@@ -2,9 +2,10 @@ from typing import Dict
 
 import accelerate
 import torch
-from engine import Model, util
-from engine.logger import logger as engine_logger
-from engine.pydantics import JobStatus, RequestModel, ResponseModel, fx
+
+from nnsight import LanguageModel, util
+from nnsight.logger import logger as engine_logger
+from nnsight.pydantics import JobStatus, RequestModel, ResponseModel, tracing
 
 from ..ResponseDict import ResponseDict
 from . import Processor
@@ -43,7 +44,7 @@ class ModelProcessor(Processor):
 
     def initialize(self) -> None:
         # Create Model
-        self.model = Model(self.model_name_or_path)
+        self.model = LanguageModel(self.model_name_or_path, torch_dtype=torch.bfloat16)
 
         # If max_memory is set, use accelerate.infer_auto_device_map to get a device_map
         if self.max_memory is not None:
@@ -53,7 +54,7 @@ class ModelProcessor(Processor):
             )
 
         # Actually load the parameters of the model according to device_map
-        self.model.dispatch(device_map=self.device_map)
+        self.model.dispatch_local_model(device_map=self.device_map)
 
         engine_logger.addHandler(self.logging_handler)
 
@@ -66,28 +67,34 @@ class ModelProcessor(Processor):
             graph = request.graph()
 
             # Run model with parameters and interventions
-            output = self.model(request.prompts, graph, *args, **kwargs)
+            output = self.model(
+                self.model._generation if request.generation else self.model._forward,
+                request.batched_input,
+                graph,
+                *args,
+                **kwargs,
+            )
 
             # Create response
             self.response_dict[request.id] = ResponseModel(
                 id=request.id,
-                recieved=request.recieved,
+                recieved=request.received,
                 blocking=request.blocking,
                 status=JobStatus.COMPLETED,
                 description="Your job has been completed.",
-                output=output,
+                output=util.apply(output, lambda x: x.cpu(), torch.Tensor),
                 # Move all copied data to cpu
                 saves={
-                    name: util.apply(value.value(), lambda x: x.cpu(), torch.Tensor)
+                    name: util.apply(value.value, lambda x: x.cpu(), torch.Tensor)
                     for name, value in graph.nodes.items()
-                    if value.done()
+                    if value is not None
                 },
             ).log(self.logger)
 
         except Exception as exception:
             self.response_dict[request.id] = ResponseModel(
                 id=request.id,
-                recieved=request.recieved,
+                recieved=request.received,
                 blocking=request.blocking,
                 status=JobStatus.ERROR,
                 description=str(exception),
