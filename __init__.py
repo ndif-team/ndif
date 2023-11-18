@@ -2,7 +2,7 @@ import os
 
 import yaml
 
-from .modeling import ConfigModel
+from .pydantics import ConfigModel
 
 # Get a parse config in same directory
 PATH = os.path.dirname(os.path.abspath(__file__))

@@ -5,7 +5,7 @@ from datetime import datetime
 from multiprocessing import Manager
 from uuid import uuid4
 
-from engine.pydantics import JobStatus, RequestModel, ResponseModel
+from nnsight.pydantics import JobStatus, RequestModel, ResponseModel
 
 from flask import Flask, request, session
 from flask_socketio import SocketIO, close_room, join_room
@@ -85,7 +85,7 @@ def blocking_request(data: str) -> None:
     rquest.blocking = True
     # Give the request a unique id
     rquest.id = str(uuid4())
-    rquest.recieved = datetime.now()
+    rquest.received = datetime.now()
     # Add this websocket session to a room with id the same as the request id. That way we
     # can respond to this specific request by emiting to this specific room.
     join_room(rquest.id)
@@ -93,7 +93,7 @@ def blocking_request(data: str) -> None:
     # Set the recieved response
     RESPONSE_DICT[rquest.id] = ResponseModel(
         id=rquest.id,
-        recieved=rquest.recieved,
+        recieved=rquest.received,
         blocking=True,
         status=JobStatus.RECIEVED,
         description="Your job has been recieved and is waiting approval",

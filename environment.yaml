@@ -9,4 +9,6 @@ dependencies:
     - flask
     - flask-socketio
     - simple-websocket
-    - ../
+    - nnsight
+    - bitsandbytes
+    - scipy

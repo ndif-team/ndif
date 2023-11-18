@@ -3,7 +3,7 @@ import pickle
 from multiprocessing import Queue
 from typing import Any, Dict
 
-from engine.pydantics import JobStatus, RequestModel, ResponseModel
+from nnsight.pydantics import JobStatus, RequestModel, ResponseModel
 
 from .. import CONFIG
 from ..ResponseDict import ResponseDict
@@ -29,6 +29,10 @@ class RequestProcessor(Processor):
             io.BytesIO(request.intervention_graph)
         ).load()
 
+        request.batched_input = Unpickler(
+            io.BytesIO(request.batched_input)
+        ).load()
+
     def process(self, request: RequestModel) -> None:
         try:
             id = request.id
@@ -37,7 +41,7 @@ class RequestProcessor(Processor):
 
             self.response_dict[id] = ResponseModel(
                 id=id,
-                recieved=request.recieved,
+                recieved=request.received,
                 blocking=request.blocking,
                 status=JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
@@ -48,7 +52,7 @@ class RequestProcessor(Processor):
         except Exception as exception:
             self.response_dict[request.id] = ResponseModel(
                 id=request.id,
-                recieved=request.recieved,
+                recieved=request.received,
                 blocking=request.blocking,
                 status=JobStatus.ERROR,
                 description=str(exception),

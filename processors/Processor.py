@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from multiprocessing import Process, Queue
 from typing import Any
 
-from engine.util import timed
+from nnsight.util import timed
 
 from .. import CONFIG
 

@@ -8,5 +8,5 @@ for model_configuration in CONFIG.MODEL_CONFIGURATIONS:
     model_configuration.checkpoint_path = snapshot_download(
         model_configuration.repo_id,
         force_download=False,
-        allow_patterns=["*.bin", "*.json", "*.model"],
+        allow_patterns=["*.safetensors", "*.json", "*.model"],
     )
