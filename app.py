@@ -19,7 +19,7 @@ from .ResponseDict import ResponseDict
 # Flask app
 app = Flask(__name__)
 # SocketIO Flask wrapper
-socketio_app = SocketIO(app)
+socketio_app = SocketIO(app, async_mode="eventlet")
 
 logging_handler = logging.FileHandler(os.path.join(CONFIG.LOG_PATH, "app.log"), "a")
 logging_handler.setFormatter(

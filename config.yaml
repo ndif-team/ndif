@@ -1,15 +1,17 @@
 RESPONSE_PATH: ./responses
-PORT: 5000
+PORT: 5550
 LOG_PATH: ./logs
 ALLOWED_MODULES: 
   - torch
   - builtins
   - nnsight
   - collections
+  - operator
+  - _operator
 DISALLOWED_FUNCTIONS: []
 MODEL_CONFIGURATIONS:
-  - repo_id: EleutherAI/pythia-70m
-  - repo_id: meta-llama/Llama-2-70b-hf
+  - repo_id: EleutherAI/gpt-j-6b
+  # - repo_id: meta-llama/Llama-2-70b-hf
     # max_memory:
     #   {
     #     0: "0GiB",
