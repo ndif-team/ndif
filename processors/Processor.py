@@ -37,7 +37,7 @@ class Processor(Process, ABC):
         )
         self.logging_handler.setFormatter(
             logging.Formatter(
-                "%(asctime)s %(processName)-10s %(name)s %(levelname)-8s %(message)s"
+                "%(asctime)s PID:%(process)d %(processName)-10s %(name)s %(levelname)-8s %(message)s"
             )
         )
         self.logging_handler.setLevel(logging.DEBUG)
@@ -46,14 +46,14 @@ class Processor(Process, ABC):
         self.logger.setLevel(logging.DEBUG)
 
         self.process = timed(self.process, self.logger)
-    
+
     def initialize(self) -> None:
         """Called on process start."""
         pass
 
     def maintenance(self) -> None:
         """Called on end of processing loop."""
-        
+
         self.logger.debug(f"Queue size: {self.queue.qsize()}.")
 
     @abstractmethod
@@ -94,4 +94,3 @@ class Processor(Process, ABC):
                 self.logger.exception(f"Exception encountered in processing.")
             finally:
                 self.maintenance()
-           
