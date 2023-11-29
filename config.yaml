@@ -10,7 +10,7 @@ ALLOWED_MODULES:
   - _operator
 DISALLOWED_FUNCTIONS: []
 MODEL_CONFIGURATIONS:
-  - repo_id: EleutherAI/gpt-j-6b
+  - repo_id: gpt2
   # - repo_id: meta-llama/Llama-2-70b-hf
     # max_memory:
     #   {

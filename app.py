@@ -5,10 +5,11 @@ from datetime import datetime
 from multiprocessing import Manager
 from uuid import uuid4
 
-from nnsight.pydantics import JobStatus, RequestModel, ResponseModel
-
-from flask import Flask, request, session
+from flask import Flask, jsonify
+from flask_cors import CORS
 from flask_socketio import SocketIO, close_room, join_room
+
+from nnsight.pydantics import JobStatus, RequestModel, ResponseModel
 
 from . import CONFIG
 from .processors.ModelProcessor import ModelProcessor
@@ -18,8 +19,9 @@ from .ResponseDict import ResponseDict
 
 # Flask app
 app = Flask(__name__)
+CORS(app)
 # SocketIO Flask wrapper
-socketio_app = SocketIO(app, async_mode="eventlet")
+socketio_app = SocketIO(app, async_mode="eventlet", cors_allowed_origins="*")
 
 logging_handler = logging.FileHandler(os.path.join(CONFIG.LOG_PATH, "app.log"), "a")
 logging_handler.setFormatter(
@@ -127,8 +129,13 @@ def blocking_response(id: str) -> None:
         )
         close_room(id)
 
+
+@app.route("/ping")
+def ping():
+    return jsonify(success=True)
+
+
 REQUEST_PROCESSOR.start()
 [model_processor.start() for model_processor in MODEL_PROCESSORS]
 with app.app_context():
-
     SIGNAL_PROCESSOR.start()

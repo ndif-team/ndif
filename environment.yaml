@@ -8,6 +8,7 @@ dependencies:
     - openapi_schema_pydantic
     - flask
     - flask-socketio
+    - flask-cors
     - simple-websocket
     - nnsight
     - bitsandbytes
