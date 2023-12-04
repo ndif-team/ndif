@@ -21,7 +21,7 @@ from .ResponseDict import ResponseDict
 app = Flask(__name__)
 CORS(app)
 # SocketIO Flask wrapper
-socketio_app = SocketIO(app, async_mode="eventlet", cors_allowed_origins="*")
+socketio_app = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 logging_handler = logging.FileHandler(os.path.join(CONFIG.LOG_PATH, "app.log"), "a")
 logging_handler.setFormatter(
