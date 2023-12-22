@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from flask import Flask, jsonify
 from flask_cors import CORS
-from flask_socketio import SocketIO, close_room, join_room
+from flask_socketio import SocketIO, close_room, join_room, emit
 
 from nnsight.pydantics import JobStatus, RequestModel, ResponseModel
 
@@ -21,7 +21,7 @@ from .ResponseDict import ResponseDict
 app = Flask(__name__)
 CORS(app)
 # SocketIO Flask wrapper
-socketio_app = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
+socketio_app = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True, max_http_buffer_size=5000000000, ping_timeout =240)
 
 logging_handler = logging.FileHandler(os.path.join(CONFIG.LOG_PATH, "app.log"), "a")
 logging_handler.setFormatter(
@@ -30,7 +30,7 @@ logging_handler.setFormatter(
     )
 )
 app.logger.addHandler(logging_handler)
-app.logger.setLevel(logging.DEBUG)
+app.logger.setLevel(logging.INFO)
 
 MP_MANAGER = Manager()
 
@@ -60,8 +60,9 @@ REQUEST_PROCESSOR = RequestProcessor(
 MODEL_PROCESSORS = [
     ModelProcessor(
         model_name_or_path=model_configuration.checkpoint_path,
+        nnsight_class=model_configuration.nnsight_class,
         max_memory=model_configuration.max_memory,
-        device_map=model_configuration.device_map,
+        model_kwargs=model_configuration.kwargs,
         response_dict=RESPONSE_DICT,
         queue=MODEL_QUEUES[model_configuration.repo_id],
     )
@@ -120,7 +121,7 @@ def blocking_response(id: str) -> None:
     app.logger.info(f"Responding to: {str(response)}.")
 
     # Emit to the room associated with the id using (to=id).
-    socketio_app.emit("blocking_response", pickle.dumps(response), to=id)
+    emit("blocking_response", pickle.dumps(response), to=id)
 
     # If the request is completed or errored out, close the associated room.
     if response.status == JobStatus.COMPLETED or response.status == JobStatus.ERROR:

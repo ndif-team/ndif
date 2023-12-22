@@ -1,5 +1,5 @@
 RESPONSE_PATH: ./responses
-PORT: 5550
+PORT: 5000
 LOG_PATH: ./logs
 ALLOWED_MODULES: 
   - torch
@@ -8,18 +8,20 @@ ALLOWED_MODULES:
   - collections
   - operator
   - _operator
+  - inspect
 DISALLOWED_FUNCTIONS: []
 MODEL_CONFIGURATIONS:
-  - repo_id: gpt2
-  # - repo_id: meta-llama/Llama-2-70b-hf
-    # max_memory:
-    #   {
-    #     0: "0GiB",
-    #     1: "0GiB",
-    #     2: "0GiB",
-    #     3: "0GiB",
-    #     4: "86GiB",
-    #     5: "86GiB",
-    #     6: "86GiB",
-    #     7: "86GiB",
-    #   }
+  - repo_id: EleutherAI/gpt-j-6b
+    nnsight_class: nnsight.models.LanguageModel.LanguageModel
+    kwargs: 
+      device_map: auto
+      
+  - repo_id: mistralai/Mixtral-8x7B-v0.1
+    nnsight_class: nnsight.models.LanguageModel.LanguageModel
+    kwargs: 
+      device_map: auto
+
+  - repo_id: state-spaces/mamba-2.8b-slimpj
+    nnsight_class: nnsight.models.Mamba.Mamba
+    kwargs: 
+      device: cuda

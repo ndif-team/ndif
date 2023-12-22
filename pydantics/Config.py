@@ -1,12 +1,12 @@
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from pydantic import BaseModel
 
 
 class ModelConfigModel(BaseModel):
     repo_id: str
-
-    device_map: Dict = "auto"
+    nnsight_class: str
+    kwargs: Dict[str, Any]
     max_memory: Dict[int, str] = None
     checkpoint_path: str = None
 
