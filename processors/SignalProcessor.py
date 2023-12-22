@@ -13,7 +13,7 @@ class SignalProcessor(Processor):
 
     def initialize(self) -> None:
         self.sio = socketio.Client()
-        self.sio.connect(self.url, transports=['websocket'])
+        self.sio.connect(self.url, transports=['websocket'], wait_timeout=5000)
 
         super().initialize()
 
