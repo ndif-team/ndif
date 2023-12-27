@@ -15,5 +15,3 @@ dependencies:
     - celery
     - aio_pika
     - requests
-    - torch
-    - numpy
