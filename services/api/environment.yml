@@ -1,0 +1,19 @@
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+
+  - pip:
+    - pip
+    - setuptools
+    - fastapi
+    - fastapi-socketio
+    - socketio
+    - uvicorn 
+    - pymongo
+    - celery
+    - aio_pika
+    - requests
+    - torch
+    - numpy
