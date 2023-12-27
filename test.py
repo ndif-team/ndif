@@ -1,14 +1,11 @@
 
 import nnsight
 
-model = nnsight.LanguageModel('gpt2')
+model = nnsight.LanguageModel('EleutherAI/gpt-j-6b')
 
 with model.forward(remote=True) as runner:
 
     with runner.invoke("testing"):
-        data = model.transformer.h[0].output.save()
-
-
-print(data.value)
+        pass
 
 

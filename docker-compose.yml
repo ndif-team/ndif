@@ -3,7 +3,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.11.28
-    
+        
   mongodb:
     image: mongodb/mongodb-community-server:6.0-ubi8
     environment:
@@ -25,9 +25,9 @@ services:
       API_URL: https://ndif.dev
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
-      ALLOWED_MODULES: torch,collections,nnsight,inspect,_operator
-  
-  model:
+      ALLOWED_MODULES: torch,collections,nnsight,inspect,_operator,builtins.slice
+
+  model-gpt2:
     image: model:latest
     environment:
       API_URL: https://ndif.dev
@@ -43,6 +43,25 @@ services:
             - driver: nvidia
               count: 8
               capabilities: [gpu]
+              
+  model-gptj:
+    image: model:latest
+    environment:
+      API_URL: https://ndif.dev
+      RMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
+      REPO_ID: EleutherAI/gpt-j-6b
+    volumes:
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub:z
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [gpu]
+
+
 
 
 

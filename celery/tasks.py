@@ -1,5 +1,5 @@
-
 import celery
+from amqp import exceptions
 from celery import bootsteps
 from celery.utils.log import get_task_logger
 from click import Option
@@ -7,7 +7,6 @@ from click import Option
 from ..pydantics import RequestModel, ResponseModel
 from . import celeryconfig, customconfig
 from .process_request import validate_request
-
 
 logger = get_task_logger(__name__)
 
@@ -90,6 +89,7 @@ def run_model(request: RequestModel):
 
         ResponseModel(
             id=request.id,
+            session_id=request.session_id,
             recieved=request.received,
             blocking=request.blocking,
             status=ResponseModel.JobStatus.COMPLETED,
@@ -108,9 +108,9 @@ def run_model(request: RequestModel):
     except Exception as exception:
         ResponseModel(
             id=request.id,
+            session_id=request.session_id,
             received=request.received,
             blocking=request.blocking,
-            session_id=request.session_id,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
         ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
@@ -125,25 +125,34 @@ def process_request(request: RequestModel):
     try:
         validate_request(request)
 
+        queue_name = f"models-{request.repo_id}"
+
+        with app.broker_connection() as conn:
+            with conn.channel() as channel:
+                try:
+                    queue = channel.queue_declare(queue_name, passive=True)
+                except exceptions.NotFound:
+                    raise ValueError(f"Model with id '{request.repo_id}' not among hosted models.")
+
+            run_model.apply_async([request], queue=queue_name, connection=conn).forget()
+
         ResponseModel(
             id=request.id,
-            received=request.received,
-            blocking=True,
             session_id=request.session_id,
+            received=request.received,
+            blocking=request.blocking,
             status=ResponseModel.JobStatus.APPROVED,
             description="Your job was approved and is waiting to be run.",
         ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
 
-        run_model.apply_async([request], queue=f"models/{request.repo_id}").forget()
-
     except Exception as exception:
         ResponseModel(
             id=request.id,
+            session_id=request.session_id,
             received=request.received,
             blocking=request.blocking,
-            session_id=request.session_id,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
         ).log(logger).update_backend(app.backend._get_connection()).blocking_response(

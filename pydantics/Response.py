@@ -4,10 +4,10 @@ import logging
 import pickle
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Union
 
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 
 class ResponseModel(BaseModel):
@@ -22,9 +22,9 @@ class ResponseModel(BaseModel):
     status: JobStatus
     description: str
 
-    output: Any = None
     received: datetime = None
-    saves: Dict[str, Any] = None
+    output: Union[bytes, Any] = None
+    saves: Union[bytes, Any] = None
     session_id: str = None
     blocking: bool = False
 
@@ -45,7 +45,7 @@ class ResponseModel(BaseModel):
         from bson.objectid import ObjectId
 
         responses_collection.replace_one(
-            {"_id": ObjectId(self.id)}, {"bytes": pickle.dumps(self)}, upsert=True
+            {"_id": ObjectId(self.id)}, self.model_dump(exclude_defaults=True, exclude_none=True), upsert=True
         )
 
         return self
@@ -55,3 +55,15 @@ class ResponseModel(BaseModel):
             requests.get(f"{api_url}/blocking_response/{self.id}")
 
         return self
+
+    @field_serializer("output", "saves")
+    def pickles(self, value, _info):
+        return pickle.dumps(value)
+
+    @field_serializer("status")
+    def sstatus(self, value, _info):
+        return value.value
+    
+    @field_serializer("received")
+    def sreceived(self, value, _info):
+        return str(value)

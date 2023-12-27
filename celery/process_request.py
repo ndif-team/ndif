@@ -9,14 +9,16 @@ class Unpickler(pickle.Unpickler):
     def find_class(self, __module_name: str, __global_name: str) -> Any:
         disallowed = True
 
+        fullname = f"{__module_name}.{__global_name}"
+
         for allowed_module in customconfig.allowed_modules:
-            if __module_name.startswith(allowed_module):
+            if fullname.startswith(allowed_module):
                 disallowed = False
 
                 break
 
         if disallowed:
-            raise pickle.UnpicklingError(f"Bad {__module_name} {__global_name}")
+            raise pickle.UnpicklingError(f"Type {fullname} not allowed.")
 
         return super().find_class(__module_name, __global_name)
 
