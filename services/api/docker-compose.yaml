@@ -1,9 +1,0 @@
-version: '3'
-services:
-  api:
-    image: api:latest
-    ports:
-      - 8001:80
-    environment:
-      RMQ_URL: amqp://guest:guest@rabbitmq:80/
-      MONGO_URL: mongodb://user:pass@localhost:5001/celery_result_backend 

@@ -10,7 +10,8 @@ dependencies:
     - fastapi
     - fastapi-socketio
     - socketio
-    - uvicorn 
+    - uvicorn[standard]
+    - gunicorn
     - pymongo
     - celery
     - aio_pika
