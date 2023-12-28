@@ -43,7 +43,7 @@ services:
             - driver: nvidia
               count: 8
               capabilities: [gpu]
-              
+
   model-gptj:
     image: model:latest
     environment:
@@ -54,6 +54,7 @@ services:
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub:z
     deploy:
+      replicas: 3
       resources:
         reservations:
           devices:
