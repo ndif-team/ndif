@@ -28,7 +28,8 @@ app.user_options["worker"].add(
     )
 )
 
-
+# Model.
+# Only gets populated if `repo_id` custom argument is defined.
 model = None
 
 
@@ -70,21 +71,28 @@ app.config_from_object(celeryconfig)
 
 @app.task()
 def run_model(request: RequestModel):
+    """Task for `model` workers to run. Executes a model and interleaves an intervention graph.
+    Depends on `torch` and `nnsight`
+
+    Args:
+        request (RequestModel): _description_
+
+    Raises:
+        exception: _description_
+    """
     try:
+        # Import
         import torch
 
         from nnsight import util
 
-        args, kwargs = request.args, request.kwargs
-
-        graph = request.intervention_graph
-
+        # Execute model with intervention graph.
         output = model(
             model._generation if request.generation else model._forward,
             request.batched_input,
-            graph,
-            *args,
-            **kwargs,
+            request.intervention_graph,
+            *request.args,
+            **request.kwargs,
         )
 
         ResponseModel(
@@ -98,7 +106,7 @@ def run_model(request: RequestModel):
             # Move all copied data to cpu
             saves={
                 name: util.apply(value.value, lambda x: x.detach().cpu(), torch.Tensor)
-                for name, value in graph.nodes.items()
+                for name, value in request.intervention_graph.nodes.items()
                 if value is not None
             },
         ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
@@ -122,19 +130,40 @@ def run_model(request: RequestModel):
 
 @app.task()
 def process_request(request: RequestModel):
-    try:
-        validate_request(request)
+    """Task for `request` workers to run. Validates requests.
+    Checks if intervention graph and inputs use approved modules in their pickled data. Set by ENV variable.
+    Checks if queue for a model service exists for specified model.
 
+    Args:
+        request (RequestModel): _description_
+
+    Raises:
+        ValueError: _description_
+        exception: _description_
+    """
+    try:
+        # Model workers should listen on a queue with name in the format: models-<huggingface repo id>
         queue_name = f"models-{request.repo_id}"
 
-        with app.broker_connection() as conn:
-            with conn.channel() as channel:
+        # Check if a queue for this model services exists.
+        # If not, raise error and inform user.
+        # TODO use manager. This requires a rabbitmq manager image
+        with app.broker_connection() as connection:
+            with connection.channel() as channel:
                 try:
                     queue = channel.queue_declare(queue_name, passive=True)
                 except exceptions.NotFound:
-                    raise ValueError(f"Model with id '{request.repo_id}' not among hosted models.")
+                    raise ValueError(
+                        f"Model with id '{request.repo_id}' not among hosted models."
+                    )
 
-            run_model.apply_async([request], queue=queue_name, connection=conn).forget()
+            # Validate request.
+            validate_request(request)
+
+            # Have model workers for this model process the request.
+            run_model.apply_async(
+                [request], queue=queue_name, connection=connection
+            ).forget()
 
         ResponseModel(
             id=request.id,
