@@ -4,7 +4,7 @@ from celery import bootsteps
 from celery.utils.log import get_task_logger
 from click import Option
 
-from ..pydantics import RequestModel, ResponseModel
+from ..pydantics import RequestModel, ResponseModel, ResultModel
 from . import celeryconfig, customconfig
 from .process_request import validate_request
 
@@ -41,11 +41,12 @@ class CustomArgs(bootsteps.StartStopStep):
 
         if customconfig.repo_id is not None:
             import nnsight
+            import torch
 
             global model
 
             model = nnsight.LanguageModel(
-                customconfig.repo_id, dispatch=True, device_map="auto"
+                customconfig.repo_id, dispatch=True, device_map="auto", torch_dtype=torch.bfloat16
             )
 
             mem_params = sum(
@@ -69,7 +70,7 @@ app.steps["worker"].add(CustomArgs)
 app.config_from_object(celeryconfig)
 
 
-@app.task()
+@app.task(ignore_result=True)
 def run_model(request: RequestModel):
     """Task for `model` workers to run. Executes a model and interleaves an intervention graph.
     Depends on `torch` and `nnsight`
@@ -98,18 +99,23 @@ def run_model(request: RequestModel):
         ResponseModel(
             id=request.id,
             session_id=request.session_id,
-            recieved=request.received,
+            received=request.received,
             blocking=request.blocking,
             status=ResponseModel.JobStatus.COMPLETED,
             description="Your job has been completed.",
-            output=util.apply(output, lambda x: x.detach().cpu(), torch.Tensor),
-            # Move all copied data to cpu
-            saves={
-                name: util.apply(value.value, lambda x: x.detach().cpu(), torch.Tensor)
-                for name, value in request.intervention_graph.nodes.items()
-                if value is not None
-            },
-        ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
+            result=ResultModel(
+                id=request.id,
+                output=util.apply(output, lambda x: x.detach().cpu(), torch.Tensor),
+                # Move all copied data to cpu
+                saves={
+                    name: util.apply(
+                        value.value, lambda x: x.detach().cpu(), torch.Tensor
+                    )
+                    for name, value in request.intervention_graph.nodes.items()
+                    if value is not None
+                },
+            ),
+        ).log(logger).save(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
 
@@ -121,14 +127,14 @@ def run_model(request: RequestModel):
             blocking=request.blocking,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
-        ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
+        ).log(logger).save(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
 
         raise exception
 
 
-@app.task()
+@app.task(ignore_result=True)
 def process_request(request: RequestModel):
     """Task for `request` workers to run. Validates requests.
     Checks if intervention graph and inputs use approved modules in their pickled data. Set by ENV variable.
@@ -172,7 +178,7 @@ def process_request(request: RequestModel):
             blocking=request.blocking,
             status=ResponseModel.JobStatus.APPROVED,
             description="Your job was approved and is waiting to be run.",
-        ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
+        ).log(logger).save(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
 
@@ -184,7 +190,7 @@ def process_request(request: RequestModel):
             blocking=request.blocking,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
-        ).log(logger).update_backend(app.backend._get_connection()).blocking_response(
+        ).log(logger).save(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
 

@@ -3,6 +3,9 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.11.28
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
         
   mongodb:
     image: mongodb/mongodb-community-server:6.0-ubi8
@@ -17,7 +20,7 @@ services:
     environment:
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
-      WORKERS: 10
+      WORKERS: 4
 
   request:
     image: request:latest
@@ -25,7 +28,7 @@ services:
       API_URL: https://ndif.dev
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
-      ALLOWED_MODULES: torch,collections,nnsight,inspect,_operator,builtins.slice
+      ALLOWED_MODULES: torch._C,,collections,nnsight,inspect,_operator,builtins.slice
 
   model-gpt2:
     image: model:latest
@@ -52,7 +55,7 @@ services:
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
       REPO_ID: EleutherAI/gpt-j-6b
     volumes:
-      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub:z
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub
     deploy:
       replicas: 3
       resources:
