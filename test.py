@@ -1,22 +1,14 @@
 
 import nnsight
 
-model = nnsight.LanguageModel('EleutherAI/gpt-j-6b')
+model = nnsight.LanguageModel('gpt2')
 
-with model.forward(remote=True, validate=False) as runner:
+for i in range(3):
 
-    with runner.invoke("testing", scan=False):
-        data = model.transformer.h[0].output.save()
+    with model.forward(remote=True, validate=False) as runner:
 
-print('ayy')
-with model.forward(remote=True, validate=False) as runner:
+        with runner.invoke(["testingascascacaccascascascasc"] *  50, scan=False):
+            hidden_states = model.transformer.h[-1].output[0][:, -1].save()
 
-    with runner.invoke("testing", scan=False):
-        data = model.transformer.h[0].output.save()
-print('ayy')
-with model.forward(remote=True, validate=False) as runner:
 
-    with runner.invoke("testing", scan=False):
-        data = model.transformer.h[0].output.save()
-
-print('ayy')
+    print(hidden_states.value)
