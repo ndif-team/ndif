@@ -9,7 +9,7 @@ from typing import Any, Union
 import gridfs
 import requests
 from bson.objectid import ObjectId
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, ConfigDict, field_serializer
 from pymongo import MongoClient
 
 
@@ -19,14 +19,17 @@ class ResultModel(BaseModel):
     saves: Union[bytes, Any] = None
 
     @classmethod
-    def load(cls, client: MongoClient, id: str) -> ResultModel:
+    def load(cls, client: MongoClient, id: str, stream: bool = False) -> ResultModel:
         results_collection = gridfs.GridFS(
             client["ndif_database"], collection="results"
         )
 
-        result = ResultModel(
-            **pickle.loads(results_collection.find_one(ObjectId(id)).read())
-        )
+        gridout = results_collection.find_one(ObjectId(id))
+
+        if stream:
+            return gridout
+
+        result = ResultModel(**pickle.loads(gridout.read()))
 
         return result
 
@@ -48,6 +51,7 @@ class ResultModel(BaseModel):
 
 
 class ResponseModel(BaseModel):
+
     class JobStatus(Enum):
         RECEIVED = "RECEIVED"
         APPROVED = "APPROVED"
@@ -66,7 +70,12 @@ class ResponseModel(BaseModel):
     result: Union[bytes, ResultModel] = None
 
     @classmethod
-    def load(cls, client: MongoClient, id: str, result: bool = True) -> ResponseModel:
+    def load(
+        cls,
+        client: MongoClient,
+        id: str,
+        result: bool = True,
+    ) -> ResponseModel:
         responses_collection = client["ndif_database"]["responses"]
 
         response = ResponseModel(
@@ -74,7 +83,7 @@ class ResponseModel(BaseModel):
         )
 
         if result and response.status == ResponseModel.JobStatus.COMPLETED:
-            response.result = ResultModel.load(client, id)
+            response.result = ResultModel.load(client, id, stream=False)
 
         return response
 

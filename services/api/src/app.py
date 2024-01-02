@@ -4,6 +4,7 @@ import pickle
 from datetime import datetime
 from io import BytesIO
 
+import gridfs
 import socketio
 import uvicorn
 from bson.objectid import ObjectId
@@ -16,7 +17,7 @@ from pymongo import MongoClient
 from .celery import celeryconfig
 from .celery.tasks import app as celery_app
 from .celery.tasks import process_request
-from .pydantics import RequestModel, ResponseModel
+from .pydantics import RequestModel, ResponseModel, ResultModel
 
 logger = logging.getLogger("gunicorn.error")
 
@@ -95,26 +96,30 @@ async def blocking_response(id: str):
     await _blocking_response(response)
 
 
-@app.get("/retrieve/{id}", response_model=ResponseModel)
-async def retrieve(id: str) -> ResponseModel:
+@app.get("/response/{id}")
+async def response(id: str):
     client: MongoClient = celery_app.backend._get_connection()
 
-    response = ResponseModel.load(client, id)
+    return ResponseModel.load(client, id, result=False)
 
 
-    data = BytesIO()
+@app.get("/result/{id}")
+def result(id: str):
+    client: MongoClient = celery_app.backend._get_connection()
 
-    pickle.dump(response.model_dump(), data)
-    data.seek(0)
+    result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
+
+    headers = {
+        "Content-Length": str(result.length),
+    }
 
     return StreamingResponse(
-        content=data,
-        media_type="application/octet-stream",
+        content=result, media_type="application/octet-stream", headers=headers
     )
 
 
-@app.get("/ping")
-async def ping(status_code=200):
+@app.get("/ping", status_code=200)
+async def ping():
     return "pong"
 
 
