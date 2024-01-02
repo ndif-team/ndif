@@ -28,7 +28,7 @@ services:
       API_URL: https://ndif.dev
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
-      ALLOWED_MODULES: torch._C,,collections,nnsight,inspect,_operator,builtins.slice
+      ALLOWED_MODULES: torch._C,torch._utils,torch.storage,collections,nnsight,inspect._empty,_operator,builtins.slice
 
   model-gpt2:
     image: model:latest
