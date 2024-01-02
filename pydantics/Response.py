@@ -4,7 +4,7 @@ import logging
 import pickle
 from datetime import datetime
 from enum import Enum
-from typing import Any, Union
+from typing import Any, Dict, Union
 
 import gridfs
 import requests
@@ -15,8 +15,8 @@ from pymongo import MongoClient
 
 class ResultModel(BaseModel):
     id: str
-    output: Union[bytes, Any] = None
-    saves: Union[bytes, Any] = None
+    output: Any = None
+    saves: Dict[str, Any] = None
 
     @classmethod
     def load(cls, client: MongoClient, id: str, stream: bool = False) -> ResultModel:
@@ -42,16 +42,12 @@ class ResultModel(BaseModel):
 
         results_collection.delete(id)
 
-        self.output = pickle.dumps(self.output)
-        self.saves = pickle.dumps(self.saves)
-
         results_collection.put(pickle.dumps(self.model_dump()), _id=id)
 
         return self
 
 
 class ResponseModel(BaseModel):
-
     class JobStatus(Enum):
         RECEIVED = "RECEIVED"
         APPROVED = "APPROVED"
