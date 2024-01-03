@@ -1,2 +1,2 @@
 from .Request import RequestModel
-from .Response import ResponseModel
+from .Response import ResponseModel, ResultModel
