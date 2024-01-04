@@ -16,3 +16,4 @@ class RequestModel(BaseModel):
     session_id: str = None
     received: datetime = None
     blocking: bool = False
+    include_output: bool = False

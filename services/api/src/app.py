@@ -59,7 +59,7 @@ async def blocking_request(sid, request: RequestModel):
             blocking=True,
             session_id=request.session_id,
             status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting approval",
+            description="Your job has been received and is waiting approval.",
         ).log(logger)
 
         await _blocking_response(response)
@@ -121,6 +121,17 @@ def result(id: str):
 @app.get("/ping", status_code=200)
 async def ping():
     return "pong"
+
+
+@app.get("/stats", status_code=200)
+async def stats():
+    stats = celery_app.control.inspect().stats()
+
+    return {
+        key: value["custom_info"]
+        for key, value in stats.items()
+        if "custom_info" in value
+    }
 
 
 if __name__ == "__main__":

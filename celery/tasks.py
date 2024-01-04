@@ -1,6 +1,8 @@
+from functools import wraps
+
 import celery
 from amqp import exceptions
-from celery import bootsteps
+from celery import bootsteps, worker
 from celery.utils.log import get_task_logger
 from click import Option
 
@@ -13,6 +15,7 @@ logger = get_task_logger(__name__)
 app = celery.Celery("tasks")
 
 app.user_options["worker"].add(Option(["--repo_id"], default=None))
+app.user_options["worker"].add(Option(["--model_kwargs"], default=None))
 
 app.user_options["worker"].add(
     Option(
@@ -34,19 +37,32 @@ model = None
 
 
 class CustomArgs(bootsteps.StartStopStep):
-    def __init__(self, worker, repo_id, api_url, allowed_modules, **options):
+    def __init__(
+        self,
+        worker: worker.WorkController,
+        repo_id,
+        model_kwargs,
+        api_url,
+        allowed_modules,
+        **options,
+    ):
         customconfig.repo_id = repo_id
+        customconfig.model_kwargs = model_kwargs
         customconfig.api_url = api_url
         customconfig.allowed_modules = allowed_modules.split(",")
 
         if customconfig.repo_id is not None:
-            import nnsight
+            
+            model_kwargs = eval(customconfig.model_kwargs) if customconfig.model_kwargs is not None else {}
+
             import torch
+
+            import nnsight
 
             global model
 
             model = nnsight.LanguageModel(
-                customconfig.repo_id, dispatch=True, device_map="auto", torch_dtype=torch.bfloat16
+                customconfig.repo_id, dispatch=True, device_map="auto", **model_kwargs
             )
 
             mem_params = sum(
@@ -65,6 +81,27 @@ class CustomArgs(bootsteps.StartStopStep):
 
             logger.info(f"MEM: {customconfig.repo_id} size {mem_gbs:.2f}GBs")
 
+            def info_wrapper(fn):
+                @wraps(fn)
+                def inner(*args, **kwargs):
+                    info: dict = fn(*args, **kwargs)
+
+                    info["custom_info"] = {
+                        "repo_id": repo_id,
+                        "config_json_string": model.local_model.config.to_json_string()
+                        if hasattr(model.local_model, "config")
+                        else None,
+                        "kwargs": {
+                            key: str(value) for key, value in model_kwargs.items()
+                        },
+                    }
+
+                    return info
+
+                return inner
+
+            worker.info = info_wrapper(worker.info)
+
 
 app.steps["worker"].add(CustomArgs)
 app.config_from_object(celeryconfig)
@@ -81,12 +118,15 @@ def run_model(request: RequestModel):
     Raises:
         exception: _description_
     """
+
+    import gc
+    import inspect
+
+    import torch
+
+    from nnsight import util
+
     try:
-        # Import
-        import torch
-
-        from nnsight import util
-
         # Execute model with intervention graph.
         output = model(
             model._generation if request.generation else model._forward,
@@ -105,14 +145,16 @@ def run_model(request: RequestModel):
             description="Your job has been completed.",
             result=ResultModel(
                 id=request.id,
-                output=util.apply(output, lambda x: x.detach().cpu(), torch.Tensor),
+                output=util.apply(output, lambda x: x.detach().cpu(), torch.Tensor)
+                if request.include_output
+                else None,
                 # Move all copied data to cpu
                 saves={
                     name: util.apply(
-                        value.value, lambda x: x.detach().cpu(), torch.Tensor
+                        node.value, lambda x: x.detach().cpu(), torch.Tensor
                     )
-                    for name, value in request.intervention_graph.nodes.items()
-                    if value is not None
+                    for name, node in request.intervention_graph.nodes.items()
+                    if node.value is not inspect._empty
                 },
             ),
         ).log(logger).save(app.backend._get_connection()).blocking_response(
@@ -132,6 +174,15 @@ def run_model(request: RequestModel):
         )
 
         raise exception
+
+    # Cleanup
+    request.intervention_graph.compile(None)
+
+    del request
+    del output
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 @app.task(ignore_result=True)
@@ -153,7 +204,7 @@ def process_request(request: RequestModel):
 
         # Check if a queue for this model services exists.
         # If not, raise error and inform user.
-        # TODO use manager. This requires a rabbitmq manager image
+        # TODO use manager. This requires a rabbitmq manager image.
         with app.broker_connection() as connection:
             with connection.channel() as channel:
                 try:
