@@ -12,7 +12,10 @@ dependencies:
     - socketio
     - uvicorn[standard]
     - gunicorn
+    - eventlet
     - pymongo
     - celery
     - aio_pika
     - requests
+    - torch
+    - nnsight

@@ -27,8 +27,7 @@ services:
     environment:
       API_URL: https://ndif.dev
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
-      ALLOWED_MODULES: torch._C,torch._utils,torch.storage,collections,nnsight,inspect._empty,_operator,builtins.slice,builtins.len
+      MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend
 
   model-gpt2:
     image: model:latest
@@ -38,7 +37,24 @@ services:
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
       REPO_ID: gpt2
     volumes:
-      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub:z
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [gpu]
+
+  model-gpt2-xl:
+    image: model:latest
+    environment:
+      API_URL: https://ndif.dev
+      RMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend 
+      REPO_ID: gpt2-xl
+    volumes:
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub
     deploy:
       resources:
         reservations:

@@ -1,14 +1,23 @@
+import gc
+import inspect
 from functools import wraps
 
 import celery
+import torch
 from amqp import exceptions
 from celery import bootsteps, worker
 from celery.utils.log import get_task_logger
 from click import Option
 
-from ..pydantics import RequestModel, ResponseModel, ResultModel
+import nnsight
+from nnsight import util
+from nnsight.pydantics import RequestModel
+from nnsight.pydantics.format import FUNCTIONS_WHITELIST
+from nnsight.pydantics.format.types import FUNCTION, FunctionWhitelistError
+from nnsight.tracing.Proxy import Proxy
+
+from ..pydantics import ResponseModel, ResultModel
 from . import celeryconfig, customconfig
-from .process_request import validate_request
 
 logger = get_task_logger(__name__)
 
@@ -24,13 +33,6 @@ app.user_options["worker"].add(
     )
 )
 
-app.user_options["worker"].add(
-    Option(
-        ["--allowed_modules"],
-        default="",
-    )
-)
-
 # Model.
 # Only gets populated if `repo_id` custom argument is defined.
 model = None
@@ -43,21 +45,18 @@ class CustomArgs(bootsteps.StartStopStep):
         repo_id,
         model_kwargs,
         api_url,
-        allowed_modules,
         **options,
     ):
         customconfig.repo_id = repo_id
         customconfig.model_kwargs = model_kwargs
         customconfig.api_url = api_url
-        customconfig.allowed_modules = allowed_modules.split(",")
 
         if customconfig.repo_id is not None:
-            
-            model_kwargs = eval(customconfig.model_kwargs) if customconfig.model_kwargs is not None else {}
-
-            import torch
-
-            import nnsight
+            model_kwargs = (
+                eval(customconfig.model_kwargs)
+                if customconfig.model_kwargs is not None
+                else {}
+            )
 
             global model
 
@@ -102,6 +101,16 @@ class CustomArgs(bootsteps.StartStopStep):
 
             worker.info = info_wrapper(worker.info)
 
+            def whitelist_proxy_call(callable: FUNCTION, *args, **kwargs):
+                if callable.__qualname__ not in FUNCTIONS_WHITELIST:
+                    raise FunctionWhitelistError(
+                        f"Function with name `{callable.__qualname__}` not in function whitelist."
+                    )
+
+                return callable(*args, **kwargs)
+
+            Proxy.proxy_call = whitelist_proxy_call
+
 
 app.steps["worker"].add(CustomArgs)
 app.config_from_object(celeryconfig)
@@ -118,13 +127,6 @@ def run_model(request: RequestModel):
     Raises:
         exception: _description_
     """
-
-    import gc
-    import inspect
-
-    import torch
-
-    from nnsight import util
 
     try:
         # Execute model with intervention graph.
@@ -214,8 +216,8 @@ def process_request(request: RequestModel):
                         f"Model with id '{request.repo_id}' not among hosted models."
                     )
 
-            # Validate request.
-            validate_request(request)
+            # Compile request.
+            request.compile()
 
             # Have model workers for this model process the request.
             run_model.apply_async(

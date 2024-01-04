@@ -1,8 +1,5 @@
-import io
 import logging
-import pickle
 from datetime import datetime
-from io import BytesIO
 
 import gridfs
 import socketio
@@ -14,10 +11,12 @@ from fastapi.responses import StreamingResponse
 from fastapi_socketio import SocketManager
 from pymongo import MongoClient
 
+from nnsight.pydantics import RequestModel
+
 from .celery import celeryconfig
 from .celery.tasks import app as celery_app
 from .celery.tasks import process_request
-from .pydantics import RequestModel, ResponseModel, ResultModel
+from .pydantics import ResponseModel, ResultModel
 
 logger = logging.getLogger("gunicorn.error")
 
