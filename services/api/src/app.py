@@ -17,7 +17,6 @@ from .celery import celeryconfig
 from .celery.tasks import app as celery_app
 from .celery.tasks import process_request
 from .pydantics import ResponseModel, ResultModel
-
 logger = logging.getLogger("gunicorn.error")
 
 app = FastAPI()
@@ -67,7 +66,7 @@ async def blocking_request(sid, request: RequestModel):
         response = ResponseModel(
             id=request.id,
             received=request.received,
-            blocking=request.blocking,
+            blocking=True,
             session_id=request.session_id,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
@@ -75,10 +74,11 @@ async def blocking_request(sid, request: RequestModel):
 
         await _blocking_response(response)
 
-        raise exception
-
 
 async def _blocking_response(response: ResponseModel):
+    logger.info(f"Responding to SID: `{response.session_id}`:")
+    response.log(logger)
+
     await sm.emit(
         "blocking_response",
         data=response.model_dump(exclude_defaults=True, exclude_none=True),
@@ -96,14 +96,14 @@ async def blocking_response(id: str):
 
 
 @app.get("/response/{id}")
-async def response(id: str):
+async def response(id: str) -> ResultModel:
     client: MongoClient = celery_app.backend._get_connection()
 
     return ResponseModel.load(client, id, result=False)
 
 
 @app.get("/result/{id}")
-def result(id: str):
+def result(id: str) -> ResultModel:
     client: MongoClient = celery_app.backend._get_connection()
 
     result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
@@ -131,7 +131,6 @@ async def stats():
         for key, value in stats.items()
         if "custom_info" in value
     }
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001, workers=1)

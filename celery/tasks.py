@@ -1,3 +1,4 @@
+import functools
 import gc
 import inspect
 from functools import wraps
@@ -102,12 +103,27 @@ class CustomArgs(bootsteps.StartStopStep):
             worker.info = info_wrapper(worker.info)
 
             def whitelist_proxy_call(callable: FUNCTION, *args, **kwargs):
-                if callable.__qualname__ not in FUNCTIONS_WHITELIST:
-                    raise FunctionWhitelistError(
-                        f"Function with name `{callable.__qualname__}` not in function whitelist."
-                    )
+                if callable.__qualname__ in FUNCTIONS_WHITELIST:
+                    return callable(*args, **kwargs)
 
-                return callable(*args, **kwargs)
+                obj = (
+                    callable.__self__
+                    if not isinstance(callable, functools.partial)
+                    else callable.args[0]
+                )
+
+                func = (
+                    callable
+                    if not isinstance(callable, functools.partial)
+                    else callable.func
+                )
+
+                if isinstance(obj, torch.nn.Module) and "forward" in str(func):
+                    return callable(*args, **kwargs)
+
+                raise FunctionWhitelistError(
+                    f"Function with name `{callable.__qualname__}` not in function whitelist."
+                )
 
             Proxy.proxy_call = whitelist_proxy_call
 
@@ -127,6 +143,8 @@ def run_model(request: RequestModel):
     Raises:
         exception: _description_
     """
+
+    output = None
 
     try:
         # Execute model with intervention graph.
@@ -175,10 +193,7 @@ def run_model(request: RequestModel):
             customconfig.api_url
         )
 
-        raise exception
-
     # Cleanup
-    request.intervention_graph.compile(None)
 
     del request
     del output
@@ -246,5 +261,3 @@ def process_request(request: RequestModel):
         ).log(logger).save(app.backend._get_connection()).blocking_response(
             customconfig.api_url
         )
-
-        raise exception
