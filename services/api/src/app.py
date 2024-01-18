@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 
@@ -17,9 +18,13 @@ from .celery import celeryconfig
 from .celery.tasks import app as celery_app
 from .celery.tasks import process_request
 from .pydantics import ResponseModel, ResultModel
+
+# Attache to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
 
+# Init FastAPI app
 app = FastAPI()
+# Add middleware for CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,10 +32,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+# Init async rabbitmq manager for communication between socketio servers
 socketio_manager = socketio.AsyncAioPikaManager(
     url=celeryconfig.broker_url, logger=logger
 )
+# Init socketio manager app
 sm = SocketManager(
     app=app,
     mount_location="/ws",
@@ -103,7 +109,7 @@ async def response(id: str) -> ResultModel:
 
 
 @app.get("/result/{id}")
-def result(id: str) -> ResultModel:
+async def result(id: str) -> ResultModel:
     client: MongoClient = celery_app.backend._get_connection()
 
     result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
@@ -112,9 +118,16 @@ def result(id: str) -> ResultModel:
         "Content-Length": str(result.length),
     }
 
-    return StreamingResponse(
-        content=result, media_type="application/octet-stream", headers=headers
-    )
+    async def stream_gridfs(gridout: gridfs.GridOut):
+        for chunk in gridout:
+            yield chunk
+
+    with result:
+        return StreamingResponse(
+            content=stream_gridfs(result),
+            media_type="application/octet-stream",
+            headers=headers,
+        )
 
 
 @app.get("/ping", status_code=200)
@@ -131,6 +144,7 @@ async def stats():
         for key, value in stats.items()
         if "custom_info" in value
     }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001, workers=1)

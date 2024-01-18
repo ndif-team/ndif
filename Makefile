@@ -16,3 +16,9 @@ up:
 
 down:
 	docker compose down
+
+up-dev:
+	docker compose -f docker-compose-dev.yml up --detach
+
+down-dev:
+	docker compose -f docker-compose-dev.yml down
