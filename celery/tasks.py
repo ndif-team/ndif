@@ -13,7 +13,7 @@ from click import Option
 import nnsight
 from nnsight import util
 from nnsight.pydantics import RequestModel
-from nnsight.pydantics.format import FUNCTIONS_WHITELIST
+from nnsight.pydantics.format import FUNCTIONS_WHITELIST, get_function_name
 from nnsight.pydantics.format.types import FUNCTION, FunctionWhitelistError
 from nnsight.tracing.Proxy import Proxy
 
@@ -103,7 +103,8 @@ class CustomArgs(bootsteps.StartStopStep):
             worker.info = info_wrapper(worker.info)
 
             def whitelist_proxy_call(callable: FUNCTION, *args, **kwargs):
-                if callable.__qualname__ in FUNCTIONS_WHITELIST:
+                fn_name = get_function_name(callable)
+                if fn_name in FUNCTIONS_WHITELIST:
                     return callable(*args, **kwargs)
 
                 obj = (
@@ -160,7 +161,6 @@ def run_model(request: RequestModel):
             id=request.id,
             session_id=request.session_id,
             received=request.received,
-            blocking=request.blocking,
             status=ResponseModel.JobStatus.COMPLETED,
             description="Your job has been completed.",
             result=ResultModel(
@@ -186,7 +186,6 @@ def run_model(request: RequestModel):
             id=request.id,
             session_id=request.session_id,
             received=request.received,
-            blocking=request.blocking,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
         ).log(logger).save(app.backend._get_connection()).blocking_response(
@@ -243,7 +242,6 @@ def process_request(request: RequestModel):
             id=request.id,
             session_id=request.session_id,
             received=request.received,
-            blocking=request.blocking,
             status=ResponseModel.JobStatus.APPROVED,
             description="Your job was approved and is waiting to be run.",
         ).log(logger).save(app.backend._get_connection()).blocking_response(
@@ -255,7 +253,6 @@ def process_request(request: RequestModel):
             id=request.id,
             session_id=request.session_id,
             received=request.received,
-            blocking=request.blocking,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
         ).log(logger).save(app.backend._get_connection()).blocking_response(
