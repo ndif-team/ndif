@@ -38,47 +38,52 @@ socketio_manager = socketio.AsyncAioPikaManager(
 )
 # Init socketio manager app
 sm = SocketManager(
-    app=app,
-    mount_location="/ws",
-    client_manager=socketio_manager,
-    logger=logger,
-    max_http_buffer_size=50000000,
+    app=app, mount_location="/ws", client_manager=socketio_manager, logger=logger
 )
 
 
-@sm.on("blocking_request")
-async def blocking_request(sid, request: RequestModel):
+@app.post("/request")
+async def request(request: RequestModel) -> ResponseModel:
+    """Endpoint to submit request.
+
+    Args:
+        request (RequestModel): _description_
+
+    Returns:
+        ResponseModel: _description_
+    """
     try:
-        request = RequestModel(**request)
         request.received = datetime.now()
         request.id = str(ObjectId())
-        request.blocking = True
-        request.session_id = sid
 
         process_request.apply_async([request], queue="request").forget()
 
-        response = ResponseModel(
-            id=request.id,
-            received=request.received,
-            blocking=True,
-            session_id=request.session_id,
-            status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting approval.",
-        ).log(logger)
-
-        await _blocking_response(response)
+        response = (
+            ResponseModel(
+                id=request.id,
+                received=request.received,
+                session_id=request.session_id,
+                status=ResponseModel.JobStatus.RECEIVED,
+                description="Your job has been received and is waiting approval.",
+            )
+            .log(logger)
+            .save(celery_app.backend._get_connection())
+        )
 
     except Exception as exception:
-        response = ResponseModel(
-            id=request.id,
-            received=request.received,
-            blocking=True,
-            session_id=request.session_id,
-            status=ResponseModel.JobStatus.ERROR,
-            description=str(exception),
-        ).log(logger)
+        response = (
+            ResponseModel(
+                id=request.id,
+                received=request.received,
+                session_id=request.session_id,
+                status=ResponseModel.JobStatus.ERROR,
+                description=str(exception),
+            )
+            .log(logger)
+            .save(celery_app.backend._get_connection())
+        )
 
-        await _blocking_response(response)
+    return response
 
 
 async def _blocking_response(response: ResponseModel):
@@ -94,6 +99,11 @@ async def _blocking_response(response: ResponseModel):
 
 @app.get("/blocking_response/{id}")
 async def blocking_response(id: str):
+    """Endpoint to have server respond to sid.
+
+    Args:
+        id (str): _description_
+    """
     client: MongoClient = celery_app.backend._get_connection()
 
     response = ResponseModel.load(client, id, result=False)
@@ -103,6 +113,14 @@ async def blocking_response(id: str):
 
 @app.get("/response/{id}")
 async def response(id: str) -> ResultModel:
+    """Endpoint to latest response for id.
+
+    Args:
+        id (str): _description_
+
+    Returns:
+        ResultModel: _description_
+    """
     client: MongoClient = celery_app.backend._get_connection()
 
     return ResponseModel.load(client, id, result=False)
@@ -110,6 +128,18 @@ async def response(id: str) -> ResultModel:
 
 @app.get("/result/{id}")
 async def result(id: str) -> ResultModel:
+    """Endpoint to retrieve result for id.
+
+    Args:
+        id (str): _description_
+
+    Returns:
+        ResultModel: _description_
+
+    Yields:
+        Iterator[ResultModel]: _description_
+    """
+
     client: MongoClient = celery_app.backend._get_connection()
 
     result: gridfs.GridOut = ResultModel.load(client, id, stream=True)

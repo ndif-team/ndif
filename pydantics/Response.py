@@ -61,7 +61,6 @@ class ResponseModel(BaseModel):
 
     received: datetime = None
     session_id: str = None
-    blocking: bool = False
 
     result: Union[bytes, ResultModel] = None
 
@@ -110,8 +109,11 @@ class ResponseModel(BaseModel):
 
         return self
 
+    def blocking(self) -> bool:
+        return self.session_id is not None
+
     def blocking_response(self, api_url: str) -> ResponseModel:
-        if self.blocking:
+        if self.blocking():
             requests.get(f"{api_url}/blocking_response/{self.id}")
 
         return self
