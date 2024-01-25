@@ -6,7 +6,7 @@ import gridfs
 import socketio
 import uvicorn
 from bson.objectid import ObjectId
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_socketio import SocketManager
@@ -53,11 +53,16 @@ async def request(request: RequestModel) -> ResponseModel:
         ResponseModel: _description_
     """
     try:
+        # Set the id and time received of request.
         request.received = datetime.now()
         request.id = str(ObjectId())
 
+        # Send to request workers waiting to process requests on the "request" queue.
+        # Forget as we don't care about the response.
         process_request.apply_async([request], queue="request").forget()
 
+        # Create response object.
+        # Log and save to data backend.
         response = (
             ResponseModel(
                 id=request.id,
@@ -71,6 +76,8 @@ async def request(request: RequestModel) -> ResponseModel:
         )
 
     except Exception as exception:
+        # Create exception response object.
+        # Log and save to data backend.
         response = (
             ResponseModel(
                 id=request.id,
@@ -83,6 +90,7 @@ async def request(request: RequestModel) -> ResponseModel:
             .save(celery_app.backend._get_connection())
         )
 
+    # Return response.
     return response
 
 
@@ -112,17 +120,21 @@ async def blocking_response(id: str):
 
 
 @app.get("/response/{id}")
-async def response(id: str) -> ResultModel:
-    """Endpoint to latest response for id.
+async def response(id: str) -> ResponseModel:
+    """Endpoint to get latest response for id.
 
     Args:
-        id (str): _description_
+        id (str): ID of request/response.
 
     Returns:
-        ResultModel: _description_
+        ResponseModel: Response.
     """
+
+    # Get data backend client.
     client: MongoClient = celery_app.backend._get_connection()
 
+    # Load response from client given id.
+    # Don't load result.
     return ResponseModel.load(client, id, result=False)
 
 
@@ -131,19 +143,22 @@ async def result(id: str) -> ResultModel:
     """Endpoint to retrieve result for id.
 
     Args:
-        id (str): _description_
+        id (str): ID of request/response.
 
     Returns:
-        ResultModel: _description_
+        ResultModel: Result.
 
     Yields:
         Iterator[ResultModel]: _description_
     """
 
+    # Get data backend client.
     client: MongoClient = celery_app.backend._get_connection()
 
+    # Get cursor to bytes stored in data backend.
     result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
 
+    # Inform client the total size of result in bytes.
     headers = {
         "Content-Length": str(result.length),
     }
@@ -162,11 +177,21 @@ async def result(id: str) -> ResultModel:
 
 @app.get("/ping", status_code=200)
 async def ping():
+    """Endpoint to check if the server is online.
+
+    Returns:
+        _type_: _description_
+    """
     return "pong"
 
 
 @app.get("/stats", status_code=200)
 async def stats():
+    """Endpoint to get info about all celery workers that define custom_info. Info can be used to show what models are currently hosted.
+
+    Returns:
+        _type_: _description_
+    """
     stats = celery_app.control.inspect().stats()
 
     return {
