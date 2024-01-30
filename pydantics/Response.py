@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 import pickle
 from datetime import datetime
@@ -8,6 +9,7 @@ from typing import Any, Dict, Union
 
 import gridfs
 import requests
+import torch
 from bson.objectid import ObjectId
 from pydantic import BaseModel, ConfigDict, field_serializer
 from pymongo import MongoClient
@@ -29,7 +31,7 @@ class ResultModel(BaseModel):
         if stream:
             return gridout
 
-        result = ResultModel(**pickle.loads(gridout.read()))
+        result = ResultModel(**torch.load(gridout, map_location='cpu'))
 
         return result
 
@@ -42,11 +44,16 @@ class ResultModel(BaseModel):
 
         results_collection.delete(id)
 
-        results_collection.put(pickle.dumps(self.model_dump()), _id=id)
+        buffer = io.BytesIO()
+        torch.save(self.model_dump(), buffer)
+        buffer.seek(0)
+
+        results_collection.put(buffer, _id=id)
 
         return self
 
 
+# TODO Use ResponseModel from nnsight
 class ResponseModel(BaseModel):
     class JobStatus(Enum):
         RECEIVED = "RECEIVED"
