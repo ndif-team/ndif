@@ -26,7 +26,6 @@ app = celery.Celery("tasks")
 
 app.user_options["worker"].add(Option(["--repo_id"], default=None))
 app.user_options["worker"].add(Option(["--model_kwargs"], default=None))
-
 app.user_options["worker"].add(
     Option(
         ["--api_url"],
