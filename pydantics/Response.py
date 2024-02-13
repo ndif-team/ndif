@@ -110,7 +110,7 @@ class ResponseModel(BaseModel):
 
     def log(self, logger: logging.Logger) -> ResponseModel:
         if self.status == ResponseModel.JobStatus.ERROR:
-            logger.error(str(self))
+            logger.exception(str(self))
         else:
             logger.info(str(self))
 

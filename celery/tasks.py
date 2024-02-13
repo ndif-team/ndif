@@ -196,6 +196,8 @@ def run_model(request: RequestModel):
     del request
     del output
 
+    model.local_model.zero_grad()
+    
     gc.collect()
     torch.cuda.empty_cache()
 
