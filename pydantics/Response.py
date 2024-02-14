@@ -17,7 +17,6 @@ from pymongo import MongoClient
 
 class ResultModel(BaseModel):
     id: str
-    output: Any = None
     saves: Dict[str, Any] = None
 
     @classmethod

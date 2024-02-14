@@ -67,13 +67,13 @@ class CustomArgs(bootsteps.StartStopStep):
             mem_params = sum(
                 [
                     param.nelement() * param.element_size()
-                    for param in model.local_model.parameters()
+                    for param in model._model.parameters()
                 ]
             )
             mem_bufs = sum(
                 [
                     buf.nelement() * buf.element_size()
-                    for buf in model.local_model.buffers()
+                    for buf in model._model.buffers()
                 ]
             )
             mem_gbs = (mem_params + mem_bufs) * 1e-9
@@ -87,8 +87,8 @@ class CustomArgs(bootsteps.StartStopStep):
 
                     info["custom_info"] = {
                         "repo_id": repo_id,
-                        "config_json_string": model.local_model.config.to_json_string()
-                        if hasattr(model.local_model, "config")
+                        "config_json_string": model._model.config.to_json_string()
+                        if hasattr(model._model, "config")
                         else None,
                         "kwargs": {
                             key: str(value) for key, value in model_kwargs.items()
@@ -148,11 +148,11 @@ def run_model(request: RequestModel):
 
     try:
         # Execute model with intervention graph.
-        output = model(
-            model._generation if request.generation else model._forward,
-            request.batched_input,
+
+        output = model.interleave(
+            model._execute,
             request.intervention_graph,
-            *request.args,
+            *request.batched_input,
             **request.kwargs,
         )
 
@@ -164,9 +164,6 @@ def run_model(request: RequestModel):
             description="Your job has been completed.",
             result=ResultModel(
                 id=request.id,
-                output=util.apply(output, lambda x: x.detach().cpu(), torch.Tensor)
-                if request.include_output
-                else None,
                 # Move all copied data to cpu
                 saves={
                     name: util.apply(
@@ -196,7 +193,7 @@ def run_model(request: RequestModel):
     del request
     del output
 
-    model.local_model.zero_grad()
+    model._model.zero_grad()
     
     gc.collect()
     torch.cuda.empty_cache()
