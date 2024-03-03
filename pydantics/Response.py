@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 import pickle
 from datetime import datetime
@@ -8,6 +9,7 @@ from typing import Any, Dict, Union
 
 import gridfs
 import requests
+import torch
 from bson.objectid import ObjectId
 from pydantic import BaseModel, ConfigDict, field_serializer
 from pymongo import MongoClient
@@ -15,7 +17,6 @@ from pymongo import MongoClient
 
 class ResultModel(BaseModel):
     id: str
-    output: Any = None
     saves: Dict[str, Any] = None
 
     @classmethod
@@ -29,7 +30,7 @@ class ResultModel(BaseModel):
         if stream:
             return gridout
 
-        result = ResultModel(**pickle.loads(gridout.read()))
+        result = ResultModel(**torch.load(gridout, map_location='cpu'))
 
         return result
 
@@ -42,11 +43,16 @@ class ResultModel(BaseModel):
 
         results_collection.delete(id)
 
-        results_collection.put(pickle.dumps(self.model_dump()), _id=id)
+        buffer = io.BytesIO()
+        torch.save(self.model_dump(), buffer)
+        buffer.seek(0)
+
+        results_collection.put(buffer, _id=id)
 
         return self
 
 
+# TODO Use ResponseModel from nnsight
 class ResponseModel(BaseModel):
     class JobStatus(Enum):
         RECEIVED = "RECEIVED"
@@ -61,7 +67,6 @@ class ResponseModel(BaseModel):
 
     received: datetime = None
     session_id: str = None
-    blocking: bool = False
 
     result: Union[bytes, ResultModel] = None
 
@@ -104,14 +109,17 @@ class ResponseModel(BaseModel):
 
     def log(self, logger: logging.Logger) -> ResponseModel:
         if self.status == ResponseModel.JobStatus.ERROR:
-            logger.error(str(self))
+            logger.exception(str(self))
         else:
             logger.info(str(self))
 
         return self
 
+    def blocking(self) -> bool:
+        return self.session_id is not None
+
     def blocking_response(self, api_url: str) -> ResponseModel:
-        if self.blocking:
+        if self.blocking():
             requests.get(f"{api_url}/blocking_response/{self.id}")
 
         return self

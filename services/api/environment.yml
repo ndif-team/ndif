@@ -7,12 +7,16 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - fastapi
+    - fastapi==0.108.0
     - fastapi-socketio
     - socketio
-    - uvicorn[standard]
+    - uvicorn[standard]==0.24.0
     - gunicorn
+    - eventlet
     - pymongo
     - celery
     - aio_pika
     - requests
+    - torch
+    - nnsight==0.2.0.dev2
+    - firebase-admin

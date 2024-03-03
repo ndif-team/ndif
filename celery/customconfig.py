@@ -1,7 +1,7 @@
 
 repo_id = None
 
-api_url = None
+model_kwargs = None
 
-allowed_modules = None
+api_url = None
 
