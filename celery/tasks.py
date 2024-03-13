@@ -147,6 +147,10 @@ def run_model(request: RequestModel):
     output = None
 
     try:
+        
+        # Compile request
+        request.compile()
+        
         # Execute model with intervention graph.
 
         output = model.interleave(
@@ -227,9 +231,6 @@ def process_request(request: RequestModel):
                     raise ValueError(
                         f"Model with id '{request.repo_id}' not among hosted models."
                     )
-
-            # Compile request.
-            request.compile()
 
             # Have model workers for this model process the request.
             run_model.apply_async(

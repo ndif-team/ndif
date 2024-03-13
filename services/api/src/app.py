@@ -14,11 +14,11 @@ from pymongo import MongoClient
 
 from nnsight.pydantics import RequestModel
 
+from .api_key import api_key_auth
 from .celery import celeryconfig
 from .celery.tasks import app as celery_app
 from .celery.tasks import process_request
 from .pydantics import ResponseModel, ResultModel
-from .api_key import api_key_auth
 
 # Attache to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
@@ -167,8 +167,11 @@ async def result(id: str) -> ResultModel:
     }
 
     async def stream_gridfs(gridout: gridfs.GridOut):
+
         for chunk in gridout:
             yield chunk
+
+        ResultModel.delete(client, id)
 
     with result:
         return StreamingResponse(

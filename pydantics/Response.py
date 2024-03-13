@@ -30,9 +30,20 @@ class ResultModel(BaseModel):
         if stream:
             return gridout
 
-        result = ResultModel(**torch.load(gridout, map_location='cpu'))
+        result = ResultModel(**torch.load(gridout, map_location="cpu"))
 
         return result
+    
+    @classmethod
+    def delete(cls, client: MongoClient, id: str) -> None:
+
+        results_collection = gridfs.GridFS(
+            client["ndif_database"], collection="results"
+        )
+
+        id = ObjectId(id)
+
+        results_collection.delete(id)
 
     def save(self, client: MongoClient) -> ResultModel:
         results_collection = gridfs.GridFS(
@@ -50,6 +61,8 @@ class ResultModel(BaseModel):
         results_collection.put(buffer, _id=id)
 
         return self
+
+
 
 
 # TODO Use ResponseModel from nnsight
