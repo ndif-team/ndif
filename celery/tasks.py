@@ -148,7 +148,8 @@ def run_model(request: RequestModel):
 
     try:
         # Execute model with intervention graph.
-
+        request.compile()
+        
         output = model.interleave(
             model._execute,
             request.intervention_graph,
@@ -229,7 +230,7 @@ def process_request(request: RequestModel):
                     )
 
             # Compile request.
-            request.compile()
+            # request.compile()
 
             # Have model workers for this model process the request.
             run_model.apply_async(
