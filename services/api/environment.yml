@@ -18,5 +18,5 @@ dependencies:
     - aio_pika
     - requests
     - torch
-    - nnsight==0.2.0.dev2
+    - nnsight
     - firebase-admin
