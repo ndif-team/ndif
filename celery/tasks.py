@@ -151,9 +151,6 @@ def run_model(request: RequestModel):
         # Compile request
         request.compile()
         
-        # Execute model with intervention graph.
-        request.compile()
-        
         output = model.interleave(
             model._execute,
             request.intervention_graph,
