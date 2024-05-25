@@ -1,6 +1,6 @@
 # Development
 
-Welcome to the development guide for the `ndif` project! This document explains how to set up a development environment, install dependencies, and get started with contributing to the project.
+Welcome to the development guide for the `NDIF` project! This document explains how to set up a development environment, install dependencies, and get started with contributing to the project.
 
 ## Prerequisites
 
@@ -13,7 +13,7 @@ Welcome to the development guide for the `ndif` project! This document explains 
 
 If you haven't already, install Conda by downloading and installing Anaconda or Miniconda from the [official Conda website](https://docs.conda.io/en/latest/miniconda.html).
 
-Fork the ndif repository to your local machine. Create a new Conda virtual environment for the `ndif` project with required dependencies. Replace `ndif-dev` with your desired environment name.
+Fork the NDIF repository to your local machine. Create a new Conda virtual environment for the `NDIF` project with required dependencies. Replace `ndif-dev` with your desired environment name.
 ```sh
 conda env create --name ndif-dev -f requirements.yml
 conda activate ndif-dev
@@ -38,14 +38,14 @@ make build_service
 
 3. Start the development containers
 
-After building the base environment and the service, start the ndif docker containers.
+After building the base environment and the service, start the NDIF docker containers.
 ```sh
 make up-dev
 ```
 
 4. Inspect server status
 
-After building the ndif containers, you can check the docker logs to verify the services are running correctly.
+After building the NDIF containers, you can check the docker logs to verify the services are running correctly.
 ```sh
 docker logs ndif-api-dev-1
 ```
