@@ -171,7 +171,8 @@ async def result(id: str) -> ResultModel:
         for chunk in gridout:
             yield chunk
 
-        ResultModel.delete(client, id)
+        ResultModel.delete(client, id, logger=logger)
+        ResponseModel.delete(client, id, logger=logger)
 
     with result:
         return StreamingResponse(

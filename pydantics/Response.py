@@ -33,9 +33,11 @@ class ResultModel(BaseModel):
         result = ResultModel(**torch.load(gridout, map_location="cpu"))
 
         return result
-    
+
     @classmethod
-    def delete(cls, client: MongoClient, id: str) -> None:
+    def delete(
+        cls, client: MongoClient, id: str, logger: logging.Logger = None
+    ) -> None:
 
         results_collection = gridfs.GridFS(
             client["ndif_database"], collection="results"
@@ -44,6 +46,10 @@ class ResultModel(BaseModel):
         id = ObjectId(id)
 
         results_collection.delete(id)
+
+        if logger is not None:
+
+            logger.info(f"DELETED Result: {id}")
 
     def save(self, client: MongoClient) -> ResultModel:
         results_collection = gridfs.GridFS(
@@ -61,8 +67,6 @@ class ResultModel(BaseModel):
         results_collection.put(buffer, _id=id)
 
         return self
-
-
 
 
 # TODO Use ResponseModel from nnsight
@@ -100,6 +104,19 @@ class ResponseModel(BaseModel):
             response.result = ResultModel.load(client, id, stream=False)
 
         return response
+
+    @classmethod
+    def delete(
+        cls, client: MongoClient, id: str, logger: logging.Logger = None
+    ) -> None:
+
+        responses_collection = client["ndif_database"]["responses"]
+
+        responses_collection.delete_one({"_id": ObjectId(id)})
+
+        if logger is not None:
+
+            logger.info(f"DELETED Response: {id}")
 
     def save(self, client: MongoClient) -> ResponseModel:
         responses_collection = client["ndif_database"]["responses"]
