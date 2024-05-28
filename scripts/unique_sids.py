@@ -7,7 +7,7 @@ def main(file_path):
 
         log_text = file.read()
 
-    regex = r'Responding to SID: `(.+)`:'
+    regex = r'DELETED Result'
 
 
     matches = re.findall(regex, log_text)
