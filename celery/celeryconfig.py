@@ -11,3 +11,5 @@ task_serializer = 'pickle'
 result_serializer = 'pickle'
 
 accept_content = ['pickle']
+
+worker_pool_restarts = True
