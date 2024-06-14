@@ -1,0 +1,59 @@
+
+extensions:
+  basicauth/grafana_cloud:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/extension/basicauthextension
+    client_auth:
+
+receivers:
+  otlp:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver
+    protocols:
+      grpc:
+      http:
+  hostmetrics:
+    # Optional. Host Metrics Receiver added as an example of Infra Monitoring capabilities of the OpenTelemetry Collector
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/hostmetricsreceiver
+    scrapers:
+      load:
+      memory:
+
+processors:
+  batch:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/processor/batchprocessor
+  resourcedetection:
+    # Enriches telemetry data with resource information from the host
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/resourcedetectionprocessor
+    detectors: ["env", "system"]
+    override: false
+  transform/add_resource_attributes_as_metric_attributes:
+    # https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/transformprocessor
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["deployment.environment"], resource.attributes["deployment.environment"])
+          - set(attributes["service.version"], resource.attributes["service.version"])
+
+exporters:
+  otlp/grafana_cloud:
+    # https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter
+    endpoint: "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"
+    add_metric_suffixes: false
+    auth:
+      authenticator: basicauth/grafana_cloud
+
+service:
+  extensions: [basicauth/grafana_cloud]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/grafana_cloud]
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [resourcedetection, transform/add_resource_attributes_as_metric_attributes, batch]
+      exporters: [otlp/grafana_cloud]
+    logs:
+      receivers: [otlp]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/grafana_cloud]
