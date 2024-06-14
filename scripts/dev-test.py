@@ -1,25 +1,17 @@
-import torch
 
 import nnsight
-from nnsight.pydantics.Request import RequestModel
 
-model = nnsight.LanguageModel("EleutherAI/gpt-j-6b")
+nnsight.CONFIG.API.HOST = "localhost:5001"
+nnsight.CONFIG.API.APIKEY = "0Bb6oUQxj2TuPtlrTkny"
+model = nnsight.LanguageModel("gpt2")
 
 import time
-
-
 
 for i in range(3):
     start = time.time()
     with model.generate(remote=True) as runner:
-        with runner.invoke([[10] * 10] * 20):
+        with runner.invoke('hello'):
             hs = model.transformer.h[-1].output.save()
 
     print(hs.value)
     print(time.time() - start)
-
-            
-
-
-
-    

@@ -25,21 +25,19 @@ def main(path, unique):
         ips.extend(get_ips(file))
 
     data = pd.DataFrame(ips, columns=["ip", "date"])
-    
-    breakpoint()
-    
+        
     if unique:
     
         data = data.drop_duplicates(subset=["ip", "date"])
         
     ax = data.sort_values('date', axis=0)['date'].value_counts(sort=False).plot(kind='bar',
                                     figsize=(14,10),
-                                    title="# requests"
+                                    title=f"{'unique ' if unique else ''}# requests"
                                     )
     ax.set_xlabel("Date", rotation=45)
-    ax.set_ylabel("# requests")
+    ax.set_ylabel(f"{'unique ' if unique else ''}# requests")
 
-    ax.figure.savefig('requests.png')
+    ax.figure.savefig(f"{'unique_' if unique else ''}requests.png")
     
     
 
