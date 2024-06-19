@@ -1,0 +1,25 @@
+proxy_location: Disabled
+http_options:
+  host: 0.0.0.0
+  port: 5005
+grpc_options:
+  port: 9000
+  grpc_servicer_functions: []
+logging_config:
+  encoding: TEXT
+  log_level: INFO
+  logs_dir: null
+  enable_access_log: true
+applications:
+- name: llm-serving
+  route_prefix: /llm
+  import_path: model_entrypoint:app_builder
+  args:
+    autoscaler_enabled: false
+    config_file_path: config/llm_config_default.yaml
+    dashboard_port: 8265
+    model_reference_path: config/model_reference.json
+  runtime_env: {}
+  deployments:
+  - name: MainApp
+    num_replicas: 1
