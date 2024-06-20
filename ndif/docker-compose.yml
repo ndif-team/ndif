@@ -32,13 +32,31 @@ services:
       RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
       MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017/celery_result_backend
 
-  model-gpt2-xl:
+  # model-gpt2-xl:
+  #   image: model:latest
+  #   environment:
+  #     API_URL: https://ndif.dev
+  #     RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
+  #     MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017/celery_result_backend
+  #     REPO_ID: openai-community/gpt2-xl
+  #     CUDA_LAUNCH_BLOCKING: 1
+  #   volumes:
+  #     - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub
+  #   deploy:
+  #     replicas: 1
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 8
+  #             capabilities: [ gpu ]
+  model-gemma7b:
     image: model:latest
     environment:
       API_URL: https://ndif.dev
       RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
       MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017/celery_result_backend
-      REPO_ID: openai-community/gpt2-xl
+      REPO_ID: google/gemma-7b
       CUDA_LAUNCH_BLOCKING: 1
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub

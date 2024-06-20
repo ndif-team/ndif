@@ -12,10 +12,10 @@ build_service:
 	cd services/model && make build_service
 
 up:
-	docker compose -f compose/docker-compose.yml up --detach
+	docker compose -f ndif/docker-compose.yml up --detach
 
 down:
-	docker compose -f compose/docker-compose.yml down
+	docker compose -f ndif/docker-compose.yml down
 
 up-dev:
 	docker compose -f compose/docker-compose-dev.yml up --detach

@@ -3,7 +3,7 @@ FROM ubuntu:22.04
 # Install base utilities
 RUN apt-get update \
     && apt-get install -y build-essential \
-    && apt-get install -y wget  \
+    && apt-get install -y wget \
     && apt-get install -y python3-distutils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -12,6 +12,9 @@ RUN apt-get update \
 
 # Copy over environment file
 COPY environment.yml .
+
+# Copy over start script
+COPY start.sh .
 
 # Install miniconda
 ENV CONDA_DIR /opt/conda

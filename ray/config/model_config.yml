@@ -1,2 +1,3 @@
 models:
   - model_key: openai-community/gpt2
+    cuda_memory_MB: 15000
