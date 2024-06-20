@@ -8,14 +8,14 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
-        
+
   mongodb-dev:
     image: mongodb/mongodb-community-server:6.0-ubi8
     ports:
       - 5003:27017
     environment:
       MONGO_INITDB_ROOT_USERNAME: user
-      MONGO_INITDB_ROOT_PASSWORD: pass 
+      MONGO_INITDB_ROOT_PASSWORD: pass
 
   api-dev:
     image: api:latest
@@ -23,7 +23,12 @@ services:
       - 5001:80
     environment:
       RMQ_URL: amqp://guest:guest@10.201.22.179:5002/
-      MONGO_URL: mongodb://user:pass@10.201.22.179:5003/celery_result_backend 
+      MONGO_URL: mongodb://user:pass@10.201.22.179:5003/celery_result_backend
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: grpc://10.201.22.179:4317
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
       WORKERS: 2
 
   request-dev:
@@ -38,7 +43,7 @@ services:
     environment:
       API_URL: http://10.201.22.179:5001
       RMQ_URL: amqp://guest:guest@10.201.22.179:5002/
-      MONGO_URL: mongodb://user:pass@10.201.22.179:5003/celery_result_backend 
+      MONGO_URL: mongodb://user:pass@10.201.22.179:5003/celery_result_backend
       REPO_ID: gpt2
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/home/celery/.cache/huggingface/hub
@@ -48,9 +53,11 @@ services:
           devices:
             - driver: nvidia
               count: 8
-              capabilities: [gpu]
+              capabilities: [ gpu ]
 
- 
-
-
-
+  opentel-dev:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - 4317:4317
+    volumes:
+      - /disk/u/jfiottok/wd/ndif/services/opentel/config.yml:/etc/otelcol-contrib/config.yaml

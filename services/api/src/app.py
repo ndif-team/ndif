@@ -1,5 +1,5 @@
-import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import gridfs
@@ -9,7 +9,11 @@ from bson.objectid import ObjectId
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pymongo import MongoClient
 
 from nnsight.pydantics import RequestModel
@@ -23,8 +27,15 @@ from .pydantics import ResponseModel, ResultModel
 # Attache to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    FastAPICache.init(InMemoryBackend())
+    yield
+
+
 # Init FastAPI app
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 # Add middleware for CORS
 app.add_middleware(
     CORSMiddleware,
@@ -193,6 +204,7 @@ async def ping():
 
 
 @app.get("/stats", status_code=200)
+@cache(expire=120)
 async def stats():
     """Endpoint to get info about all celery workers that define custom_info. Info can be used to show what models are currently hosted.
 
@@ -206,6 +218,9 @@ async def stats():
         for key, value in stats.items()
         if "custom_info" in value
     }
+
+
+FastAPIInstrumentor.instrument_app(app)
 
 
 if __name__ == "__main__":

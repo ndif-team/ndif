@@ -1,17 +1,20 @@
 import functools
 import gc
 import inspect
+import os
+import signal
 from functools import wraps
 
 import celery
 import torch
 from amqp import exceptions
-from celery import bootsteps, worker
+from celery import bootsteps
 from celery.utils.log import get_task_logger
+from celery.worker import WorkController
 from click import Option
 
 import nnsight
-from nnsight import util
+from nnsight import NNsight, util
 from nnsight.pydantics import RequestModel
 from nnsight.pydantics.format import FUNCTIONS_WHITELIST, get_function_name
 from nnsight.pydantics.format.types import FUNCTION, FunctionWhitelistError
@@ -35,18 +38,19 @@ app.user_options["worker"].add(
 
 # Model.
 # Only gets populated if `repo_id` custom argument is defined.
-model = None
+model: NNsight = None
 
 
 class CustomArgs(bootsteps.StartStopStep):
     def __init__(
         self,
-        worker: worker.WorkController,
+        worker: WorkController,
         repo_id,
         model_kwargs,
         api_url,
         **options,
     ):
+
         customconfig.repo_id = repo_id
         customconfig.model_kwargs = model_kwargs
         customconfig.api_url = api_url
@@ -71,10 +75,7 @@ class CustomArgs(bootsteps.StartStopStep):
                 ]
             )
             mem_bufs = sum(
-                [
-                    buf.nelement() * buf.element_size()
-                    for buf in model._model.buffers()
-                ]
+                [buf.nelement() * buf.element_size() for buf in model._model.buffers()]
             )
             mem_gbs = (mem_params + mem_bufs) * 1e-9
 
@@ -87,9 +88,11 @@ class CustomArgs(bootsteps.StartStopStep):
 
                     info["custom_info"] = {
                         "repo_id": repo_id,
-                        "config_json_string": model._model.config.to_json_string()
-                        if hasattr(model._model, "config")
-                        else None,
+                        "config_json_string": (
+                            model._model.config.to_json_string()
+                            if hasattr(model._model, "config")
+                            else None
+                        ),
                         "kwargs": {
                             key: str(value) for key, value in model_kwargs.items()
                         },
@@ -147,10 +150,10 @@ def run_model(request: RequestModel):
     output = None
 
     try:
-        
+
         # Compile request
         request.compile()
-        
+
         output = model.interleave(
             model._execute,
             request.intervention_graph,
@@ -196,9 +199,17 @@ def run_model(request: RequestModel):
     del output
 
     model._model.zero_grad()
-    
+
     gc.collect()
-    torch.cuda.empty_cache()
+
+    try:
+        torch.cuda.empty_cache()
+
+    except Exception as e:
+
+        logger.critical("Sending reset command...")
+
+        os.kill(os.getpid(), signal.SIGHUP)
 
 
 @app.task(ignore_result=True)
