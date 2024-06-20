@@ -29,7 +29,7 @@ services:
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MONGO_URL: mongodb://user:pass@mongodb:27017/celery_result_backend
 
-  model-gpt2-xl:
+  model-gemma7b:
     image: model:latest
     environment:
       API_URL: https://ndif.dev
