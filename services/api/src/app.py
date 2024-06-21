@@ -13,7 +13,7 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+#from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pymongo import MongoClient
 
 from nnsight.pydantics import RequestModel
@@ -220,7 +220,7 @@ async def stats():
     }
 
 
-FastAPIInstrumentor.instrument_app(app)
+#FastAPIInstrumentor.instrument_app(app)
 
 
 if __name__ == "__main__":
