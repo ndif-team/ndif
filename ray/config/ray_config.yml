@@ -11,15 +11,11 @@ logging_config:
   logs_dir: null
   enable_access_log: true
 applications:
-- name: llm-serving
-  route_prefix: /llm
-  import_path: model_entrypoint:app_builder
+- name: Controller
+  import_path: src.ray.deployments.controller:app
   args:
-    autoscaler_enabled: false
-    config_file_path: config/llm_config_default.yaml
-    dashboard_port: 8265
-    model_reference_path: config/model_reference.json
-  runtime_env: {}
-  deployments:
-  - name: MainApp
-    num_replicas: 1
+    ray_config_path: src/ray/config/ray_config.yml
+    service_config_path: src/ray/config/service_config.yml
+    ray_dashboard_url: http://nagoya.research.khoury.northeastern.edu:8265
+    database_url: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016/service
+    api_url: http://nagoya.research.khoury.northeastern.edu:5001

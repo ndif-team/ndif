@@ -9,14 +9,7 @@ from ray.serve import Application
 from nnsight.models.mixins import RemoteableMixin
 from nnsight.pydantics.Request import RequestModel
 
-from ..pydantics.Response import ResponseModel, ResultModel
-
-
-class ModelDeploymentArgs(BaseModel):
-
-    model_key: str
-    api_url: str
-    database_url: str
+from ...pydantics.Response import ResponseModel, ResultModel
 
 
 @serve.deployment()
@@ -80,6 +73,13 @@ class ModelDeployment:
         mem_gbs = (mem_params + mem_bufs) * 1e-9
 
         return mem_gbs
+
+
+class ModelDeploymentArgs(BaseModel):
+
+    model_key: str
+    api_url: str
+    database_url: str
 
 
 def app(args: ModelDeploymentArgs) -> Application:

@@ -1,0 +1,7 @@
+model_import_path: src.ray.deployments.model:app
+request_import_path: src.ray.deployments.request:app
+request_num_replicas: 1
+models:
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+    cuda_memory_MB: 15000
+    num_replicas: 1

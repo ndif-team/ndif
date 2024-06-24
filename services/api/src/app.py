@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 import gridfs
-import socketio
+import os
 import uvicorn
 from bson.objectid import ObjectId
 from fastapi import Depends, FastAPI
@@ -15,13 +15,10 @@ from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pymongo import MongoClient
-
-from nnsight.pydantics import RequestModel
-
+from pymongo import MongoClient
+from ray import serve
 from .api_key import api_key_auth
-from .celery import celeryconfig
-from .celery.tasks import app as celery_app
-from .celery.tasks import process_request
+from nnsight.pydantics.Request import RequestModel
 from .pydantics import ResponseModel, ResultModel
 
 # Attache to gunicorn logger
@@ -44,15 +41,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Init async rabbitmq manager for communication between socketio servers
-socketio_manager = socketio.AsyncAioPikaManager(
-    url=celeryconfig.broker_url, logger=logger
-)
+
 # Init socketio manager app
 sm = SocketManager(
-    app=app, mount_location="/ws", client_manager=socketio_manager, logger=logger
+    app=app, mount_location="/ws", logger=logger
 )
 
+db_connection = MongoClient(os.environ.get('MONGO_URL'))
 
 @app.post("/request")
 async def request(
@@ -73,7 +68,7 @@ async def request(
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
-        process_request.apply_async([request], queue="request").forget()
+        serve.get_app_handle('Request').remote(request)
 
         # Create response object.
         # Log and save to data backend.
@@ -86,7 +81,7 @@ async def request(
                 description="Your job has been received and is waiting approval.",
             )
             .log(logger)
-            .save(celery_app.backend._get_connection())
+            .save(db_connection)
         )
 
     except Exception as exception:
@@ -101,7 +96,7 @@ async def request(
                 description=str(exception),
             )
             .log(logger)
-            .save(celery_app.backend._get_connection())
+            .save(db_connection)
         )
 
     # Return response.
@@ -126,9 +121,8 @@ async def blocking_response(id: str):
     Args:
         id (str): _description_
     """
-    client: MongoClient = celery_app.backend._get_connection()
 
-    response = ResponseModel.load(client, id, result=False)
+    response = ResponseModel.load(db_connection, id, result=False)
 
     await _blocking_response(response)
 
@@ -144,12 +138,9 @@ async def response(id: str) -> ResponseModel:
         ResponseModel: Response.
     """
 
-    # Get data backend client.
-    client: MongoClient = celery_app.backend._get_connection()
-
     # Load response from client given id.
     # Don't load result.
-    return ResponseModel.load(client, id, result=False)
+    return ResponseModel.load(db_connection, id, result=False)
 
 
 @app.get("/result/{id}")
@@ -166,11 +157,9 @@ async def result(id: str) -> ResultModel:
         Iterator[ResultModel]: _description_
     """
 
-    # Get data backend client.
-    client: MongoClient = celery_app.backend._get_connection()
 
     # Get cursor to bytes stored in data backend.
-    result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
+    result: gridfs.GridOut = ResultModel.load(db_connection, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -182,8 +171,8 @@ async def result(id: str) -> ResultModel:
         for chunk in gridout:
             yield chunk
 
-        ResultModel.delete(client, id, logger=logger)
-        ResponseModel.delete(client, id, logger=logger)
+        ResultModel.delete(db_connection, id, logger=logger)
+        ResponseModel.delete(db_connection, id, logger=logger)
 
     with result:
         return StreamingResponse(
@@ -220,7 +209,7 @@ async def stats():
     }
 
 
-FastAPIInstrumentor.instrument_app(app)
+#FastAPIInstrumentor.instrument_app(app)
 
 
 if __name__ == "__main__":

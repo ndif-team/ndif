@@ -6,4 +6,8 @@ dependencies:
 
   - pip:
     - pip
+    - setuptools
+    - nnsight
     - ray[serve]
+    # Database
+    - pymongo

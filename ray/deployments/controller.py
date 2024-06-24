@@ -1,27 +1,48 @@
 import os
 from typing import Dict
 
-import ray
 from pydantic import BaseModel
 from ray import serve
-from ray.serve.handle import DeploymentHandle, DeploymentResponse
 
 from ..raystate import RayState
-class ControllerDeploymentArgs(BaseModel):
 
-    ray_config_path: str
-    model_config_path: str
+from ray.serve import Application
 
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment:
-    def __init__(self, ray_config_path: str, model_config_path: str):
+    def __init__(
+        self,
+        ray_config_path: str,
+        service_config_path: str,
+        ray_dashboard_url: str,
+        database_url: str,
+        api_url: str,
+    ):
         self.ray_config_path = ray_config_path
-        self.model_config_path = model_config_path
-        
-        
-        self.state = RayState(ray_config_path)
+        self.service_config_path = service_config_path
+        self.ray_dashboard_url = ray_dashboard_url
+        self.database_url = database_url
+        self.api_url = api_url
 
-    async def __call__(self):
-        return os.getpid()
+        self.state = RayState(
+            self.ray_config_path,
+            self.service_config_path,
+            self.ray_dashboard_url,
+            self.database_url,
+            self.api_url,
+        )
+        
+        self.state.apply()
+        
+class ControllerDeploymentArgs(BaseModel):
 
+    ray_config_path: str
+    service_config_path: str
+    ray_dashboard_url: str
+    database_url: str
+    api_url: str
+
+
+def app(args: ControllerDeploymentArgs) -> Application:
+    return ControllerDeployment.bind(**args.model_dump())

@@ -1,16 +1,15 @@
-FROM model_base:latest
+ARG NAME
 
-RUN useradd -ms /bin/bash celery \
-    && chown -R celery: /opt/conda/envs/service/ 
+FROM ${NAME}_base:latest
 
-USER celery
+COPY ./src.tar.gz ./src.tar.gz
 
-WORKDIR /wd
+COPY ./start.sh ./start.sh
 
-COPY ./src.tar.gz /src.tar.gz
+RUN tar -xvf ./src.tar.gz\
+    && rm ./src.tar.gz
 
-RUN tar -xvf src.tar.gz\
-    && rm src.tar.gz
+SHELL ["/bin/bash", "-c"]
 
-CMD bash start.sh
+CMD source activate service && bash ./start.sh
 
