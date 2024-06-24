@@ -3,7 +3,7 @@ channels:
 dependencies:
   - python=3.10
   - pip
-
+  - git
   - pip:
     - pip
     - setuptools
@@ -30,4 +30,4 @@ dependencies:
     - ray[serve]
     - requests
     - torch
-    - nnsight
+    - git+https://github.com/ndif-team/nnsight@0.3

@@ -13,9 +13,6 @@ RUN apt-get update \
 # Copy over environment file
 COPY environment.yml .
 
-# Copy over start script
-COPY start.sh .
-
 # Install miniconda
 ENV CONDA_DIR /opt/conda
 

@@ -3,11 +3,14 @@ channels:
 dependencies:
   - python=3.10
   - pip
-
+  - git
   - pip:
     - pip
     - setuptools
-    - nnsight
+    - git+https://github.com/ndif-team/nnsight@0.3
     - ray[serve]
+    - prometheus-client
+    - opencensus
+    - aiohttp_cors
     # Database
     - pymongo
