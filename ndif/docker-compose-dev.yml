@@ -9,16 +9,35 @@ services:
     ports:
       - 27016:27017
 
+  dev-ray-head:
+    image: ray_head:latest
+    shm_size: '2gb'
+    ports:
+      # Dashboard 
+      - 8265:8265
+      # Ray Address
+      - 6379:6379
+      # Client?
+      - 10001:10001
+    volumes:
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+
   dev-api:
+    depends_on:
+      - dev-ray-head
+      - dev-mongodb
     image: api:latest
     ports:
       - 5001:80
     environment:
-      MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017/service
-      WORKERS: 12
-
-  dev-ray-head:
-    image: ray_head:latest
-    ports:
-      - 8265:8265
-      - 6379:6379
+      MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016
+      WORKERS: 1
+      RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:10001

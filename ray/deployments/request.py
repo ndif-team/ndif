@@ -5,6 +5,10 @@ from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
 from ray.serve.handle import DeploymentHandle
+try:
+    from slugify import slugify
+except:
+    pass
 
 from nnsight.pydantics.Request import RequestModel
 
@@ -27,7 +31,9 @@ class RequestDeployment:
 
         try:
 
-            app_handle = self.get_ray_app_handle(request.model_key)
+            model_key = f"Model:{slugify(request.model_key)}"
+
+            app_handle = self.get_ray_app_handle(model_key)
 
             app_handle.remote(request)
 
@@ -35,8 +41,8 @@ class RequestDeployment:
                 id=request.id,
                 session_id=request.session_id,
                 received=request.received,
-                status=ResponseModel.JobStatus.COMPLETED,
-                description="Your job has been completed.",
+                status=ResponseModel.JobStatus.APPROVED,
+                description="Your job was approved and is waiting to be run.",
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
 
         except Exception as exception:

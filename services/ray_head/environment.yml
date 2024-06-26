@@ -9,8 +9,5 @@ dependencies:
     - setuptools
     - git+https://github.com/ndif-team/nnsight@0.3
     - ray[serve]
-    - prometheus-client
-    - opencensus
-    - aiohttp_cors
-    # Database
+    - python-slugify
     - pymongo

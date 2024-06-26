@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import io
 import logging
-import pickle
-from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, Union
+from typing import Any, Dict, List, Union
 
 import gridfs
 import requests
 import torch
 from bson.objectid import ObjectId
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import field_serializer
 from pymongo import MongoClient
 
+from nnsight.pydantics.Response import ResponseModel as _ResponseModel
+from nnsight.pydantics.Response import ResultModel as _ResultModel
 
-class ResultModel(BaseModel):
-    id: str
-    saves: Dict[str, Any] = None
+
+class ResultModel(_ResultModel):    
 
     @classmethod
     def load(cls, client: MongoClient, id: str, stream: bool = False) -> ResultModel:
@@ -33,6 +31,7 @@ class ResultModel(BaseModel):
         result = ResultModel(**torch.load(gridout, map_location="cpu"))
 
         return result
+
 
     @classmethod
     def delete(
@@ -69,23 +68,7 @@ class ResultModel(BaseModel):
         return self
 
 
-# TODO Use ResponseModel from nnsight
-class ResponseModel(BaseModel):
-    class JobStatus(Enum):
-        RECEIVED = "RECEIVED"
-        APPROVED = "APPROVED"
-        SUBMITTED = "SUBMITTED"
-        COMPLETED = "COMPLETED"
-        ERROR = "ERROR"
-
-    id: str
-    status: JobStatus
-    description: str
-
-    received: datetime = None
-    session_id: str = None
-
-    result: Union[bytes, ResultModel] = None
+class ResponseModel(_ResponseModel):
 
     @classmethod
     def load(

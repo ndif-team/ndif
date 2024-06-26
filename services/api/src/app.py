@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 import gridfs
+import ray
 import os
 import uvicorn
 from bson.objectid import ObjectId
@@ -13,7 +14,6 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pymongo import MongoClient
 from pymongo import MongoClient
 from ray import serve
@@ -48,6 +48,8 @@ sm = SocketManager(
 )
 
 db_connection = MongoClient(os.environ.get('MONGO_URL'))
+
+ray.init()
 
 @app.post("/request")
 async def request(

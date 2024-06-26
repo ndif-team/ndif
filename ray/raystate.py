@@ -1,5 +1,9 @@
+import urllib.parse
 from typing import List
-
+try:
+    from slugify import slugify
+except:
+    pass
 import yaml
 from pydantic import BaseModel
 from ray.dashboard.modules.serve.sdk import ServeSubmissionClient
@@ -12,7 +16,6 @@ from ray.serve.schema import (
 
 from .deployments.model import ModelDeploymentArgs
 from .deployments.request import RequestDeploymentArgs
-import urllib.parse
 
 
 class ServiceConfigurationSchema(BaseModel):
@@ -84,8 +87,8 @@ class RayState:
     def add_model_app(
         self, model_config: ServiceConfigurationSchema.ModelConfigurationSchema
     ) -> None:
-        
-        model_key = urllib.parse.quote(model_config.model_key, safe='')
+
+        model_key = slugify(model_config.model_key)
 
         application = ServeApplicationSchema(
             name=f"Model:{model_key}",

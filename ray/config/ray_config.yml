@@ -11,11 +11,11 @@ logging_config:
   logs_dir: null
   enable_access_log: true
 applications:
-- name: Controller
-  import_path: src.ray.deployments.controller:app
-  args:
-    ray_config_path: src/ray/config/ray_config.yml
-    service_config_path: src/ray/config/service_config.yml
-    ray_dashboard_url: http://nagoya.research.khoury.northeastern.edu:8265
-    database_url: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016/service
-    api_url: http://nagoya.research.khoury.northeastern.edu:5001
+  - name: Controller
+    import_path: src.ray.deployments.controller:app
+    args:
+      ray_config_path: src/ray/config/ray_config.yml
+      service_config_path: src/ray/config/service_config.yml
+      ray_dashboard_url: http://nagoya.research.khoury.northeastern.edu:8265
+      database_url: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016
+      api_url: http://nagoya.research.khoury.northeastern.edu:5001

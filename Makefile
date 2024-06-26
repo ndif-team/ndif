@@ -34,3 +34,9 @@ up-dev:
 
 down-dev:
 	docker compose -f ndif/docker-compose-dev.yml down
+
+
+ta:
+	make down-dev
+	make build_all_service
+	make up-dev
