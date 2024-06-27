@@ -24,16 +24,16 @@ build_all_service:
 
 
 up:
-	docker compose -f ndif/docker-compose.yml up --detach
+	docker compose -f compose/prod/docker-compose.yml up --detach
 
 down:
-	docker compose -f ndif/docker-compose.yml down
+	docker compose -f compose/prod/docker-compose.yml down
 
 up-dev:
-	docker compose -f ndif/docker-compose-dev.yml up --detach
+	docker compose -f compose/dev/docker-compose.yml up --detach
 
 down-dev:
-	docker compose -f ndif/docker-compose-dev.yml down
+	docker compose -f compose/dev/docker-compose.yml down
 
 
 ta:

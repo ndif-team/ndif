@@ -197,11 +197,7 @@ async def ping():
 @app.get("/stats", status_code=200)
 @cache(expire=120)
 async def stats():
-    """Endpoint to get info about all celery workers that define custom_info. Info can be used to show what models are currently hosted.
-
-    Returns:
-        _type_: _description_
-    """
+  
     stats = celery_app.control.inspect().stats()
 
     return {
