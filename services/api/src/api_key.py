@@ -31,17 +31,21 @@ class ApiKeyStore:
         return doc.exists
 
 
-PATH = os.path.dirname(os.path.abspath(__file__))
+FIREBASE_CREDS_PATH = os.environ.get("FIREBASE_CREDS_PATH", None)
 
-api_key_store = ApiKeyStore(os.path.join(PATH, "creds.json"))
+if FIREBASE_CREDS_PATH is not None:
+
+    api_key_store = ApiKeyStore(FIREBASE_CREDS_PATH)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 
 async def api_key_auth(api_key: str = Security(api_key_header)):
 
-    if api_key_store.does_api_key_exist(api_key) is False:
+    if FIREBASE_CREDS_PATH is not None:
 
-        raise HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
-        )
+        if api_key_store.does_api_key_exist(api_key) is False:
+
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
+            )
