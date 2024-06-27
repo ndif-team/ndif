@@ -47,7 +47,7 @@ sm = SocketManager(
     app=app, mount_location="/ws", logger=logger
 )
 
-db_connection = MongoClient(os.environ.get('MONGO_URL'))
+db_connection = MongoClient(os.environ.get('DATABASE_URL'))
 
 ray.init()
 

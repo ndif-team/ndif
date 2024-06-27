@@ -38,6 +38,6 @@ services:
     ports:
       - 5001:80
     environment:
-      MONGO_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016
+      DATABASE_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016
       WORKERS: 1
       RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:10001

@@ -37,11 +37,11 @@ class ControllerDeployment:
         
 class ControllerDeploymentArgs(BaseModel):
 
-    ray_config_path: str
-    service_config_path: str
-    ray_dashboard_url: str
-    database_url: str
-    api_url: str
+    ray_config_path: str = os.environ.get('RAY_CONFIG_PATH', None)
+    service_config_path: str = os.environ.get('SERVICE_CONFIG_PATH', None)
+    ray_dashboard_url: str = os.environ.get('RAY_DASHBOARD_URL', None)
+    database_url: str = os.environ.get('DATABASE_URL', None)
+    api_url: str = os.environ.get('API_URL', None)
 
 
 def app(args: ControllerDeploymentArgs) -> Application:
