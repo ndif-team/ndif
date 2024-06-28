@@ -1,10 +1,10 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import gridfs
 import ray
-import os
 import uvicorn
 from bson.objectid import ObjectId
 from fastapi import Depends, FastAPI
@@ -15,10 +15,11 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from pymongo import MongoClient
-from pymongo import MongoClient
 from ray import serve
-from .api_key import api_key_auth
+
 from nnsight.pydantics.Request import RequestModel
+
+from .api_key import api_key_auth
 from .pydantics import ResponseModel, ResultModel
 
 # Attache to gunicorn logger
@@ -43,13 +44,14 @@ app.add_middleware(
 )
 
 # Init socketio manager app
-sm = SocketManager(
-    app=app, mount_location="/ws", logger=logger
-)
+sm = SocketManager(app=app, mount_location="/ws", logger=logger)
 
-db_connection = MongoClient(os.environ.get('DATABASE_URL'))
+# Init database connection
+db_connection = MongoClient(os.environ.get("DATABASE_URL"))
 
+# Init Ray connection
 ray.init()
+
 
 @app.post("/request")
 async def request(
@@ -70,7 +72,7 @@ async def request(
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
-        serve.get_app_handle('Request').remote(request)
+        serve.get_app_handle("Request").remote(request)
 
         # Create response object.
         # Log and save to data backend.
@@ -159,7 +161,6 @@ async def result(id: str) -> ResultModel:
         Iterator[ResultModel]: _description_
     """
 
-
     # Get cursor to bytes stored in data backend.
     result: gridfs.GridOut = ResultModel.load(db_connection, id, stream=True)
 
@@ -194,20 +195,47 @@ async def ping():
     return "pong"
 
 
-@app.get("/stats", status_code=200)
+@app.get("/status", status_code=200)
 @cache(expire=120)
-async def stats():
-  
-    stats = celery_app.control.inspect().stats()
+async def status():
 
-    return {
-        key: value["custom_info"]
-        for key, value in stats.items()
-        if "custom_info" in value
-    }
+    response = {}
+
+    status = serve.status()
+
+    for application_name, application in status.applications.items():
+
+        if application_name.startswith("Model"):
+
+            deployment = application.deployments['ModelDeployment']
+
+            num_running_replicas = 0
+
+            for replica_status in deployment.replica_states:
+
+                if replica_status == "RUNNING":
+
+                    num_running_replicas += 1
+
+            if num_running_replicas > 0:
+
+                application_status = serve.get_app_handle(
+                    application_name
+                ).status.remote()
+
+                response[application_name] = {
+                    "num_running_replicas": num_running_replicas,
+                    "status": application_status,
+                }
+
+    for application_status in response.values():
+
+        application_status["status"] = await application_status["status"]
+
+    return response
 
 
-#FastAPIInstrumentor.instrument_app(app)
+# FastAPIInstrumentor.instrument_app(app)
 
 
 if __name__ == "__main__":

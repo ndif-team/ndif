@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
+from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
 from nnsight.pydantics.Request import RequestModel
@@ -58,6 +59,12 @@ class ModelDeployment:
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+
+    async def status(self):
+
+        model: PreTrainedModel = self.model._model
+
+        return model.config.to_json_string()
 
     def model_size(self) -> float:
 
