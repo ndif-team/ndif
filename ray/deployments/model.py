@@ -1,6 +1,8 @@
+import gc
 import logging
 from typing import Dict
 
+import torch
 from pydantic import BaseModel
 from pymongo import MongoClient
 from ray import serve
@@ -29,6 +31,8 @@ class ModelDeployment:
 
         self.logger = logging.getLogger(__name__)
 
+        self.restart = False
+
     async def __call__(self, request: RequestModel):
 
         try:
@@ -52,6 +56,7 @@ class ModelDeployment:
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
 
         except Exception as exception:
+
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
@@ -60,11 +65,24 @@ class ModelDeployment:
                 description=str(exception),
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
 
+        del request
+        del local_result
+
+        self.model._model.zero_grad()
+
+        gc.collect()
+
+        torch.cuda.empty_cache()
+
     async def status(self):
 
         model: PreTrainedModel = self.model._model
 
         return model.config.to_json_string()
+
+    # Ray checks this method and restarts replica if it raises an exception
+    def check_health(self):
+        torch.cuda.synchronize()
 
     def model_size(self) -> float:
 
