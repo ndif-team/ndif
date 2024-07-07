@@ -10,7 +10,7 @@ from ray.serve import Application
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
-from nnsight.pydantics.Request import RequestModel
+from nnsight.schema.Request import RequestModel
 
 from ...pydantics.Response import ResponseModel, ResultModel
 

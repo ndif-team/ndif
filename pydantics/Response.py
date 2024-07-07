@@ -11,8 +11,8 @@ from bson.objectid import ObjectId
 from pydantic import field_serializer
 from pymongo import MongoClient
 
-from nnsight.pydantics.Response import ResponseModel as _ResponseModel
-from nnsight.pydantics.Response import ResultModel as _ResultModel
+from nnsight.schema.Response import ResponseModel as _ResponseModel
+from nnsight.schema.Response import ResultModel as _ResultModel
 
 
 class ResultModel(_ResultModel):    

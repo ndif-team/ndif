@@ -10,7 +10,7 @@ try:
 except:
     pass
 
-from nnsight.pydantics.Request import RequestModel
+from nnsight.schema.Request import RequestModel
 
 from ...pydantics.Response import ResponseModel
 

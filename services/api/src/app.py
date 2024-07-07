@@ -17,7 +17,7 @@ from fastapi_socketio import SocketManager
 from pymongo import MongoClient
 from ray import serve
 
-from nnsight.pydantics.Request import RequestModel
+from nnsight.schema.Request import RequestModel
 
 from .api_key import api_key_auth
 from .pydantics import ResponseModel, ResultModel

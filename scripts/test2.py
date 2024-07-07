@@ -1,6 +1,6 @@
 
 import nnsight
-from nnsight.pydantics.Request import RequestModel
+from nnsight.schema.Request import RequestModel
 from nnsight import CONFIG
 import gc
 CONFIG.set_default_api_key("GZj3dV4aWltBJAQ6qsHL")
