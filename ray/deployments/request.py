@@ -12,7 +12,7 @@ except:
 
 from nnsight.schema.Request import RequestModel
 
-from ...pydantics.Response import ResponseModel
+from ...schema.Response import ResponseModel
 
 
 @serve.deployment()

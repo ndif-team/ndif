@@ -12,7 +12,7 @@ from transformers import PreTrainedModel
 from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Request import RequestModel
 
-from ...pydantics.Response import ResponseModel, ResultModel
+from ...schema.Response import ResponseModel, ResultModel
 
 
 @serve.deployment()
@@ -33,12 +33,12 @@ class ModelDeployment:
 
         self.restart = False
 
-    async def __call__(self, request: RequestModel):
+    def __call__(self, request: RequestModel):
 
         try:
 
             # Compile request
-            obj = request.compile(self.model)
+            obj = request.deserialize(self.model)
 
             # Execute object.
             local_result = obj.local_backend_execute()
