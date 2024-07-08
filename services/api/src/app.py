@@ -20,7 +20,7 @@ from ray import serve
 from nnsight.schema.Request import RequestModel
 
 from .api_key import api_key_auth
-from .pydantics import ResponseModel, ResultModel
+from .schema import ResponseModel, ResultModel
 
 # Attache to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
@@ -207,7 +207,7 @@ async def status():
 
         if application_name.startswith("Model"):
 
-            deployment = application.deployments['ModelDeployment']
+            deployment = application.deployments["ModelDeployment"]
 
             num_running_replicas = 0
 

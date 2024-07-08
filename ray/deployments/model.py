@@ -37,7 +37,7 @@ class ModelDeployment:
 
         try:
 
-            # Compile request
+            # Deserialize request
             obj = request.deserialize(self.model)
 
             # Execute object.
