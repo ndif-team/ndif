@@ -41,3 +41,4 @@ services:
       DATABASE_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27016
       WORKERS: 1
       RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:10001
+      # FIREBASE_CREDS_PATH
