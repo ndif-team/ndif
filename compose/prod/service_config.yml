@@ -1,0 +1,19 @@
+model_import_path: src.ray.deployments.model:app
+request_import_path: src.ray.deployments.request:app
+request_num_replicas: 1
+models:
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+    cuda_memory_MB: 15000
+    num_replicas: 1
+
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "google/gemma-7b"}'
+    cuda_memory_MB: 70000.0
+    num_replicas: 1
+
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "EleutherAI/gpt-j-6b"}'
+    cuda_memory_MB: 60000.0
+    num_replicas: 1
+
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Llama-2-70b-hf"}'
+  #   cuda_memory_MB: 700000.0
+  #   num_replicas: 1

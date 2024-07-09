@@ -14,8 +14,8 @@ applications:
   - name: Controller
     import_path: src.ray.deployments.controller:app
     args:
-      ray_config_path: src/ray/config/ray_config.yml
-      service_config_path: src/ray/config/service_config.yml
-      ray_dashboard_url: http://ray-head:8265
-      database_url: mongodb://user:pass@mongodb:27017
-      api_url: http://api:80
+      ray_config_path: /src/ray/config/ray_config.yml
+      service_config_path: /src/ray/config/service_config.yml
+      ray_dashboard_url: http://nagoya.research.khoury.northeastern.edu:8265
+      database_url: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017
+      api_url: https://ndif.dev
