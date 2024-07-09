@@ -27,7 +27,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 8
               capabilities: [ gpu ]
 
   dev-api:

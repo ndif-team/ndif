@@ -22,7 +22,7 @@ from nnsight.schema.Request import RequestModel
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
 
-# Attache to gunicorn logger
+# Attach to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
 
 
