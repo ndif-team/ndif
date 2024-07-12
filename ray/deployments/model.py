@@ -112,5 +112,5 @@ class ModelDeploymentArgs(BaseModel):
 
 
 def app(args: ModelDeploymentArgs) -> Application:
-    set_cuda_env_var()
+
     return ModelDeployment.bind(**args.model_dump())
