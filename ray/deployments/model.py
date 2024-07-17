@@ -31,8 +31,6 @@ class ModelDeployment:
 
         self.logger = logging.getLogger(__name__)
 
-        self.restart = False
-
     def __call__(self, request: RequestModel):
 
         try:
