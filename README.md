@@ -57,15 +57,15 @@ vi compose/(dev|prod)/docker-compose.yml
 2. Update the Hugging Face cache path:
 
 ```sh
-     - /disk/u/[YOUR BAULAB USERNAME]/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+- /disk/u/[YOUR BAULAB USERNAME]/.cache/huggingface/hub/:/root/.cache/huggingface/hub
 ```
 
 3. Adjust GPU settings (check your system with `nvidia-smi`):
 
 ```sh
-    - driver: nvidia
-      count: 1
-      capabilities: [ gpu ]
+- driver: nvidia
+ count: 1
+ capabilities: [ gpu ]
 ```
 
 ## Building and Running `NDIF`
@@ -105,4 +105,4 @@ You should expect to see a message like `Application startup complete.` in the a
 python scripts/test.py
 ```
 
-This will send 3 NNsight requests to the API service running in the local container
+This will send 3 NNsight requests to the API service running in the local container.
