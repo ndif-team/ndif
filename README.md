@@ -1,7 +1,7 @@
 
 # NDIF Development Guide
 
-Welcome to the development guide for the `NDIF` project! This document explains how to set up a development environment, install dependencies, and get started with contributing to the NDIF project.
+This guide explains how to set up a development environment, install dependencies, and get started with contributing to the `NDIF` project.
 
 ## Prerequisites
 
@@ -12,20 +12,20 @@ Welcome to the development guide for the `NDIF` project! This document explains 
 
 ## Setup
 
-### Install Conda
+### 1. Install Conda
 
 If you haven't already, install Conda by downloading and installing Anaconda or Miniconda from the [official Conda website](https://docs.conda.io/en/latest/miniconda.html).
 
-### Create Conda Environment
+### 2. Create Conda Environment
 
-Fork or clone the NDIF repository to your local machine. Then create a new Conda virtual environment:
+Fork or clone the `NDIF` repository to your local machine. Then create a new Conda virtual environment:
 
 ```sh
 conda create -n ndif-dev python=3.10
 conda activate ndif-dev
 ```
 
-### Install NNsight 
+### 3. Install NNsight 
 
 Choose one of the following methods:
 
@@ -35,7 +35,7 @@ a. Via pip (simple)
 pip install nnsight
 ```
 
-2. From repository (recommended for specific branches)
+b. From repository (recommended for specific branches)
 
 ```sh
 git clone https://github.com/nnsight/nnsight.git
@@ -44,7 +44,7 @@ git checkout <branch-name>  # e.g., 0.3
 pip install -e .
 ```
 
-### Configure Docker Compose
+### 4. Configure Docker Compose
 
 Modify the Docker Compose file for your system
 
@@ -68,7 +68,7 @@ vi compose/(dev|prod)/docker-compose.yml
       capabilities: [ gpu ]
 ```
 
-## Building and Running NDIF
+## Building and Running `NDIF`
 
 1. Build the base environment
 
@@ -86,14 +86,14 @@ make build_all_service
 
 3. Start the development containers
 
-After building the base environment and the service, start the NDIF docker containers.
+After building the base environment and the service, start the `NDIF` docker containers.
 ```sh
 make up-dev
 ```
 
 4. Verify server status
 
-After building the NDIF containers, you can check the docker logs to verify the services are running correctly.
+After building the `NDIF` containers, you can check the docker logs to verify the services are running correctly.
 ```sh
 docker logs dev-api-1
 ```
