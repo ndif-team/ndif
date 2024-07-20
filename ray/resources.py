@@ -2,7 +2,6 @@ import json
 
 from .util import get_total_cudamemory_MBs
 
-
 def main(head: bool):
 
     resources = {}
@@ -12,7 +11,7 @@ def main(head: bool):
         resources["head"] = 1
 
     resources["cuda_memory_MB"] = get_total_cudamemory_MBs()
-
+        
     print(json.dumps(resources))
 
 

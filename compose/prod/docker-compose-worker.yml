@@ -1,0 +1,17 @@
+version: '3'
+services:
+  ray-worker:
+    image: ray_worker:latest
+    volumes:
+      - /drive7/hf-cache/hub/:/root/.cache/huggingface/hub
+    network_mode: "host"
+    environment:
+      RAY_ADDRESS: 127.0.0.1:6379
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [ gpu ]

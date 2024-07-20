@@ -5,6 +5,7 @@ from datetime import datetime
 
 import gridfs
 import ray
+import socketio
 import uvicorn
 from bson.objectid import ObjectId
 from fastapi import Depends, FastAPI
@@ -22,7 +23,7 @@ from nnsight.schema.Request import RequestModel
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
 
-# Attache to gunicorn logger
+# Attach to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
 
 
@@ -43,8 +44,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Init async rabbitmq manager for communication between socketio servers
+socketio_manager = socketio.AsyncAioPikaManager(
+    url=os.environ["RMQ_URL"], logger=logger
+)
 # Init socketio manager app
-sm = SocketManager(app=app, mount_location="/ws", logger=logger)
+sm = SocketManager(
+    app=app, mount_location="/ws", client_manager=socketio_manager, logger=logger
+)
 
 # Init database connection
 db_connection = MongoClient(os.environ.get("DATABASE_URL"))

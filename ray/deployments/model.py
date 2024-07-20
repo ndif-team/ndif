@@ -1,5 +1,6 @@
 import gc
 import logging
+import os
 from typing import Dict
 
 import torch
@@ -13,11 +14,14 @@ from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
+from ..util import set_cuda_env_var
 
 
 @serve.deployment()
 class ModelDeployment:
     def __init__(self, model_key: str, api_url: str, database_url: str):
+
+        set_cuda_env_var()
 
         self.model_key = model_key
         self.api_url = api_url
@@ -80,7 +84,9 @@ class ModelDeployment:
 
     # Ray checks this method and restarts replica if it raises an exception
     def check_health(self):
-        torch.cuda.synchronize()
+
+        for device in range(torch.cuda.device_count()):
+            torch.cuda.mem_get_info(device)
 
     def model_size(self) -> float:
 
@@ -106,4 +112,5 @@ class ModelDeploymentArgs(BaseModel):
 
 
 def app(args: ModelDeploymentArgs) -> Application:
+
     return ModelDeployment.bind(**args.model_dump())
