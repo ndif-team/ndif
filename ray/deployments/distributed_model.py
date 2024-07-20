@@ -17,7 +17,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
 from ..distributed.parallel_dims import ParallelDims
-from ..distributed.tensor_parallelism.plans import parallelize_model
+from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import load_hf_model_from_cache
 from .model import ModelDeploymentArgs
 
@@ -104,7 +104,7 @@ class DistributedModelDeployment:
             enable_loss_parallel=False,
         )
 
-        world_mesh = parallel_dims.build_mesh(device_type=f"cuda:{self.device.index}")
+        world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         parallelize_model(self.model._model, "llama3", world_mesh["tp"])
 
