@@ -24,4 +24,4 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
         state_dict = load_file(shard_path, device="cpu")
 
-        model.load_state_dict(state_dict, strict=False)
+        model.load_state_dict(state_dict, strict=False, assign=True)
