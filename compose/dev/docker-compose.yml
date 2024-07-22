@@ -9,6 +9,8 @@ services:
 
   mongodb:
     image: mongodb/mongodb-community-server:6.0-ubi8
+    ports:
+      - 27017
     environment:
       MONGO_INITDB_ROOT_USERNAME: user
       MONGO_INITDB_ROOT_PASSWORD: pass
@@ -16,18 +18,16 @@ services:
   ray-head:
     image: ray_head:latest
     shm_size: '2gb'
-    ports:
-      # Dashboard 
-      - 8266:8265
+    network_mode: "host"
     volumes:
-      - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
     deploy:
       replicas: 1
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 8
+              count: 2
               capabilities: [ gpu ]
 
   api:
@@ -42,5 +42,5 @@ services:
       DATABASE_URL: mongodb://user:pass@mongodb:27017
       RMQ_URL: amqp://guest:guest@rabbitmq:5672/
       WORKERS: 1
-      RAY_ADDRESS: ray://ray-head:10001
+      RAY_ADDRESS: ray://localhost:10001
       # FIREBASE_CREDS_PATH

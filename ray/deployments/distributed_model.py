@@ -23,7 +23,7 @@ from .model import ModelDeploymentArgs
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
-class DistributedModelDeployment:
+class ModelDeployment:
     def __init__(
         self,
         model_key: str,
@@ -38,6 +38,8 @@ class DistributedModelDeployment:
         tensor_parallelism_size: int,
         pipeline_parallelism_size: int,
     ):
+
+        self.replica_context = serve.get_replica_context()
 
         self.model_key = model_key
         self.api_url = api_url
@@ -55,7 +57,16 @@ class DistributedModelDeployment:
 
         self.model = RemoteableMixin.from_model_key(self.model_key)
 
+        self.device = torch.device(f"cuda:{torch.cuda.current_device()}") 
+
+        print("device", str(self.device))
+
+        self.logger = logging.getLogger(__name__)
+
         self.head = torch_distributed_world_rank == 0
+
+        print("head", self.head)
+        print("taddress", self.torch_distributed_address)
 
         if self.head:
 
@@ -69,32 +80,53 @@ class DistributedModelDeployment:
                     f"tcp://{ip_address}:{self.torch_distributed_port}"
                 )
 
-            self.worker_applications = []
+            self.worker_deployments = []
 
             for worker_world_rank in range(1, self.torch_distributed_world_size):
 
-                worker_application = DistributedModelDeployment.bind(
+                distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
                     api_url=self.api_url,
                     database_url=self.database_url,
                     torch_distributed_address=self.torch_distributed_address,
-                    torch_distributed_port=self.torch_distributed_port,
                     torch_distributed_world_size=self.torch_distributed_world_size,
                     torch_distributed_world_rank=worker_world_rank,
                     torch_distributed_world_timeout_seconds=self.torch_distributed_world_timeout_seconds,
+                    tensor_parallelism_size=self.tensor_parallelism_size,
+                    data_parallelism_size=self.data_parallelism_size,
+                    pipeline_parallelism_size=self.pipeline_parallelism_size,
                 )
 
-                self.worker_applications.append(worker_application)
+                worker_application = ModelDeployment.bind(
+                    **distributed_model_deployment_args.model_dump()
+                )
 
-        self.device = torch.get_default_device()
+                worker_deployment = serve.run(
+                    worker_application,
+                    name=f"{self.replica_context.app_name}-{worker_world_rank}",
+                    route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
+                )
+
+                self.worker_deployments.append(worker_deployment)
+
+            for worker_deployment in self.worker_deployments:
+
+                worker_deployment.init_distributed.remote()
+
+            self.init_distributed()
+
+    def init_distributed(self):
 
         torch.distributed.init_process_group(
             "nccl",
+            init_method=self.torch_distributed_address,
             timeout=timedelta(self.torch_distributed_world_timeout_seconds),
             world_size=self.torch_distributed_world_size,
-            rank=torch_distributed_world_rank,
+            rank=self.torch_distributed_world_rank,
             device_id=self.device,
         )
+
+        print("dist inited")
 
         parallel_dims = ParallelDims(
             dp=self.data_parallelism_size,
@@ -106,15 +138,16 @@ class DistributedModelDeployment:
 
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
-        parallelize_model(self.model._model, "llama3", world_mesh["tp"])
+        parallelize_model(self.model._model, self.model._model.config._name_or_path, world_mesh["tp"])
+        print("parallelized")
 
         load_hf_model_from_cache(
             self.model._model, self.model._model.config._name_or_path
         )
 
-        self.model._dispatched = True
+        print("loaded")
 
-        self.logger = logging.getLogger(__name__)
+        self.model._dispatched = True
 
     def __call__(self, request: RequestModel):
 
@@ -122,9 +155,9 @@ class DistributedModelDeployment:
 
             if self.head:
 
-                for worker_application in self.worker_applications:
+                for worker_deployment in self.worker_deployments:
 
-                    worker_application.remote(request)
+                    worker_deployment.remote(request)
 
             # Deserialize request
             obj = request.deserialize(self.model)
@@ -186,8 +219,9 @@ class DistributedModelDeploymentArgs(ModelDeploymentArgs):
 
     torch_distributed_address: str = None
     torch_distributed_port: int = None
+    torch_distributed_world_rank: int = 0
+
     torch_distributed_world_size: int
-    torch_distributed_world_rank: int
     torch_distributed_world_timeout_seconds: int
 
     data_parallelism_size: int = 1
@@ -195,5 +229,5 @@ class DistributedModelDeploymentArgs(ModelDeploymentArgs):
     pipeline_parallelism_size: int = 1
 
 
-def app(args: ModelDeploymentArgs) -> Application:
-    return DistributedModelDeployment.bind(**args.model_dump())
+def app(args: DistributedModelDeploymentArgs) -> Application:
+    return ModelDeployment.bind(**args.model_dump())

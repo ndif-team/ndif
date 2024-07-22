@@ -16,6 +16,6 @@ applications:
     args:
       ray_config_path: src/ray/config/ray_config.yml
       service_config_path: src/ray/config/service_config.yml
-      ray_dashboard_url: http://ray-head:8265
-      database_url: mongodb://user:pass@mongodb:27017
-      api_url: http://api:80
+      ray_dashboard_url: http://localhost:8265
+      database_url: mongodb://user:pass@localhost:27017
+      api_url: http://localhost:5001

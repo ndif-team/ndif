@@ -1,5 +1,6 @@
 import urllib.parse
 from typing import Any, Dict, List
+
 try:
     from slugify import slugify
 except:
@@ -20,12 +21,12 @@ from .deployments.request import RequestDeploymentArgs
 
 class ServiceConfigurationSchema(BaseModel):
     class ModelConfigurationSchema(BaseModel):
-        
-        model_import_path:str = None
-        
-        ray_actor_options:RayActorOptionsSchema  = None
-        args: Dict[str, Any]
-        
+
+        model_import_path: str = None
+
+        ray_actor_options: Dict[str, Any] = {}
+        args: Dict[str, Any] = {}
+
         model_key: str
         num_replicas: int
 
@@ -95,15 +96,20 @@ class RayState:
 
         model_key = slugify(model_config.model_key)
 
+        model_config.args["model_key"] = model_config.model_key
+        model_config.args["api_url"] = self.api_url
+        model_config.args["database_url"] = self.database_url
+
         application = ServeApplicationSchema(
             name=f"Model:{model_key}",
-            import_path=self.service_config.default_model_import_path or model_config.model_import_path,
-            route_prefix=f"/model:{model_key}",
+            import_path=model_config.model_import_path
+            or self.service_config.default_model_import_path,
+            route_prefix=f"/Model:{model_key}",
             deployments=[
                 DeploymentSchema(
                     name="ModelDeployment",
                     num_replicas=model_config.num_replicas,
-                    ray_actor_options=model_config.ray_actor_options
+                    ray_actor_options=model_config.ray_actor_options,
                 )
             ],
             args=model_config.args,
