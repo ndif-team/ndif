@@ -185,6 +185,8 @@ class ModelDeployment:
         )
 
         self.model._dispatched = True
+        
+        torch.cuda.empty_cache()
 
     def __call__(self, request: RequestModel):
 

@@ -19,3 +19,10 @@ models:
       tensor_parallelism_size: 2
     ray_actor_options:
       num_gpus: 1
+
+
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3-8B"}'
+  #   num_replicas: 1
+    
+  #   ray_actor_options:
+  #     num_gpus: 1
