@@ -27,7 +27,7 @@ def main(local_rank: int, world_rank: int, world_size: int, model_id: str):
         timeout=timedelta(seconds=10),
         world_size=world_size,
         rank=world_rank,
-        init_method="tcp://localhost:5009",
+
     )
 
     parallel_dims = ParallelDims(

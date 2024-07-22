@@ -1,5 +1,6 @@
 import gc
 import logging
+import os
 import socket
 from datetime import timedelta
 from typing import Dict
@@ -57,18 +58,13 @@ class ModelDeployment:
 
         self.model = RemoteableMixin.from_model_key(self.model_key)
 
-        self.device = torch.device(f"cuda:{torch.cuda.current_device()}") 
-
-        print("device", str(self.device))
-
         self.logger = logging.getLogger(__name__)
 
         self.head = torch_distributed_world_rank == 0
 
-        print("head", self.head)
-        print("taddress", self.torch_distributed_address)
-
         if self.head:
+
+            print("Initializing distributed head...")
 
             self.db_connection = MongoClient(self.database_url)
 
@@ -78,6 +74,10 @@ class ModelDeployment:
 
                 self.torch_distributed_address = (
                     f"tcp://{ip_address}:{self.torch_distributed_port}"
+                )
+
+                print(
+                    f"=> Torch distributed address: {self.torch_distributed_address}"
                 )
 
             self.worker_deployments = []
@@ -97,8 +97,17 @@ class ModelDeployment:
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
                 )
 
+                print(
+                    f"=> Binding distributed worker: {worker_world_rank}..."
+                )
+
                 worker_application = ModelDeployment.bind(
                     **distributed_model_deployment_args.model_dump()
+                )
+
+                print(f"=> Bound distributed worker: {worker_world_rank}.")
+                print(
+                    f"=> Serving distributed worker: {worker_world_rank}..."
                 )
 
                 worker_deployment = serve.run(
@@ -107,15 +116,25 @@ class ModelDeployment:
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
 
+                print(f"=> Served distributed worker: {worker_world_rank}.")
+
                 self.worker_deployments.append(worker_deployment)
 
             for worker_deployment in self.worker_deployments:
 
                 worker_deployment.init_distributed.remote()
 
+            print(f"Initialized distributed head.")
+
             self.init_distributed()
 
     def init_distributed(self):
+
+        print(
+            f"Initializing distributed worker: {self.torch_distributed_world_rank}..."
+        )
+
+        self.device = torch.device("cuda:0")
 
         torch.distributed.init_process_group(
             "nccl",
@@ -126,7 +145,9 @@ class ModelDeployment:
             device_id=self.device,
         )
 
-        print("dist inited")
+        print(
+            f"Initialized distributed worker: {self.torch_distributed_world_rank}."
+        )
 
         parallel_dims = ParallelDims(
             dp=self.data_parallelism_size,
@@ -138,14 +159,30 @@ class ModelDeployment:
 
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
-        parallelize_model(self.model._model, self.model._model.config._name_or_path, world_mesh["tp"])
-        print("parallelized")
+        torch.set_default_device(self.device)
+
+        print(
+            f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
+        )
+
+        parallelize_model(
+            self.model._model, self.model._model.config._name_or_path, world_mesh["tp"]
+        )
+
+        print(
+            f"Parallelized distributed worker: {self.torch_distributed_world_rank}."
+        )
+        print(
+            f"Loading distributed worker: {self.torch_distributed_world_rank}..."
+        )
 
         load_hf_model_from_cache(
             self.model._model, self.model._model.config._name_or_path
         )
 
-        print("loaded")
+        print(
+            f"Loaded distributed worker: {self.torch_distributed_world_rank}."
+        )
 
         self.model._dispatched = True
 
