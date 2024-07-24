@@ -1,7 +1,9 @@
 import gc
+import inspect
 import logging
 import os
 import socket
+import time
 from datetime import timedelta
 from typing import Dict
 
@@ -13,8 +15,8 @@ from ray import serve
 from ray.serve import Application
 from transformers import PreTrainedModel
 
-from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import RequestModel
+from nnsight import LanguageModel, util
+from nnsight.pydantics.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
 from ..distributed.parallel_dims import ParallelDims
@@ -71,14 +73,11 @@ class ModelDeployment:
             if self.torch_distributed_address is None:
 
                 ip_address = ray.get_runtime_context().worker.node_ip_address
-
                 self.torch_distributed_address = (
                     f"tcp://{ip_address}:{self.torch_distributed_port}"
                 )
 
-                print(
-                    f"=> Torch distributed address: {self.torch_distributed_address}"
-                )
+            print(f"=> Torch distributed address: {self.torch_distributed_address}")
 
             self.worker_deployments = []
 
@@ -97,21 +96,18 @@ class ModelDeployment:
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
                 )
 
-                print(
-                    f"=> Binding distributed worker: {worker_world_rank}..."
-                )
+                print(f"=> Binding distributed worker: {worker_world_rank}...")
 
                 worker_application = ModelDeployment.bind(
                     **distributed_model_deployment_args.model_dump()
                 )
 
                 print(f"=> Bound distributed worker: {worker_world_rank}.")
-                print(
-                    f"=> Serving distributed worker: {worker_world_rank}..."
-                )
+                print(f"=> Serving distributed worker: {worker_world_rank}...")
 
-                worker_deployment = serve.run(
+                worker_deployment = serve._run(
                     worker_application,
+                    _blocking=False,
                     name=f"{self.replica_context.app_name}-{worker_world_rank}",
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
@@ -120,18 +116,14 @@ class ModelDeployment:
 
                 self.worker_deployments.append(worker_deployment)
 
-            for worker_deployment in self.worker_deployments:
-
-                worker_deployment.init_distributed.remote()
-
             print(f"Initialized distributed head.")
 
-            self.init_distributed()
+        self.init_distributed()
 
     def init_distributed(self):
 
         print(
-            f"Initializing distributed worker: {self.torch_distributed_world_rank}..."
+            f"Initializing distributed worker: {self.torch_distributed_world_rank}. Ray address: {self.torch_distributed_address}..."
         )
 
         self.device = torch.device("cuda:0")
@@ -145,9 +137,7 @@ class ModelDeployment:
             device_id=self.device,
         )
 
-        print(
-            f"Initialized distributed worker: {self.torch_distributed_world_rank}."
-        )
+        print(f"Initialized distributed worker: {self.torch_distributed_world_rank}.")
 
         parallel_dims = ParallelDims(
             dp=self.data_parallelism_size,
@@ -160,6 +150,7 @@ class ModelDeployment:
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         torch.set_default_device(self.device)
+        torch.set_default_dtype(torch.bfloat16)
 
         print(
             f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
@@ -169,11 +160,9 @@ class ModelDeployment:
             self.model._model, self.model._model.config._name_or_path, world_mesh["tp"]
         )
 
+        print(f"Parallelized distributed worker: {self.torch_distributed_world_rank}.")
         print(
-            f"Parallelized distributed worker: {self.torch_distributed_world_rank}."
-        )
-        print(
-            f"Loading distributed worker: {self.torch_distributed_world_rank}..."
+            f"Loading model for distributed worker: {self.torch_distributed_world_rank}..."
         )
 
         load_hf_model_from_cache(
@@ -181,22 +170,24 @@ class ModelDeployment:
         )
 
         print(
-            f"Loaded distributed worker: {self.torch_distributed_world_rank}."
+            f"Loaded model for distributed worker: {self.torch_distributed_world_rank}."
         )
 
         self.model._dispatched = True
-        
+
         torch.cuda.empty_cache()
 
     def __call__(self, request: RequestModel):
 
+        if self.head:
+
+            for worker_deployment in self.worker_deployments:
+
+                worker_deployment.remote(request)
+
+        torch.distributed.barrier()
+
         try:
-
-            if self.head:
-
-                for worker_deployment in self.worker_deployments:
-
-                    worker_deployment.remote(request)
 
             # Deserialize request
             obj = request.deserialize(self.model)
@@ -247,11 +238,16 @@ class ModelDeployment:
 
         model: PreTrainedModel = self.model._model
 
-        return model.config.to_json_string()
+        return {
+            "config_json_string": model.config.to_json_string(),
+            "repo_id": model.config._name_or_path,
+        }
 
     # Ray checks this method and restarts replica if it raises an exception
-    def check_health(self):
-        torch.cuda.synchronize()
+    async def check_health(self):
+
+        for device in range(torch.cuda.device_count()):
+            torch.cuda.mem_get_info(device)
 
 
 class DistributedModelDeploymentArgs(ModelDeploymentArgs):

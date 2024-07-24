@@ -11,7 +11,7 @@ def ready_to_be_parallelized(module: torch.nn.Module):
 
     param = next(module.parameters())
 
-    return not isinstance(param, DTensor) and param.device.type != 'meta' and param.nonzero().numel() != 0
+    return not isinstance(param, DTensor) and param.device.type != 'meta'
 
 
 def parallelize_on_state_dict_load(plan, module: torch.nn.Module, tp_mesh):

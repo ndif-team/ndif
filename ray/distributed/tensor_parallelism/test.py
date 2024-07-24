@@ -18,12 +18,11 @@ def main(local_rank: int, world_rank: int, world_size: int, model_id: str):
 
     device = torch.device(f"cuda:{local_rank}")
     
-    
-
     nnsight_model = nnsight.LanguageModel(model_id)
 
     torch.distributed.init_process_group(
         "nccl",
+        init_method="tcp://10.201.22.179:5003",
         timeout=timedelta(seconds=10),
         world_size=world_size,
         rank=world_rank,
