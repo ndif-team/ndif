@@ -1,0 +1,45 @@
+version: '3'
+services:
+
+  rabbitmq:
+    image: rabbitmq:3.11.28
+    network_mode: "host"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  mongodb:
+    image: mongodb/mongodb-community-server:6.0-ubi8
+    network_mode: "host"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: user
+      MONGO_INITDB_ROOT_PASSWORD: pass
+
+  ray-head:
+    image: ray_head:latest
+    shm_size: '2gb'
+    network_mode: "host"
+    volumes:
+      - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [ gpu ]
+
+  api:
+    depends_on:
+      - rabbitmq
+      - ray-head
+      - mongodb
+    image: api:latest
+    network_mode: "host"
+    environment:
+      DATABASE_URL: mongodb://user:pass@localhost:27017
+      RMQ_URL: amqp://guest:guest@localhost:5672/
+      WORKERS: 1
+      RAY_ADDRESS: ray://localhost:10001
+      # FIREBASE_CREDS_PATH

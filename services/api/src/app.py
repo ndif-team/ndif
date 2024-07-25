@@ -1,8 +1,10 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import gridfs
+import ray
 import socketio
 import uvicorn
 from bson.objectid import ObjectId
@@ -13,18 +15,15 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-#from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from pymongo import MongoClient
+from ray import serve
 
-from nnsight.pydantics import RequestModel
+from nnsight.schema.Request import RequestModel
 
 from .api_key import api_key_auth
-from .celery import celeryconfig
-from .celery.tasks import app as celery_app
-from .celery.tasks import process_request
-from .pydantics import ResponseModel, ResultModel
+from .schema import ResponseModel, ResultModel
 
-# Attache to gunicorn logger
+# Attach to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
 
 
@@ -44,14 +43,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Init async rabbitmq manager for communication between socketio servers
 socketio_manager = socketio.AsyncAioPikaManager(
-    url=celeryconfig.broker_url, logger=logger
+    url=os.environ["RMQ_URL"], logger=logger
 )
 # Init socketio manager app
 sm = SocketManager(
     app=app, mount_location="/ws", client_manager=socketio_manager, logger=logger
 )
+
+# Init database connection
+db_connection = MongoClient(os.environ.get("DATABASE_URL"))
+
+# Init Ray connection
+ray.init()
 
 
 @app.post("/request")
@@ -73,7 +79,7 @@ async def request(
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
-        process_request.apply_async([request], queue="request").forget()
+        serve.get_app_handle("Request").remote(request)
 
         # Create response object.
         # Log and save to data backend.
@@ -86,7 +92,7 @@ async def request(
                 description="Your job has been received and is waiting approval.",
             )
             .log(logger)
-            .save(celery_app.backend._get_connection())
+            .save(db_connection)
         )
 
     except Exception as exception:
@@ -101,7 +107,7 @@ async def request(
                 description=str(exception),
             )
             .log(logger)
-            .save(celery_app.backend._get_connection())
+            .save(db_connection)
         )
 
     # Return response.
@@ -126,9 +132,8 @@ async def blocking_response(id: str):
     Args:
         id (str): _description_
     """
-    client: MongoClient = celery_app.backend._get_connection()
 
-    response = ResponseModel.load(client, id, result=False)
+    response = ResponseModel.load(db_connection, id, result=False)
 
     await _blocking_response(response)
 
@@ -144,12 +149,9 @@ async def response(id: str) -> ResponseModel:
         ResponseModel: Response.
     """
 
-    # Get data backend client.
-    client: MongoClient = celery_app.backend._get_connection()
-
     # Load response from client given id.
     # Don't load result.
-    return ResponseModel.load(client, id, result=False)
+    return ResponseModel.load(db_connection, id, result=False)
 
 
 @app.get("/result/{id}")
@@ -166,11 +168,8 @@ async def result(id: str) -> ResultModel:
         Iterator[ResultModel]: _description_
     """
 
-    # Get data backend client.
-    client: MongoClient = celery_app.backend._get_connection()
-
     # Get cursor to bytes stored in data backend.
-    result: gridfs.GridOut = ResultModel.load(client, id, stream=True)
+    result: gridfs.GridOut = ResultModel.load(db_connection, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -182,8 +181,8 @@ async def result(id: str) -> ResultModel:
         for chunk in gridout:
             yield chunk
 
-        ResultModel.delete(client, id, logger=logger)
-        ResponseModel.delete(client, id, logger=logger)
+        ResultModel.delete(db_connection, id, logger=logger)
+        ResponseModel.delete(db_connection, id, logger=logger)
 
     with result:
         return StreamingResponse(
@@ -203,24 +202,47 @@ async def ping():
     return "pong"
 
 
-@app.get("/stats", status_code=200)
+@app.get("/status", status_code=200)
 @cache(expire=120)
-async def stats():
-    """Endpoint to get info about all celery workers that define custom_info. Info can be used to show what models are currently hosted.
+async def status():
 
-    Returns:
-        _type_: _description_
-    """
-    stats = celery_app.control.inspect().stats()
+    response = {}
 
-    return {
-        key: value["custom_info"]
-        for key, value in stats.items()
-        if "custom_info" in value
-    }
+    status = serve.status()
+
+    for application_name, application in status.applications.items():
+
+        if application_name.startswith("Model"):
+
+            deployment = application.deployments["ModelDeployment"]
+
+            num_running_replicas = 0
+
+            for replica_status in deployment.replica_states:
+
+                if replica_status == "RUNNING":
+
+                    num_running_replicas += 1
+
+            if num_running_replicas > 0:
+
+                application_status = serve.get_app_handle(
+                    application_name
+                ).status.remote()
+
+                response[application_name] = {
+                    "num_running_replicas": num_running_replicas,
+                    "status": application_status,
+                }
+
+    for application_status in response.values():
+
+        application_status["status"] = await application_status["status"]
+
+    return response
 
 
-#FastAPIInstrumentor.instrument_app(app)
+# FastAPIInstrumentor.instrument_app(app)
 
 
 if __name__ == "__main__":

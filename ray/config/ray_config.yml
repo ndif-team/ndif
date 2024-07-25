@@ -1,0 +1,21 @@
+proxy_location: Disabled
+http_options:
+  host: 0.0.0.0
+  port: 5005
+grpc_options:
+  port: 9000
+  grpc_servicer_functions: []
+logging_config:
+  encoding: TEXT
+  log_level: INFO
+  logs_dir: null
+  enable_access_log: true
+applications:
+  - name: Controller
+    import_path: src.ray.deployments.controller:app
+    args:
+      ray_config_path: src/ray/config/ray_config.yml
+      service_config_path: src/ray/config/service_config.yml
+      ray_dashboard_url: http://localhost:8265
+      database_url: mongodb://user:pass@localhost:27017
+      api_url: http://localhost:80

@@ -1,0 +1,56 @@
+version: '3'
+services:
+
+  rabbitmq:
+    image: rabbitmq:3.11.28
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - 5672:5672
+
+  mongodb:
+    image: mongodb/mongodb-community-server:6.0-ubi8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: user
+      MONGO_INITDB_ROOT_PASSWORD: pass
+    ports:
+      - 27017:27017
+
+  ray-head:
+    image: ray_head:latest
+    shm_size: '2gb'
+    ports:
+      # Dashboard 
+      - 8265:8265
+      # Ray Address
+      - 6379:6379
+      # Client?
+      - 10001:10001
+    volumes:
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - /disk/u/jfiottok/wd/ndif/compose/prod/service_config.yml:/src/ray/config/service_config.yml
+      - /disk/u/jfiottok/wd/ndif/compose/prod/ray_config.yml:/src/ray/config/ray_config.yml
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 8
+              capabilities: [ gpu ]
+
+  api:
+    depends_on:
+      - rabbitmq
+      - ray-head
+      - mongodb
+    image: api:latest
+    ports:
+      - 5000:80
+    environment:
+      DATABASE_URL: mongodb://user:pass@nagoya.research.khoury.northeastern.edu:27017
+      RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
+      WORKERS: 12
+      RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:10001
+      FIREBASE_CREDS_PATH: /src/creds.json
