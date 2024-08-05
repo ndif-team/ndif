@@ -1,0 +1,4 @@
+num_users: 10
+spawn_rate: 10
+deterministic: false
+base_url: "http://localhost:5001"
