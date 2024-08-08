@@ -30,16 +30,20 @@ class ModelDeployment:
         self.model = RemoteableMixin.from_model_key(
             self.model_key, device_map="auto", dispatch=True
         )
-        
+        self.model._model.requires_grad_(False)
+
         torch.cuda.empty_cache()
 
         self.db_connection = MongoClient(self.database_url)
 
         self.logger = logging.getLogger(__name__)
 
+        self.running = False
+
     def __call__(self, request: RequestModel):
 
         try:
+            self.running = True
 
             # Deserialize request
             obj = request.deserialize(self.model)
@@ -69,6 +73,10 @@ class ModelDeployment:
                 description=str(exception),
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
 
+        finally:
+
+            self.running = False
+
         del request
         del local_result
 
@@ -87,8 +95,8 @@ class ModelDeployment:
     # Ray checks this method and restarts replica if it raises an exception
     def check_health(self):
 
-        for device in range(torch.cuda.device_count()):
-            torch.cuda.mem_get_info(device)
+        if not self.running:
+            torch.cuda.empty_cache()
 
     def model_size(self) -> float:
 
