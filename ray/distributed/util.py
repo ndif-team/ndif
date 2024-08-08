@@ -20,7 +20,7 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
     for shard_file in pbar:
         # Get path to shard
-        shard_path = hf_hub_download(repo_id=repo_id, filename=shard_file)
+        shard_path = hf_hub_download(repo_id=repo_id, filename=shard_file, local_files_only=True)
         pbar.set_postfix({"Current shard": shard_file})
 
         # Get path to shard
