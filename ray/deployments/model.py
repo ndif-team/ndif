@@ -90,7 +90,10 @@ class ModelDeployment:
 
         model: PreTrainedModel = self.model._model
 
-        return model.config.to_json_string()
+        return {
+            "config_json_string": model.config.to_json_string(),
+            "repo_id": model.config._name_or_path,
+        }
 
     # Ray checks this method and restarts replica if it raises an exception
     def check_health(self):

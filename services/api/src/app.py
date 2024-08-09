@@ -235,9 +235,9 @@ async def status():
                     "status": application_status,
                 }
 
-    for application_status in response.values():
+    for key, value in response.items():
 
-        application_status["status"] = await application_status["status"]
+        response[key] = await value["status"]
 
     return response
 
