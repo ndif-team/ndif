@@ -8,7 +8,8 @@ ray start --head \
     --object-manager-port=8076 \
     --include-dashboard=true \
     --dashboard-host=0.0.0.0 \
-    --dashboard-port=8265
+    --dashboard-port=8265 \
+    --metrics-export-port=8267
 
 serve deploy src/ray/config/ray_config.yml
 
