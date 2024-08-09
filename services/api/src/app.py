@@ -63,7 +63,6 @@ ray.init()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-
 @app.post("/request")
 async def request(
     request: RequestModel, api_key=Depends(api_key_auth)
