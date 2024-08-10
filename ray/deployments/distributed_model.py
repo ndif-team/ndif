@@ -15,13 +15,17 @@ from ray import serve
 from ray.serve import Application
 from transformers import PreTrainedModel
 
-from nnsight import LanguageModel, util
-from nnsight.pydantics.Request import RequestModel
+from nnsight.models.mixins import RemoteableMixin
+from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import load_hf_model_from_cache
+from ..distributed.util import (
+    load_hf_model_from_cache,
+    patch_intervention_protocol,
+    to_full_tensor,
+)
 from .model import ModelDeploymentArgs
 
 
@@ -59,6 +63,8 @@ class ModelDeployment:
         self.pipeline_parallelism_size = pipeline_parallelism_size
 
         self.model = RemoteableMixin.from_model_key(self.model_key)
+
+        patch_intervention_protocol()
 
         self.logger = logging.getLogger(__name__)
 
@@ -197,6 +203,10 @@ class ModelDeployment:
 
             if self.head:
 
+                value = obj.remote_backend_postprocess_result(local_result)
+
+                value = to_full_tensor(value)
+
                 ResponseModel(
                     id=request.id,
                     session_id=request.session_id,
@@ -205,7 +215,7 @@ class ModelDeployment:
                     description="Your job has been completed.",
                     result=ResultModel(
                         id=request.id,
-                        value=obj.remote_backend_postprocess_result(local_result),
+                        value=value,
                     ),
                 ).log(self.logger).save(self.db_connection).blocking_response(
                     self.api_url
