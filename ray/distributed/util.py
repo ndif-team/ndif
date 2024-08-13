@@ -78,14 +78,14 @@ def patch_intervention_protocol() -> None:
                 if placement is None:
 
                     return tensor
+                
+                placement, device_mesh = placement
 
                 if isinstance(tensor, DTensor):
 
                     return tensor.redistribute(
-                        placements=placements.pop(0)[0], async_op=False
+                        placements=placement, async_op=False
                     )
-
-                placement, device_mesh = placement
 
                 return DTensor.from_local(
                     tensor, device_mesh=device_mesh, placements=placement
