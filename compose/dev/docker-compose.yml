@@ -57,7 +57,7 @@ services:
       - '--web.enable-remote-write-receiver'
     volumes:
       - prometheus-data:/prometheus
-      - ../../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
     depends_on:
       - api
       - ray-head
