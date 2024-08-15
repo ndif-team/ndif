@@ -1,6 +1,6 @@
 import torch
 import os
-
+from nnsight.schema.format import functions
 
 def get_total_cudamemory_MBs(return_ids=False) -> int:
 
@@ -32,3 +32,7 @@ def set_cuda_env_var(ids = None):
         _, ids = get_total_cudamemory_MBs(return_ids=True)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in ids])
+
+def update_nnsight_print_function(new_function):
+    
+    functions.FUNCTIONS_WHITELIST[functions.get_function_name(print)] = new_function
