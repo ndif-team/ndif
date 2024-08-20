@@ -73,7 +73,14 @@ services:
     depends_on:
       - prometheus
 
+  loki:
+    image: grafana/loki:2.8.1
+    network_mode: "host"
+    volumes:
+      - loki-data:/loki
+
 volumes:
   grafana-storage:
+  loki-data:
   prometheus-data:
   ray-data:
