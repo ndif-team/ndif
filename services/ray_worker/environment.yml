@@ -9,5 +9,7 @@ dependencies:
     - setuptools
     - nnsight
     - ray[serve]
+    # Telemetry
+    - python-logging-loki
     # Database
     - pymongo
