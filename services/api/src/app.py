@@ -15,6 +15,7 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
+from prometheus_fastapi_instrumentator import Instrumentator
 from pymongo import MongoClient
 from ray import serve
 
@@ -59,6 +60,8 @@ db_connection = MongoClient(os.environ.get("DATABASE_URL"))
 # Init Ray connection
 ray.init()
 
+# Prometheus instrumentation (for metrics)
+Instrumentator().instrument(app).expose(app)
 
 @app.post("/request")
 async def request(
@@ -240,10 +243,6 @@ async def status():
         response[key] = await value["status"]
 
     return response
-
-
-# FastAPIInstrumentor.instrument_app(app)
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001, workers=1)

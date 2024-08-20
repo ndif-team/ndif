@@ -21,6 +21,7 @@ services:
     network_mode: "host"
     volumes:
       - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
+      - ray-data:/tmp/ray/session_latest
     deploy:
       replicas: 1
       resources:
@@ -29,6 +30,10 @@ services:
             - driver: nvidia
               count: 2
               capabilities: [ gpu ]
+    environment:
+       - RAY_METRICS_EXPORT_PORT=8267
+       - RAY_JOB_METRICS_EXPORT_PORT=8267
+       - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
 
   api:
     depends_on:
@@ -43,3 +48,32 @@ services:
       WORKERS: 1
       RAY_ADDRESS: ray://localhost:10001
       # FIREBASE_CREDS_PATH
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "host"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - api
+      - ray-head
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: "host"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-storage:
+  prometheus-data:
+  ray-data:
