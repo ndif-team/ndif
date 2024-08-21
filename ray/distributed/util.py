@@ -15,7 +15,7 @@ from nnsight.intervention import InterventionProtocol
 def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
     model_index_filename = "model.safetensors.index.json"
-    index_path = hf_hub_download(repo_id=repo_id, filename=model_index_filename)
+    index_path = cached_file(repo_id=repo_id, filename=model_index_filename)
 
     with open(index_path, "r") as f:
         index = json.load(f)
