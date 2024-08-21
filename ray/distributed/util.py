@@ -3,10 +3,10 @@ from functools import wraps
 from typing import Any
 
 import torch
-from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from torch.distributed._tensor import DTensor, Replicate, distribute_tensor
 from tqdm import tqdm
+from transformers.utils.hub import cached_file
 
 from nnsight import util
 from nnsight.intervention import InterventionProtocol
@@ -26,8 +26,8 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
     for shard_file in pbar:
         # Get path to shard
-        shard_path = hf_hub_download(
-            repo_id=repo_id, filename=shard_file, local_files_only=False
+        shard_path = cached_file(
+            repo_id=repo_id, filename=shard_file
         )
         pbar.set_postfix({"Current shard": shard_file})
 
