@@ -6,7 +6,10 @@ from torch.distributed.tensor.parallel import (
     SequenceParallel,
 )
 
+def update_attention(module, mesh):
 
+    module.num_heads = module.num_heads // mesh.size()
+    module.num_key_value_heads = module.num_key_value_heads // mesh.size()
 
 model_plans = {
     # "model.norm": SequenceParallel(),
@@ -35,4 +38,5 @@ model_plans = {
     "model.layers.*mlp.gate_proj": ColwiseParallel(),
     "model.layers.*mlp.up_proj": ColwiseParallel(),
     "model.layers.*mlp.down_proj": RowwiseParallel(),
+    "model.layers.*self_attn": update_attention,
 }
