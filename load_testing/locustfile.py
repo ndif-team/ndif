@@ -57,7 +57,7 @@ class NNSightTasks(TaskSet):
   @task
   def layer_selector(self):
     '''Models the selection of the activations of an intermediate layer.'''
-    if not self.deterministic:
+    if self.deterministic:
       layer = -1 # TODO: Configurable
       query = 'hello world'
     else:
