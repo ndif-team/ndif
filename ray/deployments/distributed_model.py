@@ -26,11 +26,11 @@ from ..distributed.util import (
     patch_intervention_protocol,
     to_full_tensor,
 )
-from .model import ModelDeploymentArgs, ModelDeployment as _ModelDeployment
+from .model import ModelDeploymentArgs
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
-class ModelDeployment(_ModelDeployment):
+class ModelDeployment:
     def __init__(
         self,
         model_key: str,
@@ -185,6 +185,8 @@ class ModelDeployment(_ModelDeployment):
         load_hf_model_from_cache(
             self.model._model, self.model._model.config._name_or_path
         )
+        
+        self.model._model.requires_grad_(False)
 
         print(
             f"Loaded model for distributed worker: {self.torch_distributed_world_rank}."
@@ -270,7 +272,15 @@ class ModelDeployment(_ModelDeployment):
 
         for device in range(torch.cuda.device_count()):
             torch.cuda.mem_get_info(device)
+            
+    async def status(self):
 
+        model: PreTrainedModel = self.model._model
+
+        return {
+            "config_json_string": model.config.to_json_string(),
+            "repo_id": model.config._name_or_path,
+        }
 
 class DistributedModelDeploymentArgs(ModelDeploymentArgs):
 
