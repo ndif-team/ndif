@@ -35,4 +35,6 @@ def set_cuda_env_var(ids = None):
 
 def update_nnsight_print_function(new_function):
     
+    new_function.__name__ = functions.get_function_name(print)
+    
     functions.FUNCTIONS_WHITELIST[functions.get_function_name(print)] = new_function
