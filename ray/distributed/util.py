@@ -15,7 +15,7 @@ from nnsight.intervention import InterventionProtocol
 def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
     model_index_filename = "model.safetensors.index.json"
-    index_path = cached_file(repo_id=repo_id, filename=model_index_filename)
+    index_path = cached_file(repo_id, model_index_filename)
 
     with open(index_path, "r") as f:
         index = json.load(f)
@@ -27,7 +27,7 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
     for shard_file in pbar:
         # Get path to shard
         shard_path = cached_file(
-            repo_id=repo_id, filename=shard_file
+            repo_id, shard_file
         )
         pbar.set_postfix({"Current shard": shard_file})
 
