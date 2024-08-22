@@ -10,6 +10,7 @@ dependencies:
     - nnsight
     - ray[serve]
     # Telemetry
+    - prometheus_client
     - python-logging-loki
     # Database
     - pymongo
