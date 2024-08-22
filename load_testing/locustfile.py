@@ -96,6 +96,7 @@ class NNSightTasks(TaskSet):
   @task(0)
   def layer_selector(self):
     '''Models the selection of the activations of an intermediate layer.'''
+<<<<<<< HEAD
     start_time = time.time()
 
     try:
@@ -115,6 +116,20 @@ class NNSightTasks(TaskSet):
       pass
 
   @task(0)
+=======
+    if self.deterministic:
+      layer = -1 # TODO: Configurable
+      query = 'hello world'
+    else:
+      layer = random.randint(0,self.n_layers-1)
+      n_char = random.randint(1,1000) # TODO: Config
+      query = gen_rand_str(n_char)
+
+    with self.model.trace(query, remote=True):
+      output = self.model.transformer.h[layer].output.save()
+
+  @task
+>>>>>>> f93324bb598eb6d6f5c684fdc48421eb5b678b57
   def memory_user(self):
     '''Simulates a high memory usecase, where the user runs a large number of invokes and saves a lot of outputs'''
     # TODO: The design of this needs a lot of work.

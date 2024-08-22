@@ -1,7 +1,8 @@
 import gc
 import logging
 import os
-from typing import Dict
+from functools import partial
+from typing import Any, Dict
 
 import torch
 from pydantic import BaseModel
@@ -14,7 +15,8 @@ from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
-from ..util import set_cuda_env_var
+
+from ..util import set_cuda_env_var, update_nnsight_print_function
 from logger import load_logger
 
 
@@ -24,26 +26,58 @@ class ModelDeployment:
 
         set_cuda_env_var()
 
+        # Set attrs
         self.model_key = model_key
         self.api_url = api_url
         self.database_url = database_url
 
+        # Load and dispatch model based on model key.
+        # The class returned could be any model type.
+        # Device_map = auto means even distribute parmeaters across all gpus
         self.model = RemoteableMixin.from_model_key(
             self.model_key, device_map="auto", dispatch=True
         )
+        # Make model weights non trainable / no grad.
         self.model._model.requires_grad_(False)
 
+        # Clear cuda cache after model load.
         torch.cuda.empty_cache()
 
+        # Init DB connection.
         self.db_connection = MongoClient(self.database_url)
 
         self.logger = load_logger(service_name="ray.model", logger_name="ray.serve")
-
         self.running = False
 
     def __call__(self, request: RequestModel):
 
+        # Send RUNNING response.
+        ResponseModel(
+            id=request.id,
+            session_id=request.session_id,
+            received=request.received,
+            status=ResponseModel.JobStatus.RUNNING,
+            description="Your job has started running.",
+        ).log(self.logger).save(self.db_connection).blocking_response(
+            self.api_url
+        )
+        
+        local_result = None
+
         try:
+
+            # Changes the nnsight intervention graph function to respond via the ResponseModel instead of printing.
+            update_nnsight_print_function(
+                partial(
+                    self.log_to_user,
+                    params={
+                        "id": request.id,
+                        "session_id": request.session_id,
+                        "received": request.received,
+                    },
+                )
+            )
+
             self.running = True
 
             # Deserialize request
@@ -52,6 +86,7 @@ class ModelDeployment:
             # Execute object.
             local_result = obj.local_backend_execute()
 
+            # Send COMPELTED response.
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
@@ -62,7 +97,9 @@ class ModelDeployment:
                     id=request.id,
                     value=obj.remote_backend_postprocess_result(local_result),
                 ),
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).save(self.db_connection).blocking_response(
+                self.api_url
+            )
 
         except Exception as exception:
 
@@ -72,7 +109,9 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).save(self.db_connection).blocking_response(
+                self.api_url
+            )
 
         finally:
 
@@ -87,6 +126,16 @@ class ModelDeployment:
 
         torch.cuda.empty_cache()
 
+    def log_to_user(self, data: Any, params: Dict[str, Any]):
+
+        ResponseModel(
+            **params,
+            status=ResponseModel.JobStatus.LOG,
+            description=str(data),
+        ).log(self.logger).save(self.db_connection).blocking_response(
+            self.api_url
+        )
+
     async def status(self):
 
         model: PreTrainedModel = self.model._model
@@ -96,11 +145,11 @@ class ModelDeployment:
             "repo_id": model.config._name_or_path,
         }
 
-    # Ray checks this method and restarts replica if it raises an exception
-    def check_health(self):
+    # # Ray checks this method and restarts replica if it raises an exception
+    # def check_health(self):
 
-        if not self.running:
-            torch.cuda.empty_cache()
+    #     if not self.running:
+    #         torch.cuda.empty_cache()
 
     def model_size(self) -> float:
 
@@ -111,7 +160,10 @@ class ModelDeployment:
             ]
         )
         mem_bufs = sum(
-            [buf.nelement() * buf.element_size() for buf in self.model._model.buffers()]
+            [
+                buf.nelement() * buf.element_size()
+                for buf in self.model._model.buffers()
+            ]
         )
         mem_gbs = (mem_params + mem_bufs) * 1e-9
 
