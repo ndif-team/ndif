@@ -267,11 +267,11 @@ class ModelDeployment:
 
         torch.cuda.empty_cache()
 
-    # Ray checks this method and restarts replica if it raises an exception
-    async def check_health(self):
+    # # Ray checks this method and restarts replica if it raises an exception
+    # async def check_health(self):
 
-        for device in range(torch.cuda.device_count()):
-            torch.cuda.mem_get_info(device)
+    #     for device in range(torch.cuda.device_count()):
+    #         torch.cuda.mem_get_info(device)
             
     async def status(self):
 

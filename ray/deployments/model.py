@@ -145,11 +145,11 @@ class ModelDeployment:
             "repo_id": model.config._name_or_path,
         }
 
-    # Ray checks this method and restarts replica if it raises an exception
-    def check_health(self):
+    # # Ray checks this method and restarts replica if it raises an exception
+    # def check_health(self):
 
-        if not self.running:
-            torch.cuda.empty_cache()
+    #     if not self.running:
+    #         torch.cuda.empty_cache()
 
     def model_size(self) -> float:
 
