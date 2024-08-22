@@ -15,6 +15,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
 from ..util import set_cuda_env_var
+from logger import load_logger
 
 
 @serve.deployment()
@@ -36,7 +37,7 @@ class ModelDeployment:
 
         self.db_connection = MongoClient(self.database_url)
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = load_logger(service_name="ray.model", logger_name="ray.serve")
 
         self.running = False
 

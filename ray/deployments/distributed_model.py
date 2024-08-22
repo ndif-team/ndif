@@ -1,6 +1,5 @@
 import gc
 import inspect
-import logging
 import os
 import socket
 import time
@@ -27,6 +26,7 @@ from ..distributed.util import (
     to_full_tensor,
 )
 from .model import ModelDeploymentArgs
+from logger import load_logger()
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
@@ -66,8 +66,7 @@ class ModelDeployment:
 
         patch_intervention_protocol()
 
-        self.logger = logging.getLogger(__name__)
-
+        self.logger = load_logger(service_name="ray.distributed_model", logger_name="ray.serve")
         self.head = torch_distributed_world_rank == 0
 
         if self.head:

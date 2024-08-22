@@ -13,6 +13,7 @@ except:
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
+from logger import load_logger
 
 
 @serve.deployment()
@@ -25,7 +26,7 @@ class RequestDeployment:
 
         self.db_connection = MongoClient(self.database_url)
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = load_logger(service_name="ray.request", logger_name="ray.serve")
 
     async def __call__(self, request: RequestModel):
 

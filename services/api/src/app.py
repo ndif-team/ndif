@@ -23,10 +23,9 @@ from nnsight.schema.Request import RequestModel
 
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
+from logger import load_logger
 
-# Attach to gunicorn logger
-logger = logging.getLogger("gunicorn.error")
-
+logger = load_logger(service_name = "app", logger_name="gunicorn.error")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
