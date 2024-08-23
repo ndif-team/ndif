@@ -52,5 +52,5 @@ model_plans = {
     "model.layers.*mlp.gate_proj": ColwiseParallel(),
     "model.layers.*mlp.up_proj": ColwiseParallel(),
     "model.layers.*mlp.down_proj": RowwiseParallel(),
-    "model.layers.*self_attn": update_attention,
+    # "model.layers.*self_attn": update_attention,
 }
