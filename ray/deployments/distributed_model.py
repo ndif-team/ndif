@@ -67,7 +67,7 @@ class ModelDeployment:
         # Patches nnsight intervention protocol to handle DTensors.
         patch_intervention_protocol()
 
-        self.logger = load_logger(service_name="ray.distributed_model", logger_name="ray.serve")
+        self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
