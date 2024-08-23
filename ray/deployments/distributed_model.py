@@ -28,6 +28,7 @@ from ..distributed.util import (
     load_hf_model_from_cache,
     patch_intervention_protocol,
     to_full_tensor,
+    patch_accelerate
 )
 from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
@@ -167,7 +168,7 @@ class ModelDeployment:
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         torch.set_default_device(self.device)
-        torch.set_default_dtype(torch.bfloat16)
+        #torch.set_default_dtype(torch.bfloat16)
 
         print(
             f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
