@@ -8,6 +8,11 @@ from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from nnsight.schema.Request import RequestModel
+from nnsight.schema.Response import ResponseModel
+from gauge import load_gauge
+
+gauge = load_gauge()
+llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B-Instruct"}'
 
 class ApiKeyStore:
 
@@ -40,17 +45,28 @@ if FIREBASE_CREDS_PATH is not None:
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
+def update_gauge(request: RequestModel, api_key: str, status: ResponseModel.JobStatus):
+    gauge.labels(
+        request_id=request.id,
+        api_key=api_key,
+        model_key=request.model_key,
+        timestamp=request.received,
+    ).set(status.value)
 
 async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_header)):
 
+    update_gauge(request, api_key, ResponseModel.JobStatus.RECEIVED)
     if FIREBASE_CREDS_PATH is not None:
         check_405b = False
-        if request.model_key == 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B-Instruct"}':
+        if request.model_key == llama_405b:
             check_405b = True
         
         if api_key_store.does_api_key_exist(api_key, check_405b):
-                return True
+            update_gauge(request, api_key, ResponseModel.JobStatus.APPROVED)
+            return True
 
-        raise HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
-        )
+        else:
+            update_gauge(request, api_key, ResponseModel.JobStatus.ERROR)
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
+            )
