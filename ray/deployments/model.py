@@ -18,6 +18,7 @@ from ...schema.Response import ResponseModel, ResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
 from logger import load_logger
+from gauge import load_gauge
 
 
 @serve.deployment()
@@ -47,6 +48,7 @@ class ModelDeployment:
         self.db_connection = MongoClient(self.database_url)
 
         self.logger = load_logger(service_name="ray.model", logger_name="ray.serve")
+        self.gauge = load_gauge()
         self.running = False
 
     def __call__(self, request: RequestModel):

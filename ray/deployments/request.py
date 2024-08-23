@@ -14,6 +14,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
 from logger import load_logger
+from gauge import load_gauge
 
 
 @serve.deployment()
@@ -27,6 +28,7 @@ class RequestDeployment:
         self.db_connection = MongoClient(self.database_url)
 
         self.logger = load_logger(service_name="ray.request", logger_name="ray.serve")
+        self.gauge = load_gauge()
 
     async def __call__(self, request: RequestModel):
 

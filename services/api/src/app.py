@@ -24,8 +24,10 @@ from nnsight.schema.Request import RequestModel
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
 from logger import load_logger
+from gauge import load_gauge
 
 logger = load_logger(service_name = "app", logger_name="gunicorn.error")
+gauge = load_gauge()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

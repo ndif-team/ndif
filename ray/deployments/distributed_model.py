@@ -27,6 +27,7 @@ from ..distributed.util import (
 )
 from .model import ModelDeploymentArgs
 from logger import load_logger()
+from gauge import load_gauge()
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
@@ -68,6 +69,7 @@ class ModelDeployment:
         patch_intervention_protocol()
 
         self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
+        self.gauge = load_gauge()
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
