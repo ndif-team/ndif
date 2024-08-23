@@ -26,8 +26,8 @@ from ..distributed.util import (
     to_full_tensor,
 )
 from .model import ModelDeploymentArgs
-from logger import load_logger()
-from gauge import load_gauge()
+from logger import load_logger
+from gauge import load_gauge, update_gauge
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
@@ -201,6 +201,8 @@ class ModelDeployment:
 
         if self.head:
 
+            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.RUNNING)
+            
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
@@ -230,6 +232,8 @@ class ModelDeployment:
                 value = obj.remote_backend_postprocess_result(local_result)
 
                 value = to_full_tensor(value)
+            
+                update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.COMPLETED)
 
                 ResponseModel(
                     id=request.id,
@@ -248,6 +252,8 @@ class ModelDeployment:
         except Exception as exception:
 
             if self.head:
+
+                update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
 
                 ResponseModel(
                     id=request.id,
