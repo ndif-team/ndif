@@ -14,7 +14,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
 from logger import load_logger
-from gauge import load_gauge
+from gauge import load_gauge, update_gauge
 
 
 @serve.deployment()
@@ -40,6 +40,8 @@ class RequestDeployment:
 
             app_handle.remote(request)
 
+            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.APPROVED)
+
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
@@ -49,6 +51,9 @@ class RequestDeployment:
             ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
 
         except Exception as exception:
+
+            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
+
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
