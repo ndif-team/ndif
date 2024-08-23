@@ -5,17 +5,20 @@ import os
 import socket
 import time
 from datetime import timedelta
-from typing import Dict
+from functools import partial
+from typing import Any, Dict
 
 import ray
 import torch
 import torch.distributed
+from accelerate import init_empty_weights
 from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
+from nnsight.models.NNsightModel import MetaDispatcher
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
@@ -26,6 +29,7 @@ from ..distributed.util import (
     patch_intervention_protocol,
     to_full_tensor,
 )
+from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
 
 
@@ -119,7 +123,7 @@ class ModelDeployment:
                 worker_deployment = serve._run(
                     worker_application,
                     _blocking=False,
-                    name=f"{self.replica_context.app_name}-{worker_world_rank}",
+                    name=f"Shard-{worker_world_rank}:{self.replica_context.app_name}",
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
 
@@ -185,7 +189,10 @@ class ModelDeployment:
         load_hf_model_from_cache(
             self.model._model, self.model._model.config._name_or_path
         )
-        
+
+        # Handle buffers
+        self.model._model = self.model._model.to(self.device)
+
         self.model._model.requires_grad_(False)
 
         print(
@@ -210,6 +217,17 @@ class ModelDeployment:
                 self.api_url
             )
 
+            update_nnsight_print_function(
+                partial(
+                    self.log_to_user,
+                    params={
+                        "id": request.id,
+                        "session_id": request.session_id,
+                        "received": request.received,
+                    },
+                )
+            )
+
             for worker_deployment in self.worker_deployments:
 
                 worker_deployment.remote(request)
@@ -227,8 +245,6 @@ class ModelDeployment:
             if self.head:
 
                 value = obj.remote_backend_postprocess_result(local_result)
-
-                value = to_full_tensor(value)
 
                 ResponseModel(
                     id=request.id,
@@ -272,7 +288,17 @@ class ModelDeployment:
 
     #     for device in range(torch.cuda.device_count()):
     #         torch.cuda.mem_get_info(device)
-            
+
+    def log_to_user(self, data: Any, params: Dict[str, Any]):
+
+        ResponseModel(
+            **params,
+            status=ResponseModel.JobStatus.LOG,
+            description=str(data),
+        ).log(self.logger).save(self.db_connection).blocking_response(
+            self.api_url
+        )
+
     async def status(self):
 
         model: PreTrainedModel = self.model._model
@@ -281,6 +307,7 @@ class ModelDeployment:
             "config_json_string": model.config.to_json_string(),
             "repo_id": model.config._name_or_path,
         }
+
 
 class DistributedModelDeploymentArgs(ModelDeploymentArgs):
 
