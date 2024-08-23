@@ -1,7 +1,9 @@
 import os
 
 import firebase_admin
+from bson.objectid import ObjectId
 from cachetools import TTLCache, cached
+from datetime import datetime
 from fastapi import HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from firebase_admin import credentials, firestore
@@ -55,7 +57,16 @@ def update_gauge(request: RequestModel, api_key: str, status: ResponseModel.JobS
 
 async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_header)):
 
+    # Set the id and time received of request.
+    if not request.id:
+        request.id = str(ObjectId())
+    if not request.received:
+        request.received = datetime.now()
+
+    # TODO: Update the RequestModel to include additional fields (e.g. API key)
+
     update_gauge(request, api_key, ResponseModel.JobStatus.RECEIVED)
+
     if FIREBASE_CREDS_PATH is not None:
         check_405b = False
         if request.model_key == llama_405b:
@@ -63,7 +74,7 @@ async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_h
         
         if api_key_store.does_api_key_exist(api_key, check_405b):
             update_gauge(request, api_key, ResponseModel.JobStatus.APPROVED)
-            return True
+            return request
 
         else:
             update_gauge(request, api_key, ResponseModel.JobStatus.ERROR)

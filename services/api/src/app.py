@@ -1,13 +1,10 @@
-import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
 
 import gridfs
 import ray
 import socketio
 import uvicorn
-from bson.objectid import ObjectId
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -66,7 +63,7 @@ Instrumentator().instrument(app).expose(app)
 
 @app.post("/request")
 async def request(
-    request: RequestModel, api_key=Depends(api_key_auth)
+    request: RequestModel = Depends(api_key_auth)
 ) -> ResponseModel:
     """Endpoint to submit request.
 
@@ -77,9 +74,6 @@ async def request(
         ResponseModel: _description_
     """
     try:
-        # Set the id and time received of request.
-        request.received = datetime.now()
-        request.id = str(ObjectId())
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
