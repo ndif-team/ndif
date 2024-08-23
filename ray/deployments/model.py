@@ -18,7 +18,7 @@ from ...schema.Response import ResponseModel, ResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
 from logger import load_logger
-from gauge import load_gauge
+from gauge import load_gauge, update_gauge
 
 
 @serve.deployment()
@@ -52,6 +52,8 @@ class ModelDeployment:
         self.running = False
 
     def __call__(self, request: RequestModel):
+
+        update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.RUNNING)
 
         # Send RUNNING response.
         ResponseModel(
@@ -88,6 +90,8 @@ class ModelDeployment:
             # Execute object.
             local_result = obj.local_backend_execute()
 
+            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.COMPLETED)
+
             # Send COMPELTED response.
             ResponseModel(
                 id=request.id,
@@ -104,6 +108,8 @@ class ModelDeployment:
             )
 
         except Exception as exception:
+
+            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,
