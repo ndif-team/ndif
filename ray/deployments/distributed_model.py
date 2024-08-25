@@ -26,9 +26,9 @@ from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import (
     load_hf_model_from_cache,
+    patch_accelerate,
     patch_intervention_protocol,
     to_full_tensor,
-    patch_accelerate
 )
 from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
@@ -67,7 +67,9 @@ class ModelDeployment:
         self.tensor_parallelism_size = tensor_parallelism_size
         self.pipeline_parallelism_size = pipeline_parallelism_size
 
-        self.model = RemoteableMixin.from_model_key(self.model_key)
+        self.model = RemoteableMixin.from_model_key(
+            self.model_key, meta_buffers=True, patch_llama_scan=False
+        )
 
         # Patches nnsight intervention protocol to handle DTensors.
         patch_intervention_protocol()
@@ -168,7 +170,7 @@ class ModelDeployment:
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         torch.set_default_device(self.device)
-        #torch.set_default_dtype(torch.bfloat16)
+        # torch.set_default_dtype(torch.bfloat16)
 
         print(
             f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
