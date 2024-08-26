@@ -27,7 +27,7 @@ from ..distributed.util import (
 )
 from .model import ModelDeploymentArgs
 from logger import load_logger
-from gauge import load_gauge, update_gauge
+from gauge import NDIFGauge
 
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
@@ -69,7 +69,7 @@ class ModelDeployment:
         patch_intervention_protocol()
 
         self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
-        self.gauge = load_gauge()
+        self.gauge = NDIFGauge(service='ray')
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
@@ -201,7 +201,7 @@ class ModelDeployment:
 
         if self.head:
 
-            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.RUNNING)
+            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.RUNNING)
             
             ResponseModel(
                 id=request.id,
@@ -233,7 +233,7 @@ class ModelDeployment:
 
                 value = to_full_tensor(value)
             
-                update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.COMPLETED)
+                self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.COMPLETED)
 
                 ResponseModel(
                     id=request.id,
@@ -253,7 +253,7 @@ class ModelDeployment:
 
             if self.head:
 
-                update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
+                self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
 
                 ResponseModel(
                     id=request.id,

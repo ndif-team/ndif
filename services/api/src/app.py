@@ -21,10 +21,10 @@ from nnsight.schema.Request import RequestModel
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
 from logger import load_logger
-from gauge import load_gauge, update_gauge
+from gauge import NDIFGauge
 
-logger = load_logger(service_name = "app", logger_name="gunicorn.error")
-gauge = load_gauge()
+logger = load_logger(service_name = 'app', logger_name='gunicorn.error')
+gauge = NDIFGauge(service='app')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,7 +79,8 @@ async def request(
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
 
-        update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.RECEIVED)
+        gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.RECEIVED)
+
         # Create response object.
         # Log and save to data backend.
         response = (
@@ -95,10 +96,10 @@ async def request(
         )
 
     except Exception as exception:
+
+        gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
         # Create exception response object.
         # Log and save to data backend.
-
-        update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
         response = (
             ResponseModel(
                 id=request.id,

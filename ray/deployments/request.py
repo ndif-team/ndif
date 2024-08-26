@@ -14,7 +14,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
 from logger import load_logger
-from gauge import load_gauge, update_gauge
+from gauge import NDIFGauge
 
 
 @serve.deployment()
@@ -27,8 +27,8 @@ class RequestDeployment:
 
         self.db_connection = MongoClient(self.database_url)
 
-        self.logger = load_logger(service_name="ray.request", logger_name="ray.serve")
-        self.gauge = load_gauge()
+        self.logger = load_logger(service_name="ray_request", logger_name="ray.serve")
+        self.gauge = NDIFGauge(service='ray')
 
     async def __call__(self, request: RequestModel):
 
@@ -40,7 +40,7 @@ class RequestDeployment:
 
             app_handle.remote(request)
 
-            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.APPROVED)
+            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.APPROVED)
 
             ResponseModel(
                 id=request.id,
@@ -52,7 +52,7 @@ class RequestDeployment:
 
         except Exception as exception:
 
-            update_gauge(request=request, api_key=None, status=ResponseModel.JobStatus.ERROR)
+            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,

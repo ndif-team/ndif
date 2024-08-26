@@ -11,9 +11,10 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
-from gauge import load_gauge, update_gauge
+from gauge import NDIFGauge
 
-gauge = load_gauge()
+gauge = NDIFGauge(service='app')
+
 llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B-Instruct"}'
 
 class ApiKeyStore:
@@ -57,7 +58,7 @@ async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_h
 
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
 
-    update_gauge(request, api_key, ResponseModel.JobStatus.AUTHENTICATING)
+    gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 
     if FIREBASE_CREDS_PATH is not None:
         check_405b = False
@@ -65,11 +66,13 @@ async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_h
             check_405b = True
         
         if api_key_store.does_api_key_exist(api_key, check_405b):
-            update_gauge(request, api_key, ResponseModel.JobStatus.APPROVED)
+            gauge.update(request, api_key, ResponseModel.JobStatus.APPROVED)
             return request
 
         else:
-            update_gauge(request, api_key, ResponseModel.JobStatus.ERROR)
+            gauge.update(request, api_key, ResponseModel.JobStatus.ERROR)
             raise HTTPException(
                 status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
             )
+
+    return request
