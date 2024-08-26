@@ -20,6 +20,8 @@ class NDIFGauge:
 
     This class supports both Ray's Gauge API and Prometheus' Gauge API, switching between them based on the service type.
     """
+    # Class-level dictionary to store gauge instances (singleton pattern)
+    _instances = {}
 
     class NumericJobStatus(Enum):
         RECEIVED = 1
@@ -29,9 +31,14 @@ class NDIFGauge:
         LOG = 5
         ERROR = 6
 
-    def __init__(self, service: str):
-        self.service = service
-        self._gauge = self._initialize_gauge()
+    def __new__(cls, service: str):
+        """Singleton pattern to ensure only one instance of the gauge per service."""
+        if service not in cls._instances:
+            instance = super(NDIFGauge, cls).__new__(cls)
+            instance.service = service
+            instance._gauge = instance._initialize_gauge()
+            cls._instances[service] = instance
+        return cls._instances[service]
 
     def _initialize_gauge(self):
         """Initialize the appropriate Gauge based on the service type."""
