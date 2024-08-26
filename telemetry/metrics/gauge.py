@@ -41,7 +41,7 @@ class NDIFGauge:
         else:
             return PrometheusGauge('request_status', 'Track status of requests', request_labels)
 
-    def update(self, request: RequestModel, api_key: str, status) -> None:
+    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
