@@ -68,7 +68,7 @@ class ModelDeployment:
         self.pipeline_parallelism_size = pipeline_parallelism_size
 
         self.model = RemoteableMixin.from_model_key(
-            self.model_key, meta_buffers=True, patch_llama_scan=False
+            self.model_key, meta_buffers=False, patch_llama_scan=False
         )
 
         # Patches nnsight intervention protocol to handle DTensors.
