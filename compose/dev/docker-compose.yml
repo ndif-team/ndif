@@ -23,6 +23,7 @@ services:
       - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
       - ray-data:/tmp/ray/session_latest
       - ../../telemetry/logging:/src/logging
+      - ../../telemetry/logging:/src/metrics
     deploy:
       replicas: 1
       resources:
@@ -35,7 +36,7 @@ services:
        - RAY_METRICS_EXPORT_PORT=8267
        - RAY_JOB_METRICS_EXPORT_PORT=8267
        - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
-       - PYTHONPATH=/src/logging
+       - PYTHONPATH=/src/logging:/src/metrics
 
   api:
     depends_on:
@@ -45,13 +46,14 @@ services:
     image: api:latest
     volumes:
       - ../../telemetry/logging:/src/logging
+      - ../../telemetry/metrics:/src/metrics
     network_mode: "host"
     environment:
       DATABASE_URL: mongodb://user:pass@localhost:27017
       RMQ_URL: amqp://guest:guest@localhost:5672/
       WORKERS: 1
       RAY_ADDRESS: ray://localhost:10001
-      PYTHONPATH: /src/logging
+      PYTHONPATH: /src/logging:/src/metrics
       # FIREBASE_CREDS_PATH
 
   prometheus:
