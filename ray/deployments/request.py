@@ -40,7 +40,7 @@ class RequestDeployment:
 
             app_handle.remote(request)
 
-            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.APPROVED)
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.APPROVED)
 
             ResponseModel(
                 id=request.id,
@@ -52,7 +52,7 @@ class RequestDeployment:
 
         except Exception as exception:
 
-            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,

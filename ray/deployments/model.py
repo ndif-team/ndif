@@ -53,7 +53,7 @@ class ModelDeployment:
 
     def __call__(self, request: RequestModel):
 
-        self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.RUNNING)
+        self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.RUNNING)
 
         # Send RUNNING response.
         ResponseModel(
@@ -90,7 +90,7 @@ class ModelDeployment:
             # Execute object.
             local_result = obj.local_backend_execute()
 
-            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.COMPLETED)
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED)
 
             # Send COMPELTED response.
             ResponseModel(
@@ -109,7 +109,7 @@ class ModelDeployment:
 
         except Exception as exception:
 
-            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,

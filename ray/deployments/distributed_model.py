@@ -201,7 +201,7 @@ class ModelDeployment:
 
         if self.head:
 
-            self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.RUNNING)
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.RUNNING)
             
             ResponseModel(
                 id=request.id,
@@ -233,7 +233,7 @@ class ModelDeployment:
 
                 value = to_full_tensor(value)
             
-                self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.COMPLETED)
+                self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED)
 
                 ResponseModel(
                     id=request.id,
@@ -253,7 +253,7 @@ class ModelDeployment:
 
             if self.head:
 
-                self.gauge.update(request=request, api_key='', status=ResponseModel.JobStatus.ERROR)
+                self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
 
                 ResponseModel(
                     id=request.id,
