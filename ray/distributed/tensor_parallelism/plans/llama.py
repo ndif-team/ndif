@@ -49,8 +49,8 @@ model_plans = {
         output_layouts=Replicate(),
         use_local_output=True,
     ),
-    "model.layers.*mlp.gate_proj": ColwiseParallel(),
-    "model.layers.*mlp.up_proj": ColwiseParallel(),
+    "model.layers.*mlp.gate_proj": ColwiseParallel(use_local_output=False),
+    "model.layers.*mlp.up_proj": ColwiseParallel(use_local_output=False),
     "model.layers.*mlp.down_proj": RowwiseParallel(),
     # "model.layers.*self_attn": update_attention,
 }

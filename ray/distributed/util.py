@@ -66,7 +66,7 @@ def patch_intervention_protocol() -> None:
 
                     placements.append((tensor.placements, tensor.device_mesh))
 
-                    return tensor.to_local()
+                    return tensor.full_tensor()
 
                 placements.append(None)
 
