@@ -23,6 +23,7 @@ from nnsight.schema.Request import RequestModel
 
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
+from .util import _save_request
 
 # Attach to gunicorn logger
 logger = logging.getLogger("gunicorn.error")
@@ -112,6 +113,8 @@ async def request(
             .log(logger)
             .save(db_connection)
         )
+
+    _save_request(request)
 
     # Return response.
     return response
