@@ -6,7 +6,7 @@ from nnsight.schema.Response import ResponseModel
 
 # Labels for the metrics
 request_labels = ('request_id', 'api_key', 'model_key', 'timestamp')
-network_labels = ('request_id', 'ip_address')
+network_labels = ('request_id', 'ip_address', 'user_agent')
 
 
 class NDIFGauge:
@@ -76,7 +76,7 @@ class NDIFGauge:
             # Prometheus Gauge API uses a more traditional labeling approach
             self._gauge.labels(**labels).set(numeric_status)
 
-    def update_network(self, request_id: str, ip_address: str, content_length: int) -> None:
+    def update_network(self, request_id: str, ip_address: str, user_agent: str, content_length: int) -> None:
         """
         Update the values of the network-related gauge.
         Only applicable for services other than 'ray'.
@@ -86,7 +86,8 @@ class NDIFGauge:
         
         network_labels = {
             "request_id": request_id,
-            "ip_address": ip_address
+            "ip_address": ip_address,
+            "user_agent": user_agent
         }
 
         # Set content length in the network gauge
