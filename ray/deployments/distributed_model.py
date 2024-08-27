@@ -34,7 +34,7 @@ from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
 
 
-@serve.deployment(ray_actor_options={"num_gpus": 1})
+@serve.deployment(ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200)
 class ModelDeployment:
     def __init__(
         self,
