@@ -5,7 +5,7 @@ from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
 
 # Labels for the metrics
-request_labels = ('request_id', 'api_key', 'model_key', 'timestamp')
+request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp')
 
 class NDIFGauge:
     """
@@ -48,7 +48,7 @@ class NDIFGauge:
         else:
             return PrometheusGauge('request_status', 'Track status of requests', request_labels)
 
-    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus) -> None:
+    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, gpu_mem: int = 0) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
@@ -58,6 +58,7 @@ class NDIFGauge:
             "request_id": request.id,
             "api_key": api_key,
             "model_key": request.model_key,
+            "gpu_mem": str(gpu_mem),
             "timestamp": str(request.received)  # Ensure timestamp is string for consistency
         }
 

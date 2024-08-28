@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
+from torch.cuda import max_memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
@@ -84,13 +85,19 @@ class ModelDeployment:
 
             self.running = True
 
+            # For tracking peak GPU usage
+            reset_peak_memory_stats()
+
             # Deserialize request
             obj = request.deserialize(self.model)
 
             # Execute object.
             local_result = obj.local_backend_execute()
 
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED)
+            # Peak VRAM usage during execution (in bytes)
+            gpu_mem = max_memory_allocated()
+
+            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED, gpu_mem=gpu_mem)
 
             # Send COMPELTED response.
             ResponseModel(
