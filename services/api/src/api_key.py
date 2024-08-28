@@ -52,11 +52,8 @@ api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 def extract_request_metadata(raw_request: Request):
     content_length = raw_request.headers.get('content-length')
     
-    # Handle IP address, including proxy headers
+    # Handle IP address
     ip_address = raw_request.client.host
-    forwarded_for = raw_request.headers.get('x-forwarded-for')
-    if forwarded_for:
-        ip_address = forwarded_for.split(',')[0]  # Take the first IP in the list
 
     # Extract User-Agent
     user_agent = raw_request.headers.get('user-agent')
