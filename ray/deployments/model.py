@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
+from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
@@ -61,7 +62,7 @@ class ModelDeployment:
         ).log(self.logger).save(self.db_connection).blocking_response(
             self.api_url
         )
-        
+
         local_result = None
 
         try:
@@ -80,11 +81,13 @@ class ModelDeployment:
 
             self.running = True
 
-            # Deserialize request
-            obj = request.deserialize(self.model)
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-            # Execute object.
-            local_result = obj.local_backend_execute()
+                # Deserialize request
+                obj = request.deserialize(self.model)
+
+                # Execute object.
+                local_result = obj.local_backend_execute()
 
             # Send COMPELTED response.
             ResponseModel(

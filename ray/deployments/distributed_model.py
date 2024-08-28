@@ -15,6 +15,7 @@ from accelerate import init_empty_weights
 from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
+from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
@@ -34,7 +35,9 @@ from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
 
 
-@serve.deployment(ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200)
+@serve.deployment(
+    ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200
+)
 class ModelDeployment:
     def __init__(
         self,
@@ -170,7 +173,7 @@ class ModelDeployment:
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         torch.set_default_device(self.device)
-        # torch.set_default_dtype(torch.bfloat16)
+        torch.set_default_dtype(torch.bfloat16)
 
         print(
             f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
@@ -239,11 +242,13 @@ class ModelDeployment:
 
         try:
 
-            # Deserialize request
-            obj = request.deserialize(self.model)
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-            # Execute object.
-            local_result = obj.local_backend_execute()
+                # Deserialize request
+                obj = request.deserialize(self.model)
+
+                # Execute object.
+                local_result = obj.local_backend_execute()
 
             if self.head:
 
