@@ -1,7 +1,8 @@
-import json
 import logging
 import logging_loki
-from datetime import datetime
+import os
+
+LOKI_URL = os.environ.get('LOKI_URL')
 
 class CustomJSONFormatter(logging.Formatter):
     def __init__(self, service_name, fmt=None, datefmt=None, style='%', *args, **kwargs):
@@ -26,7 +27,7 @@ def load_logger(service_name : str, logger_name : str) -> logging.Logger:
 
     # Loki handler configuration
     loki_handler = logging_loki.LokiHandler(
-        url="http://localhost:3100/loki/api/v1/push", # Loki endpoint
+        url=LOKI_URL,
         tags={"application": service_name},
         auth=None,
         version="1",
