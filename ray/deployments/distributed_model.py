@@ -26,8 +26,7 @@ from ..distributed.util import (
     to_full_tensor,
 )
 from .model import ModelDeploymentArgs
-from logger import load_logger()
-
+from ...logging import load_logger
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
 class ModelDeployment:

@@ -13,7 +13,7 @@ except:
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
-from logger import load_logger
+from ...logging import load_logger
 
 
 @serve.deployment()

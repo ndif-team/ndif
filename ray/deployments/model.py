@@ -17,7 +17,7 @@ from nnsight.schema.Request import RequestModel
 from ...schema.Response import ResponseModel, ResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
-from logger import load_logger
+from ...logging import load_logger
 
 
 @serve.deployment()
