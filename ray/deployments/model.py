@@ -29,12 +29,14 @@ class ModelDeployment:
         self.model_key = model_key
         self.api_url = api_url
         self.database_url = database_url
+        
+        torch.set_default_dtype(torch.bfloat16)
 
         # Load and dispatch model based on model key.
         # The class returned could be any model type.
         # Device_map = auto means even distribute parmeaters across all gpus
         self.model = RemoteableMixin.from_model_key(
-            self.model_key, device_map="auto", dispatch=True
+            self.model_key, device_map="auto", dispatch=True, torch_dtype=torch.bfloat16
         )
         # Make model weights non trainable / no grad.
         self.model._model.requires_grad_(False)
