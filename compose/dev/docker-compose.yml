@@ -22,8 +22,7 @@ services:
     volumes:
       - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
       - ray-data:/tmp/ray/session_latest
-      - ../../telemetry/logging:/src/logging
-      - ../../telemetry/logging:/src/metrics
+      - ../../telemetry/metrics:/src/metrics
     deploy:
       replicas: 1
       resources:
@@ -37,6 +36,7 @@ services:
        - RAY_JOB_METRICS_EXPORT_PORT=8267
        - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
        - PYTHONPATH=/src/logging:/src/metrics
+       - LOKI_URL=http://localhost:3100/loki/api/v1/push
 
   api:
     depends_on:
@@ -45,7 +45,6 @@ services:
       - mongodb
     image: api:latest
     volumes:
-      - ../../telemetry/logging:/src/logging
       - ../../telemetry/metrics:/src/metrics
     network_mode: "host"
     environment:
@@ -54,6 +53,7 @@ services:
       WORKERS: 1
       RAY_ADDRESS: ray://localhost:10001
       PYTHONPATH: /src/logging:/src/metrics
+      LOKI_URL: http://localhost:3100/loki/api/v1/push
       # FIREBASE_CREDS_PATH
 
   prometheus:
