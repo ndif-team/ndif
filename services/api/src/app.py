@@ -21,7 +21,7 @@ from nnsight.schema.Request import RequestModel
 from .api_key import api_key_auth
 from .schema import ResponseModel, ResultModel
 from .logging import load_logger
-from gauge import NDIFGauge
+from .metrics import NDIFGauge
 
 logger = load_logger(service_name = 'app', logger_name='gunicorn.error')
 gauge = NDIFGauge(service='app')

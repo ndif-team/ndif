@@ -11,7 +11,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
-from gauge import NDIFGauge
+from .metrics import NDIFGauge
 
 gauge = NDIFGauge(service='app')
 

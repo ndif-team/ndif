@@ -14,7 +14,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
 from ...logging import load_logger
-from gauge import NDIFGauge
+from ...metrics import NDIFGauge
 
 @serve.deployment()
 class RequestDeployment:

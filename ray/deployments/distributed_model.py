@@ -26,13 +26,8 @@ from ..distributed.util import (
     to_full_tensor,
 )
 from .model import ModelDeploymentArgs
-<<<<<<< HEAD
-from logger import load_logger
-from gauge import NDIFGauge
-
-=======
 from ...logging import load_logger
->>>>>>> telemetry/loki
+from  ...metrics import NDIFGauge
 
 @serve.deployment(ray_actor_options={"num_gpus": 1})
 class ModelDeployment:
