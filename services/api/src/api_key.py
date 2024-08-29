@@ -4,7 +4,7 @@ import firebase_admin
 from bson.objectid import ObjectId
 from cachetools import TTLCache, cached
 from datetime import datetime
-from fastapi import HTTPException, Security
+from fastapi import HTTPException, Request, Security
 from fastapi.security.api_key import APIKeyHeader
 from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -48,7 +48,22 @@ if FIREBASE_CREDS_PATH is not None:
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
-async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_header)):
+# Helper function to extract headers and client information
+def extract_request_metadata(raw_request: Request):
+    content_length = raw_request.headers.get('content-length')
+    
+    # Handle IP address
+    ip_address = raw_request.client.host
+
+    # Extract User-Agent
+    user_agent = raw_request.headers.get('user-agent')
+    
+    return ip_address, user_agent, int(content_length)
+
+async def api_key_auth(request : RequestModel, raw_request : Request, api_key: str = Security(api_key_header)):
+
+    # Extract metadata
+    ip_address, user_agent, content_length = extract_request_metadata(raw_request)
 
     # Set the id and time received of request.
     if not request.id:
@@ -59,6 +74,8 @@ async def api_key_auth(request : RequestModel, api_key: str = Security(api_key_h
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
 
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
+
+    gauge.update_network(request.id, ip_address, user_agent, content_length)
 
     if FIREBASE_CREDS_PATH is not None:
         check_405b = False
