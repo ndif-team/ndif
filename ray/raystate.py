@@ -48,20 +48,35 @@ class RayState:
         api_url: str,
     ) -> None:
 
+        self.ray_config_path = ray_config_path
+        self.service_config_path = service_config_path
+
         self.ray_dashboard_url = ray_dashboard_url
         self.database_url = database_url
         self.api_url = api_url
 
-        with open(ray_config_path, "r") as file:
+        
+
+    def load_from_disk(self):
+
+        with open(self.ray_config_path, "r") as file:
             self.ray_config = ServeDeploySchema(**yaml.safe_load(file))
 
-        with open(service_config_path, "r") as file:
-            self.service_config = ServiceConfigurationSchema(**yaml.safe_load(file))
+        with open(self.service_config_path, "r") as file:
+            self.service_config = ServiceConfigurationSchema(
+                **yaml.safe_load(file)
+            )
+
+    def redeploy(self):
+
+        self.load_from_disk()
 
         self.add_request_app()
 
         for model_config in self.service_config.models:
             self.add_model_app(model_config)
+
+        self.apply()
 
     def apply(self) -> None:
 
