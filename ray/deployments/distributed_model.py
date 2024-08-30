@@ -110,6 +110,8 @@ class ModelDeployment:
                     model_key=self.model_key,
                     api_url=self.api_url,
                     object_store_url=self.object_store_url,
+                    object_store_access_key=self.object_store_access_key,
+                    object_store_secret_key=self.object_store_secret_key,
                     torch_distributed_address=self.torch_distributed_address,
                     torch_distributed_world_size=self.torch_distributed_world_size,
                     torch_distributed_world_rank=worker_world_rank,
