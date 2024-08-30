@@ -7,7 +7,7 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - nnsight
+    - git+https://github.com/ndif-team/nnsight@0.3
     - ray[serve]
     # Database
-    - pymongo
+    - minio

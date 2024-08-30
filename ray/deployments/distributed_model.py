@@ -1,9 +1,6 @@
 import gc
 import inspect
 import logging
-import os
-import socket
-import time
 from datetime import timedelta
 from functools import partial
 from typing import Any, Dict
@@ -11,15 +8,13 @@ from typing import Any, Dict
 import ray
 import torch
 import torch.distributed
-from accelerate import init_empty_weights
-from pymongo import MongoClient
+from minio import Minio
 from ray import serve
 from ray.serve import Application
 from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
-from nnsight.models.NNsightModel import MetaDispatcher
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
@@ -27,9 +22,7 @@ from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import (
     load_hf_model_from_cache,
-    patch_accelerate,
     patch_intervention_protocol,
-    to_full_tensor,
 )
 from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
@@ -43,7 +36,9 @@ class ModelDeployment:
         self,
         model_key: str,
         api_url: str,
-        database_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
         torch_distributed_address: str,
         torch_distributed_port: int,
         torch_distributed_world_size: int,
@@ -58,7 +53,9 @@ class ModelDeployment:
 
         self.model_key = model_key
         self.api_url = api_url
-        self.database_url = database_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
         self.torch_distributed_address = torch_distributed_address
         self.torch_distributed_port = torch_distributed_port
         self.torch_distributed_world_size = torch_distributed_world_size
@@ -85,7 +82,12 @@ class ModelDeployment:
 
             print("Initializing distributed head...")
 
-            self.db_connection = MongoClient(self.database_url)
+            self.object_store = Minio(
+                self.object_store_url,
+                access_key=self.object_store_access_key,
+                secret_key=self.object_store_secret_key,
+                secure=False,
+            )
 
             if self.torch_distributed_address is None:
 
@@ -107,7 +109,7 @@ class ModelDeployment:
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
                     api_url=self.api_url,
-                    database_url=self.database_url,
+                    object_store_url=self.object_store_url,
                     torch_distributed_address=self.torch_distributed_address,
                     torch_distributed_world_size=self.torch_distributed_world_size,
                     torch_distributed_world_rank=worker_world_rank,
@@ -219,9 +221,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.RUNNING,
                 description="Your job has started running.",
-            ).log(self.logger).save(self.db_connection).blocking_response(
-                self.api_url
-            )
+            ).log(self.logger).respond(self.api_url, self.object_store)
 
             update_nnsight_print_function(
                 partial(
@@ -240,6 +240,8 @@ class ModelDeployment:
 
         torch.distributed.barrier()
 
+        local_result = None
+
         try:
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
@@ -252,7 +254,10 @@ class ModelDeployment:
 
             if self.head:
 
-                value = obj.remote_backend_postprocess_result(local_result)
+                ResultModel(
+                    id=request.id,
+                    value=obj.remote_backend_postprocess_result(local_result),
+                ).save(self.object_store)
 
                 ResponseModel(
                     id=request.id,
@@ -260,13 +265,7 @@ class ModelDeployment:
                     received=request.received,
                     status=ResponseModel.JobStatus.COMPLETED,
                     description="Your job has been completed.",
-                    result=ResultModel(
-                        id=request.id,
-                        value=value,
-                    ),
-                ).log(self.logger).save(self.db_connection).blocking_response(
-                    self.api_url
-                )
+                ).log(self.logger).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
@@ -278,9 +277,7 @@ class ModelDeployment:
                     received=request.received,
                     status=ResponseModel.JobStatus.ERROR,
                     description=str(exception),
-                ).log(self.logger).save(self.db_connection).blocking_response(
-                    self.api_url
-                )
+                ).log(self.logger).respond(self.api_url, self.object_store)
 
         del request
         del local_result
@@ -303,9 +300,7 @@ class ModelDeployment:
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
-        ).log(self.logger).save(self.db_connection).blocking_response(
-            self.api_url
-        )
+        ).log(self.logger).respond(self.api_url, self.object_store)
 
     async def status(self):
 
