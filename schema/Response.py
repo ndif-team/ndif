@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import gridfs
 import requests
@@ -11,8 +11,10 @@ from bson.objectid import ObjectId
 from pydantic import field_serializer
 from pymongo import MongoClient
 
+from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel as _ResponseModel
 from nnsight.schema.Response import ResultModel as _ResultModel
+from ..metrics import NDIFGauge
 
 
 class ResultModel(_ResultModel):    
@@ -126,6 +128,10 @@ class ResponseModel(_ResponseModel):
         else:
             logger.info(str(self))
 
+        return self
+
+    def update_gauge(self, gauge: NDIFGauge, request: RequestModel) -> None:
+        gauge.update(request, ' ', self.status)
         return self
 
     def blocking(self) -> bool:

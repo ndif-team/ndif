@@ -39,19 +39,15 @@ class RequestDeployment:
 
             app_handle.remote(request)
 
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.APPROVED)
-
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
                 received=request.received,
                 status=ResponseModel.JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(self.api_url)
 
         except Exception as exception:
-
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,
@@ -59,7 +55,7 @@ class RequestDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(self.api_url)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 

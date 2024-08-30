@@ -18,7 +18,7 @@ from ...schema.Response import ResponseModel, ResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
 from ...logging import load_logger
-from gauge import NDIFGauge
+from ...metrics import NDIFGauge
 
 
 @serve.deployment()
@@ -53,8 +53,6 @@ class ModelDeployment:
 
     def __call__(self, request: RequestModel):
 
-        self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.RUNNING)
-
         # Send RUNNING response.
         ResponseModel(
             id=request.id,
@@ -62,7 +60,7 @@ class ModelDeployment:
             received=request.received,
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).save(self.db_connection).blocking_response(
+        ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
             self.api_url
         )
         
@@ -90,8 +88,6 @@ class ModelDeployment:
             # Execute object.
             local_result = obj.local_backend_execute()
 
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED)
-
             # Send COMPELTED response.
             ResponseModel(
                 id=request.id,
@@ -103,13 +99,11 @@ class ModelDeployment:
                     id=request.id,
                     value=obj.remote_backend_postprocess_result(local_result),
                 ),
-            ).log(self.logger).save(self.db_connection).blocking_response(
+            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
                 self.api_url
             )
 
         except Exception as exception:
-
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
 
             ResponseModel(
                 id=request.id,
@@ -117,7 +111,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).save(self.db_connection).blocking_response(
+            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
                 self.api_url
             )
 

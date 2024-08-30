@@ -79,8 +79,6 @@ async def request(
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
 
-        gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.RECEIVED)
-
         # Create response object.
         # Log and save to data backend.
         response = (
@@ -92,12 +90,12 @@ async def request(
                 description="Your job has been received and is waiting approval.",
             )
             .log(logger)
+            .update_gauge(gauge, request)
             .save(db_connection)
         )
 
     except Exception as exception:
 
-        gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.ERROR)
         # Create exception response object.
         # Log and save to data backend.
         response = (
@@ -109,6 +107,7 @@ async def request(
                 description=str(exception),
             )
             .log(logger)
+            .update_gauge(gauge, request)
             .save(db_connection)
         )
 
