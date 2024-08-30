@@ -44,7 +44,9 @@ class RayState:
         ray_config_path: str,
         service_config_path: str,
         ray_dashboard_url: str,
-        database_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
         api_url: str,
     ) -> None:
 
@@ -52,10 +54,10 @@ class RayState:
         self.service_config_path = service_config_path
 
         self.ray_dashboard_url = ray_dashboard_url
-        self.database_url = database_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
         self.api_url = api_url
-
-        
 
     def load_from_disk(self):
 
@@ -99,7 +101,9 @@ class RayState:
             args=RequestDeploymentArgs(
                 ray_dashboard_url=self.ray_dashboard_url,
                 api_url=self.api_url,
-                database_url=self.database_url,
+                object_store_url=self.object_store_url,
+                object_store_access_key=self.object_store_access_key,
+                object_store_secret_key=self.object_store_secret_key,
             ).model_dump(),
         )
 
@@ -113,7 +117,13 @@ class RayState:
 
         model_config.args["model_key"] = model_config.model_key
         model_config.args["api_url"] = self.api_url
-        model_config.args["database_url"] = self.database_url
+        model_config.args["object_store_url"] = self.object_store_url
+        model_config.args["object_store_access_key"] = (
+            self.object_store_access_key
+        )
+        model_config.args["object_store_secret_key"] = (
+            self.object_store_secret_key
+        )
 
         application = ServeApplicationSchema(
             name=f"Model:{model_key}",

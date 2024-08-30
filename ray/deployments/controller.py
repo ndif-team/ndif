@@ -15,20 +15,27 @@ class ControllerDeployment:
         ray_config_path: str,
         service_config_path: str,
         ray_dashboard_url: str,
-        database_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
         api_url: str,
     ):
         self.ray_config_path = ray_config_path
         self.service_config_path = service_config_path
         self.ray_dashboard_url = ray_dashboard_url
-        self.database_url = database_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
+
         self.api_url = api_url
 
         self.state = RayState(
             self.ray_config_path,
             self.service_config_path,
             self.ray_dashboard_url,
-            self.database_url,
+            self.object_store_url,
+            self.object_store_access_key,
+            self.object_store_secret_key,
             self.api_url,
         )
 
@@ -45,7 +52,9 @@ class ControllerDeploymentArgs(BaseModel):
     ray_config_path: str = os.environ.get("RAY_CONFIG_PATH", None)
     service_config_path: str = os.environ.get("SERVICE_CONFIG_PATH", None)
     ray_dashboard_url: str = os.environ.get("RAY_DASHBOARD_URL", None)
-    database_url: str = os.environ.get("DATABASE_URL", None)
+    object_store_url: str = os.environ.get("OBJECT_STORE_URL", None)
+    object_store_access_key: str = os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin")
+    object_store_secret_key: str = os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin")
     api_url: str = os.environ.get("API_URL", None)
 
 

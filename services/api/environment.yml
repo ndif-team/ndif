@@ -26,7 +26,7 @@ dependencies:
     - gunicorn
     - eventlet
     # Database
-    - pymongo
+    - minio
     # Tasks
     - ray[serve]
     - requests

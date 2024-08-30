@@ -1,22 +1,46 @@
-model_import_path: src.ray.deployments.model:app
+default_model_import_path: src.ray.deployments.model:app
 request_import_path: src.ray.deployments.request:app
 request_num_replicas: 1
 models:
-  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-70B"}'
+  #   ray_actor_options:
+  #     num_gpus: 3
+  #     resources: 
+  #       boa: 1
+  #   num_replicas: 1
+
+
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-8B"}'
     ray_actor_options:
-      resources: 
-        cuda_memory_MB: 28000
+      num_gpus: 1
+
     num_replicas: 1
 
-  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "google/gemma-7b"}'
-    ray_actor_options:
-      resources: 
-        cuda_memory_MB: 70000
-    num_replicas: 1
 
-  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "EleutherAI/gpt-j-6b"}'
-    ray_actor_options:
-      resources: 
-        cuda_memory_MB: 60000
-    num_replicas: 1
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "EleutherAI/gpt-j-6b"}'
+  #   ray_actor_options:
+  #     num_gpus: 1
+  #     resources: 
+  #       hamada: 1
+  #   num_replicas: 1
 
+
+
+
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-70B-Instruct"}'
+  #   ray_actor_options:
+  #     resources: 
+  #       cuda_memory_MB: 60000
+  #   num_replicas: 1
+
+  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
+  #   num_replicas: 1
+  #   model_import_path: src.ray.deployments.distributed_model:app
+  #   args:
+  #     torch_distributed_port: 5003
+  #     torch_distributed_world_size: 16
+  #     torch_distributed_world_timeout_seconds: 40
+  #     tensor_parallelism_size: 16
+  #   ray_actor_options:
+  #     num_gpus: 1

@@ -10,4 +10,4 @@ dependencies:
     - git+https://github.com/ndif-team/nnsight@0.3
     - ray[serve]
     - python-slugify
-    - pymongo
+    - minio

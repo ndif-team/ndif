@@ -1,14 +1,15 @@
 import logging
 
 from pydantic import BaseModel
-from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
 from ray.serve.handle import DeploymentHandle
+
 try:
     from slugify import slugify
 except:
     pass
+from minio import Minio
 
 from nnsight.schema.Request import RequestModel
 
@@ -17,13 +18,27 @@ from ...schema.Response import ResponseModel
 
 @serve.deployment()
 class RequestDeployment:
-    def __init__(self, ray_dashboard_url: str, api_url: str, database_url: str):
+    def __init__(
+        self,
+        ray_dashboard_url: str,
+        api_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
+    ):
 
         self.ray_dashboard_url = ray_dashboard_url
         self.api_url = api_url
-        self.database_url = database_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
 
-        self.db_connection = MongoClient(self.database_url)
+        self.object_store = Minio(
+            self.object_store_url,
+            access_key=self.object_store_access_key,
+            secret_key=self.object_store_secret_key,
+            secure=False,
+        )
 
         self.logger = logging.getLogger(__name__)
 
@@ -43,7 +58,7 @@ class RequestDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).respond(self.api_url, self.object_store)
 
         except Exception as exception:
             ResponseModel(
@@ -52,7 +67,7 @@ class RequestDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).save(self.db_connection).blocking_response(self.api_url)
+            ).log(self.logger).respond(self.api_url, self.object_store)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 
@@ -63,7 +78,9 @@ class RequestDeploymentArgs(BaseModel):
 
     ray_dashboard_url: str
     api_url: str
-    database_url: str
+    object_store_url: str
+    object_store_access_key: str
+    object_store_secret_key: str
 
 
 def app(args: RequestDeploymentArgs) -> Application:
