@@ -3,17 +3,21 @@ from __future__ import annotations
 import io
 import logging
 from io import BytesIO
-from typing import Any, BinaryIO, ClassVar, Dict, List, Union
+from typing import Any, BinaryIO, ClassVar, Dict, List, Optional, Union
 
 import requests
 import torch
 from minio import Minio
 from pydantic import BaseModel, field_serializer
 from typing_extensions import Self
+from urllib3.response import HTTPResponse
 
+from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel as _ResponseModel
 from nnsight.schema.Response import ResultModel as _ResultModel
-from urllib3.response import HTTPResponse
+
+from ..metrics import NDIFGauge
+
 
 class StoredMixin(BaseModel):
 
@@ -30,9 +34,9 @@ class StoredMixin(BaseModel):
 
         bucket_name = self._bucket_name
         object_name = self.object_name(self.id)
-        
+
         data.seek(0)
-        
+
         length = data.getbuffer().nbytes
 
         if not client.bucket_exists(bucket_name):
@@ -53,9 +57,9 @@ class StoredMixin(BaseModel):
 
         bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
-        
+
         object = client.get_object(bucket_name, object_name)
-        
+
         if stream:
             return object
 
@@ -86,9 +90,7 @@ class StoredMixin(BaseModel):
         return self
 
     @classmethod
-    def load(
-        cls, client: Minio, id: str, stream: bool = False
-    ) -> HTTPResponse | Self:
+    def load(cls, client: Minio, id: str, stream: bool = False) -> HTTPResponse | Self:
 
         object = cls._load(client, id, stream=stream)
 
@@ -108,11 +110,11 @@ class StoredMixin(BaseModel):
 
         bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
-        
+
         try:
 
             client.remove_object(bucket_name, id)
-            
+
         except:
             pass
 
@@ -138,14 +140,16 @@ class ResponseModel(_ResponseModel, StoredMixin):
 
         return self
 
+    def update_gauge(self, gauge: NDIFGauge, request: RequestModel):
+        gauge.update(request, " ", self.status)
+        return self
+
     def blocking(self) -> bool:
         return self.session_id is not None
 
     def respond(self, api_url: str, object_store: Minio) -> ResponseModel:
         if self.blocking():
-            requests.post(
-                f"{api_url}/blocking_response", json=self.model_dump()
-            )
+            requests.post(f"{api_url}/blocking_response", json=self.model_dump())
         else:
             self.save(object_store)
 

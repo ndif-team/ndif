@@ -15,7 +15,7 @@ from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
 from ...logging import load_logger
-
+from ...metrics import NDIFGauge
 
 @serve.deployment()
 class RequestDeployment:
@@ -41,7 +41,8 @@ class RequestDeployment:
             secure=False,
         )
 
-        self.logger = load_logger(service_name="ray.request", logger_name="ray.serve")
+        self.logger = load_logger(service_name="ray_request", logger_name="ray.serve")
+        self.gauge = NDIFGauge(service='ray')
 
     async def __call__(self, request: RequestModel):
 
@@ -59,16 +60,17 @@ class RequestDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
-            ).log(self.logger).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         except Exception as exception:
+
             ResponseModel(
                 id=request.id,
                 session_id=request.session_id,
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 

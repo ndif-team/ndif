@@ -20,6 +20,7 @@ dependencies:
     - opentelemetry-sdk
     - opentelemetry-exporter-otlp
     - opentelemetry-instrumentation-fastapi
+    - prometheus_client
     - prometheus-fastapi-instrumentator
     - python-logging-loki
     # Http server

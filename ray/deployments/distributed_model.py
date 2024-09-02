@@ -27,6 +27,7 @@ from ..distributed.util import (
 from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
 from ...logging import load_logger
+from  ...metrics import NDIFGauge
 
 @serve.deployment(
     ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200
@@ -75,6 +76,7 @@ class ModelDeployment:
         patch_intervention_protocol()
 
         self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
+        self.gauge = NDIFGauge(service='ray')
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
@@ -222,8 +224,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.RUNNING,
                 description="Your job has started running.",
-            ).log(self.logger).respond(self.api_url, self.object_store)
-
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
             update_nnsight_print_function(
                 partial(
                     self.log_to_user,
@@ -266,7 +267,7 @@ class ModelDeployment:
                     received=request.received,
                     status=ResponseModel.JobStatus.COMPLETED,
                     description="Your job has been completed.",
-                ).log(self.logger).respond(self.api_url, self.object_store)
+                ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
@@ -278,7 +279,7 @@ class ModelDeployment:
                     received=request.received,
                     status=ResponseModel.JobStatus.ERROR,
                     description=str(exception),
-                ).log(self.logger).respond(self.api_url, self.object_store)
+                ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         del request
         del local_result

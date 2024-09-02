@@ -19,6 +19,7 @@ from ...schema.Response import ResponseModel, ResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
 from ...logging import load_logger
+from ...metrics import NDIFGauge
 
 
 @serve.deployment()
@@ -66,8 +67,9 @@ class ModelDeployment:
             secure=False,
         )
 
-        self.logger = load_logger(service_name="ray.model", logger_name="ray.serve")
+        self.logger = load_logger(service_name="ray_model", logger_name="ray.serve")
         self.running = False
+        self.gauge = NDIFGauge(service='ray')
 
     def __call__(self, request: RequestModel):
 
@@ -78,7 +80,7 @@ class ModelDeployment:
             received=request.received,
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).respond(self.api_url, self.object_store)
+        ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         local_result = None
 
@@ -116,7 +118,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
@@ -126,7 +128,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         del request
         del local_result
