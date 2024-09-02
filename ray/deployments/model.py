@@ -5,10 +5,11 @@ from functools import partial
 from typing import Any, Dict
 
 import torch
+from minio import Minio
 from pydantic import BaseModel
-from pymongo import MongoClient
 from ray import serve
 from ray.serve import Application
+from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
@@ -23,20 +24,34 @@ from ...metrics import NDIFGauge
 
 @serve.deployment()
 class ModelDeployment:
-    def __init__(self, model_key: str, api_url: str, database_url: str):
+    def __init__(
+        self,
+        model_key: str,
+        api_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
+    ):
 
         set_cuda_env_var()
 
         # Set attrs
         self.model_key = model_key
         self.api_url = api_url
-        self.database_url = database_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
+
+        torch.set_default_dtype(torch.bfloat16)
 
         # Load and dispatch model based on model key.
         # The class returned could be any model type.
         # Device_map = auto means even distribute parmeaters across all gpus
         self.model = RemoteableMixin.from_model_key(
-            self.model_key, device_map="auto", dispatch=True
+            self.model_key,
+            device_map="auto",
+            dispatch=True,
+            torch_dtype=torch.bfloat16,
         )
         # Make model weights non trainable / no grad.
         self.model._model.requires_grad_(False)
@@ -45,7 +60,12 @@ class ModelDeployment:
         torch.cuda.empty_cache()
 
         # Init DB connection.
-        self.db_connection = MongoClient(self.database_url)
+        self.object_store = Minio(
+            self.object_store_url,
+            access_key=self.object_store_access_key,
+            secret_key=self.object_store_secret_key,
+            secure=False,
+        )
 
         self.logger = load_logger(service_name="ray_model", logger_name="ray.serve")
         self.running = False
@@ -60,10 +80,8 @@ class ModelDeployment:
             received=request.received,
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
-            self.api_url
-        )
-        
+        ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+
         local_result = None
 
         try:
@@ -80,13 +98,18 @@ class ModelDeployment:
                 )
             )
 
-            self.running = True
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-            # Deserialize request
-            obj = request.deserialize(self.model)
+                # Deserialize request
+                obj = request.deserialize(self.model)
 
-            # Execute object.
-            local_result = obj.local_backend_execute()
+                # Execute object.
+                local_result = obj.local_backend_execute()
+
+            ResultModel(
+                id=request.id,
+                value=obj.remote_backend_postprocess_result(local_result),
+            ).save(self.object_store)
 
             # Send COMPELTED response.
             ResponseModel(
@@ -95,13 +118,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-                result=ResultModel(
-                    id=request.id,
-                    value=obj.remote_backend_postprocess_result(local_result),
-                ),
-            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
-                self.api_url
-            )
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
@@ -111,13 +128,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).save(self.db_connection).blocking_response(
-                self.api_url
-            )
-
-        finally:
-
-            self.running = False
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         del request
         del local_result
@@ -134,9 +145,7 @@ class ModelDeployment:
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
-        ).log(self.logger).save(self.db_connection).blocking_response(
-            self.api_url
-        )
+        ).log(self.logger).respond(self.api_url, self.object_store)
 
     async def status(self):
 
@@ -176,7 +185,9 @@ class ModelDeploymentArgs(BaseModel):
 
     model_key: str
     api_url: str
-    database_url: str
+    object_store_url: str
+    object_store_access_key: str
+    object_store_secret_key: str
 
 
 def app(args: ModelDeploymentArgs) -> Application:

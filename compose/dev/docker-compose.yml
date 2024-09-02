@@ -3,33 +3,40 @@ services:
 
   rabbitmq:
     image: rabbitmq:3.11.28
-    network_mode: "host"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - 5673:5672
 
-  mongodb:
-    image: mongodb/mongodb-community-server:6.0-ubi8
-    network_mode: "host"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: user
-      MONGO_INITDB_ROOT_PASSWORD: pass
+  minio:
+    image: minio/minio:latest
+    ports:
+      - 27018:9000
 
   ray-head:
     image: ray_head:latest
-    shm_size: '2gb'
-    network_mode: "host"
+    shm_size: '15gb'
     volumes:
       - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
       - ray-data:/tmp/ray/session_latest
       - ../../telemetry/metrics:/src/metrics
+      - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - /disk/u/jfiottok/wd/ndif/compose/prod/service_config.yml:/src/ray/config/service_config.yml
+      - /disk/u/jfiottok/wd/ndif/compose/prod/ray_config.yml:/src/ray/config/ray_config.yml
+      - /disk/u/jfiottok/wd/ndif/compose/prod/ray-head-start.sh:/start.sh
+    
+    ports:
+      - 6380:6379
+      - 9998:10001
+      - 8266:8265
     deploy:
       replicas: 1
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 2
+              count: 8
               capabilities: [ gpu ]
     environment:
        - RAY_METRICS_EXPORT_PORT=8267
@@ -39,10 +46,6 @@ services:
        - LOKI_URL=http://localhost:3100/loki/api/v1/push
 
   api:
-    depends_on:
-      - rabbitmq
-      - ray-head
-      - mongodb
     image: api:latest
     volumes:
       - ../../telemetry/metrics:/src/metrics
