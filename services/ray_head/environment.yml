@@ -10,4 +10,7 @@ dependencies:
     - git+https://github.com/ndif-team/nnsight@dev
     - ray[serve]
     - python-slugify
+    # Telemetry
+    - python-logging-loki
+    # Database
     - minio

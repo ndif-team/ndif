@@ -16,7 +16,9 @@ from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel, ResultModel
+
 from ..util import set_cuda_env_var, update_nnsight_print_function
+from ...logging import load_logger
 
 
 @serve.deployment()
@@ -64,8 +66,8 @@ class ModelDeployment:
             secure=False,
         )
 
-        # Init logger
-        self.logger = logging.getLogger(__name__)
+        self.logger = load_logger(service_name="ray.model", logger_name="ray.serve")
+        self.running = False
 
     def __call__(self, request: RequestModel):
 

@@ -14,6 +14,7 @@ from minio import Minio
 from nnsight.schema.Request import RequestModel
 
 from ...schema.Response import ResponseModel
+from ...logging import load_logger
 
 
 @serve.deployment()
@@ -40,7 +41,7 @@ class RequestDeployment:
             secure=False,
         )
 
-        self.logger = logging.getLogger(__name__)
+        self.logger = load_logger(service_name="ray.request", logger_name="ray.serve")
 
     async def __call__(self, request: RequestModel):
 

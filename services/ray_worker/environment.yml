@@ -9,5 +9,7 @@ dependencies:
     - setuptools
     - git+https://github.com/ndif-team/nnsight@dev
     - ray[serve]
+    # Telemetry
+    - python-logging-loki
     # Database
     - minio

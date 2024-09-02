@@ -35,14 +35,55 @@ services:
             - driver: nvidia
               count: 8
               capabilities: [ gpu ]
+    environment:
+       - RAY_METRICS_EXPORT_PORT=8267
+       - RAY_JOB_METRICS_EXPORT_PORT=8267
+       - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
+       - LOKI_URL=http://localhost:3100/loki/api/v1/push
 
   api:
     image: api:latest
-    ports:
-      - 5001:80
+    network_mode: "host"
     environment:
-      OBJECT_STORE_URL: nagoya.research.khoury.northeastern.edu:27018
-      RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5673/
-      WORKERS: 12
-      RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:9998
-      FIREBASE_CREDS_PATH: /src/creds.json
+      DATABASE_URL: mongodb://user:pass@localhost:27017
+      RMQ_URL: amqp://guest:guest@localhost:5672/
+      WORKERS: 1
+      RAY_ADDRESS: ray://localhost:10001
+      LOKI_URL: http://localhost:3100/loki/api/v1/push
+      # FIREBASE_CREDS_PATH
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "host"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - api
+      - ray-head
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: "host"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:2.8.1
+    network_mode: "host"
+    volumes:
+      - loki-data:/loki
+
+volumes:
+  grafana-storage:
+  loki-data:
+  prometheus-data:
+  ray-data:

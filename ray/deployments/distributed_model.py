@@ -26,7 +26,7 @@ from ..distributed.util import (
 )
 from ..util import update_nnsight_print_function
 from .model import ModelDeploymentArgs
-
+from ...logging import load_logger
 
 @serve.deployment(
     ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200
@@ -74,8 +74,7 @@ class ModelDeployment:
         # Patches nnsight intervention protocol to handle DTensors.
         patch_intervention_protocol()
 
-        self.logger = logging.getLogger(__name__)
-
+        self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
