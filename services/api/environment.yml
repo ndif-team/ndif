@@ -27,9 +27,9 @@ dependencies:
     - gunicorn
     - eventlet
     # Database
-    - pymongo
+    - minio
     # Tasks
     - ray[serve]
     - requests
     - torch
-    - git+https://github.com/ndif-team/nnsight@0.3
+    - git+https://github.com/ndif-team/nnsight@dev
