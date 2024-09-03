@@ -2,120 +2,132 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Dict, List, Union
+from io import BytesIO
+from typing import Any, BinaryIO, ClassVar, Dict, List, Optional, Union
 
-import gridfs
 import requests
 import torch
-from bson.objectid import ObjectId
-from pydantic import field_serializer
-from pymongo import MongoClient
+from minio import Minio
+from pydantic import BaseModel, field_serializer
+from typing_extensions import Self
+from urllib3.response import HTTPResponse
 
+from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel as _ResponseModel
 from nnsight.schema.Response import ResultModel as _ResultModel
 
+from ..metrics import NDIFGauge
 
-class ResultModel(_ResultModel):    
+
+class StoredMixin(BaseModel):
+
+    id: str
+    _bucket_name: ClassVar[str] = "default"
+    _file_extension: ClassVar[str] = "json"
 
     @classmethod
-    def load(cls, client: MongoClient, id: str, stream: bool = False) -> ResultModel:
-        results_collection = gridfs.GridFS(
-            client["ndif_database"], collection="results"
+    def object_name(cls, id: str):
+
+        return f"{id}.{cls._file_extension}"
+
+    def _save(self, client: Minio, data: BytesIO, content_type: str) -> None:
+
+        bucket_name = self._bucket_name
+        object_name = self.object_name(self.id)
+
+        data.seek(0)
+
+        length = data.getbuffer().nbytes
+
+        if not client.bucket_exists(bucket_name):
+            client.make_bucket(bucket_name)
+
+        client.put_object(
+            bucket_name,
+            object_name,
+            data,
+            length,
+            content_type=content_type,
         )
 
-        gridout = results_collection.find_one(ObjectId(id))
+    @classmethod
+    def _load(
+        cls, client: Minio, id: str, stream: bool = False
+    ) -> HTTPResponse | bytes:
+
+        bucket_name = cls._bucket_name
+        object_name = cls.object_name(id)
+
+        object = client.get_object(bucket_name, object_name)
 
         if stream:
-            return gridout
+            return object
 
-        result = ResultModel(**torch.load(gridout, map_location="cpu"))
+        _object = object.read()
 
-        return result
+        object.close()
 
+        return _object
 
-    @classmethod
-    def delete(
-        cls, client: MongoClient, id: str, logger: logging.Logger = None
-    ) -> None:
+    def save(self, client: Minio) -> Self:
 
-        results_collection = gridfs.GridFS(
-            client["ndif_database"], collection="results"
-        )
+        if self._file_extension == "json":
 
-        id = ObjectId(id)
+            data = BytesIO(self.model_dump_json().encode("utf-8"))
 
-        results_collection.delete(id)
+            content_type = "application/json"
 
-        if logger is not None:
+        elif self._file_extension == "pt":
 
-            logger.info(f"DELETED Result: {id}")
+            data = BytesIO()
 
-    def save(self, client: MongoClient) -> ResultModel:
-        results_collection = gridfs.GridFS(
-            client["ndif_database"], collection="results"
-        )
+            torch.save(self.model_dump(), data)
 
-        id = ObjectId(self.id)
+            content_type = "application/octet-stream"
 
-        results_collection.delete(id)
-
-        buffer = io.BytesIO()
-        torch.save(self.model_dump(), buffer)
-        buffer.seek(0)
-
-        results_collection.put(buffer, _id=id)
+        self._save(client, data, content_type)
 
         return self
 
+    @classmethod
+    def load(cls, client: Minio, id: str, stream: bool = False) -> HTTPResponse | Self:
 
-class ResponseModel(_ResponseModel):
+        object = cls._load(client, id, stream=stream)
+
+        if stream:
+            return object
+
+        if cls._file_extension == "json":
+
+            return cls.model_validate_json(object.decode("utf-8"))
+
+        elif cls._file_extension == "pt":
+
+            return torch.load(object, map_location="cpu", weights_only=False)
 
     @classmethod
-    def load(
-        cls,
-        client: MongoClient,
-        id: str,
-        result: bool = True,
-    ) -> ResponseModel:
-        responses_collection = client["ndif_database"]["responses"]
+    def delete(cls, client: Minio, id: str) -> None:
 
-        response = ResponseModel(
-            **responses_collection.find_one({"_id": ObjectId(id)}, {"_id": False})
-        )
+        bucket_name = cls._bucket_name
+        object_name = cls.object_name(id)
 
-        if result and response.status == ResponseModel.JobStatus.COMPLETED:
-            response.result = ResultModel.load(client, id, stream=False)
+        try:
 
-        return response
+            client.remove_object(bucket_name, id)
 
-    @classmethod
-    def delete(
-        cls, client: MongoClient, id: str, logger: logging.Logger = None
-    ) -> None:
+        except:
+            pass
 
-        responses_collection = client["ndif_database"]["responses"]
 
-        responses_collection.delete_one({"_id": ObjectId(id)})
+class ResultModel(_ResultModel, StoredMixin):
 
-        if logger is not None:
+    _bucket_name: ClassVar[str] = "results"
+    _file_extension: ClassVar[str] = "pt"
 
-            logger.info(f"DELETED Response: {id}")
 
-    def save(self, client: MongoClient) -> ResponseModel:
-        responses_collection = client["ndif_database"]["responses"]
+class ResponseModel(_ResponseModel, StoredMixin):
 
-        if self.result is not None:
-            self.result.save(client)
-
-        responses_collection.replace_one(
-            {"_id": ObjectId(self.id)},
-            self.model_dump(
-                exclude_defaults=True, exclude_none=True, exclude=["result"]
-            ),
-            upsert=True,
-        )
-
-        return self
+    _bucket_name: ClassVar[str] = "responses"
 
     def __str__(self) -> str:
         return f"{self.id} - {self.status.name}: {self.description}"
@@ -128,12 +140,18 @@ class ResponseModel(_ResponseModel):
 
         return self
 
+    def update_gauge(self, gauge: NDIFGauge, request: RequestModel):
+        gauge.update(request, " ", self.status)
+        return self
+
     def blocking(self) -> bool:
         return self.session_id is not None
 
-    def blocking_response(self, api_url: str) -> ResponseModel:
+    def respond(self, api_url: str, object_store: Minio) -> ResponseModel:
         if self.blocking():
-            requests.get(f"{api_url}/blocking_response/{self.id}")
+            requests.post(f"{api_url}/blocking_response", json=self.model_dump())
+        else:
+            self.save(object_store)
 
         return self
 

@@ -3,14 +3,14 @@ channels:
 dependencies:
   - python=3.10
   - pip
-
+  - git
   - pip:
     - pip
     - setuptools
-    - nnsight
+    - git+https://github.com/ndif-team/nnsight@dev
     - ray[serve]
     # Telemetry
     - prometheus_client
     - python-logging-loki
     # Database
-    - pymongo
+    - minio

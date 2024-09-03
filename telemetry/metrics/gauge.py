@@ -6,6 +6,7 @@ from nnsight.schema.Response import ResponseModel
 
 # Labels for the metrics
 request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp')
+network_labels = ('request_id', 'ip_address', 'user_agent')
 
 class NDIFGauge:
     """
@@ -37,6 +38,8 @@ class NDIFGauge:
             instance = super(NDIFGauge, cls).__new__(cls)
             instance.service = service
             instance._gauge = instance._initialize_gauge()
+            if service != 'ray':  # Only initialize the network gauge if the service is not 'ray'
+                instance._network_gauge = instance._initialize_network_gauge()
             cls._instances[service] = instance
         return cls._instances[service]
 
@@ -47,6 +50,10 @@ class NDIFGauge:
             return RayGauge('request_status', description='Track status of requests', tag_keys=request_labels)
         else:
             return PrometheusGauge('request_status', 'Track status of requests', request_labels)
+          
+    def _initialize_network_gauge(self):
+        """Initialize the network-related Gauge. Only used if the service is not 'ray'."""
+        return PrometheusGauge('network_data', 'Track network data of requests', network_labels)
 
     def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, gpu_mem: int = 0) -> None:
         """
@@ -68,3 +75,20 @@ class NDIFGauge:
         else:
             # Prometheus Gauge API uses a more traditional labeling approach
             self._gauge.labels(**labels).set(numeric_status)
+
+    def update_network(self, request_id: str, ip_address: str, user_agent: str, content_length: int) -> None:
+        """
+        Update the values of the network-related gauge.
+        Only applicable for services other than 'ray'.
+        """
+        if self.service == 'ray':
+            return  # Do nothing if the service is 'ray'
+        
+        network_labels = {
+            "request_id": request_id,
+            "ip_address": ip_address,
+            "user_agent": user_agent
+        }
+
+        # Set content length in the network gauge
+        self._network_gauge.labels(**network_labels).set(content_length)
