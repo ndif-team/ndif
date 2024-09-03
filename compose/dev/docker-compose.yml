@@ -76,8 +76,6 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-storage:/var/lib/grafana
-      - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
-      - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
 

@@ -113,8 +113,6 @@ class ModelDeployment:
             # Peak VRAM usage during execution (in bytes)
             gpu_mem = max_memory_allocated()
 
-            self.gauge.update(request=request, api_key=' ', status=ResponseModel.JobStatus.COMPLETED, gpu_mem=gpu_mem)
-
             ResultModel(
                 id=request.id,
                 value=obj.remote_backend_postprocess_result(local_result),
@@ -127,7 +125,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 

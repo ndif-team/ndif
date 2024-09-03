@@ -140,8 +140,8 @@ class ResponseModel(_ResponseModel, StoredMixin):
 
         return self
 
-    def update_gauge(self, gauge: NDIFGauge, request: RequestModel):
-        gauge.update(request, " ", self.status)
+    def update_gauge(self, gauge: NDIFGauge, request: RequestModel, gpu_mem: int = 0) -> Self:
+        gauge.update(request, " ", self.status, gpu_mem)
         return self
 
     def blocking(self) -> bool:
