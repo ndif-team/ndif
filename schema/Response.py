@@ -30,9 +30,9 @@ class StoredMixin(BaseModel):
 
         return f"{id}.{cls._file_extension}"
 
-    def _save(self, client: Minio, data: BytesIO, content_type: str) -> None:
+    def _save(self, client: Minio, data: BytesIO, content_type: str, bucket_name: str = None) -> None:
 
-        bucket_name = self._bucket_name
+        bucket_name = self._bucket_name if bucket_name is None else bucket_name
         object_name = self.object_name(self.id)
 
         data.seek(0)
@@ -140,9 +140,13 @@ class ResponseModel(_ResponseModel, StoredMixin):
 
         return self
 
-    def update_gauge(self, gauge: NDIFGauge, request: RequestModel):
+    def update_gauge(self, gauge: NDIFGauge, request: RequestModel) -> Self:
         gauge.update(request, " ", self.status)
         return self
+
+    def backup_request(self, client: Minio, request: RequestModel) -> Self:
+        data = BytesIO(request.object.model_dump_json().encode("utf-8"))
+        self._save(client, data, 'application/json', 'serialized-requests')
 
     def blocking(self) -> bool:
         return self.session_id is not None

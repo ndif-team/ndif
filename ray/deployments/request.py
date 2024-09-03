@@ -70,7 +70,7 @@ class RequestDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store).backup_request(self.object_store, request)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 

@@ -113,7 +113,7 @@ async def request(
             session_id=request.session_id,
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
-        )
+        ).backup_request(object_store, request)
 
     # Log and save to data backend.
     response.log(logger).update_gauge(gauge, request)
