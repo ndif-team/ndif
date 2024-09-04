@@ -11,6 +11,7 @@ import torch.distributed
 from minio import Minio
 from ray import serve
 from ray.serve import Application
+from torch.cuda import max_memory_allocated, reset_peak_memory_stats
 from torch.amp import autocast
 from transformers import PreTrainedModel
 
@@ -245,14 +246,16 @@ class ModelDeployment:
         local_result = None
 
         try:
+            # For tracking peak GPU usage of current worker
+            reset_peak_memory_stats()
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
                 # Deserialize request
                 obj = request.deserialize(self.model)
 
-                # Execute object.
-                local_result = obj.local_backend_execute()
+            # Peak VRAM usage (in bytes) of current worker during execution
+            gpu_mem = max_memory_allocated()
 
             if self.head:
 
@@ -267,7 +270,7 @@ class ModelDeployment:
                     received=request.received,
                     status=ResponseModel.JobStatus.COMPLETED,
                     description="Your job has been completed.",
-                ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+                ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
