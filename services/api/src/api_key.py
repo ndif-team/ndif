@@ -1,7 +1,7 @@
 import os
 
+import uuid
 import firebase_admin
-from bson.objectid import ObjectId
 from cachetools import TTLCache, cached
 from datetime import datetime
 from fastapi import HTTPException, Request, Security
@@ -67,7 +67,7 @@ async def api_key_auth(request : RequestModel, raw_request : Request, api_key: s
 
     # Set the id and time received of request.
     if not request.id:
-        request.id = str(ObjectId())
+        request.id = str(uuid.uuid4())
     if not request.received:
         request.received = datetime.now()
 
