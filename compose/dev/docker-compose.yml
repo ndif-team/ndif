@@ -22,6 +22,7 @@ services:
       - ./service_config.yml:/src/ray/config/service_config.yml
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ./ray-head-start.sh:/start.sh
+      - ray-data:/tmp/ray/session_latest
     
     ports:
       - 6380:6379
@@ -36,10 +37,10 @@ services:
               count: 2
               capabilities: [ gpu ]
     environment:
+       - OBJECT_STORE_URL=localhost:27017
        - RAY_METRICS_EXPORT_PORT=8267
        - RAY_JOB_METRICS_EXPORT_PORT=8267
        - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
-       - PYTHONPATH=/src/logging:/src/metrics
        - LOKI_URL=http://localhost:3100/loki/api/v1/push
        - RAY_DASHBOARD_URL=http://${HOST_IP}:8266
        - OBJECT_STORE_URL=${HOST_IP}:27018
@@ -47,8 +48,6 @@ services:
 
   api:
     image: api:latest
-    volumes:
-      - ../../telemetry/metrics:/src/metrics
     network_mode: "host"
     environment:
       OBJECT_STORE_URL: localhost:27018

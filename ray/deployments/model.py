@@ -9,6 +9,7 @@ from minio import Minio
 from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
+from torch.cuda import max_memory_allocated, reset_peak_memory_stats
 from torch.amp import autocast
 from transformers import PreTrainedModel
 
@@ -100,11 +101,17 @@ class ModelDeployment:
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
+                # For tracking peak GPU usage
+                reset_peak_memory_stats()
+
                 # Deserialize request
                 obj = request.deserialize(self.model)
 
                 # Execute object.
                 local_result = obj.local_backend_execute()
+
+            # Peak VRAM usage during execution (in bytes)
+            gpu_mem = max_memory_allocated()
 
             ResultModel(
                 id=request.id,
@@ -118,7 +125,7 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
