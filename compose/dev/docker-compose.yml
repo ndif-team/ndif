@@ -1,4 +1,3 @@
-version: '3'
 services:
 
   rabbitmq:
@@ -11,6 +10,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    command: server /data
     ports:
       - 27018:9000
 
@@ -18,12 +18,11 @@ services:
     image: ray_head:latest
     shm_size: '15gb'
     volumes:
-      - /share/u/jadenfk/.cache/huggingface/hub:/root/.cache/huggingface/hub
+      - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - ./service_config.yml:/src/ray/config/service_config.yml
+      - ./ray_config.yml:/src/ray/config/ray_config.yml
+      - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/session_latest
-      - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - /disk/u/jfiottok/wd/ndif/compose/prod/service_config.yml:/src/ray/config/service_config.yml
-      - /disk/u/jfiottok/wd/ndif/compose/prod/ray_config.yml:/src/ray/config/ray_config.yml
-      - /disk/u/jfiottok/wd/ndif/compose/prod/ray-head-start.sh:/start.sh
     
     ports:
       - 6380:6379
@@ -35,7 +34,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 8
+              count: 2
               capabilities: [ gpu ]
     environment:
        - OBJECT_STORE_URL=localhost:27017
@@ -43,15 +42,19 @@ services:
        - RAY_JOB_METRICS_EXPORT_PORT=8267
        - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
        - LOKI_URL=http://localhost:3100/loki/api/v1/push
+       - RAY_DASHBOARD_URL=http://${HOST_IP}:8266
+       - OBJECT_STORE_URL=${HOST_IP}:27018
+       - API_URL=http://${HOST_IP}:80
 
   api:
     image: api:latest
     network_mode: "host"
     environment:
-      OBJECT_STORE_URL: localhost:27017
-      RMQ_URL: amqp://guest:guest@localhost:5672/
+      OBJECT_STORE_URL: localhost:27018
+      RMQ_URL: amqp://guest:guest@localhost:5673/
       WORKERS: 1
-      RAY_ADDRESS: ray://localhost:10001
+      RAY_ADDRESS: ray://localhost:9998
+      PYTHONPATH: /src/logging:/src/metrics
       LOKI_URL: http://localhost:3100/loki/api/v1/push
       # FIREBASE_CREDS_PATH
 

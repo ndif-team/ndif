@@ -1,3 +1,5 @@
+IP_ADDR := $(shell hostname -I | awk '{print $$1}')
+
 build_base:
 
 	docker build --no-cache -t $(NAME)_base:latest -f ../base.dockerfile .
@@ -29,7 +31,7 @@ down:
 	docker compose -f compose/prod/docker-compose.yml down
 
 up-dev:
-	docker compose -f compose/dev/docker-compose.yml up --detach
+	export HOST_IP=${IP_ADDR} && docker compose -f compose/dev/docker-compose.yml up --detach
 
 down-dev:
 	docker compose -f compose/dev/docker-compose.yml down

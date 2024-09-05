@@ -113,7 +113,7 @@ class StoredMixin(BaseModel):
 
         try:
 
-            client.remove_object(bucket_name, id)
+            client.remove_object(bucket_name, object_name)
 
         except:
             pass

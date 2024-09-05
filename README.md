@@ -46,21 +46,7 @@ pip install -e .
 
 ### 4. Configure Docker Compose
 
-Modify the Docker Compose file for your system
-
-1. Edit the file:
-
-```sh
-vi compose/(dev|prod)/docker-compose.yml 
-```
-
-2. Update the Hugging Face cache path:
-
-```sh
-- /disk/u/[YOUR BAULAB USERNAME]/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-```
-
-3. Adjust GPU settings (check your system with `nvidia-smi`):
+Adjust your GPU settings in `ndif/compose/dev/docker-compose.yml` (check your system with `nvidia-smi`):
 
 ```sh
 - driver: nvidia
