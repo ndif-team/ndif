@@ -23,7 +23,7 @@ services:
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/session_latest
-    
+
     ports:
       - 6380:6379
       - 9998:10001
@@ -34,28 +34,27 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 2
+              count: 1
               capabilities: [ gpu ]
+
     environment:
-       - OBJECT_STORE_URL=localhost:27017
-       - RAY_METRICS_EXPORT_PORT=8267
-       - RAY_JOB_METRICS_EXPORT_PORT=8267
-       - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
-       - LOKI_URL=http://localhost:3100/loki/api/v1/push
-       - RAY_DASHBOARD_URL=http://${HOST_IP}:8266
-       - OBJECT_STORE_URL=${HOST_IP}:27018
-       - API_URL=http://${HOST_IP}:80
+      - RAY_METRICS_EXPORT_PORT=8267
+      - RAY_JOB_METRICS_EXPORT_PORT=8267
+      - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
+      - LOKI_URL=http://${HOST_IP}:3100/loki/api/v1/push
+      - OBJECT_STORE_URL=${HOST_IP}:27018
+      - API_URL=http://${HOST_IP}:5001
 
   api:
     image: api:latest
-    network_mode: "host"
+    ports:
+      - 5001:80
     environment:
-      OBJECT_STORE_URL: localhost:27018
-      RMQ_URL: amqp://guest:guest@localhost:5673/
+      OBJECT_STORE_URL: ${HOST_IP}:27018
+      RMQ_URL: amqp://guest:guest@${HOST_IP}:5673/
       WORKERS: 1
-      RAY_ADDRESS: ray://localhost:9998
-      PYTHONPATH: /src/logging:/src/metrics
-      LOKI_URL: http://localhost:3100/loki/api/v1/push
+      RAY_ADDRESS: ray://${HOST_IP}:9998
+      LOKI_URL: http://${HOST_IP}:3100/loki/api/v1/push
       # FIREBASE_CREDS_PATH
 
   prometheus:
@@ -79,6 +78,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     volumes:
       - grafana-storage:/var/lib/grafana
+      - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
+      - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
 
