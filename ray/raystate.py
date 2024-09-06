@@ -1,10 +1,10 @@
-import urllib.parse
 from typing import Any, Dict, List
 
 try:
     from slugify import slugify
 except:
     pass
+import ray
 import yaml
 from pydantic import BaseModel
 from ray.dashboard.modules.serve.sdk import ServeSubmissionClient
@@ -43,7 +43,6 @@ class RayState:
         self,
         ray_config_path: str,
         service_config_path: str,
-        ray_dashboard_url: str,
         object_store_url: str,
         object_store_access_key: str,
         object_store_secret_key: str,
@@ -52,12 +51,13 @@ class RayState:
 
         self.ray_config_path = ray_config_path
         self.service_config_path = service_config_path
-
-        self.ray_dashboard_url = ray_dashboard_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
         self.api_url = api_url
+
+        self.runtime_context = ray.get_runtime_context()
+        self.ray_dashboard_url = f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
 
     def load_from_disk(self):
 
@@ -82,7 +82,9 @@ class RayState:
 
     def apply(self) -> None:
 
-        ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
+        ServeSubmissionClient(
+            self.ray_dashboard_url
+        ).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
 
@@ -99,7 +101,6 @@ class RayState:
                 )
             ],
             args=RequestDeploymentArgs(
-                ray_dashboard_url=self.ray_dashboard_url,
                 api_url=self.api_url,
                 object_store_url=self.object_store_url,
                 object_store_access_key=self.object_store_access_key,
