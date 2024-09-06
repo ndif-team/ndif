@@ -254,6 +254,8 @@ class ModelDeployment:
 
                 # Deserialize request
                 obj = request.deserialize(self.model)
+                
+                local_result = obj.local_backend_execute()
 
             # Peak VRAM usage (in bytes) of current worker during execution
             gpu_mem = max_memory_allocated()
