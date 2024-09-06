@@ -23,11 +23,11 @@ services:
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/session_latest
-
     ports:
       - 6380:6379
       - 9998:10001
       - 8266:8265
+      - 8267:8267
     deploy:
       replicas: 1
       resources:
@@ -38,8 +38,6 @@ services:
               capabilities: [ gpu ]
 
     environment:
-      - RAY_METRICS_EXPORT_PORT=8267
-      - RAY_JOB_METRICS_EXPORT_PORT=8267
       - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
       - LOKI_URL=http://${HOST_IP}:3100/loki/api/v1/push
       - OBJECT_STORE_URL=${HOST_IP}:27018
