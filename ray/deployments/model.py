@@ -4,26 +4,28 @@ import os
 from functools import partial
 from typing import Any, Dict
 
+import ray
 import torch
 from minio import Minio
 from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
-from torch.cuda import max_memory_allocated, reset_peak_memory_stats
 from torch.amp import autocast
+from torch.cuda import max_memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Request import RequestModel
 
-from ...schema.Response import ResponseModel, ResultModel
-
-from ..util import set_cuda_env_var, update_nnsight_print_function
 from ...logging import load_logger
 from ...metrics import NDIFGauge
+from ...schema.Response import ResponseModel, ResultModel
+from ..util import set_cuda_env_var, update_nnsight_print_function
 
 
-@serve.deployment()
+@serve.deployment(
+    ray_actor_options={"concurrency_groups": {"io": 5, "compute": 1}}
+)
 class ModelDeployment:
     def __init__(
         self,
@@ -68,11 +70,14 @@ class ModelDeployment:
             secure=False,
         )
 
-        self.logger = load_logger(service_name="ray_model", logger_name="ray.serve")
+        self.logger = load_logger(
+            service_name="ray_model", logger_name="ray.serve"
+        )
         self.running = False
-        self.gauge = NDIFGauge(service='ray')
+        self.gauge = NDIFGauge(service="ray")
 
-    def __call__(self, request: RequestModel):
+    @ray.method(concurrency_group="compute")
+    async def __call__(self, request: RequestModel):
 
         # Send RUNNING response.
         ResponseModel(
@@ -81,7 +86,9 @@ class ModelDeployment:
             received=request.received,
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+        ).log(self.logger).update_gauge(self.gauge, request).respond(
+            self.api_url, self.object_store
+        )
 
         local_result = None
 
@@ -125,7 +132,11 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(
+                self.gauge, request, gpu_mem
+            ).respond(
+                self.api_url, self.object_store
+            )
 
         except Exception as exception:
 
@@ -135,7 +146,9 @@ class ModelDeployment:
                 received=request.received,
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+            ).log(self.logger).update_gauge(self.gauge, request).respond(
+                self.api_url, self.object_store
+            )
 
         del request
         del local_result
@@ -154,6 +167,7 @@ class ModelDeployment:
             description=str(data),
         ).log(self.logger).respond(self.api_url, self.object_store)
 
+    @ray.method(concurrency_group="io")
     async def status(self):
 
         model: PreTrainedModel = self.model._model

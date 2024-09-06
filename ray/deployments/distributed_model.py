@@ -31,7 +31,7 @@ from ...logging import load_logger
 from  ...metrics import NDIFGauge
 
 @serve.deployment(
-    ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200
+    ray_actor_options={"num_gpus": 1, "concurrency_groups": {"io": 5, "compute": 1}}, health_check_timeout_s=1200
 )
 class ModelDeployment:
     def __init__(
@@ -215,7 +215,8 @@ class ModelDeployment:
 
         torch.cuda.empty_cache()
 
-    def __call__(self, request: RequestModel):
+    @ray.method(concurrency_group="compute")
+    async def __call__(self, request: RequestModel):
 
         if self.head:
 
@@ -307,6 +308,7 @@ class ModelDeployment:
             description=str(data),
         ).log(self.logger).respond(self.api_url, self.object_store)
 
+    @ray.method(concurrency_group="io")
     async def status(self):
 
         model: PreTrainedModel = self.model._model
