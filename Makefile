@@ -1,5 +1,7 @@
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 
+N_DEVICES := $(shell nvidia-smi  -L | wc -l)
+
 build_base:
 
 	docker build --no-cache -t $(NAME)_base:latest -f ../base.dockerfile .
@@ -26,11 +28,11 @@ build_all_service:
 
 up:
 
-	export HOST_IP=${IP_ADDR} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml up --detach
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml up --detach
 
 down:
 
-	export HOST_IP=${IP_ADDR} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml down
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml down
 
 ta:
 	make down dev
