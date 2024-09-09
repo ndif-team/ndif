@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 
 from nnsight.schema.Request import RequestModel
@@ -11,10 +12,12 @@ from .Response import BackendResponseModel
 class BackendRequestModel(RequestModel, ObjectStorageMixin):
 
     _bucket_name: ClassVar[str] = "serialized-requests"
-    _file_extension: ClassVar[str] = "application/json"
+    _file_extension: ClassVar[str] = "json"
     
-    def create_response(self, status: ResponseModel.JobStatus, description: str) -> BackendResponseModel:
+    def create_response(self, status: ResponseModel.JobStatus, description: str, logger: logging.Logger, gauge: "NDIFGauge", gpu_mem: int = 0) -> BackendResponseModel:
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
+
+        msg = f"{self.id} - {status.name}: {description}"
 
         response = BackendResponseModel(
             id=self.id,
@@ -22,11 +25,15 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
             received=self.received,
             status=status,
             description=description
+        ).backend_log(
+            logger=logger,
+            message=msg,
+        ).update_gauge(
+            gauge=gauge, 
+            request=self, 
+            status=status, 
+            api_key=" ",
+            gpu_mem=gpu_mem,
         )
-        return response
 
-    def upgrade_from(self, request_model: RequestModel) -> BackendRequestModel:
-        """Copy relevant fields from an existing RequestModel to the backend version."""
-        for field, value in request_model.__dict__.items():
-            setattr(self, field, value)
-        return self
+        return response

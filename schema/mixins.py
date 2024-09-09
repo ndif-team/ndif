@@ -143,13 +143,13 @@ class TelemetryMixin:
     allows easy integration of logging and metric updates.
 
     Methods:
-        log(logger: logging.Logger, message: str, level: str = 'info') -> Self:
+        backend_log(logger: logging.Logger, message: str, level: str = 'info') -> Self:
             Logs a message with the specified logging level (info, error, exception).
 
         update_gauge(gauge: NDIFGauge, request: RequestModel, status: ResponseModel.JobStatus, gpu_mem: int = 0) -> Self:
             Updates the telemetry gauge to track the status of a request or response.
     """
-    def log(self, logger: logging.Logger, message: str, level: str = 'info'):
+    def backend_log(self, logger: logging.Logger, message: str, level: str = 'info'):
         if level == 'info':
             logger.info(message)
         elif level == 'error':

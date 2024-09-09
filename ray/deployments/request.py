@@ -54,19 +54,24 @@ class RequestDeployment:
 
             app_handle.remote(request)
 
-            response = request.create_response(
+            request.create_response(
                 status=ResponseModel.JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
+                logger=self.logger,
+                gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
-            #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
-            response = request.create_response(
+            request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
+                logger=self.logger,
+                gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
-            #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store).backup_request(self.object_store, request)
+
+            # Backup request object
+            request.save(self.object_store)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 

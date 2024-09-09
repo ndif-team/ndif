@@ -85,18 +85,17 @@ async def request(
         BackendResponseModel: _description_
     """
     try:
-
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
-        #request.logger = logger
-        #request.gauge = gauge
 
         # Create response object.
         # Log and save to data backend.
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
+            logger=logger,
+            gauge=gauge,
         )
 
     except Exception as exception:
@@ -105,11 +104,11 @@ async def request(
         response = request.create_response(
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
+            logger=logger,
+            gauge=gauge,
         )
-        #.backup_request(object_store, request)
-
-    # Log and save to data backend.
-    #response.log(logger).update_gauge(gauge, request)
+        # Backup request object
+        request.save(object_store)
 
     if not response.blocking():
 
@@ -191,6 +190,7 @@ async def result(id: str) -> BackendResultModel:
             
             BackendResultModel.delete(object_store, id)
             BackendResponseModel.delete(object_store, id)
+            BackendRequestModel.delete(object_store, id)
 
     return StreamingResponse(
         content=stream(),

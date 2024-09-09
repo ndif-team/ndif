@@ -75,11 +75,12 @@ class ModelDeployment:
     def __call__(self, request: BackendRequestModel):
 
         # Send RUNNING response.
-        response = request.create_response(
+        request.create_response(
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
+            logger=self.logger,
+            gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
-        #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         local_result = None
 
@@ -117,19 +118,25 @@ class ModelDeployment:
             ).save(self.object_store)
 
             # Send COMPELTED response.
-            response = request.create_response(
+            request.create_response(
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
+                logger=self.logger,
+                gauge=self.gauge,
+                gpu_mem=gpu_mem,
             ).respond(self.api_url, self.object_store)
-            #.log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
-            response = request.create_response(
+            request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
+                logger=self.logger,
+                gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
-            #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store).backup_request(self.object_store, request)
+
+            # Backup request object
+            request.save(self.object_store)
 
         del request
         del local_result
@@ -146,8 +153,9 @@ class ModelDeployment:
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
+            logger=self.logger,
+            gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
-        #.log(self.logger).respond(self.api_url, self.object_store)
 
     async def status(self):
 
