@@ -70,9 +70,6 @@ class RequestDeployment:
                 gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
 
-            # Backup request object
-            request.save(self.object_store)
-
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 
         return serve.get_app_handle(name)

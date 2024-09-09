@@ -135,9 +135,6 @@ class ModelDeployment:
                 gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
 
-            # Backup request object
-            request.save(self.object_store)
-
         del request
         del local_result
 

@@ -89,7 +89,8 @@ class ObjectStorageMixin(BaseModel):
 
         if self._file_extension == "json":
 
-            data = BytesIO(self.model_dump_json().encode("utf-8"))
+            pydantic_object = self.object if hasattr(self, 'object') else self
+            data = BytesIO(pydantic_object.model_dump_json().encode("utf-8"))
 
             content_type = "application/json"
 
@@ -129,7 +130,7 @@ class ObjectStorageMixin(BaseModel):
 
         try:
 
-            client.remove_object(bucket_name, id)
+            client.remove_object(bucket_name, object_name)
 
         except:
             pass

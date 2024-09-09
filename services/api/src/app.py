@@ -98,6 +98,9 @@ async def request(
             gauge=gauge,
         )
 
+        # Back up request object by default (to be deleted on successful completion)
+        request.save(object_store)
+
     except Exception as exception:
 
         # Create exception response object.
@@ -107,8 +110,6 @@ async def request(
             logger=logger,
             gauge=gauge,
         )
-        # Backup request object
-        request.save(object_store)
 
     if not response.blocking():
 
