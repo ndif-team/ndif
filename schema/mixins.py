@@ -10,9 +10,7 @@ from pydantic import BaseModel
 from typing_extensions import Self
 from urllib3.response import HTTPResponse
 
-from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
-from ..telemetry import NDIFGauge
 
 class ObjectStorageMixin(BaseModel):
     """
@@ -160,6 +158,6 @@ class TelemetryMixin:
             logger.exception(message)
         return self
 
-    def update_gauge(self, gauge: NDIFGauge, request: RequestModel, status: ResponseModel.JobStatus, gpu_mem: int = 0):
-        gauge.update(request, " ", status, gpu_mem)
+    def update_gauge(self, gauge: "NDIFGauge", request: "BackendRequestModel", status: ResponseModel.JobStatus, api_key:str = " ", gpu_mem: int = 0):
+        gauge.update(request, api_key, status, gpu_mem)
         return self

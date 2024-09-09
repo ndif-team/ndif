@@ -14,9 +14,9 @@ from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import RequestModel
+from nnsight.schema.Response import ResponseModel
 
-from ...schema.Response import ResponseModel, ResultModel
+from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 from ..util import set_cuda_env_var, update_nnsight_print_function
 from ...logging import load_logger
@@ -72,16 +72,14 @@ class ModelDeployment:
         self.running = False
         self.gauge = NDIFGauge(service='ray')
 
-    def __call__(self, request: RequestModel):
+    def __call__(self, request: BackendRequestModel):
 
         # Send RUNNING response.
-        ResponseModel(
-            id=request.id,
-            session_id=request.session_id,
-            received=request.received,
+        response = request.create_response(
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+        ).respond(self.api_url, self.object_store)
+        #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
 
         local_result = None
 
@@ -113,29 +111,25 @@ class ModelDeployment:
             # Peak VRAM usage during execution (in bytes)
             gpu_mem = max_memory_allocated()
 
-            ResultModel(
+            BackendResultModel(
                 id=request.id,
                 value=obj.remote_backend_postprocess_result(local_result),
             ).save(self.object_store)
 
             # Send COMPELTED response.
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            response = request.create_response(
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
+            ).respond(self.api_url, self.object_store)
+            #.log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            response = request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store).backup_request(self.object_store, request)
+            ).respond(self.api_url, self.object_store)
+            #.log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store).backup_request(self.object_store, request)
 
         del request
         del local_result
@@ -148,11 +142,12 @@ class ModelDeployment:
 
     def log_to_user(self, data: Any, params: Dict[str, Any]):
 
-        ResponseModel(
+        BackendResponseModel(
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
-        ).log(self.logger).respond(self.api_url, self.object_store)
+        ).respond(self.api_url, self.object_store)
+        #.log(self.logger).respond(self.api_url, self.object_store)
 
     async def status(self):
 

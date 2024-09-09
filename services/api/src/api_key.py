@@ -9,8 +9,8 @@ from fastapi.security.api_key import APIKeyHeader
 from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
-from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
+from .schema import BackendRequestModel
 from .metrics import NDIFGauge
 
 gauge = NDIFGauge(service='app')
@@ -60,7 +60,7 @@ def extract_request_metadata(raw_request: Request):
     
     return ip_address, user_agent, int(content_length)
 
-async def api_key_auth(request : RequestModel, raw_request : Request, api_key: str = Security(api_key_header)):
+async def api_key_auth(request : BackendRequestModel, raw_request : Request, api_key: str = Security(api_key_header)):
 
     # Extract metadata
     ip_address, user_agent, content_length = extract_request_metadata(raw_request)
@@ -73,6 +73,7 @@ async def api_key_auth(request : RequestModel, raw_request : Request, api_key: s
 
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
 
+    #request.update(gauge, request, ResponseModel.JobStatus.RECEIVED)
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 
     gauge.update_network(request.id, ip_address, user_agent, content_length)

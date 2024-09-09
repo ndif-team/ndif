@@ -3,21 +3,23 @@ from __future__ import annotations
 from typing import ClassVar
 
 from nnsight.schema.Request import RequestModel
+from nnsight.schema.Response import ResponseModel
 
 from .mixins import ObjectStorageMixin
-from .Response import ResponseModel
+from .Response import BackendResponseModel
 
 class BackendRequestModel(RequestModel, ObjectStorageMixin):
 
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "application/json"
     
-    def create_response(self, status: ResponseModel.JobStatus, description: str) -> ResponseModel:
-        """Generates a ResponseModel given a change in status to an ongoing request."""
-        response = ResponseModel(
+    def create_response(self, status: ResponseModel.JobStatus, description: str) -> BackendResponseModel:
+        """Generates a BackendResponseModel given a change in status to an ongoing request."""
+
+        response = BackendResponseModel(
             id=self.id,
             session_id=self.session_id,
-            receieved=self.received,
+            received=self.received,
             status=status,
             description=description
         )
