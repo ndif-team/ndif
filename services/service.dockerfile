@@ -1,4 +1,4 @@
-ARG NAME
+ARG NAME=api
 
 FROM ${NAME}_base:latest
 

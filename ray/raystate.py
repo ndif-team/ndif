@@ -1,10 +1,10 @@
-import urllib.parse
 from typing import Any, Dict, List
 
 try:
     from slugify import slugify
 except:
     pass
+import ray
 import yaml
 from pydantic import BaseModel
 from ray.dashboard.modules.serve.sdk import ServeSubmissionClient
@@ -43,29 +43,48 @@ class RayState:
         self,
         ray_config_path: str,
         service_config_path: str,
-        ray_dashboard_url: str,
-        database_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
         api_url: str,
     ) -> None:
 
-        self.ray_dashboard_url = ray_dashboard_url
-        self.database_url = database_url
+        self.ray_config_path = ray_config_path
+        self.service_config_path = service_config_path
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
         self.api_url = api_url
 
-        with open(ray_config_path, "r") as file:
+        self.runtime_context = ray.get_runtime_context()
+        self.ray_dashboard_url = f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
+
+    def load_from_disk(self):
+
+        with open(self.ray_config_path, "r") as file:
             self.ray_config = ServeDeploySchema(**yaml.safe_load(file))
 
-        with open(service_config_path, "r") as file:
-            self.service_config = ServiceConfigurationSchema(**yaml.safe_load(file))
+        with open(self.service_config_path, "r") as file:
+            self.service_config = ServiceConfigurationSchema(
+                **yaml.safe_load(file)
+            )
+
+    def redeploy(self):
+
+        self.load_from_disk()
 
         self.add_request_app()
 
         for model_config in self.service_config.models:
             self.add_model_app(model_config)
 
+        self.apply()
+
     def apply(self) -> None:
 
-        ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
+        ServeSubmissionClient(
+            self.ray_dashboard_url
+        ).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
 
@@ -82,9 +101,10 @@ class RayState:
                 )
             ],
             args=RequestDeploymentArgs(
-                ray_dashboard_url=self.ray_dashboard_url,
                 api_url=self.api_url,
-                database_url=self.database_url,
+                object_store_url=self.object_store_url,
+                object_store_access_key=self.object_store_access_key,
+                object_store_secret_key=self.object_store_secret_key,
             ).model_dump(),
         )
 
@@ -98,7 +118,13 @@ class RayState:
 
         model_config.args["model_key"] = model_config.model_key
         model_config.args["api_url"] = self.api_url
-        model_config.args["database_url"] = self.database_url
+        model_config.args["object_store_url"] = self.object_store_url
+        model_config.args["object_store_access_key"] = (
+            self.object_store_access_key
+        )
+        model_config.args["object_store_secret_key"] = (
+            self.object_store_secret_key
+        )
 
         application = ServeApplicationSchema(
             name=f"Model:{model_key}",

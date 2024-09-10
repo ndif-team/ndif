@@ -14,7 +14,7 @@ RUN apt-get update \
 COPY environment.yml .
 
 # Install miniconda
-ENV CONDA_DIR /opt/conda
+ENV CONDA_DIR=/opt/conda
 
 # Put conda in path so we can use conda activate
 ENV PATH=$CONDA_DIR/bin:$PATH

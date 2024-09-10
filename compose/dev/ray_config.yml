@@ -16,7 +16,3 @@ applications:
     args:
       ray_config_path: /src/ray/config/ray_config.yml
       service_config_path: /src/ray/config/service_config.yml
-      ray_dashboard_url: http://nagoya.research.khoury.northeastern.edu:8265
-      # object_store_url: mongodb://user:pass@129.10.122.141:27017
-      object_store_url: nagoya.research.khoury.northeastern.edu:27017
-      api_url: http://nagoya.research.khoury.northeastern.edu:5000

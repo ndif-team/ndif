@@ -20,15 +20,17 @@ dependencies:
     - opentelemetry-sdk
     - opentelemetry-exporter-otlp
     - opentelemetry-instrumentation-fastapi
+    - prometheus_client
     - prometheus-fastapi-instrumentator
+    - python-logging-loki
     # Http server
     - uvicorn[standard]==0.24.0
     - gunicorn
     - eventlet
     # Database
-    - pymongo
+    - minio
     # Tasks
     - ray[serve]
     - requests
     - torch
-    - git+https://github.com/ndif-team/nnsight@0.3
+    - git+https://github.com/ndif-team/nnsight@dev

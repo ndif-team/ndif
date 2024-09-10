@@ -7,7 +7,11 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - git+https://github.com/ndif-team/nnsight@0.3
+    - git+https://github.com/ndif-team/nnsight@dev
     - ray[serve]
     - python-slugify
-    - pymongo
+    # Telemetry
+    - prometheus_client
+    - python-logging-loki
+    # Database
+    - minio
