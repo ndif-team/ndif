@@ -44,16 +44,6 @@ git checkout <branch-name>  # e.g., 0.3
 pip install -e .
 ```
 
-### 4. Configure Docker Compose
-
-Adjust your GPU settings in `ndif/compose/dev/docker-compose.yml` (check your system with `nvidia-smi`):
-
-```sh
-- driver: nvidia
- count: 1
- capabilities: [ gpu ]
-```
-
 ## Building and Running `NDIF`
 
 1. Build the base environment

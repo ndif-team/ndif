@@ -34,7 +34,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: ${N_DEVICES}
               capabilities: [ gpu ]
 
     environment:
