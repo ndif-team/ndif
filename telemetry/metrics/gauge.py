@@ -5,7 +5,7 @@ from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
 
 # Labels for the metrics
-request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp')
+request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp', 'user_id')
 network_labels = ('request_id', 'ip_address', 'user_agent')
 
 class NDIFGauge:
@@ -55,18 +55,20 @@ class NDIFGauge:
         """Initialize the network-related Gauge. Only used if the service is not 'ray'."""
         return PrometheusGauge('network_data', 'Track network data of requests', network_labels)
 
-    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, gpu_mem: int = 0) -> None:
+    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, user_id = None, gpu_mem: int = 0) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
+
         labels = {
-            "request_id": request.id,
-            "api_key": api_key,
-            "model_key": request.model_key,
+            "request_id": str(request.id),
+            "api_key": str(api_key),
+            "model_key": str(request.model_key),
             "gpu_mem": str(gpu_mem),
-            "timestamp": str(request.received)  # Ensure timestamp is string for consistency
+            "timestamp": str(request.received),  # Ensure timestamp is string for consistency
+            "user_id": str(user_id) if user_id is not None else " "
         }
 
         if self.service == 'ray':
