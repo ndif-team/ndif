@@ -2,7 +2,7 @@
 import nnsight
 from nnsight import CONFIG
 
-CONFIG.API.HOST = "localhost:80"
+CONFIG.API.HOST = "localhost:5001"
 CONFIG.API.SSL = False
 
 model = nnsight.LanguageModel("openai-community/gpt2")
