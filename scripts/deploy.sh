@@ -4,7 +4,7 @@
 # Description: This script deploys (or redeploys) Ray model deployments on a list of specified machines.
 # Author: Michael Ripa
 # Date: 2024-09-10
-
+# Only works on baulab machines 
 ##################### CONFIG ######################################################################
 
 MACHINES=("hamada" "fukuyama") # List of machines/ip's (for ssh)
@@ -22,45 +22,32 @@ for MACHINE in "${MACHINES[@]}"; do
   ssh $USER@$MACHINE << EOF
     echo "Attaching to tmux session on $MACHINE..."
    
-    # Attach to the most recent tmux session (or create new session if none found)
-    TMUX_SESSION=\$(tmux ls | tail -n 1 | awk -F: '{print \$1}')
-    if [ -z "\$TMUX_SESSION" ]; then
-      echo "No tmux session found on $MACHINE. Starting new tmux session..."
-      tmux
-    else
-      tmux attach-session -t \$TMUX_SESSION
-    fi
-
-    # Stop the running Ray node (press Ctrl+C)
-    echo "Stopping current Ray node..."
-    tmux send-keys -t \$TMUX_SESSION C-c
-
-    # Ensure all Python scripts are killed (probably optional)
-    echo "Killing all Python scripts..."
-    pkill -u $USER -f python  # Kills all Python processes
+    # Activate the specific conda environment
 
     cd $START_SCRIPT_DIR
-    source ~/miniconda3/etc/profile.d/conda.sh
-
-    # Activate the specific conda environment
-    conda activate $CONDA_ENV
 
     # Navigate to each repo, pull updates
     START_SCRIPT_DIR="$START_SCRIPT_DIR"
     REPOS="$REPOS"
     for REPO in \$REPOS; do
-      echo "Updating repository: \$REPO..."
-      cd \$REPO
-      git pull
-      cd ../
+        echo "Updating repository: \$REPO..."
+        cd \$REPO
+        git pull
+        cd ../
     done
+
+    source ~/miniconda3/etc/profile.d/conda.sh
+    conda activate $CONDA_ENV
+
+    # Stop the running Ray node (press Ctrl+C)
+    echo "Stopping current Ray node..."
+
+    ray stop
 
     # Start the node
     cd \$START_SCRIPT_DIR
     bash start.sh
 
-    # Detach from tmux session and disconnect
-    tmux detach
     echo "Tasks completed on $MACHINE. Disconnecting..."
 
 EOF
