@@ -11,15 +11,15 @@ from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, reset_peak_memory_stats
+from torch.cuda import memory_allocated, max_memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import RequestModel
+from nnsight.schema.Response import ResponseModel
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema.Response import ResponseModel, ResultModel
+from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ..util import set_cuda_env_var, update_nnsight_print_function
 
 
@@ -77,18 +77,15 @@ class ModelDeployment:
         self.gauge = NDIFGauge(service="ray")
 
     @ray.method(concurrency_group="compute")
-    async def __call__(self, request: RequestModel):
+    async def __call__(self, request: BackendRequestModel):
 
         # Send RUNNING response.
-        ResponseModel(
-            id=request.id,
-            session_id=request.session_id,
-            received=request.received,
+        request.create_response(
             status=ResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
-        ).log(self.logger).update_gauge(self.gauge, request).respond(
-            self.api_url, self.object_store
-        )
+            logger=self.logger,
+            gauge=self.gauge,
+        ).respond(self.api_url, self.object_store)
 
         local_result = None
 
@@ -110,6 +107,7 @@ class ModelDeployment:
 
                 # For tracking peak GPU usage
                 reset_peak_memory_stats()
+                model_memory = memory_allocated()
 
                 # Deserialize request
                 obj = request.deserialize(self.model)
@@ -117,38 +115,31 @@ class ModelDeployment:
                 # Execute object.
                 local_result = obj.local_backend_execute()
 
-            # Peak VRAM usage during execution (in bytes)
-            gpu_mem = max_memory_allocated()
+            # Peak VRAM usage during execution (in bytes, not including the model weights)
+            gpu_mem = max_memory_allocated() - model_memory
 
-            ResultModel(
+            BackendResultModel(
                 id=request.id,
                 value=obj.remote_backend_postprocess_result(local_result),
             ).save(self.object_store)
 
-            # Send COMPELTED response.
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            # Send COMPLETED response.
+            request.create_response(
                 status=ResponseModel.JobStatus.COMPLETED,
                 description="Your job has been completed.",
-            ).log(self.logger).update_gauge(
-                self.gauge, request, gpu_mem
-            ).respond(
-                self.api_url, self.object_store
-            )
+                logger=self.logger,
+                gauge=self.gauge,
+                gpu_mem=gpu_mem,
+            ).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).respond(
-                self.api_url, self.object_store
-            )
+                logger=self.logger,
+                gauge=self.gauge,
+            ).respond(self.api_url, self.object_store)
 
         del request
         del local_result
@@ -161,11 +152,13 @@ class ModelDeployment:
 
     def log_to_user(self, data: Any, params: Dict[str, Any]):
 
-        ResponseModel(
+        BackendResponseModel(
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
-        ).log(self.logger).respond(self.api_url, self.object_store)
+            logger=self.logger,
+            gauge=self.gauge,
+        ).respond(self.api_url, self.object_store)
 
     @ray.method(concurrency_group="io")
     async def status(self):

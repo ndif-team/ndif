@@ -19,10 +19,9 @@ from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
 
-from nnsight.schema.Request import RequestModel
-
+from nnsight.schema.Response import ResponseModel
 from .api_key import api_key_auth
-from .schema import ResponseModel, ResultModel
+from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from .logging import load_logger
 from .metrics import NDIFGauge
 
@@ -75,48 +74,42 @@ Instrumentator().instrument(app).expose(app)
 
 @app.post("/request")
 async def request(
-    request: RequestModel = Depends(api_key_auth)
-) -> ResponseModel:
+    request: BackendRequestModel = Depends(api_key_auth)
+) -> BackendResponseModel:
     """Endpoint to submit request.
 
     Args:
-        request (RequestModel): _description_
+        request (BackendRequestModel): _description_
 
     Returns:
-        ResponseModel: _description_
+        BackendResponseModel: _description_
     """
     try:
-        # Set the id and time received of request.
-        request.received = datetime.now()
-        request.id = str(uuid.uuid4())
-
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
 
         # Create response object.
         # Log and save to data backend.
-        response = ResponseModel(
-            id=request.id,
-            received=request.received,
-            session_id=request.session_id,
+        response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
+            logger=logger,
+            gauge=gauge,
         )
+
+        # Back up request object by default (to be deleted on successful completion)
+        request.save(object_store)
 
     except Exception as exception:
 
         # Create exception response object.
-        response = ResponseModel(
-            id=request.id,
-            received=request.received,
-            session_id=request.session_id,
+        response = request.create_response(
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
+            logger=logger,
+            gauge=gauge,
         )
-
-    # Log and save to data backend.
-    response.log(logger).update_gauge(gauge, request)
 
     if not response.blocking():
 
@@ -138,7 +131,7 @@ async def _blocking_response(response: ResponseModel):
 
 
 @app.post("/blocking_response")
-async def blocking_response(response: ResponseModel):
+async def blocking_response(response: BackendResponseModel):
     """Endpoint to have server respond to sid.
 
     Args:
@@ -149,36 +142,36 @@ async def blocking_response(response: ResponseModel):
 
 
 @app.get("/response/{id}")
-async def response(id: str) -> ResponseModel:
+async def response(id: str) -> BackendResponseModel:
     """Endpoint to get latest response for id.
 
     Args:
         id (str): ID of request/response.
 
     Returns:
-        ResponseModel: Response.
+        BackendResponseModel: Response.
     """
 
     # Load response from client given id.
-    return ResponseModel.load(object_store, id)
+    return BackendResponseModel.load(object_store, id)
 
 
 @app.get("/result/{id}")
-async def result(id: str) -> ResultModel:
+async def result(id: str) -> BackendResultModel:
     """Endpoint to retrieve result for id.
 
     Args:
         id (str): ID of request/response.
 
     Returns:
-        ResultModel: Result.
+        BackendResultModel: Result.
 
     Yields:
-        Iterator[ResultModel]: _description_
+        Iterator[BackendResultModel]: _description_
     """
 
     # Get cursor to bytes stored in data backend.
-    object = ResultModel.load(object_store, id, stream=True)
+    object = BackendResultModel.load(object_store, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -196,8 +189,9 @@ async def result(id: str) -> ResultModel:
             object.close()
             object.release_conn()
             
-            ResultModel.delete(object_store, id)
-            ResponseModel.delete(object_store, id)
+            BackendResultModel.delete(object_store, id)
+            BackendResponseModel.delete(object_store, id)
+            BackendRequestModel.delete(object_store, id)
 
     return StreamingResponse(
         content=stream(),

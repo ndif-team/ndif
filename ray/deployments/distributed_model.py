@@ -11,14 +11,14 @@ import torch.distributed
 from minio import Minio
 from ray import serve
 from ray.serve import Application
-from torch.cuda import max_memory_allocated, reset_peak_memory_stats
+from torch.cuda import memory_allocated, max_memory_allocated, reset_peak_memory_stats
 from torch.amp import autocast
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import RequestModel
+from nnsight.schema.Response import ResponseModel
 
-from ...schema.Response import ResponseModel, ResultModel
+from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import (
@@ -216,17 +216,16 @@ class ModelDeployment:
         torch.cuda.empty_cache()
 
     @ray.method(concurrency_group="compute")
-    async def __call__(self, request: RequestModel):
+    async def __call__(self, request: BackendRequestModel):
 
         if self.head:
 
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            request.create_response(
                 status=ResponseModel.JobStatus.RUNNING,
                 description="Your job has started running.",
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+                logger=self.logger,
+                gauge=self.gauge,
+            ).respond(self.api_url, self.object_store)
             update_nnsight_print_function(
                 partial(
                     self.log_to_user,
@@ -249,6 +248,7 @@ class ModelDeployment:
         try:
             # For tracking peak GPU usage of current worker
             reset_peak_memory_stats()
+            shard_memory = memory_allocated()
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
@@ -258,34 +258,33 @@ class ModelDeployment:
                 local_result = obj.local_backend_execute()
 
             # Peak VRAM usage (in bytes) of current worker during execution
-            gpu_mem = max_memory_allocated()
+            gpu_mem = max_memory_allocated() - shard_memory
 
             if self.head:
 
-                ResultModel(
+                BackendResultModel(
                     id=request.id,
                     value=obj.remote_backend_postprocess_result(local_result),
                 ).save(self.object_store)
 
-                ResponseModel(
-                    id=request.id,
-                    session_id=request.session_id,
-                    received=request.received,
+                request.create_response(
                     status=ResponseModel.JobStatus.COMPLETED,
                     description="Your job has been completed.",
-                ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
+                    logger=self.logger,
+                    gauge=self.gauge,
+                    gpu_mem=gpu_mem,
+                ).respond(self.api_url, self.object_store)
 
         except Exception as exception:
 
             if self.head:
 
-                ResponseModel(
-                    id=request.id,
-                    session_id=request.session_id,
-                    received=request.received,
+                request.create_response(
                     status=ResponseModel.JobStatus.ERROR,
                     description=str(exception),
-                ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+                    logger=self.logger,
+                    gauge=self.gauge,
+                ).respond(self.api_url, self.object_store)
 
         del request
         del local_result
@@ -304,7 +303,7 @@ class ModelDeployment:
 
     def log_to_user(self, data: Any, params: Dict[str, Any]):
 
-        ResponseModel(
+        BackendResponseModel(
             **params,
             status=ResponseModel.JobStatus.LOG,
             description=str(data),
