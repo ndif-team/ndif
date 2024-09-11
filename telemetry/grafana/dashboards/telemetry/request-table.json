@@ -23,7 +23,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "bdu849a893wg0b"
+        "uid": "cdwtb84j7ug3ka"
       },
       "description": "",
       "fieldConfig": {
@@ -43,39 +43,33 @@
           "mappings": [
             {
               "options": {
-                "from": 0.5,
-                "result": {
+                "1": {
                   "color": "super-light-green",
                   "index": 0,
+                  "text": "JOB RECEIVED"
+                },
+                "2": {
+                  "color": "light-green",
+                  "index": 1,
+                  "text": "JOB APPROVED"
+                },
+                "3": {
+                  "color": "green",
+                  "index": 2,
                   "text": "JOB RUNNING"
                 },
-                "to": 1.5
-              },
-              "type": "range"
-            },
-            {
-              "options": {
-                "from": 3.5,
-                "result": {
+                "4": {
                   "color": "dark-green",
-                  "index": 1,
+                  "index": 3,
                   "text": "JOB COMPLETE"
                 },
-                "to": 4.5
-              },
-              "type": "range"
-            },
-            {
-              "options": {
-                "from": 5.5,
-                "result": {
+                "6": {
                   "color": "dark-red",
-                  "index": 2,
+                  "index": 4,
                   "text": "JOB FAILED"
-                },
-                "to": 6.5
+                }
               },
-              "type": "range"
+              "type": "value"
             }
           ],
           "thresholds": {
@@ -92,7 +86,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Value (firstNotNull)"
+              "options": "Value (max)"
             },
             "properties": [
               {
@@ -114,6 +108,42 @@
               {
                 "id": "displayName",
                 "value": "Duration"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "user_id (lastNotNull)"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Email"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "api_key (lastNotNull)"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "API Key"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "model_key (firstNotNull)"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Model Key"
               }
             ]
           }
@@ -139,19 +169,14 @@
         },
         "frameIndex": 0,
         "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Status"
-          }
-        ]
+        "sortBy": []
       },
       "pluginVersion": "11.1.0",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "bdu849a893wg0b"
+            "uid": "cdwtb84j7ug3ka"
           },
           "disableTextWrap": false,
           "editorMode": "code",
@@ -185,7 +210,7 @@
               },
               "Value": {
                 "aggregations": [
-                  "firstNotNull"
+                  "max"
                 ],
                 "operation": "aggregate"
               },
@@ -244,6 +269,12 @@
                   "range"
                 ]
               },
+              "user_id": {
+                "aggregations": [
+                  "lastNotNull"
+                ],
+                "operation": "aggregate"
+              },
               "{__name__=\"calculated_duration\", request_id=\"66cdefe37d3ba5114d6c6fe1\"}": {
                 "aggregations": [
                   "lastNotNull"
@@ -262,7 +293,7 @@
     "list": [
       {
         "current": {
-          "selected": true,
+          "selected": false,
           "text": "1h",
           "value": "1h"
         },
@@ -312,6 +343,6 @@
   "timezone": "browser",
   "title": "Request Table",
   "uid": "bdupuguennj7ka",
-  "version": 5,
+  "version": 1,
   "weekStart": ""
 }
