@@ -31,7 +31,7 @@ from ...logging import load_logger
 from  ...metrics import NDIFGauge
 
 @serve.deployment(
-    ray_actor_options={"num_gpus": 1}, health_check_timeout_s=1200
+    ray_actor_options={"num_gpus": 1, "concurrency_groups": {"io": 5, "compute": 1}}, health_check_timeout_s=1200
 )
 class ModelDeployment:
     def __init__(
@@ -215,7 +215,8 @@ class ModelDeployment:
 
         torch.cuda.empty_cache()
 
-    def __call__(self, request: BackendRequestModel):
+    @ray.method(concurrency_group="compute")
+    async def __call__(self, request: BackendRequestModel):
 
         if self.head:
 
@@ -253,6 +254,8 @@ class ModelDeployment:
 
                 # Deserialize request
                 obj = request.deserialize(self.model)
+                
+                local_result = obj.local_backend_execute()
 
             # Peak VRAM usage (in bytes) of current worker during execution
             gpu_mem = max_memory_allocated() - shard_memory
@@ -306,6 +309,7 @@ class ModelDeployment:
             description=str(data),
         ).log(self.logger).respond(self.api_url, self.object_store)
 
+    @ray.method(concurrency_group="io")
     async def status(self):
 
         model: PreTrainedModel = self.model._model

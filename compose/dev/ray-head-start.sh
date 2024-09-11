@@ -9,7 +9,9 @@ ray start --head \
     --include-dashboard=true \
     --dashboard-host=0.0.0.0 \
     --dashboard-port=8265 \
-    --dashboard-grpc-port=8267
+    --dashboard-grpc-port=8268 \
+    --metrics-export-port=8267
+    
     
 serve deploy src/ray/config/ray_config.yml
 

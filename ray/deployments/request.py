@@ -21,14 +21,12 @@ from ...metrics import NDIFGauge
 class RequestDeployment:
     def __init__(
         self,
-        ray_dashboard_url: str,
         api_url: str,
         object_store_url: str,
         object_store_access_key: str,
         object_store_secret_key: str,
     ):
 
-        self.ray_dashboard_url = ray_dashboard_url
         self.api_url = api_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
@@ -77,7 +75,6 @@ class RequestDeployment:
 
 class RequestDeploymentArgs(BaseModel):
 
-    ray_dashboard_url: str
     api_url: str
     object_store_url: str
     object_store_access_key: str

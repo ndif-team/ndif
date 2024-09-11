@@ -4,26 +4,28 @@ import os
 from functools import partial
 from typing import Any, Dict
 
+import ray
 import torch
 from minio import Minio
 from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
-from torch.cuda import memory_allocated, max_memory_allocated, reset_peak_memory_stats
 from torch.amp import autocast
+from torch.cuda import memory_allocated, max_memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
 from nnsight.schema.Response import ResponseModel
 
-from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-
-from ..util import set_cuda_env_var, update_nnsight_print_function
 from ...logging import load_logger
 from ...metrics import NDIFGauge
+from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ..util import set_cuda_env_var, update_nnsight_print_function
 
 
-@serve.deployment()
+@serve.deployment(
+    ray_actor_options={"concurrency_groups": {"io": 5, "compute": 1}}
+)
 class ModelDeployment:
     def __init__(
         self,
@@ -68,11 +70,14 @@ class ModelDeployment:
             secure=False,
         )
 
-        self.logger = load_logger(service_name="ray_model", logger_name="ray.serve")
+        self.logger = load_logger(
+            service_name="ray_model", logger_name="ray.serve"
+        )
         self.running = False
-        self.gauge = NDIFGauge(service='ray')
+        self.gauge = NDIFGauge(service="ray")
 
-    def __call__(self, request: BackendRequestModel):
+    @ray.method(concurrency_group="compute")
+    async def __call__(self, request: BackendRequestModel):
 
         # Send RUNNING response.
         request.create_response(
@@ -155,6 +160,7 @@ class ModelDeployment:
             gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
 
+    @ray.method(concurrency_group="io")
     async def status(self):
 
         model: PreTrainedModel = self.model._model

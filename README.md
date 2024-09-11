@@ -44,30 +44,6 @@ git checkout <branch-name>  # e.g., 0.3
 pip install -e .
 ```
 
-### 4. Configure Docker Compose
-
-Modify the Docker Compose file for your system
-
-1. Edit the file:
-
-```sh
-vi compose/(dev|prod)/docker-compose.yml 
-```
-
-2. Update the Hugging Face cache path:
-
-```sh
-- /disk/u/[YOUR BAULAB USERNAME]/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-```
-
-3. Adjust GPU settings (check your system with `nvidia-smi`):
-
-```sh
-- driver: nvidia
- count: 1
- capabilities: [ gpu ]
-```
-
 ## Building and Running `NDIF`
 
 1. Build the base environment

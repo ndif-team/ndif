@@ -1,7 +1,7 @@
 import os
 
+import uuid
 import firebase_admin
-from bson.objectid import ObjectId
 from cachetools import TTLCache, cached
 from datetime import datetime
 from fastapi import HTTPException, Request, Security
@@ -33,12 +33,18 @@ class ApiKeyStore:
         self.firestore_client = firestore.client()
 
     @cached(cache=TTLCache(maxsize=1024, ttl=60))
-    def does_api_key_exist(self, api_key: str, check_405b: bool = False) -> bool:
+    def fetch_document(self, api_key: str):
 
         doc = self.firestore_client.collection("keys").document(api_key).get()
+        return doc
+
+    def does_api_key_exist(self, doc, check_405b: bool = False) -> bool:
 
         return doc.exists and doc.to_dict().get('tier') == '405b' if check_405b else doc.exists
 
+    def get_uid(self, doc):
+        user_id = doc.to_dict().get('user_id')
+        return user_id
 
 FIREBASE_CREDS_PATH = os.environ.get("FIREBASE_CREDS_PATH", None)
 
@@ -66,7 +72,7 @@ def init_request(request: BackendRequestModel) -> BackendRequestModel:
     """
     # Ensure request ID and received timestamp are set
     if not request.id:
-        request.id = str(ObjectId())
+        request.id = str(uuid.uuid4())
     if not request.received:
         request.received = datetime.now()
     return request
@@ -96,8 +102,10 @@ async def api_key_auth(
         if request.model_key == llama_405b:
             check_405b = True
         
-        if api_key_store.does_api_key_exist(api_key, check_405b):
-            gauge.update(request, api_key, ResponseModel.JobStatus.APPROVED)
+        doc = api_key_store.fetch_document(api_key)
+        if api_key_store.does_api_key_exist(doc, check_405b):
+            user_id = api_key_store.get_uid(doc)
+            gauge.update(request=request, api_key=api_key, status=ResponseModel.JobStatus.APPROVED, user_id=user_id)
             return request
 
         else:
