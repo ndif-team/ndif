@@ -1,4 +1,5 @@
 num_users: 10
 spawn_rate: 10
 deterministic: false
+model_key: "openai-community/gpt2"
 base_url: "http://localhost:5001"
