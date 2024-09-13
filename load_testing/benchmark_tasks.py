@@ -1,29 +1,21 @@
-from locust import TaskSet, task
+from locust import task
 import random
-from LocustBackend import LocustBackend
+from common_tasks import CommonTasks
 from util import gen_rand_str
 import nnsight
 
-class BenchmarkTasks(TaskSet):
+class BenchmarkTasks(CommonTasks):
     """TaskSet for benchmarking with incrementally increasing load."""
-    # TODO: Add to config
-    min_num_tokens = 1
-    max_num_tokens = 10**6
-    increment_size = 10   # Increment size
-    current_token_count = min_num_tokens
 
     def on_start(self):
         """Initialize backend and model for benchmarking."""
-        self.backend = LocustBackend(
-            client=self.client,
-            api_key=random.choice(self.user.api_keys),
-            base_url=self.user.config['base_url']
-        )
 
-        for key, val in self.user.config.items():
-            setattr(self, key, val)
-
-        self.model = nnsight.LanguageModel(self.model_key)
+        super().on_start()
+        # TODO: Add to config
+        self.min_num_tokens = 1
+        self.max_num_tokens = 10**6
+        self.increment_size = 10   # Increment size
+        self.current_token_count = self.min_num_tokens
 
     @task
     def benchmark_token_size(self):

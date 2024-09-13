@@ -1,24 +1,13 @@
-from locust import TaskSet, task
+from locust import task
 import random
-from LocustBackend import LocustBackend
-import nnsight
+from common_tasks import CommonTasks
+from util import get_num_layers
 
-class LoadTestingTasks(TaskSet):
+class LoadTestingTasks(CommonTasks):
     def on_start(self):
         """Initialize backend and model for standard load testing tasks."""
-        # Dynamically initialize the backend
-        self.backend = LocustBackend(
-            client=self.client,
-            api_key=random.choice(self.user.api_keys),
-            base_url=self.user.config['base_url']
-        )
-        for key, val in self.user.config.items():
-            setattr(self, key, val)
-
-        self.model = nnsight.LanguageModel(self.model_key)
-        self.n_layers = self.model.config.n_layer
-
-        # TODO: Give this user a unique IP address
+        super().on_start()
+        self.n_layers = get_num_layers(self.model.config)
 
     @task
     def next_token(self):
@@ -32,7 +21,7 @@ class LoadTestingTasks(TaskSet):
     @task
     def layer_selector(self):
         """Simulate selecting activations of an intermediate layer."""
-        layer = random.randint(0, self.model.config.n_layer - 1)
+        layer = random.randint(0, self.n_layers - 1)
         query = 'test query'
         with self.model.trace(query, remote=True, backend=self.backend):
             output = self.model.transformer.h[layer].output.save()
