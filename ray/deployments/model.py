@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
 from torch.amp import autocast
-from torch.cuda import memory_allocated, max_memory_allocated, reset_peak_memory_stats
+from torch.cuda import (
+    max_memory_allocated,
+    memory_allocated,
+    reset_peak_memory_stats,
+)
 from transformers import PreTrainedModel
 
 from nnsight.models.mixins import RemoteableMixin
@@ -19,12 +23,20 @@ from nnsight.schema.Response import ResponseModel
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ...schema import (
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ..util import set_cuda_env_var, update_nnsight_print_function
 
 
 @serve.deployment(
-    ray_actor_options={"concurrency_groups": {"io": 5, "compute": 1}}
+    ray_actor_options={
+        "concurrency_groups": {"io": 5, "compute": 1},
+        "num_cpus": 2,
+    },
+    health_check_timeout_s=1200,
 )
 class ModelDeployment:
     def __init__(
@@ -170,11 +182,10 @@ class ModelDeployment:
             "repo_id": model.config._name_or_path,
         }
 
-    # # Ray checks this method and restarts replica if it raises an exception
-    # def check_health(self):
-
-    #     if not self.running:
-    #         torch.cuda.empty_cache()
+    # Ray checks this method and restarts replica if it raises an exception
+    @ray.method(concurrency_group="io")
+    async def check_health(self):
+        pass
 
     def model_size(self) -> float:
 
