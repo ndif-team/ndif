@@ -1,5 +1,5 @@
 #!/bin/bash
-
+pip install python-logging-loki
 resources=`python -m src.ray.resources --head`
 
 ray start --head \
