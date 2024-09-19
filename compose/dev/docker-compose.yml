@@ -1,19 +1,17 @@
 services:
-
   rabbitmq:
     image: rabbitmq:3.11.28
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - 5673:5672
+      - ${DEV_RABBITMQ_PORT}:5672
 
   minio:
     image: minio/minio:latest
     command: server /data
     ports:
-      - 27018:9000
-
+      - ${DEV_MINIO_PORT}:9000
   ray-head:
     image: ray_head:latest
     shm_size: '15gb'
@@ -24,10 +22,10 @@ services:
       - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/
     ports:
-      - 6380:6379
+      - ${DEV_RAY_HEAD_PORT}:6379
       - 9998:10001
-      - 8266:8265
-      - 8267:8267
+      - ${DEV_RAY_DASHBOARD_PORT}:8265
+      - ${DEV_RAY_SERVE_PORT}:8267
     deploy:
       replicas: 1
       resources:
@@ -39,20 +37,19 @@ services:
 
     environment:
       - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
-      - LOKI_URL=http://${HOST_IP}:3100/loki/api/v1/push
-      - OBJECT_STORE_URL=${HOST_IP}:27018
-      - API_URL=http://${HOST_IP}:5001
+      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      - OBJECT_STORE_URL=${HOST_IP}:${DEV_MINIO_PORT}
+      - API_URL=http://${HOST_IP}:${DEV_API_PORT}
   api:
     image: api:latest
     ports:
-      - 5001:80
+      - ${DEV_API_PORT}:80
     environment:
-      OBJECT_STORE_URL: ${HOST_IP}:27018
-      RMQ_URL: amqp://guest:guest@${HOST_IP}:5673/
+      OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
+      RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${HOST_IP}:${DEV_RABBITMQ_PORT}/
       WORKERS: 1
       RAY_ADDRESS: ray://${HOST_IP}:9998
-      LOKI_URL: http://${HOST_IP}:3100/loki/api/v1/push
-      # FIREBASE_CREDS_PATH
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
 
   prometheus:
     image: prom/prometheus:latest
@@ -72,8 +69,8 @@ services:
     image: grafana/grafana:latest
     network_mode: "host"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
