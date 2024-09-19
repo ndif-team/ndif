@@ -50,7 +50,8 @@ services:
     ports:
       - 5000:80
     volumes:
-      - /disk/u/jfiottok/wd/ndif/compose/prod/api-start.sh:/start.sh
+      - ./api-start.sh:/start.sh
+      - ../../services/api/src/creds.json:/src/creds.json
     environment:
       OBJECT_STORE_URL: nagoya.research.khoury.northeastern.edu:27017
       RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
