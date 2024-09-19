@@ -23,9 +23,9 @@ services:
     shm_size: '15gb'
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - /share/u/ndif/ndif-deployment/ndif/compose/prod/service_config.yml:/src/ray/config/service_config.yml
-      - /share/u/ndif/ndif-deployment/ndif/compose/prod/ray_config.yml:/src/ray/config/ray_config.yml
-      - /share/u/ndif/ndif-deployment/ndif/compose/prod/ray-head-start.sh:/start.sh
+      - ./service_config.yml:/src/ray/config/service_config.yml
+      - ./prod/ray_config.yml:/src/ray/config/ray_config.yml
+      - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/
     environment:
       NCCL_DEBUG: INFO
