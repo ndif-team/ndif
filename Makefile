@@ -41,6 +41,13 @@ build_all_service:
 	cd services/ray_head && make -f ../../Makefile build_service NAME=ray_head
 	cd services/ray_worker && make -f ../../Makefile build_service NAME=ray_worker
 
+build:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	make build_all_base
+	make build_all_service
+	make up $(ENV)
+
 up:
 	$(call set_env)
 	$(call check_env,$(ENV))
