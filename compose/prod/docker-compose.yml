@@ -6,7 +6,7 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - ${PROD_RABBITMQ_PORT}:5672
+      - ${PROD_RABBITMQ_PORT}:${RABBITMQ_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
@@ -15,7 +15,7 @@ services:
     #   - MINIO_ACCESS_KEY=minioadmin
     #     MINIO_SECRET_KEY=minioadmin
     ports:
-      - ${PROD_MINIO_PORT}:9000
+      - ${PROD_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray-head:
     image: ray_head:latest
@@ -32,6 +32,8 @@ services:
       LOKI_URL: http://${PROD_HOST_IP}:${PROD_LOKI_PORT}/loki/api/v1/push
       OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
       API_URL: https://ndif.dev
+    env_file:
+      - .env
     deploy:
       replicas: 1
       resources:
@@ -48,7 +50,7 @@ services:
       - minio
     image: api:latest
     ports:
-      - ${PROD_API_PORT}:80
+      - ${PROD_API_PORT}:${API_INTERNAL_PORT}
     volumes:
       - ./api-start.sh:/start.sh
       - ../../services/api/src/creds.json:/src/creds.json
