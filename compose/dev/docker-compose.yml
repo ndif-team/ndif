@@ -5,13 +5,14 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - ${DEV_RABBITMQ_PORT}:5672
+      - ${DEV_RABBITMQ_PORT}:${RABBITMQ_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
     command: server /data
     ports:
-      - ${DEV_MINIO_PORT}:9000
+      - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
+
   ray-head:
     image: ray_head:latest
     shm_size: '15gb'
@@ -22,10 +23,10 @@ services:
       - ./ray-head-start.sh:/start.sh
       - ray-data:/tmp/ray/
     ports:
-      - ${DEV_RAY_HEAD_PORT}:6379
-      - 9998:10001
-      - ${DEV_RAY_DASHBOARD_PORT}:8265
-      - ${DEV_RAY_SERVE_PORT}:8267
+      - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
+      - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
+      - ${DEV_RAY_DASHBOARD_PORT}:${RAY_DASHBOARD_INTERNAL_PORT}
+      - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
     deploy:
       replicas: 1
       resources:
@@ -34,21 +35,22 @@ services:
             - driver: nvidia
               count: ${N_DEVICES}
               capabilities: [ gpu ]
-
     environment:
-      - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
       - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       - OBJECT_STORE_URL=${HOST_IP}:${DEV_MINIO_PORT}
       - API_URL=http://${HOST_IP}:${DEV_API_PORT}
+    env_file:
+      - .env
+
   api:
     image: api:latest
     ports:
-      - ${DEV_API_PORT}:80
+      - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
       OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
       RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${HOST_IP}:${DEV_RABBITMQ_PORT}/
       WORKERS: 1
-      RAY_ADDRESS: ray://${HOST_IP}:9998
+      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
 
   prometheus:
