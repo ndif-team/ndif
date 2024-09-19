@@ -22,7 +22,7 @@ services:
       - ./service_config.yml:/src/ray/config/service_config.yml
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ./ray-head-start.sh:/start.sh
-      - ray-data:/tmp/ray/session_latest
+      - ray-data:/tmp/ray/
     ports:
       - 6380:6379
       - 9998:10001
@@ -42,7 +42,6 @@ services:
       - LOKI_URL=http://${HOST_IP}:3100/loki/api/v1/push
       - OBJECT_STORE_URL=${HOST_IP}:27018
       - API_URL=http://${HOST_IP}:5001
-
   api:
     image: api:latest
     ports:
@@ -64,6 +63,7 @@ services:
     volumes:
       - prometheus-data:/prometheus
       - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ray-data:/tmp/ray
     depends_on:
       - api
       - ray-head
