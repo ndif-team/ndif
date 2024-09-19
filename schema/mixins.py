@@ -160,5 +160,10 @@ class TelemetryMixin:
         return self
 
     def update_gauge(self, gauge: "NDIFGauge", request: "BackendRequestModel", status: ResponseModel.JobStatus, api_key:str = " ", gpu_mem: int = 0):
-        gauge.update(request, api_key, status, gpu_mem)
+        gauge.update(
+            request=request,
+            api_key=api_key,
+            status=status,
+            gpu_mem=gpu_mem
+        )
         return self
