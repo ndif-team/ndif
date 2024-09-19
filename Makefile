@@ -13,6 +13,10 @@ DEFAULT_ENV := dev
 # Function to check if the environment is valid
 check_env = $(if $(filter $(1),$(VALID_ENVS)),,$(error Invalid environment '$(1)'. Use one of: $(VALID_ENVS)))
 
+# Function to set environment and print message if no environment was specified
+set_env = $(eval ENV := $(if $(filter $(words $(MAKECMDGOALS)),1),$(DEFAULT_ENV),$(word 2,$(MAKECMDGOALS)))) \
+          $(if $(filter $(words $(MAKECMDGOALS)),1),$(info Using default environment: $(DEFAULT_ENV)),)
+
 build_base:
 
 	docker build --no-cache -t $(NAME)_base:latest -f ../base.dockerfile .
@@ -36,16 +40,19 @@ build_all_service:
 	cd services/api && make -f ../../Makefile build_service NAME=api
 	cd services/ray_head && make -f ../../Makefile build_service NAME=ray_head
 	cd services/ray_worker && make -f ../../Makefile build_service NAME=ray_worker
+
 up:
-	$(call check_env,$(word 2,$(MAKECMDGOALS)))
-	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml up --detach
+	$(call set_env)
+	$(call check_env,$(ENV))
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml up --detach
 
 down:
-	$(call check_env,$(word 2,$(MAKECMDGOALS)))
-	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(word 2,$(MAKECMDGOALS))/docker-compose.yml down
+	$(call set_env)
+	$(call check_env,$(ENV))
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down
 
 ta:
-	$(eval ENV := $(if $(filter $(words $(MAKECMDGOALS)),1),$(DEFAULT_ENV),$(word 2,$(MAKECMDGOALS))))
+	$(call set_env)
 	$(call check_env,$(ENV))
 	make down $(ENV)
 	make build_all_service
