@@ -15,8 +15,7 @@ from ray.serve.schema import (
     ServeDeploySchema,
 )
 
-from .deployments.model import ModelDeploymentArgs
-from .deployments.request import RequestDeploymentArgs
+from .deployments.base import BaseModelDeploymentArgs, BaseDeploymentArgs
 
 
 class ServiceConfigurationSchema(BaseModel):
@@ -100,7 +99,7 @@ class RayState:
                     ray_actor_options=RayActorOptionsSchema(num_cpus=1),
                 )
             ],
-            args=RequestDeploymentArgs(
+            args=BaseDeploymentArgs(
                 api_url=self.api_url,
                 object_store_url=self.object_store_url,
                 object_store_access_key=self.object_store_access_key,
