@@ -6,7 +6,6 @@ from io import BytesIO
 
 import ray
 import socketio
-from urllib3 import HTTPResponse
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,15 +17,18 @@ from fastapi_socketio import SocketManager
 from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
+from urllib3 import HTTPResponse
 
 from nnsight.schema.Response import ResponseModel
+
 from .api_key import api_key_auth
-from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from .logging import load_logger
 from .metrics import NDIFGauge
+from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
-logger = load_logger(service_name = 'app', logger_name='gunicorn.error')
-gauge = NDIFGauge(service='app')
+logger = load_logger(service_name="app", logger_name="gunicorn.error")
+gauge = NDIFGauge(service="app")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -74,7 +76,7 @@ Instrumentator().instrument(app).expose(app)
 
 @app.post("/request")
 async def request(
-    request: BackendRequestModel = Depends(api_key_auth)
+    request: BackendRequestModel = Depends(api_key_auth),
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -175,7 +177,7 @@ async def result(id: str) -> BackendResultModel:
 
     # Inform client the total size of result in bytes.
     headers = {
-        "Content-Length": object.headers['Content-Length'],
+        "Content-Length": object.headers["Content-Length"],
     }
 
     def stream():
@@ -188,7 +190,7 @@ async def result(id: str) -> BackendResultModel:
         finally:
             object.close()
             object.release_conn()
-            
+
             BackendResultModel.delete(object_store, id)
             BackendResponseModel.delete(object_store, id)
             BackendRequestModel.delete(object_store, id)
@@ -245,7 +247,12 @@ async def status():
 
     for key, value in response.items():
 
-        response[key] = await value["status"]
+        try:
+
+            response[key] = await value["status"]
+
+        except:
+            pass
 
     return response
 

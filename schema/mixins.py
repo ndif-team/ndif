@@ -89,8 +89,7 @@ class ObjectStorageMixin(BaseModel):
 
         if self._file_extension == "json":
 
-            pydantic_object = self.object if hasattr(self, 'object') else self
-            data = BytesIO(pydantic_object.model_dump_json().encode("utf-8"))
+            data = BytesIO(self.model_dump_json().encode("utf-8"))
 
             content_type = "application/json"
 
