@@ -1,10 +1,12 @@
+from typing import Callable
 
-from nnsight.tracing.Node import Node
+from nnsight.schema.format.functions import update_function
 from nnsight.tracing.protocols import Protocol
 
+
 class LogProtocol(Protocol):
-    
-    
+
     @classmethod
-    def execute(cls, node: Node):
-        return super().execute(node)
+    def put(cls, fn: Callable):
+
+        update_function(print, fn)

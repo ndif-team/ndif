@@ -1,17 +1,14 @@
 import gc
 from concurrent.futures import ThreadPoolExecutor
-from functools import wraps
+from functools import partial, wraps
 from typing import Any, Dict
 
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
 from torch.amp import autocast
-from torch.cuda import (
-    max_memory_allocated,
-    memory_allocated,
-    reset_peak_memory_stats,
-)
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 from transformers import PreTrainedModel
 
 from nnsight.contexts.backends.RemoteBackend import RemoteMixin
@@ -19,11 +16,9 @@ from nnsight.models.mixins import RemoteableMixin
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from ...schema import (BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
+from . import protocols
 
 
 class BaseDeployment:
@@ -56,7 +51,7 @@ class BaseDeployment:
 
 
 class BaseDeploymentArgs(BaseModel):
-    
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     api_url: str
@@ -119,6 +114,8 @@ class BaseModelDeployment(BaseDeployment):
     def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
+
+            protocols.LogProtocol.put(partial(self.log, request=request))
 
             self.pre(request)
 
@@ -216,6 +213,15 @@ class BaseModelDeployment(BaseDeployment):
         gc.collect()
 
         torch.cuda.empty_cache()
+
+    def log(self, data: Any, request: BackendRequestModel):
+
+        request.create_response(
+            status=BackendResponseModel.JobStatus.LOG,
+            description=str(data),
+            logger=self.logger,
+            gauge=self.gauge,
+        ).respond(self.api_url, self.object_store)
 
 
 class BaseModelDeploymentArgs(BaseDeploymentArgs):

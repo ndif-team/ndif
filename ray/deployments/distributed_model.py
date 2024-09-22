@@ -1,4 +1,3 @@
-
 from datetime import timedelta
 from typing import Any, Dict
 
@@ -8,16 +7,19 @@ import torch.distributed
 from ray import serve
 from ray.serve import Application
 
+from ...schema import BackendRequestModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (load_hf_model_from_cache,
-                                patch_intervention_protocol)
+from ..distributed.util import (
+    load_hf_model_from_cache,
+    patch_intervention_protocol,
+)
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
-from ...schema import BackendRequestModel
 
 
 @serve.deployment(
-    ray_actor_options={"num_gpus": 1, "num_cpus": 2}, health_check_timeout_s=1200
+    ray_actor_options={"num_gpus": 1, "num_cpus": 2},
+    health_check_timeout_s=1200,
 )
 class ModelDeployment(BaseModelDeployment):
     def __init__(
@@ -30,10 +32,15 @@ class ModelDeployment(BaseModelDeployment):
         data_parallelism_size: int,
         tensor_parallelism_size: int,
         pipeline_parallelism_size: int,
-        *args, **kwargs
+        *args,
+        **kwargs,
     ):
-        
-        super().__init__(*args, extra_kwargs={'meta_buffers':False, 'patch_llama_scan':False}, **kwargs)
+
+        super().__init__(
+            *args,
+            extra_kwargs={"meta_buffers": False, "patch_llama_scan": False},
+            **kwargs,
+        )
 
         self.replica_context = serve.get_replica_context()
 
@@ -50,7 +57,7 @@ class ModelDeployment(BaseModelDeployment):
 
         # Patches nnsight intervention protocol to handle DTensors.
         patch_intervention_protocol()
-        
+
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
@@ -179,30 +186,32 @@ class ModelDeployment(BaseModelDeployment):
         self.model._dispatched = True
 
         torch.cuda.empty_cache()
-        
-        
+
     def pre(self, request: BackendRequestModel):
         if self.head:
             super().pre(request)
-            
+
             for worker_deployment in self.worker_deployments:
 
                 worker_deployment.remote(request)
-                
+
         torch.distributed.barrier()
-            
-    def post(self, request: BackendRequestModel, result:Any):
+
+    def post(self, request: BackendRequestModel, result: Any):
         if self.head:
             super().post(request, result)
-            
+
     def exception(self, request: BackendRequestModel, exception: Exception):
         if self.head:
             super().exception(request, exception)
 
+    def log(self, data: Any, request: BackendRequestModel):
+        if self.head:
+            super().log(data, request)
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
-    
+
     device_map: str | None = None
     dispatch: bool = False
 
