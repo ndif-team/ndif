@@ -1,6 +1,3 @@
-import logging
-
-from pydantic import BaseModel
 from ray import serve
 from ray.serve import Application
 from ray.serve.handle import DeploymentHandle
@@ -9,38 +6,15 @@ try:
     from slugify import slugify
 except:
     pass
-from minio import Minio
 
 from nnsight.schema.Response import ResponseModel
 
 from ...schema import BackendRequestModel
-from ...logging import load_logger
-from ...metrics import NDIFGauge
+from .base import BaseDeployment, BaseDeploymentArgs
+
 
 @serve.deployment()
-class RequestDeployment:
-    def __init__(
-        self,
-        api_url: str,
-        object_store_url: str,
-        object_store_access_key: str,
-        object_store_secret_key: str,
-    ):
-
-        self.api_url = api_url
-        self.object_store_url = object_store_url
-        self.object_store_access_key = object_store_access_key
-        self.object_store_secret_key = object_store_secret_key
-
-        self.object_store = Minio(
-            self.object_store_url,
-            access_key=self.object_store_access_key,
-            secret_key=self.object_store_secret_key,
-            secure=False,
-        )
-
-        self.logger = load_logger(service_name="ray_request", logger_name="ray.serve")
-        self.gauge = NDIFGauge(service='ray')
+class RequestDeployment(BaseDeployment):
 
     async def __call__(self, request: BackendRequestModel):
 
@@ -73,13 +47,5 @@ class RequestDeployment:
         return serve.get_app_handle(name)
 
 
-class RequestDeploymentArgs(BaseModel):
-
-    api_url: str
-    object_store_url: str
-    object_store_access_key: str
-    object_store_secret_key: str
-
-
-def app(args: RequestDeploymentArgs) -> Application:
+def app(args: BaseDeploymentArgs) -> Application:
     return RequestDeployment.bind(**args.model_dump())

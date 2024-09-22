@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -249,7 +250,7 @@ async def status():
 
         try:
 
-            response[key] = await value["status"]
+            response[key] = await asyncio.wait_for(value["status"], timeout=4)
 
         except:
             pass
