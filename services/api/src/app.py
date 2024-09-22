@@ -88,6 +88,12 @@ async def request(
         BackendResponseModel: _description_
     """
     try:
+
+        object = request.object
+
+        # Put object in ray
+        request.object = ray.put(object)
+
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
@@ -102,6 +108,8 @@ async def request(
         )
 
         # Back up request object by default (to be deleted on successful completion)
+        request = request.model_copy()
+        request.object = object
         request.save(object_store)
 
     except Exception as exception:

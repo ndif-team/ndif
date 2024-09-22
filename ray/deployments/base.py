@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial, wraps
 from typing import Any, Dict
 
+import ray
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
@@ -114,6 +115,7 @@ class BaseModelDeployment(BaseDeployment):
     def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
+            request.object = ray.get(request.object)
 
             protocols.LogProtocol.put(partial(self.log, request=request))
 
