@@ -33,7 +33,7 @@ class ModelDeployment(BaseModelDeployment):
         *args, **kwargs
     ):
         
-        super.__init__(*args, extra_kwargs={'meta_buffers':False, 'patch_llama_scan':False}, **kwargs)
+        super().__init__(*args, extra_kwargs={'meta_buffers':False, 'patch_llama_scan':False}, **kwargs)
 
         self.replica_context = serve.get_replica_context()
 
