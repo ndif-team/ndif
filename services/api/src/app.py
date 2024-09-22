@@ -1,4 +1,3 @@
-import asyncio
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -25,11 +24,7 @@ from nnsight.schema.Response import ResponseModel
 from .api_key import api_key_auth
 from .logging import load_logger
 from .metrics import NDIFGauge
-from .schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
 gauge = NDIFGauge(service="app")
@@ -254,7 +249,7 @@ async def status():
 
         try:
 
-            response[key] = asyncio.wait_for(value["status"], timeout=4)
+            response[key] = await value["status"]
 
         except:
             pass
