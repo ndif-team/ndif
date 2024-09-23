@@ -1,4 +1,3 @@
-
 # NDIF Development Guide
 
 This guide explains how to set up a development environment, install dependencies, and get started with contributing to the `NDIF` project.
@@ -12,20 +11,19 @@ This guide explains how to set up a development environment, install dependencie
 
 ## Setup
 
-### 1. Install Conda
+## 1. Install Conda
+If you don’t have Conda installed, download and install Anaconda or Miniconda from the [official Conda website](https://docs.conda.io/en/latest/miniconda.html).
 
-If you haven't already, install Conda by downloading and installing Anaconda or Miniconda from the [official Conda website](https://docs.conda.io/en/latest/miniconda.html).
+## 2. Create Conda Environment
 
-### 2. Create Conda Environment
-
-Fork or clone the `NDIF` repository to your local machine. Then create a new Conda virtual environment:
+Fork the `NDIF` repository (or clone it directly) to your local machine. Then create a new Conda virtual environment:
 
 ```sh
 conda create -n ndif-dev python=3.10
 conda activate ndif-dev
 ```
 
-### 3. Install NNsight 
+## 3. Install NNsight 
 
 Choose one of the following methods:
 
@@ -46,28 +44,23 @@ pip install -e .
 
 ## Building and Running `NDIF`
 
-1. Build the base environment
+### 1. Build and start the development environment
 
-First, build the base environment using the `make build_all_base` command. This will set up the base images.
+For first-time setup, use:
+
 ```sh
-make build_all_base
+make build
 ```
 
-2. Build the service
+If you’ve made changes to the codebase but did not modify the `environment.yml` files, you can quickly rebuild the services using:
 
-Next, build the service using the `make build_all_service` command.
 ```sh
-make build_all_service
+make ta
 ```
 
-3. Start the development containers
+This method is faster than running `make build` again.
 
-After building the base environment and the service, start the `NDIF` docker containers.
-```sh
-make up-dev
-```
-
-4. Verify server status
+### 2. Verify server status
 
 After building the `NDIF` containers, you can check the docker logs to verify the services are running correctly.
 ```sh
@@ -75,10 +68,45 @@ docker logs dev-api-1
 ```
 You should expect to see a message like `Application startup complete.` in the api service log.
 
-5. Run tests
+### 3. Run tests
 
 ```sh
 python scripts/test.py
 ```
 
-This will send 3 NNsight requests to the API service running in the local container.
+This will send a test NNsight request to the API service running in the local container.
+
+## Additional Commands
+
+- To start the deployment environment without rebuilding:
+
+```sh
+make up
+```
+
+- To stop the development environment:
+
+```sh
+make down
+```
+
+- To rebuild services and restart the environment (useful during development):
+
+```sh
+make ta
+```
+
+_Note: Modifying any of the `environment.yml` files will require you to rebuild from scratch._
+
+# Environment Configuration
+
+The project uses separate `.env` files for development and production environments:
+
+- Development: `compose/dev/.env`
+- Production: `compose/prod/.env`
+
+For most users, only the development environment is necessary. The production environment is configured separately and is not required for local development.
+
+### Note
+
+The Makefile includes configurations for both development and production environments. As an end user or developer, you'll primarily interact with the development environment. The production environment settings are managed separately and are not typically needed for local development work.

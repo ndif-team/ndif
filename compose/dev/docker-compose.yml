@@ -1,18 +1,17 @@
 services:
-
   rabbitmq:
     image: rabbitmq:3.11.28
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - 5673:5672
+      - ${DEV_RABBITMQ_PORT}:${RABBITMQ_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
     command: server /data
     ports:
-      - 27018:9000
+      - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray-head:
     image: ray_head:latest
@@ -21,13 +20,13 @@ services:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
       - ./service_config.yml:/src/ray/config/service_config.yml
       - ./ray_config.yml:/src/ray/config/ray_config.yml
-      - ./ray-head-start.sh:/start.sh
-      - ray-data:/tmp/ray/session_latest
+      - ../../services/ray_head/start.sh:/start.sh
+      - ray-data:/tmp/ray/
     ports:
-      - 6380:6379
-      - 9998:10001
-      - 8266:8265
-      - 8267:8267
+      - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
+      - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
+      - ${DEV_RAY_DASHBOARD_PORT}:${RAY_DASHBOARD_INTERNAL_PORT}
+      - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
     deploy:
       replicas: 1
       resources:
@@ -36,24 +35,23 @@ services:
             - driver: nvidia
               count: ${N_DEVICES}
               capabilities: [ gpu ]
-
     environment:
-      - RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS=1000
-      - LOKI_URL=http://${HOST_IP}:3100/loki/api/v1/push
-      - OBJECT_STORE_URL=${HOST_IP}:27018
-      - API_URL=http://${HOST_IP}:5001
+      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      - OBJECT_STORE_URL=${HOST_IP}:${DEV_MINIO_PORT}
+      - API_URL=http://${HOST_IP}:${DEV_API_PORT}
+    env_file:
+      - .env
 
   api:
     image: api:latest
     ports:
-      - 5001:80
+      - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
-      OBJECT_STORE_URL: ${HOST_IP}:27018
-      RMQ_URL: amqp://guest:guest@${HOST_IP}:5673/
+      OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
+      RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${HOST_IP}:${DEV_RABBITMQ_PORT}/
       WORKERS: 1
-      RAY_ADDRESS: ray://${HOST_IP}:9998
-      LOKI_URL: http://${HOST_IP}:3100/loki/api/v1/push
-      # FIREBASE_CREDS_PATH
+      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
 
   prometheus:
     image: prom/prometheus:latest
@@ -64,6 +62,7 @@ services:
     volumes:
       - prometheus-data:/prometheus
       - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ray-data:/tmp/ray
     depends_on:
       - api
       - ray-head
@@ -72,8 +71,8 @@ services:
     image: grafana/grafana:latest
     network_mode: "host"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
