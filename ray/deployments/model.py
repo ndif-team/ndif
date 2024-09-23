@@ -9,9 +9,16 @@ from torch.amp import autocast
 from ...schema.Request import BackendRequestModel
 from . import protocols
 from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
+from ..util import set_cuda_env_var
 
 
 class _ModelDeployment(BaseModelDeployment):
+    
+    def __init__(self, *args, **kwargs):
+        
+        super().__init__(*args, **kwargs)
+        
+        set_cuda_env_var()
 
     @threaded
     def __call__(self, request: BackendRequestModel) -> Any:
