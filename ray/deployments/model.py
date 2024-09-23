@@ -11,13 +11,7 @@ from . import protocols
 from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 
 
-@serve.deployment(
-    ray_actor_options={
-        "num_cpus": 2,
-    },
-    health_check_timeout_s=1200,
-)
-class ModelDeployment(BaseModelDeployment):
+class _ModelDeployment(BaseModelDeployment):
 
     @threaded
     def __call__(self, request: BackendRequestModel) -> Any:
@@ -49,6 +43,16 @@ class ModelDeployment(BaseModelDeployment):
     def execute(self, request: BackendRequestModel):
 
         return super().execute(request)
+
+
+@serve.deployment(
+    ray_actor_options={
+        "num_cpus": 2,
+    },
+    health_check_timeout_s=1200,
+)
+class ModelDeployment(_ModelDeployment):
+    pass
 
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:
