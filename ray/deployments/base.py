@@ -114,6 +114,9 @@ class BaseModelDeployment(BaseDeployment):
     def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
+            
+            result = None
+            
             request.object = ray.get(request.object)
 
             protocols.LogProtocol.put(partial(self.log, request=request))
