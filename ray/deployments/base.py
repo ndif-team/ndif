@@ -116,13 +116,11 @@ class BaseModelDeployment(BaseDeployment):
         try:
             
             result = None
-            
-            request.object = await request.object
 
             protocols.LogProtocol.put(partial(self.log, request=request))
 
-            self.pre(request)
-
+            self.pre(request)     
+            
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
                 
                 result = self.execute(request)
@@ -172,6 +170,8 @@ class BaseModelDeployment(BaseDeployment):
             logger=self.logger,
             gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
+        
+        request.object = ray.get(request.object)
 
     def execute(self, request: BackendRequestModel):
 
