@@ -111,7 +111,6 @@ class BaseModelDeployment(BaseDeployment):
 
         torch.cuda.empty_cache()
 
-    @threaded
     def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
@@ -122,7 +121,7 @@ class BaseModelDeployment(BaseDeployment):
             self.pre(request)
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-                result = self.execute(request).result(self.execution_timeout)
+                result = self.execute(request)
 
             self.post(request, result)
 
@@ -161,7 +160,6 @@ class BaseModelDeployment(BaseDeployment):
             gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
 
-    @threaded
     def execute(self, request: BackendRequestModel):
 
         # For tracking peak GPU usage
