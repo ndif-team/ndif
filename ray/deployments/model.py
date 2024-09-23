@@ -1,8 +1,13 @@
+from functools import partial, wraps
 from typing import Any, Dict
 
+import ray
+import torch
 from ray import serve
+from torch.amp import autocast
 
 from ...schema.Request import BackendRequestModel
+from . import protocols
 from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 
 
@@ -14,18 +19,36 @@ from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 )
 class ModelDeployment(BaseModelDeployment):
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-
-        self.super_execute = threaded(super().execute)
-
     @threaded
     def __call__(self, request: BackendRequestModel) -> Any:
-        return super().__call__(request)
 
+        try:
+            request.object = ray.get(request.object)
+
+            protocols.LogProtocol.put(partial(self.log, request=request))
+
+            self.pre(request)
+
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+                result = self.execute(request).result(self.execution_timeout)
+
+            self.post(request, result)
+
+        except Exception as e:
+
+            self.exception(request, e)
+
+        finally:
+
+            del request
+            del result
+
+            self.cleanup()
+
+    @threaded
     def execute(self, request: BackendRequestModel):
 
-        return self.super_execute(request).result(self.execution_timeout)
+        return super().execute(request)
 
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:
