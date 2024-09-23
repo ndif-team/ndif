@@ -1,3 +1,6 @@
+import asyncio
+
+import ray
 from ray import serve
 from ray.serve import Application
 from ray.serve.handle import DeploymentHandle
@@ -24,7 +27,7 @@ class RequestDeployment(BaseDeployment):
 
             app_handle = self.get_ray_app_handle(model_key)
 
-            app_handle.remote(request)
+            result = app_handle.remote(request)
 
             request.create_response(
                 status=ResponseModel.JobStatus.APPROVED,
@@ -32,6 +35,11 @@ class RequestDeployment(BaseDeployment):
                 logger=self.logger,
                 gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
+            
+            try:
+                ray.wait(result, timeout=0)
+            except:
+                pass
 
         except Exception as exception:
 

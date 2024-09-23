@@ -193,7 +193,15 @@ class ModelDeployment(BaseModelDeployment):
 
             for worker_deployment in self.worker_deployments:
 
-                worker_deployment.remote(request)
+                result = worker_deployment.remote(request)
+
+                try:
+
+                    result = ray.wait(result, timeout=0)
+
+                except:
+
+                    pass
 
         torch.distributed.barrier()
 

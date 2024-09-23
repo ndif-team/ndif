@@ -1,5 +1,5 @@
 import gc
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
 from functools import partial, wraps
 from typing import Any, Dict
 
@@ -111,12 +111,9 @@ class BaseModelDeployment(BaseDeployment):
 
         torch.cuda.empty_cache()
 
-    def __call__(self, request: BackendRequestModel) -> Any:
+    async def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
-            
-            result = None
-            
             request.object = ray.get(request.object)
 
             protocols.LogProtocol.put(partial(self.log, request=request))
@@ -124,10 +121,20 @@ class BaseModelDeployment(BaseDeployment):
             self.pre(request)
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+                
                 result = self.execute(request)
+                
+                if isinstance(result, Future):
+                    result = result.result(timeout=self.execution_timeout)
 
             self.post(request, result)
 
+        except TimeoutError as e:
+            
+            exception = Exception(f"Job took longer than timeout: {self.execution_timeout} seconds")
+            
+            self.exception(request, exception)
+            
         except Exception as e:
 
             self.exception(request, e)
