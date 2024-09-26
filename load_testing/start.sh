@@ -19,11 +19,5 @@ else
   exit 1
 fi
 
-# Define other optional parameters for the load test (you can adjust these as needed)
-NUM_USERS=${2:-10}    # Default to 10 users if not provided
-SPAWN_RATE=${3:-1}    # Default to 1 user per second if not provided
-RUN_TIME=${4:-"5m"}   # Default to 5 minutes if not provided
-LOCUST_FILE="locustfile.py"  # Locust file to use
-
-# Run the load test with Locust
-locust -f $LOCUST_FILE $USER_CLASS --headless -u $NUM_USERS -r $SPAWN_RATE --run-time $RUN_TIME
+# Run Locust, allowing it to pick up settings from locust.conf
+locust -f locustfile.py $USER_CLASS
