@@ -9,8 +9,8 @@ from fastapi.security.api_key import APIKeyHeader
 from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
-from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
+from .schema import BackendRequestModel
 from .metrics import NDIFGauge
 
 gauge = NDIFGauge(service='app')
@@ -54,33 +54,47 @@ if FIREBASE_CREDS_PATH is not None:
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
-# Helper function to extract headers and client information
-def extract_request_metadata(raw_request: Request):
-    content_length = raw_request.headers.get('content-length')
-    
-    # Handle IP address
-    ip_address = raw_request.client.host
+def extract_request_metadata(raw_request: Request) -> dict:
+    """
+    Extracts relevant metadata from the incoming raw request, such as IP address,
+    user agent, and content length, and returns them as a dictionary.
+    """
+    metadata = {
+        'ip_address': raw_request.client.host,
+        'user_agent': raw_request.headers.get('user-agent'),
+        'content_length': int(raw_request.headers.get('content-length', 0))
+    }
+    return metadata
 
-    # Extract User-Agent
-    user_agent = raw_request.headers.get('user-agent')
-    
-    return ip_address, user_agent, int(content_length)
-
-async def api_key_auth(request : RequestModel, raw_request : Request, api_key: str = Security(api_key_header)):
-
-    # Extract metadata
-    ip_address, user_agent, content_length = extract_request_metadata(raw_request)
-
-    # Set the id and time received of request.
+def init_request(request: BackendRequestModel) -> BackendRequestModel:
+    """
+    Initializes a BackendRequestModel by setting the ID, and received timestamp.
+    """
+    # Ensure request ID and received timestamp are set
     if not request.id:
         request.id = str(uuid.uuid4())
     if not request.received:
         request.received = datetime.now()
+    return request
+
+async def api_key_auth(
+    request: BackendRequestModel,
+    raw_request: Request,
+    api_key: str = Security(api_key_header)
+):
+    """
+    Authenticates the API request by extracting metadata and initializing the
+    BackendRequestModel with relevant information, including API key, client details, and headers.
+    """
+    # Extract metadata from the raw request
+    metadata = extract_request_metadata(raw_request)
 
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
+    request = init_request(request)
 
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 
+    ip_address, user_agent, content_length = metadata.values()
     gauge.update_network(request.id, ip_address, user_agent, content_length)
 
     if FIREBASE_CREDS_PATH is not None:

@@ -1,13 +1,12 @@
-version: '3'
 services:
 
   rabbitmq:
     image: rabbitmq:3.11.28
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
     ports:
-      - 5672:5672
+      - ${PROD_RABBITMQ_PORT}:${RABBITMQ_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
@@ -16,7 +15,7 @@ services:
     #   - MINIO_ACCESS_KEY=minioadmin
     #     MINIO_SECRET_KEY=minioadmin
     ports:
-      - 27017:9000
+      - ${PROD_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray-head:
     image: ray_head:latest
@@ -24,23 +23,24 @@ services:
     shm_size: '15gb'
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - /disk/u/jfiottok/wd/ndif/compose/prod/service_config.yml:/src/ray/config/service_config.yml
-      - /disk/u/jfiottok/wd/ndif/compose/prod/ray_config.yml:/src/ray/config/ray_config.yml
-      - /disk/u/jfiottok/wd/ndif/compose/prod/ray-head-start.sh:/start.sh
-    
+      - ./service_config.yml:/src/ray/config/service_config.yml
+      - ./prod/ray_config.yml:/src/ray/config/ray_config.yml
+      - ../../services/ray_head/start.sh:/start.sh
+      - ray-data:/tmp/ray/
     environment:
       NCCL_DEBUG: INFO
-      # RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 20
-      # RAY_health_check_initial_delay_ms: 600000
-      # RAY_health_check_period_ms: 600000
-      # RAY_num_heartbeats_timeout: 300
+      LOKI_URL: http://${PROD_HOST_IP}:${PROD_LOKI_PORT}/loki/api/v1/push
+      OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
+      API_URL: https://ndif.dev
+    env_file:
+      - .env
     deploy:
       replicas: 1
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 8
+              count: ${PROD_N_DEVICES}
               capabilities: [ gpu ]
 
   api:
@@ -50,10 +50,53 @@ services:
       - minio
     image: api:latest
     ports:
-      - 5000:80
+      - ${PROD_API_PORT}:${API_INTERNAL_PORT}
+    volumes:
+      - ./api-start.sh:/start.sh
+      - ../../services/api/src/creds.json:/src/creds.json
     environment:
-      OBJECT_STORE_URL: nagoya.research.khoury.northeastern.edu:27017
-      RMQ_URL: amqp://guest:guest@nagoya.research.khoury.northeastern.edu:5672/
+      OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
+      RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${PROD_HOST_IP}:${PROD_RABBITMQ_PORT}/
       WORKERS: 12
-      RAY_ADDRESS: ray://nagoya.research.khoury.northeastern.edu:10001
-      FIREBASE_CREDS_PATH: /src/creds.json
+      RAY_ADDRESS: ray://${PROD_HOST_IP}:${PROD_RAY_HEAD_PORT}
+      LOKI_URL: http://${PROD_HOST_IP}:${PROD_LOKI_PORT}/loki/api/v1/push
+      FIREBASE_CREDS_PATH: /src/creds.json  
+  
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "host"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ray-data:/tmp/ray
+    depends_on:
+      - api
+      - ray-head
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: "host"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
+      - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+
+  loki:
+    image: grafana/loki:2.8.1
+    network_mode: "host"
+    volumes:
+      - loki-data:/loki
+
+volumes:
+  grafana-storage:
+  loki-data:
+  prometheus-data:
+  ray-data:
