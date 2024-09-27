@@ -33,4 +33,5 @@ dependencies:
     - ray[serve]
     - requests
     - torch
+    - python-slugify
     - git+https://github.com/ndif-team/nnsight@dev

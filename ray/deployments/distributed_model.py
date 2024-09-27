@@ -205,17 +205,21 @@ class ModelDeployment(BaseModelDeployment):
 
         torch.distributed.barrier()
 
-    def post(self, request: BackendRequestModel, result: Any):
+    def post(self, *args, **kwargs):
         if self.head:
-            super().post(request, result)
+            super().post(*args, **kwargs)
 
-    def exception(self, request: BackendRequestModel, exception: Exception):
+    def exception(self, *args, **kwargs):
         if self.head:
-            super().exception(request, exception)
+            super().exception(*args, **kwargs)
 
-    def log(self, data: Any, request: BackendRequestModel):
+    def log(self, *args, **kwargs):
         if self.head:
-            super().log(data, request)
+            super().log(*args, **kwargs)
+
+    def stream_send(self, *args, **kwargs):
+        if self.head:
+            super().stream_send(*args, **kwargs)
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
