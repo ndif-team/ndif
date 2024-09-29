@@ -131,7 +131,9 @@ class BaseModelDeployment(BaseDeployment):
             lambda *args: self.stream_send(*args)
         )
 
-        protocols.ServerStreamingUploadProtocol.set(lambda *args: self.stream_receive(*args))
+        protocols.ServerStreamingUploadProtocol.set(
+            lambda *args: self.stream_receive(*args)
+        )
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -203,15 +205,6 @@ class BaseModelDeployment(BaseDeployment):
             request (BackendRequestModel): Request.
             result (Any): Result.
         """
-        
-        if self.request.session_id is not None:
-            
-            self.sio.connect(
-                f"{self.api_url}?job_id={request.id}",
-                socketio_path="/ws/socket.io",
-                transports=["websocket"],
-                wait_timeout=10,
-            )
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
@@ -284,8 +277,10 @@ class BaseModelDeployment(BaseDeployment):
     def cleanup(self):
         """Logic to execute to clean up memory after execution result is post-processed."""
         
-        self.sio.disconnect()
-        
+        if self.sio.connected:
+
+            self.sio.disconnect()
+
         self.model._model.zero_grad()
 
         gc.collect()
@@ -313,12 +308,29 @@ class BaseModelDeployment(BaseDeployment):
         """
 
         self.respond(status=BackendResponseModel.JobStatus.STREAM, data=data)
-        
+
     def stream_receive(self, *args):
-        
+
         return StreamValueModel(**self.sio.receive()[1]).deserialize(self.model)
 
+    def stream_connect(self):
+        
+        if self.sio.client is None:
+            
+            self.sio.connected = False
+
+            self.sio.connect(
+                f"{self.api_url}?job_id={self.request.id}",
+                socketio_path="/ws/socket.io",
+                transports=["websocket"],
+                wait_timeout=10,
+            )
+
     def respond(self, **kwargs) -> None:
+        
+        if self.request.session_id is not None:
+            
+            self.stream_connect()
 
         self.request.create_response(
             **kwargs, logger=self.logger, gauge=self.gauge

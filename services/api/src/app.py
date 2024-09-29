@@ -51,9 +51,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async rabbitmq manager for communication between socketio servers
-socketio_manager = socketio.AsyncAioPikaManager(
-    url=os.environ.get("RMQ_URL"), logger=logger
+# Init async manager for communication between socketio servers
+socketio_manager = socketio.AsyncRedisManager(
+    url=os.environ.get("BROKER_URL"), logger=logger
 )
 # Init socketio manager app
 sm = SocketManager(
@@ -61,6 +61,8 @@ sm = SocketManager(
     mount_location="/ws",
     client_manager=socketio_manager,
     logger=logger,
+    engineio_logger=logger,
+    max_http_buffer_size=1000000000000000
 )
 
 # Init object_store connection
