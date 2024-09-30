@@ -18,46 +18,82 @@ gauge = NDIFGauge(service='app')
 llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B-Instruct"}'
 
 class ApiKeyStore:
+    """
+    A class to manage API key storage and retrieval using Firebase.
+    """
 
     def __init__(self, cred_path: str) -> None:
+        """
+        Initialize the ApiKeyStore with Firebase credentials.
 
+        Args:
+            cred_path (str): Path to the Firebase credentials file.
+        """
         self.cred = credentials.Certificate(cred_path)
 
         try:
-
             self.app = firebase_admin.get_app()
         except ValueError as e:
-
             firebase_admin.initialize_app(self.cred)
 
         self.firestore_client = firestore.client()
 
     @cached(cache=TTLCache(maxsize=1024, ttl=60))
     def fetch_document(self, api_key: str):
+        """
+        Fetch a document from Firestore using the API key.
 
+        Args:
+            api_key (str): The API key to look up.
+
+        Returns:
+            The Firestore document corresponding to the API key.
+        """
         doc = self.firestore_client.collection("keys").document(api_key).get()
         return doc
 
     def does_api_key_exist(self, doc, check_405b: bool = False) -> bool:
+        """
+        Check if the API key exists and optionally if it has 405b tier access.
 
+        Args:
+            doc: The Firestore document.
+            check_405b (bool): Whether to check for 405b tier access.
+
+        Returns:
+            bool: True if the API key exists and meets the tier requirement (if specified).
+        """
         return doc.exists and doc.to_dict().get('tier') == '405b' if check_405b else doc.exists
 
     def get_uid(self, doc):
+        """
+        Get the user ID associated with the API key.
+
+        Args:
+            doc: The Firestore document.
+
+        Returns:
+            str: The user ID.
+        """
         user_id = doc.to_dict().get('user_id')
         return user_id
 
 FIREBASE_CREDS_PATH = os.environ.get("FIREBASE_CREDS_PATH", None)
 
 if FIREBASE_CREDS_PATH is not None:
-
     api_key_store = ApiKeyStore(FIREBASE_CREDS_PATH)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 def extract_request_metadata(raw_request: Request) -> dict:
     """
-    Extracts relevant metadata from the incoming raw request, such as IP address,
-    user agent, and content length, and returns them as a dictionary.
+    Extracts relevant metadata from the incoming raw request.
+
+    Args:
+        raw_request (Request): The raw FastAPI request object.
+
+    Returns:
+        dict: A dictionary containing IP address, user agent, and content length.
     """
     metadata = {
         'ip_address': raw_request.client.host,
@@ -68,7 +104,13 @@ def extract_request_metadata(raw_request: Request) -> dict:
 
 def init_request(request: BackendRequestModel) -> BackendRequestModel:
     """
-    Initializes a BackendRequestModel by setting the ID, and received timestamp.
+    Initializes a BackendRequestModel by setting the ID and received timestamp.
+
+    Args:
+        request (BackendRequestModel): The request model to initialize.
+
+    Returns:
+        BackendRequestModel: The initialized request model.
     """
     # Ensure request ID and received timestamp are set
     if not request.id:
@@ -83,8 +125,18 @@ async def api_key_auth(
     api_key: str = Security(api_key_header)
 ):
     """
-    Authenticates the API request by extracting metadata and initializing the
-    BackendRequestModel with relevant information, including API key, client details, and headers.
+    Authenticates the API request by validating the API key and initializing the request model.
+
+    Args:
+        request (BackendRequestModel): The request model to be authenticated and initialized.
+        raw_request (Request): The raw FastAPI request object.
+        api_key (str): The API key extracted from the request header.
+
+    Returns:
+        BackendRequestModel: The authenticated and initialized request model.
+
+    Raises:
+        HTTPException: If the API key is missing or invalid.
     """
     # Extract metadata from the raw request
     metadata = extract_request_metadata(raw_request)
