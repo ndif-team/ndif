@@ -1,18 +1,30 @@
-proxy_location: Disabled
+# Ray Serve configuration for production environment
+
+# Proxy settings
+proxy_location: Disabled  # Disables the proxy, useful for direct access in production
+
+# HTTP server options
 http_options:
-  host: 0.0.0.0
-  port: 5005
+  host: 0.0.0.0  # Binds to all available network interfaces
+  port: 5005     # Port for HTTP traffic
+
+# gRPC server options
 grpc_options:
-  port: 9000
-  grpc_servicer_functions: []
+  port: 9000                  # Port for gRPC traffic
+  grpc_servicer_functions: [] # No additional gRPC servicer functions
+
+# Logging configuration
 logging_config:
-  encoding: TEXT
-  log_level: INFO
-  logs_dir: null
-  enable_access_log: true
+  encoding: TEXT              # Log format (TEXT or JSON)
+  log_level: INFO             # Logging level
+  logs_dir: null              # No specific log directory, uses default
+  enable_access_log: true     # Enables access logging
+
+# Application deployments
 applications:
-  - name: Controller
-    import_path: src.ray.deployments.controller:app
+  - name: Controller          # Name of the application
+    import_path: src.ray.deployments.controller:app  # Path to import the application
     args:
+      # Paths to configuration files (inside container)
       ray_config_path: /src/ray/config/ray_config.yml
       service_config_path: /src/ray/config/service_config.yml
