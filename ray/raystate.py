@@ -19,24 +19,29 @@ from .deployments.base import BaseModelDeploymentArgs, BaseDeploymentArgs
 
 
 class ServiceConfigurationSchema(BaseModel):
+    """
+    Schema for the service configuration.
+    """
     class ModelConfigurationSchema(BaseModel):
+        """
+        Schema for individual model configurations within the service.
+        """
+        model_import_path: str = None  # Path to import the model, if different from default
+        ray_actor_options: Dict[str, Any] = {}  # Ray actor options for the model
+        args: Dict[str, Any] = {}  # Additional arguments for the model
+        model_key: str  # Unique identifier for the model
+        num_replicas: int  # Number of replicas for the model
 
-        model_import_path: str = None
-
-        ray_actor_options: Dict[str, Any] = {}
-        args: Dict[str, Any] = {}
-
-        model_key: str
-        num_replicas: int
-
-    default_model_import_path: str
-    request_import_path: str
-    request_num_replicas: int
-
-    models: List[ModelConfigurationSchema]
+    default_model_import_path: str  # Default import path for models
+    request_import_path: str  # Import path for the request handler
+    request_num_replicas: int  # Number of replicas for the request handler
+    models: List[ModelConfigurationSchema]  # List of model configurations
 
 
 class RayState:
+    """
+    Manages the state and configuration of Ray applications.
+    """
 
     def __init__(
         self,
@@ -47,7 +52,17 @@ class RayState:
         object_store_secret_key: str,
         api_url: str,
     ) -> None:
+        """
+        Initialize the RayState with configuration paths and credentials.
 
+        Args:
+            ray_config_path (str): Path to the Ray configuration file
+            service_config_path (str): Path to the service configuration file
+            object_store_url (str): URL of the (MinIO) object store
+            object_store_access_key (str): Access key for the (MinIO) object store
+            object_store_secret_key (str): Secret key for the (MinIO) object store
+            api_url (str): URL of the API
+        """
         self.ray_config_path = ray_config_path
         self.service_config_path = service_config_path
         self.object_store_url = object_store_url
@@ -59,7 +74,9 @@ class RayState:
         self.ray_dashboard_url = f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
 
     def load_from_disk(self):
-
+        """
+        Load Ray and service configurations from disk.
+        """
         with open(self.ray_config_path, "r") as file:
             self.ray_config = ServeDeploySchema(**yaml.safe_load(file))
 
@@ -69,9 +86,10 @@ class RayState:
             )
 
     def redeploy(self):
-
+        """
+        Redeploy the entire service by loading (potentially updated) configurations and adding applications.
+        """
         self.load_from_disk()
-
         self.add_request_app()
 
         for model_config in self.service_config.models:
@@ -80,7 +98,9 @@ class RayState:
         self.apply()
 
     def apply(self) -> None:
-
+        """
+        Apply the current configuration to deploy applications.
+        """
         ServeSubmissionClient(
             self.ray_dashboard_url
         ).deploy_applications(
@@ -88,6 +108,9 @@ class RayState:
         )
 
     def add_request_app(self) -> None:
+        """
+        Add the request handling application to the Ray configuration.
+        """
         application = ServeApplicationSchema(
             name="Request",
             import_path=self.service_config.request_import_path,
@@ -112,9 +135,15 @@ class RayState:
     def add_model_app(
         self, model_config: ServiceConfigurationSchema.ModelConfigurationSchema
     ) -> None:
+        """
+        Add a model application to the Ray configuration.
 
+        Args:
+            model_config (ServiceConfigurationSchema.ModelConfigurationSchema): Configuration for the model
+        """
         model_key = slugify(model_config.model_key)
 
+        # Prepare arguments for the model application
         model_config.args["model_key"] = model_config.model_key
         model_config.args["api_url"] = self.api_url
         model_config.args["object_store_url"] = self.object_store_url
