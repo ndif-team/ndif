@@ -25,6 +25,9 @@ class NDIFGauge:
     _instances = {}
 
     class NumericJobStatus(Enum):
+        """
+        Enum class to map job statuses to numeric values for metric reporting.
+        """
         RECEIVED = 1
         APPROVED = 2
         RUNNING = 3
@@ -33,7 +36,15 @@ class NDIFGauge:
         ERROR = 6
 
     def __new__(cls, service: str):
-        """Singleton pattern to ensure only one instance of the gauge per service."""
+        """
+        Singleton pattern to ensure only one instance of the gauge per service.
+
+        Args:
+            service (str): The name of the service ('ray' or other).
+
+        Returns:
+            NDIFGauge: An instance of NDIFGauge for the specified service.
+        """
         if service not in cls._instances:
             instance = super(NDIFGauge, cls).__new__(cls)
             instance.service = service
@@ -44,7 +55,12 @@ class NDIFGauge:
         return cls._instances[service]
 
     def _initialize_gauge(self):
-        """Initialize the appropriate Gauge based on the service type."""
+        """
+        Initialize the appropriate Gauge based on the service type.
+
+        Returns:
+            Gauge: Either a Ray Gauge or a Prometheus Gauge, depending on the service.
+        """
         if self.service == 'ray':
             from ray.util.metrics import Gauge as RayGauge
             return RayGauge('request_status', description='Track status of requests', tag_keys=request_labels)
@@ -52,13 +68,25 @@ class NDIFGauge:
             return PrometheusGauge('request_status', 'Track status of requests', request_labels)
           
     def _initialize_network_gauge(self):
-        """Initialize the network-related Gauge. Only used if the service is not 'ray'."""
+        """
+        Initialize the network-related Gauge. Only used if the service is not 'ray'.
+
+        Returns:
+            PrometheusGauge: A Prometheus Gauge for tracking network data.
+        """
         return PrometheusGauge('network_data', 'Track network data of requests', network_labels)
 
     def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, user_id = None, gpu_mem: int = 0) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
+
+        Args:
+            request (RequestModel): The request object containing request details.
+            api_key (str): The API key associated with the request.
+            status (ResponseModel.JobStatus): The current status of the job.
+            user_id (Optional): The user ID associated with the request.
+            gpu_mem (int): The GPU memory usage for the request.
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
 
@@ -82,6 +110,12 @@ class NDIFGauge:
         """
         Update the values of the network-related gauge.
         Only applicable for services other than 'ray'.
+
+        Args:
+            request_id (str): The ID of the request.
+            ip_address (str): The IP address of the client.
+            user_agent (str): The user agent string of the client.
+            content_length (int): The content length of the request.
         """
         if self.service == 'ray':
             return  # Do nothing if the service is 'ray'
