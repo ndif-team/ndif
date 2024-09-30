@@ -33,12 +33,25 @@ gauge = NDIFGauge(service="app")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for the FastAPI application.
+    
+    This function initializes the FastAPICache with an InMemoryBackend
+    when the application starts up.
+
+    Args:
+        app (FastAPI): The FastAPI application instance.
+
+    Yields:
+        None
+    """
     FastAPICache.init(InMemoryBackend())
     yield
 
 
 # Init FastAPI app
 app = FastAPI(lifespan=lifespan)
+
 # Add middleware for CORS
 app.add_middleware(
     CORSMiddleware,
@@ -52,6 +65,7 @@ app.add_middleware(
 socketio_manager = socketio.AsyncAioPikaManager(
     url=os.environ.get("RMQ_URL"), logger=logger
 )
+
 # Init socketio manager app
 sm = SocketManager(
     app=app,
@@ -79,16 +93,19 @@ Instrumentator().instrument(app).expose(app)
 async def request(
     request: BackendRequestModel = Depends(api_key_auth),
 ) -> BackendResponseModel:
-    """Endpoint to submit request.
+    """
+    Endpoint to submit a request.
+
+    This function processes the incoming request, stores it in Ray,
+    sends it to request workers, and creates a response.
 
     Args:
-        request (BackendRequestModel): _description_
+        request (BackendRequestModel): The incoming request model.
 
     Returns:
-        BackendResponseModel: _description_
+        BackendResponseModel: The response to the request.
     """
     try:
-
         object = request.object
 
         # Put object in ray
@@ -113,7 +130,6 @@ async def request(
         request.save(object_store)
 
     except Exception as exception:
-
         # Create exception response object.
         response = request.create_response(
             status=ResponseModel.JobStatus.ERROR,
@@ -123,7 +139,6 @@ async def request(
         )
 
     if not response.blocking():
-
         response.save(object_store)
 
     # Return response.
@@ -131,6 +146,13 @@ async def request(
 
 
 async def _blocking_response(response: ResponseModel):
+    """
+    Helper function to emit a blocking response to a specific session. A blocking response is one that the client
+    will not be able to send another request until this one is received.
+
+    Args:
+        response (ResponseModel): The response to be emitted.
+    """
     logger.info(f"Responding to SID: `{response.session_id}`:")
     response.log(logger)
 
@@ -143,44 +165,45 @@ async def _blocking_response(response: ResponseModel):
 
 @app.post("/blocking_response")
 async def blocking_response(response: BackendResponseModel):
-    """Endpoint to have server respond to sid.
+    """
+    Endpoint to have server respond to a specific session ID with a blocking response. A blocking response is one that the client
+    will not be able to send another request until this one is received.
 
     Args:
-        id (str): _description_
+        response (BackendResponseModel): The response to be sent.
     """
-
     await _blocking_response(response)
 
 
 @app.get("/response/{id}")
 async def response(id: str) -> BackendResponseModel:
-    """Endpoint to get latest response for id.
+    """
+    Endpoint to get the latest response for a given ID.
 
     Args:
-        id (str): ID of request/response.
+        id (str): ID of the request/response.
 
     Returns:
-        BackendResponseModel: Response.
+        BackendResponseModel: The response associated with the given ID.
     """
-
     # Load response from client given id.
     return BackendResponseModel.load(object_store, id)
 
 
 @app.get("/result/{id}")
 async def result(id: str) -> BackendResultModel:
-    """Endpoint to retrieve result for id.
+    """
+    Endpoint to retrieve the result for a given ID.
+
+    This function streams the result data and cleans up associated objects
+    after successful retrieval.
 
     Args:
-        id (str): ID of request/response.
+        id (str): ID of the request/response.
 
     Returns:
-        BackendResultModel: Result.
-
-    Yields:
-        Iterator[BackendResultModel]: _description_
+        StreamingResponse: A streaming response containing the result data.
     """
-
     # Get cursor to bytes stored in data backend.
     object = BackendResultModel.load(object_store, id, stream=True)
 
@@ -200,6 +223,7 @@ async def result(id: str) -> BackendResultModel:
             object.close()
             object.release_conn()
 
+            # Clean up associated objects
             BackendResultModel.delete(object_store, id)
             BackendResponseModel.delete(object_store, id)
             BackendRequestModel.delete(object_store, id)
@@ -213,10 +237,11 @@ async def result(id: str) -> BackendResultModel:
 
 @app.get("/ping", status_code=200)
 async def ping():
-    """Endpoint to check if the server is online.
+    """
+    Endpoint to check if the server is online.
 
     Returns:
-        _type_: _description_
+        str: "pong" if the server is online.
     """
     return "pong"
 
@@ -224,27 +249,30 @@ async def ping():
 @app.get("/stats", status_code=200)
 @cache(expire=120)
 async def status():
+    """
+    Endpoint to retrieve the status of running model applications.
 
+    This function collects and returns information about running model
+    deployments, including the number of running replicas and their status.
+
+    Returns:
+        dict: A dictionary containing status information for each running model application.
+    """
     response = {}
 
     status = serve.status()
 
     for application_name, application in status.applications.items():
-
         if application_name.startswith("Model"):
-
             deployment = application.deployments["ModelDeployment"]
 
             num_running_replicas = 0
 
             for replica_status in deployment.replica_states:
-
                 if replica_status == "RUNNING":
-
                     num_running_replicas += 1
 
             if num_running_replicas > 0:
-
                 application_status = serve.get_app_handle(
                     application_name
                 ).status.remote()
@@ -254,13 +282,12 @@ async def status():
                     "status": application_status,
                 }
 
+    # Attempt to retrieve the status for each application
     for key, value in response.items():
-
         try:
-
             response[key] = await asyncio.wait_for(value["status"], timeout=4)
-
         except:
+            # If status retrieval fails, leave the original value
             pass
 
     return response
