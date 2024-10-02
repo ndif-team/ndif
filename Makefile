@@ -22,12 +22,11 @@ build_base:
 	docker build --no-cache -t $(NAME)_base:latest -f ../base.dockerfile .
 
 build_service:
-
+	cp ../check_and_update_env.sh ./
 	tar -hczvf src.tar.gz src
-
 	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME):latest -f ../service.dockerfile  . 
-
 	rm src.tar.gz
+	rm ./check_and_update_env.sh
 
 build_all_base:
 
