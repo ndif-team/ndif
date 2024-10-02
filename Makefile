@@ -67,9 +67,7 @@ ta:
 update:
 	$(call set_env)
 	$(call check_env,$(ENV))
-	@echo "Updating dependencies for all services..."
 	@./scripts/update_dependencies.sh $(ENV)
-	@echo "Update process completed."
 
 # Consumes the second argument (e.g. 'dev', 'prod') so it doesn't cause an error.
 %:
