@@ -195,14 +195,6 @@ class ModelDeployment(BaseModelDeployment):
 
                 result = worker_deployment.remote(request)
 
-                try:
-
-                    result = ray.wait(result, timeout=0)
-
-                except:
-
-                    pass
-
         torch.distributed.barrier()
 
     def post(self, request: BackendRequestModel, result: Any):

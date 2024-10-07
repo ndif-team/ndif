@@ -44,7 +44,7 @@ class RequestDeployment(BaseDeployment):
 
             app_handle = self.get_ray_app_handle(model_key)
 
-            result = app_handle.remote(request)
+            app_handle.remote(request)
 
             request.create_response(
                 status=ResponseModel.JobStatus.APPROVED,
@@ -53,11 +53,6 @@ class RequestDeployment(BaseDeployment):
                 gauge=self.gauge,
             ).respond(self.api_url, self.object_store)
             
-            try:
-                ray.wait(result, timeout=0)
-            except:
-                pass
-
         except Exception as exception:
             request.create_response(
                 status=ResponseModel.JobStatus.ERROR,

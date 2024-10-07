@@ -247,7 +247,7 @@ async def ping():
 
 
 @app.get("/stats", status_code=200)
-@cache(expire=120)
+@cache(expire=600)
 async def status():
     """
     Endpoint to retrieve the status of running model applications.
@@ -287,8 +287,8 @@ async def status():
         try:
             response[key] = await asyncio.wait_for(value["status"], timeout=4)
         except:
-            # If status retrieval fails, leave the original value
-            pass
+            
+            del response[key]
 
     return response
 
