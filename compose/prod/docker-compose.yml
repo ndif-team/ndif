@@ -40,7 +40,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 8
+              count: ${N_DEVICES}
               capabilities: [ gpu ]
 
   api:
