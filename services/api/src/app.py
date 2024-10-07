@@ -222,7 +222,7 @@ async def ping():
 
 
 @app.get("/stats", status_code=200)
-@cache(expire=120)
+@cache(expire=600)
 async def status():
 
     response = {}
