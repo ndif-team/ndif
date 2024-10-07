@@ -98,7 +98,9 @@ class RayState:
         self.apply()
 
     def apply(self) -> None:
-
+        """
+        Apply the current configuration to deploy applications.
+        """
         ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
