@@ -261,7 +261,8 @@ async def status():
             response[key] = await asyncio.wait_for(value["status"], timeout=4)
 
         except:
-            pass
+            
+            del response[key]
 
     return response
 
