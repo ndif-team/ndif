@@ -24,7 +24,7 @@ services:
     volumes:
       - /disk/u/jfiottok/.cache/huggingface/hub/:/root/.cache/huggingface/hub
       - ./service_config.yml:/src/ray/config/service_config.yml
-      - ./prod/ray_config.yml:/src/ray/config/ray_config.yml
+      - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ../../services/ray_head/start.sh:/start.sh
       - ray-data:/tmp/ray/
     environment:
@@ -40,7 +40,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: ${PROD_N_DEVICES}
+              count: 8
               capabilities: [ gpu ]
 
   api:
@@ -53,7 +53,7 @@ services:
       - ${PROD_API_PORT}:${API_INTERNAL_PORT}
     volumes:
       - ./api-start.sh:/start.sh
-      - ../../services/api/src/creds.json:/src/creds.json
+      - /disk/u/jfiottok/wd/ndif/services/api/src/creds.json:/src/creds.json
     environment:
       OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
       RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${PROD_HOST_IP}:${PROD_RABBITMQ_PORT}/
