@@ -229,7 +229,7 @@ async def ping():
 
 
 @app.get("/stats", status_code=200)
-@cache(expire=120)
+@cache(expire=600)
 async def status():
 
     response = {}
@@ -268,7 +268,8 @@ async def status():
             response[key] = await asyncio.wait_for(value["status"], timeout=4)
 
         except:
-            pass
+            
+            del response[key]
 
     return response
 

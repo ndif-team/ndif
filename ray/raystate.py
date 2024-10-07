@@ -15,7 +15,7 @@ from ray.serve.schema import (
     ServeDeploySchema,
 )
 
-from .deployments.base import BaseModelDeploymentArgs, BaseDeploymentArgs
+from .deployments.base import BaseDeploymentArgs, BaseModelDeploymentArgs
 
 
 class ServiceConfigurationSchema(BaseModel):
@@ -81,9 +81,7 @@ class RayState:
 
     def apply(self) -> None:
 
-        ServeSubmissionClient(
-            self.ray_dashboard_url
-        ).deploy_applications(
+        ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
 
@@ -96,7 +94,9 @@ class RayState:
                 DeploymentSchema(
                     name="RequestDeployment",
                     num_replicas=self.service_config.request_num_replicas,
-                    ray_actor_options=RayActorOptionsSchema(num_cpus=1),
+                    ray_actor_options=RayActorOptionsSchema(
+                        num_cpus=1, resources={"head": 1}
+                    ),
                 )
             ],
             args=BaseDeploymentArgs(
