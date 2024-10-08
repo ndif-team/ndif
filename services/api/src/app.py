@@ -254,7 +254,7 @@ async def status():
                     "status": application_status,
                 }
 
-    for key, value in response.items():
+    for key, value in list(response.items()):
 
         try:
 
