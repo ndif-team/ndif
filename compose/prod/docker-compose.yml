@@ -53,7 +53,7 @@ services:
       - ${PROD_API_PORT}:${API_INTERNAL_PORT}
     volumes:
       - ./api-start.sh:/start.sh
-      - /disk/u/jfiottok/wd/ndif/services/api/src/creds.json:/src/creds.json
+      - ../../services/api/src/creds.json:/src/creds.json
     environment:
       OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
       RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${PROD_HOST_IP}:${PROD_RABBITMQ_PORT}/
