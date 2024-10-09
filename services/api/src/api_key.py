@@ -15,7 +15,7 @@ from .metrics import NDIFGauge
 
 gauge = NDIFGauge(service='app')
 
-llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B-Instruct"}'
+llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
 
 class ApiKeyStore:
 
