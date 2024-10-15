@@ -4,6 +4,7 @@ from functools import partial, wraps
 from typing import Any, Dict
 
 import ray
+import signal
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
@@ -50,6 +51,13 @@ class BaseDeployment:
         )
         self.gauge = NDIFGauge(service="ray")
 
+        def handler(signum, frame):
+            # Signal handler that raises a TimeoutError when SIGALRM is received.
+            raise TimeoutError()
+
+        # Set up the handler for the SIGALRM signal.
+        signal.signal(signal.SIGALRM, handler)
+
 
 class BaseDeploymentArgs(BaseModel):
 
@@ -59,18 +67,6 @@ class BaseDeploymentArgs(BaseModel):
     object_store_url: str
     object_store_access_key: str
     object_store_secret_key: str
-
-
-def threaded(method, size: int = 1):
-
-    group = ThreadPoolExecutor(size)
-
-    @wraps(method)
-    def inner(*args, **kwargs):
-
-        return group.submit(method, *args, **kwargs)
-
-    return inner
 
 
 class BaseModelDeployment(BaseDeployment):
@@ -123,10 +119,10 @@ class BaseModelDeployment(BaseDeployment):
             
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
                 
+                # Schedule an alarm to trigger after 'execution_timeout' seconds.
+                signal.alarm(self.execution_timeout)
                 result = self.execute(request)
-                
-                if isinstance(result, Future):
-                    result = result.result(timeout=self.execution_timeout)
+                signal.alarm(0) # Disable the alarm (timeout).
 
             self.post(request, result)
 
