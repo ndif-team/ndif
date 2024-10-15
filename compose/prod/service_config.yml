@@ -3,37 +3,20 @@ request_import_path: src.ray.deployments.request:app
 request_num_replicas: 1
 models:
 
-  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-70B"}'
-    ray_actor_options:
-      num_gpus: 3
-      resources: 
-        boa: 1
-    num_replicas: 1
-
-
   - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-8B"}'
     ray_actor_options:
       num_gpus: 1
-      resources: 
+      resources:
         fukuyama: 1
     num_replicas: 1
-
 
   - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "EleutherAI/gpt-j-6b"}'
     ray_actor_options:
       num_gpus: 1
-      resources: 
+      resources:
         hamada: 1
     num_replicas: 1
 
-
-
-
-  # - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-70B-Instruct"}'
-  #   ray_actor_options:
-  #     resources: 
-  #       cuda_memory_MB: 60000
-  #   num_replicas: 1
 
   - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
     num_replicas: 1
@@ -45,3 +28,11 @@ models:
       tensor_parallelism_size: 16
     ray_actor_options:
       num_gpus: 1
+
+
+  - model_key: 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-70B"}'
+    ray_actor_options:
+      num_gpus: 3
+      resources: 
+        boa: 1
+    num_replicas: 1
