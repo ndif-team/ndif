@@ -1,3 +1,5 @@
+-include .config
+
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell nvidia-smi  -L | wc -l)
 
@@ -8,7 +10,7 @@ N_DEVICES := $(shell nvidia-smi  -L | wc -l)
 VALID_ENVS := dev prod delta
 
 # Default environment
-DEFAULT_ENV := dev
+DEFAULT_ENV ?= dev
 
 # Function to check if the environment is valid
 check_env = $(if $(filter $(1),$(VALID_ENVS)),,$(error Invalid environment '$(1)'. Use one of: $(VALID_ENVS)))
@@ -64,6 +66,9 @@ ta:
 	make down $(ENV)
 	make build_all_service
 	make up $(ENV)
+
+save-vars:
+	@echo "DEFAULT_ENV=$(DEFAULT_ENV)" > .config
 
 # Consumes the second argument (e.g. 'dev', 'prod') so it doesn't cause an error.
 %:
