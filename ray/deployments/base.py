@@ -14,6 +14,7 @@ from transformers import PreTrainedModel
 
 from nnsight.contexts.backends.RemoteBackend import RemoteMixin
 from nnsight.models.mixins import RemoteableMixin
+from nnsight.util import NNsightError
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
@@ -211,13 +212,21 @@ class BaseModelDeployment(BaseDeployment):
         ).respond(self.api_url, self.object_store)
 
     def exception(self, request: BackendRequestModel, exception: Exception):
-
-        request.create_response(
-            status=BackendResponseModel.JobStatus.ERROR,
-            description=str(exception),
-            logger=self.logger,
-            gauge=self.gauge,
-        ).respond(self.api_url, self.object_store)
+        if isinstance(exception, NNsightError):
+            error_message = f"{str(exception)} - {exception.graph_id} - {exception.node_name}"
+            request.create_response(
+                status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
+                description=error_message,
+                logger=self.logger,
+                gauge=self.gauge,
+            ).respond(self.api_url, self.object_store)
+        else:
+            request.create_response(
+                status=BackendResponseModel.JobStatus.ERROR,
+                description=str(exception),
+                logger=self.logger,
+                gauge=self.gauge,
+            ).respond(self.api_url, self.object_store)
 
     def cleanup(self):
 

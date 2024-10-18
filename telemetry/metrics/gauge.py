@@ -31,6 +31,7 @@ class NDIFGauge:
         COMPLETED = 4
         LOG = 5
         ERROR = 6
+        NNSIGHT_ERROR = 7
 
     def __new__(cls, service: str):
         """Singleton pattern to ensure only one instance of the gauge per service."""
