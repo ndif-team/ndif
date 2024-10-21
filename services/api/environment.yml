@@ -12,7 +12,7 @@ dependencies:
     - fastapi==0.108.0
     - fastapi-socketio
     - python-socketio
-    - aio_pika
+    - redis
     - firebase-admin
     # Telemetry
     - asgiref
@@ -33,4 +33,5 @@ dependencies:
     - ray[serve]
     - requests
     - torch
-    - git+https://github.com/ndif-team/nnsight@dev
+    - python-slugify
+    - git+https://github.com/ndif-team/nnsight@envoy-all
