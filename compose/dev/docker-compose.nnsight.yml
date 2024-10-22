@@ -1,0 +1,10 @@
+services:
+  api:
+    command: ["bash", "./src/nns_inst.sh"]
+    volumes:
+      - ${NNS_PATH}:/nnsight
+
+  ray-head:
+    command: ["bash", "./src/nns_inst.sh"]
+    volumes:
+      - ${NNS_PATH}:/nnsight

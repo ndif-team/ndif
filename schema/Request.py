@@ -22,9 +22,10 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
     def create_response(
         self,
         status: ResponseModel.JobStatus,
-        description: str,
         logger: logging.Logger,
         gauge: "NDIFGauge",
+        description: str = None,
+        data: bytes = None,
         gpu_mem: int = 0,
     ) -> BackendResponseModel:
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
@@ -38,6 +39,7 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
                 received=self.received,
                 status=status,
                 description=description,
+                data=data
             )
             .backend_log(
                 logger=logger,

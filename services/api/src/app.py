@@ -1,14 +1,12 @@
 import asyncio
 import os
-import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
-from io import BytesIO
+from typing import Annotated, Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_cache import FastAPICache
@@ -18,14 +16,19 @@ from fastapi_socketio import SocketManager
 from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
-from urllib3 import HTTPResponse
+from slugify import slugify
 
+from nnsight.schema.Request import StreamValueModel
 from nnsight.schema.Response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
 from .metrics import NDIFGauge
-from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from .schema import (
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
 gauge = NDIFGauge(service="app")
@@ -48,9 +51,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async rabbitmq manager for communication between socketio servers
-socketio_manager = socketio.AsyncAioPikaManager(
-    url=os.environ.get("RMQ_URL"), logger=logger
+# Init async manager for communication between socketio servers
+socketio_manager = socketio.AsyncRedisManager(
+    url=os.environ.get("BROKER_URL"), logger=logger
 )
 # Init socketio manager app
 sm = SocketManager(
@@ -58,6 +61,8 @@ sm = SocketManager(
     mount_location="/ws",
     client_manager=socketio_manager,
     logger=logger,
+    engineio_logger=logger,
+    max_http_buffer_size=1000000000000000
 )
 
 # Init object_store connection
@@ -130,26 +135,28 @@ async def request(
     return response
 
 
-async def _blocking_response(response: ResponseModel):
-    logger.info(f"Responding to SID: `{response.session_id}`:")
-    response.log(logger)
+@sm.on("connect")
+async def connect(session_id: str, environ: Dict):
+    params = environ.get("QUERY_STRING")
+    params = dict(x.split("=") for x in params.split("&"))
+    
+    if "job_id" in params:
 
-    await sm.emit(
-        "blocking_response",
-        data=response.model_dump(exclude_defaults=True, exclude_none=True),
-        to=response.session_id,
-    )
+        await sm.enter_room(session_id, params["job_id"])
 
 
-@app.post("/blocking_response")
-async def blocking_response(response: BackendResponseModel):
-    """Endpoint to have server respond to sid.
+@sm.on("blocking_response")
+async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
-    Args:
-        id (str): _description_
-    """
+    await sm.emit("blocking_response", data=data, to=client_session_id)
 
-    await _blocking_response(response)
+
+@sm.on("stream_upload")
+async def stream_upload(session_id: str, value: Dict):
+    
+    value_model = StreamValueModel(**value)
+    
+    await sm.emit("stream_upload", data=value, room=value_model.model_key)
 
 
 @app.get("/response/{id}")

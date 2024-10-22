@@ -18,6 +18,15 @@ from .base import BaseDeployment, BaseDeploymentArgs
 
 @serve.deployment()
 class RequestDeployment(BaseDeployment):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.sio.connect(
+            self.api_url,
+            socketio_path="/ws/socket.io",
+            transports=["websocket"],
+            wait_timeout=10,
+        )
 
     async def __call__(self, request: BackendRequestModel):
 
@@ -34,8 +43,8 @@ class RequestDeployment(BaseDeployment):
                 description="Your job was approved and is waiting to be run.",
                 logger=self.logger,
                 gauge=self.gauge,
-            ).respond(self.api_url, self.object_store)
-            
+            ).respond(self.sio, self.object_store)
+
         except Exception as exception:
 
             request.create_response(
@@ -43,7 +52,7 @@ class RequestDeployment(BaseDeployment):
                 description=str(exception),
                 logger=self.logger,
                 gauge=self.gauge,
-            ).respond(self.api_url, self.object_store)
+            ).respond(self.sio, self.object_store)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 
