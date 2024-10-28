@@ -1,11 +1,12 @@
-import asyncio
 import gc
+import json
+import os
 import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
 from typing import Any, Dict
-
+from ..util import set_cuda_env_var
 import ray
 import socketio
 import torch
@@ -101,6 +102,9 @@ class BaseModelDeployment(BaseDeployment):
     ) -> None:
 
         super().__init__(*args, **kwargs)
+        
+        if os.environ.get("CUDA_VISIBLE_DEVICES","") == "":
+            set_cuda_env_var()
 
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -311,7 +315,7 @@ class BaseModelDeployment(BaseDeployment):
 
     def stream_receive(self, *args):
 
-        return StreamValueModel(**self.sio.receive()[1]).deserialize(self.model)
+        return StreamValueModel(**json.loads(self.sio.receive(5)[1])).deserialize(self.model)
 
     def stream_connect(self):
         

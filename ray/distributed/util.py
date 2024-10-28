@@ -4,6 +4,7 @@ from typing import Any, NamedTuple
 
 import torch
 from accelerate import load_checkpoint_and_dispatch
+from accelerate.utils import modeling
 from accelerate.utils.imports import (
     is_mlu_available,
     is_mps_available,
@@ -14,7 +15,6 @@ from accelerate.utils.imports import (
     is_xpu_available,
 )
 from accelerate.utils.modeling import check_device_same, clear_device_cache
-from accelerate.utils import modeling
 from safetensors.torch import load_file
 from torch.distributed._tensor import DTensor, Replicate
 from tqdm import tqdm
@@ -91,15 +91,14 @@ def patch_intervention_protocol() -> None:
                 placement, device_mesh = placement
 
                 return DTensor.from_local(
-                    tensor, device_mesh=device_mesh, placements=placement
-                )
+                    tensor, device_mesh=device_mesh, placements=[Replicate()]
+                ).redistribute(device_mesh=device_mesh, placements=placement)
 
             if len(placements) > 0:
 
                 activations = util.apply(
                     activations, redistribute_tensors, torch.Tensor
                 )
-
             return activations
 
         return intervene_wrapper
@@ -371,15 +370,14 @@ def set_module_tensor_to_device(
         and device not in tied_params_map[value.data_ptr()]
     ):
         tied_params_map[value.data_ptr()][device] = new_value
-        
-        
+
     #### PATCH #######################################
-    
+
     for hook in module._load_state_dict_post_hooks.values():
-                
+
         hook(module, None)
 
 
 def patch_accelerate():
-    
+
     modeling.set_module_tensor_to_device = set_module_tensor_to_device
