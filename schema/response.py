@@ -7,7 +7,7 @@ import socketio
 from minio import Minio
 from pydantic import field_serializer
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.response import ResponseModel
 
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
@@ -16,18 +16,17 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
     _bucket_name: ClassVar[str] = "responses"
 
-    data: Optional[Any] = None
-
     def __str__(self) -> str:
         return f"{self.id} - {self.status.name}: {self.description}"
 
+    @property
     def blocking(self) -> bool:
         return self.session_id is not None
 
     def respond(
         self, sio: socketio.SimpleClient, object_store: Minio
     ) -> ResponseModel:
-        if self.blocking():
+        if self.blocking:
 
             fn = sio.client.emit
 

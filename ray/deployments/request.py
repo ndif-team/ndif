@@ -10,7 +10,7 @@ try:
 except:
     pass
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.response import ResponseModel
 
 from ...schema import BackendRequestModel
 from .base import BaseDeployment, BaseDeploymentArgs

@@ -1,9 +1,8 @@
 from typing import Callable
 
-from nnsight.contexts.backends.RemoteBackend import RemoteMixin
 from nnsight.schema.format.functions import update_function
-from nnsight.tracing.Node import Node
-from nnsight.tracing.protocols import Protocol, StreamingDownloadProtocol, StreamingUploadProtocol
+from nnsight.tracing.graph import Node
+from nnsight.tracing.protocols import Protocol
 
 
 class LogProtocol(Protocol):
@@ -14,43 +13,43 @@ class LogProtocol(Protocol):
         update_function(print, fn)
 
 
-class ServerStreamingDownloadProtocol(StreamingDownloadProtocol):
+# class ServerStreamingDownloadProtocol(StreamingDownloadProtocol):
 
-    send: Callable
+#     send: Callable
 
-    @classmethod
-    def set(cls, fn: Callable):
+#     @classmethod
+#     def set(cls, fn: Callable):
 
-        cls.send = fn
+#         cls.send = fn
 
-        update_function(StreamingDownloadProtocol, cls)
+#         update_function(StreamingDownloadProtocol, cls)
 
-    @classmethod
-    def execute(cls, node: Node):
+#     @classmethod
+#     def execute(cls, node: Node):
 
-        data = RemoteMixin.remote_stream_format(node)
+#         data = RemoteMixin.remote_stream_format(node)
         
-        value = node.args[0].value
+#         value = node.args[0].value
 
-        cls.send((data, value))
+#         cls.send((data, value))
 
-        node.set_value(None)
+#         node.set_value(None)
 
-class ServerStreamingUploadProtocol(StreamingUploadProtocol):
+# class ServerStreamingUploadProtocol(StreamingUploadProtocol):
     
-    get:Callable
+#     get:Callable
     
-    @classmethod
-    def set(cls, fn:Callable):
+#     @classmethod
+#     def set(cls, fn:Callable):
         
-        cls.get = fn
+#         cls.get = fn
         
-        update_function(StreamingUploadProtocol, ServerStreamingUploadProtocol)
+#         update_function(StreamingUploadProtocol, ServerStreamingUploadProtocol)
         
         
-    @classmethod
-    def execute(cls, node: Node):
+#     @classmethod
+#     def execute(cls, node: Node):
         
-        value = cls.get(node)
+#         value = cls.get(node)
         
-        node.set_value(value)
+#         node.set_value(value)

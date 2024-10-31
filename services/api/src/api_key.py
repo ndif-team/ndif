@@ -9,7 +9,7 @@ from fastapi.security.api_key import APIKeyHeader
 from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
 from .metrics import NDIFGauge
 
@@ -66,19 +66,9 @@ def extract_request_metadata(raw_request: Request) -> dict:
     }
     return metadata
 
-def init_request(request: BackendRequestModel) -> BackendRequestModel:
-    """
-    Initializes a BackendRequestModel by setting the ID, and received timestamp.
-    """
-    # Ensure request ID and received timestamp are set
-    if not request.id:
-        request.id = str(uuid.uuid4())
-    if not request.received:
-        request.received = datetime.now()
-    return request
+
 
 async def api_key_auth(
-    request: BackendRequestModel,
     raw_request: Request,
     api_key: str = Security(api_key_header)
 ):
@@ -90,7 +80,7 @@ async def api_key_auth(
     metadata = extract_request_metadata(raw_request)
 
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
-    request = init_request(request)
+    request = await BackendRequestModel.from_request(raw_request)
 
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 

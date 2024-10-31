@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from typing_extensions import Self
 from urllib3.response import HTTPResponse
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.response import ResponseModel
 
 class ObjectStorageMixin(BaseModel):
     """

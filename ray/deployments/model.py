@@ -2,7 +2,7 @@ import os
 
 from ray import serve
 
-from ...schema.Request import BackendRequestModel
+from nnsight.tracing.graph import Graph
 from ..util import set_cuda_env_var
 from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 
@@ -10,8 +10,8 @@ from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 class ThreadedModelDeployment(BaseModelDeployment):
 
     @threaded
-    def execute(self, request: BackendRequestModel):
-        return super().execute(request)
+    def execute(self, graph: Graph):
+        return super().execute(graph)
 
 
 @serve.deployment(

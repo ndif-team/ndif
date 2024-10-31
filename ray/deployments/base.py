@@ -9,10 +9,12 @@ from typing import Any, Dict
 from ..util import set_cuda_env_var
 import ray
 import socketio
+from nnsight.tracing.graph import Graph
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
 from torch.amp import autocast
+from nnsight.tracing.backends import Backend
 from torch.cuda import (
     max_memory_allocated,
     memory_allocated,
@@ -20,19 +22,39 @@ from torch.cuda import (
 )
 from transformers import PreTrainedModel
 
-from nnsight.contexts.backends.RemoteBackend import RemoteMixin
-from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import StreamValueModel
-
+from nnsight.modeling.mixins import RemoteableMixin
+from nnsight.schema.request import StreamValueModel
+from nnsight.tracing.protocols import StopProtocol
 from ...logging import load_logger
 from ...metrics import NDIFGauge
 from ...schema import (
     BackendRequestModel,
     BackendResponseModel,
     BackendResultModel,
+    RESULT
 )
 from . import protocols
 
+class ExtractionBackend(Backend):
+    
+    def __call__(self, graph: Graph) -> RESULT:
+        
+        try:
+         
+            graph.nodes[-1].execute()
+            
+        except StopProtocol.StopException:
+            
+            pass
+        
+        finally:
+            
+            result = BackendResultModel.from_graph(graph)
+      
+            graph.nodes.clear()
+            graph.stack.clear()
+            
+            return result
 
 class BaseDeployment:
 
@@ -130,14 +152,15 @@ class BaseModelDeployment(BaseDeployment):
 
         self.request: BackendRequestModel
 
-        protocols.LogProtocol.set(lambda *args: self.log(*args))
-        protocols.ServerStreamingDownloadProtocol.set(
-            lambda *args: self.stream_send(*args)
-        )
+        protocols.LogProtocol.set(lambda *args : self.log(*args))
+        
+        # protocols.ServerStreamingDownloadProtocol.set(
+        #     lambda *args: self.stream_send(*args)
+        # )
 
-        protocols.ServerStreamingUploadProtocol.set(
-            lambda *args: self.stream_receive(*args)
-        )
+        # protocols.ServerStreamingUploadProtocol.set(
+        #     lambda *args: self.stream_receive(*args)
+        # )
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -157,16 +180,16 @@ class BaseModelDeployment(BaseDeployment):
 
             result = None
 
-            self.pre(request)
+            inputs = self.pre()
 
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-                result = self.execute(request)
+                result = self.execute(inputs)
 
                 if isinstance(result, Future):
                     result = result.result(timeout=self.execution_timeout)
 
-            self.post(request, result)
+            self.post(result)
 
         except TimeoutError as e:
 
@@ -202,22 +225,21 @@ class BaseModelDeployment(BaseDeployment):
 
     ### ABSTRACT METHODS #################################
 
-    def pre(self, request: BackendRequestModel):
+    def pre(self) -> Graph:
         """Logic to execute before execution.
 
-        Args:
-            request (BackendRequestModel): Request.
-            result (Any): Result.
         """
+        
+        graph = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
+        
+        return graph
 
-        request.object = ray.get(request.object)
-
-    def execute(self, request: BackendRequestModel) -> Any:
+    def execute(self, graph: Graph) -> Any:
         """Execute request.
 
         Args:
@@ -232,17 +254,14 @@ class BaseModelDeployment(BaseDeployment):
 
         model_memory = memory_allocated()
 
-        # Deserialize request
-        obj = request.deserialize(self.model)
-
         # Execute object.
-        result = obj.local_backend_execute()
+        result = ExtractionBackend()(graph)
 
         gpu_mem = max_memory_allocated() - model_memory
+        
+        return result, gpu_mem
 
-        return result, obj, gpu_mem
-
-    def post(self, request: BackendRequestModel, result: Any) -> None:
+    def post(self, result: Any) -> None:
         """Logic to execute after execution with result from `.execute`.
 
         Args:
@@ -250,13 +269,12 @@ class BaseModelDeployment(BaseDeployment):
             result (Any): Result.
         """
 
-        obj: RemoteMixin = result[1]
-        gpu_mem: int = result[2]
-        result: Any = result[0]
+        saves = result[0]
+        gpu_mem: int = result[1]
 
         BackendResultModel(
-            id=request.id,
-            value=obj.remote_backend_postprocess_result(result),
+            id=self.request.id,
+            result=saves,
         ).save(self.object_store)
 
         self.respond(

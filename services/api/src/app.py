@@ -18,8 +18,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
 from slugify import slugify
 
-from nnsight.schema.Request import StreamValueModel
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.request import StreamValueModel
+from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
@@ -92,13 +92,7 @@ async def request(
     Returns:
         BackendResponseModel: _description_
     """
-    try:
-
-        object = request.object
-
-        # Put object in ray
-        request.object = ray.put(object)
-
+    try:        
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
@@ -113,9 +107,9 @@ async def request(
         )
 
         # Back up request object by default (to be deleted on successful completion)
-        request = request.model_copy()
-        request.object = object
-        request.save(object_store)
+        # request = request.model_copy()
+        # request.object = object
+        # request.save(object_store)
 
     except Exception as exception:
 
@@ -127,7 +121,7 @@ async def request(
             gauge=gauge,
         )
 
-    if not response.blocking():
+    if not response.blocking:
 
         response.save(object_store)
 

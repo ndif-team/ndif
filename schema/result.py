@@ -1,6 +1,6 @@
 from typing import ClassVar
 
-from nnsight.schema.Response import ResultModel
+from nnsight.schema.result import ResultModel
 from .mixins import ObjectStorageMixin
 
 class BackendResultModel(ResultModel, ObjectStorageMixin):

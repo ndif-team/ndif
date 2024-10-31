@@ -3,8 +3,8 @@ from typing import Optional
 
 from prometheus_client import Gauge as PrometheusGauge
 
-from nnsight.schema.Request import RequestModel
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.request import RequestModel
+from nnsight.schema.response import ResponseModel
 
 # Labels for the metrics
 request_labels = (
