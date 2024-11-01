@@ -43,18 +43,18 @@ class ExtractionBackend(Backend):
          
             graph.nodes[-1].execute()
             
+            result = BackendResultModel.from_graph(graph)
+            
         except StopProtocol.StopException:
             
             pass
         
         finally:
             
-            result = BackendResultModel.from_graph(graph)
-      
             graph.nodes.clear()
             graph.stack.clear()
             
-            return result
+        return result
 
 class BaseDeployment:
 
