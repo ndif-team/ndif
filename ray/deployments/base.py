@@ -176,9 +176,9 @@ class BaseModelDeployment(BaseDeployment):
     def execute(self, request: BackendRequestModel):
 
         # For tracking peak GPU usage
-        reset_peak_memory_stats()
-
-        model_memory = memory_allocated()
+        if torch.cuda.is_available():   
+            reset_peak_memory_stats()
+            model_memory = memory_allocated()
 
         # Deserialize request
         obj = request.deserialize(self.model)
@@ -186,7 +186,11 @@ class BaseModelDeployment(BaseDeployment):
         # Execute object.
         result = obj.local_backend_execute()
 
-        gpu_mem = max_memory_allocated() - model_memory
+        # Compute GPU memory usage
+        if torch.cuda.is_available():
+            gpu_mem = max_memory_allocated() - model_memory
+        else:
+            gpu_mem = 0
 
         return result, obj, gpu_mem
 
