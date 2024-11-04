@@ -12,5 +12,6 @@ RUN tar -xvf ./src.tar.gz\
 
 SHELL ["/bin/bash", "-c"]
 
-CMD ["./check_and_update_env.sh"]
+# Check and update the environment and start the service
+CMD source activate service && bash ./check_and_update_env.sh && bash ./start.sh
 

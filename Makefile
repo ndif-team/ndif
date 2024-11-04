@@ -64,11 +64,6 @@ ta:
 	make build_all_service
 	make up $(ENV)
 
-update:
-	$(call set_env)
-	$(call check_env,$(ENV))
-	@./scripts/update_dependencies.sh $(ENV)
-
 # Consumes the second argument (e.g. 'dev', 'prod') so it doesn't cause an error.
 %:
 	@:

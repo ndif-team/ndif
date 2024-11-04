@@ -21,7 +21,3 @@ check_and_update_environment() {
 
 # Check and update the environment
 check_and_update_environment
-
-# Start the service
-echo "Starting the service..."
-source activate service && bash ./start.sh
