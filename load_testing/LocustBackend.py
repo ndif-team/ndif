@@ -4,8 +4,8 @@ import io
 from typing import Any
 
 from nnsight.contexts.backends.RemoteBackend import RemoteBackend, RemoteMixin
-from nnsight.schema.Request import RequestModel
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.request import RequestModel
+from nnsight.schema.response import ResponseModel
 import requests
 import socketio
 from tqdm import tqdm

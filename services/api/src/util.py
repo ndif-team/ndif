@@ -1,6 +1,6 @@
 import os
 import pickle
-from nnsight.schema.Request import RequestModel
+from nnsight.schema.request import RequestModel
 
 REQUEST_DIR = '/tmp/requests/'
 
