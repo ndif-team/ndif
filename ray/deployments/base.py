@@ -6,55 +6,53 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
 from typing import Any, Dict
-from ..util import set_cuda_env_var
+
 import ray
 import socketio
-from nnsight.tracing.graph import Graph
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
 from torch.amp import autocast
-from nnsight.tracing.backends import Backend
-from torch.cuda import (
-    max_memory_allocated,
-    memory_allocated,
-    reset_peak_memory_stats,
-)
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 from transformers import PreTrainedModel
 
+from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import StreamValueModel
+from nnsight.tracing.backends import Backend
+from nnsight.tracing.graph import Graph
 from nnsight.tracing.protocols import StopProtocol
+
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-    RESULT
-)
+from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
+from ..util import set_cuda_env_var
 from . import protocols
 
+
 class ExtractionBackend(Backend):
-    
+
     def __call__(self, graph: Graph) -> RESULT:
-        
+
         try:
-         
+
             graph.nodes[-1].execute()
-            
+
             result = BackendResultModel.from_graph(graph)
-            
+
         except StopProtocol.StopException:
-            
+
             pass
-        
+
         finally:
-            
+
             graph.nodes.clear()
             graph.stack.clear()
-            
+
         return result
+
 
 class BaseDeployment:
 
@@ -124,8 +122,8 @@ class BaseModelDeployment(BaseDeployment):
     ) -> None:
 
         super().__init__(*args, **kwargs)
-        
-        if os.environ.get("CUDA_VISIBLE_DEVICES","") == "":
+
+        if os.environ.get("CUDA_VISIBLE_DEVICES", "") == "":
             set_cuda_env_var()
 
         self.model_key = model_key
@@ -152,15 +150,9 @@ class BaseModelDeployment(BaseDeployment):
 
         self.request: BackendRequestModel
 
-        protocols.LogProtocol.set(lambda *args : self.log(*args))
-        
-        # protocols.ServerStreamingDownloadProtocol.set(
-        #     lambda *args: self.stream_send(*args)
-        # )
+        protocols.LogProtocol.set(lambda *args: self.log(*args))
 
-        # protocols.ServerStreamingUploadProtocol.set(
-        #     lambda *args: self.stream_receive(*args)
-        # )
+        RemoteContext.set(self.stream_send, self.stream_receive)
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -226,17 +218,14 @@ class BaseModelDeployment(BaseDeployment):
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> Graph:
-        """Logic to execute before execution.
-
-        """
-        
+        """Logic to execute before execution."""
         graph = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
-        
+
         return graph
 
     def execute(self, graph: Graph) -> Any:
@@ -258,7 +247,7 @@ class BaseModelDeployment(BaseDeployment):
         result = ExtractionBackend()(graph)
 
         gpu_mem = max_memory_allocated() - model_memory
-        
+
         return result, gpu_mem
 
     def post(self, result: Any) -> None:
@@ -298,7 +287,7 @@ class BaseModelDeployment(BaseDeployment):
 
     def cleanup(self):
         """Logic to execute to clean up memory after execution result is post-processed."""
-        
+
         if self.sio.connected:
 
             self.sio.disconnect()
@@ -318,9 +307,7 @@ class BaseModelDeployment(BaseDeployment):
 
         description = "".join([str(_data) for _data in data])
 
-        self.respond(
-            status=BackendResponseModel.JobStatus.LOG, description=description
-        )
+        self.respond(status=BackendResponseModel.JobStatus.LOG, description=description)
 
     def stream_send(self, data: Any):
         """Logic to execute to stream data back during execution.
@@ -333,12 +320,12 @@ class BaseModelDeployment(BaseDeployment):
 
     def stream_receive(self, *args):
 
-        return StreamValueModel(**json.loads(self.sio.receive(5)[1])).deserialize(self.model)
+        return StreamValueModel.deserialize(self.sio.receive(5)[1], "json", True)
 
     def stream_connect(self):
-        
+
         if self.sio.client is None:
-            
+
             self.sio.connected = False
 
             self.sio.connect(
@@ -349,9 +336,9 @@ class BaseModelDeployment(BaseDeployment):
             )
 
     def respond(self, **kwargs) -> None:
-        
+
         if self.request.session_id is not None:
-            
+
             self.stream_connect()
 
         self.request.create_response(
