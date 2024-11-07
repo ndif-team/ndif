@@ -24,11 +24,8 @@ from nnsight.schema.response import ResponseModel
 from .api_key import api_key_auth
 from .logging import load_logger
 from .metrics import NDIFGauge
-from .schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from .schema import (BackendRequestModel, BackendResponseModel,
+                     BackendResultModel)
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
 gauge = NDIFGauge(service="app")
@@ -146,11 +143,10 @@ async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
 
 @sm.on("stream_upload")
-async def stream_upload(session_id: str, value: Dict):
+async def stream_upload(session_id: str, data: bytes, job_id:str):
     
-    value_model = StreamValueModel(**value)
     
-    await sm.emit("stream_upload", data=value, room=value_model.model_key)
+    await sm.emit("stream_upload", data=data, room=job_id)
 
 
 @app.get("/response/{id}")

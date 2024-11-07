@@ -38,6 +38,17 @@ class BackendRequestModel(ObjectStorageMixin):
 
     id: str
     received: datetime
+    
+    
+    def deserialize(self, model: NNsight) -> Graph:
+        
+        graph = self.graph
+        
+        if isinstance(self.graph, ray.ObjectRef):
+
+            graph = ray.get(graph)
+        
+        return RequestModel.deserialize(model, graph, 'json', self.zlib)
 
     @classmethod
     async def from_request(cls, request: Request, put: bool = True) -> Self:
@@ -58,34 +69,6 @@ class BackendRequestModel(ObjectStorageMixin):
             id=str(uuid.uuid4()),
             received=datetime.now(),
         )
-
-    def deserialize(self, model: NNsight) -> Graph:
-
-        graph = self.graph
-
-        if isinstance(self.graph, ray.ObjectRef):
-
-            graph = ray.get(graph)
-
-        if self.zlib:
-
-            graph = zlib.decompress(graph)
-
-        if self.format == "json":
-
-            nnsight_request = msgspec.json.decode(graph)
-
-            graph = RequestModel(**nnsight_request).deserialize(model)
-
-        elif self.format == "pt":
-
-            data = BytesIO(graph)
-
-            data.seek(0)
-
-            graph = torch.load(data, map_location="cpu", weights_only=False)
-
-        return graph
 
     def create_response(
         self,
