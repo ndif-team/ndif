@@ -33,6 +33,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             if (
                 self.status == ResponseModel.JobStatus.COMPLETED
                 or self.status == ResponseModel.JobStatus.ERROR
+                or self.status == ResponseModel.JobStatus.NNSIGHT_ERROR
             ):
 
                 fn = sio.client.call

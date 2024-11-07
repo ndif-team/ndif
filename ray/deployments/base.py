@@ -5,11 +5,13 @@ import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
+import sys
 from typing import Any, Dict
 from ..util import set_cuda_env_var
 import ray
 import socketio
 from nnsight.tracing.graph import Graph
+from nnsight.util import NNsightError
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
@@ -283,18 +285,27 @@ class BaseModelDeployment(BaseDeployment):
             gpu_mem=gpu_mem,
         )
 
-    def exception(self, exception: Exception):
+    def exception(self, exception: Exception) -> None:
         """Logic to execute of there was an exception.
 
         Args:
             exception (Exception): Exception.
         """
 
-        description = traceback.format_exc()
+        if isinstance(exception, NNsightError):
+            sys.tracebacklimit = None
+            self.respond(
+                status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
+                description="An error has occured during the execution of the intervention graph.",
+                data={"message": exception.message,
+                      "node_id": exception.node_id}
+            )
+        else:
+            description = traceback.format_exc()
 
-        self.respond(
-            status=BackendResponseModel.JobStatus.ERROR, description=description
-        )
+            self.respond(
+                status=BackendResponseModel.JobStatus.ERROR, description=description
+            )
 
     def cleanup(self):
         """Logic to execute to clean up memory after execution result is post-processed."""

@@ -36,16 +36,24 @@ build_service:
 	rm src.tar.gz
 
 build_all_base:
+	$(call set_env)
+	$(call check_env,$(ENV))
 
 	cd services/api && make -f ../../Makefile build_base NAME=api
 	cd services/ray_head && make -f ../../Makefile build_base NAME=ray_head
-	cd services/ray_worker && make -f ../../Makefile build_base NAME=ray_worker
+	@if [ "$(ENV)" = "prod" ]; then \
+		cd services/ray_worker && make -f ../../Makefile build_base NAME=ray_worker; \
+	fi
 
 build_all_service:
+	$(call set_env)
+	$(call check_env,$(ENV))
 
 	cd services/api && make -f ../../Makefile build_service NAME=api
 	cd services/ray_head && make -f ../../Makefile build_service NAME=ray_head
-	cd services/ray_worker && make -f ../../Makefile build_service NAME=ray_worker
+	@if [ "$(ENV)" = "prod" ]; then \
+		cd services/ray_worker && make -f ../../Makefile build_service NAME=ray_worker; \
+	fi
 
 build:
 	$(call set_env)

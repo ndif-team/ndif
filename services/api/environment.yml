@@ -34,4 +34,4 @@ dependencies:
     - requests
     - torch
     - python-slugify
-    - git+https://github.com/ndif-team/nnsight@envoy-all
+    - git+https://github.com/ndif-team/nnsight@dev
