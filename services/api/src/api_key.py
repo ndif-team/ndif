@@ -18,7 +18,7 @@ from .logging import load_logger
 logger = load_logger(service_name='api', logger_name='gunicorn.error')
 gauge = NDIFGauge(service='app')
 
-llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
+llama_405b = 'nnsight.modeling.language.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
 
 class ApiKeyStore:
 
