@@ -1,11 +1,8 @@
 services:
-  rabbitmq:
-    image: rabbitmq:3.11.28
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+  message_broker:
+    image: redis:latest
     ports:
-      - ${DEV_RABBITMQ_PORT}:${RABBITMQ_INTERNAL_PORT}
+      - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
@@ -48,7 +45,7 @@ services:
       - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
       OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
-      RMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${HOST_IP}:${DEV_RABBITMQ_PORT}/
+      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
       WORKERS: 1
       RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
