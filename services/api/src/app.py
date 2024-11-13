@@ -1,14 +1,12 @@
 import asyncio
 import os
-import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
-from io import BytesIO
+from typing import Annotated, Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_cache import FastAPICache
@@ -18,14 +16,16 @@ from fastapi_socketio import SocketManager
 from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
-from urllib3 import HTTPResponse
+from slugify import slugify
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.request import StreamValueModel
+from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
 from .metrics import NDIFGauge
-from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from .schema import (BackendRequestModel, BackendResponseModel,
+                     BackendResultModel)
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
 gauge = NDIFGauge(service="app")
@@ -48,9 +48,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async rabbitmq manager for communication between socketio servers
-socketio_manager = socketio.AsyncAioPikaManager(
-    url=os.environ.get("RMQ_URL"), logger=logger
+# Init async manager for communication between socketio servers
+socketio_manager = socketio.AsyncRedisManager(
+    url=os.environ.get("BROKER_URL"), logger=logger
 )
 # Init socketio manager app
 sm = SocketManager(
@@ -58,6 +58,8 @@ sm = SocketManager(
     mount_location="/ws",
     client_manager=socketio_manager,
     logger=logger,
+    engineio_logger=logger,
+    max_http_buffer_size=1000000000000000
 )
 
 # Init object_store connection
@@ -87,13 +89,7 @@ async def request(
     Returns:
         BackendResponseModel: _description_
     """
-    try:
-
-        object = request.object
-
-        # Put object in ray
-        request.object = ray.put(object)
-
+    try:        
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
@@ -108,9 +104,9 @@ async def request(
         )
 
         # Back up request object by default (to be deleted on successful completion)
-        request = request.model_copy()
-        request.object = object
-        request.save(object_store)
+        # request = request.model_copy()
+        # request.object = object
+        # request.save(object_store)
 
     except Exception as exception:
 
@@ -122,7 +118,7 @@ async def request(
             gauge=gauge,
         )
 
-    if not response.blocking():
+    if not response.blocking:
 
         response.save(object_store)
 
@@ -130,26 +126,27 @@ async def request(
     return response
 
 
-async def _blocking_response(response: ResponseModel):
-    logger.info(f"Responding to SID: `{response.session_id}`:")
-    response.log(logger)
+@sm.on("connect")
+async def connect(session_id: str, environ: Dict):
+    params = environ.get("QUERY_STRING")
+    params = dict(x.split("=") for x in params.split("&"))
+    
+    if "job_id" in params:
 
-    await sm.emit(
-        "blocking_response",
-        data=response.model_dump(exclude_defaults=True, exclude_none=True),
-        to=response.session_id,
-    )
+        await sm.enter_room(session_id, params["job_id"])
 
 
-@app.post("/blocking_response")
-async def blocking_response(response: BackendResponseModel):
-    """Endpoint to have server respond to sid.
+@sm.on("blocking_response")
+async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
-    Args:
-        id (str): _description_
-    """
+    await sm.emit("blocking_response", data=data, to=client_session_id)
 
-    await _blocking_response(response)
+
+@sm.on("stream_upload")
+async def stream_upload(session_id: str, data: bytes, job_id:str):
+    
+    
+    await sm.emit("stream_upload", data=data, room=job_id)
 
 
 @app.get("/response/{id}")
@@ -222,7 +219,7 @@ async def ping():
 
 
 @app.get("/stats", status_code=200)
-@cache(expire=120)
+@cache(expire=600)
 async def status():
 
     response = {}
@@ -254,14 +251,15 @@ async def status():
                     "status": application_status,
                 }
 
-    for key, value in response.items():
+    for key, value in list(response.items()):
 
         try:
 
             response[key] = await asyncio.wait_for(value["status"], timeout=4)
 
         except:
-            pass
+            
+            del response[key]
 
     return response
 
