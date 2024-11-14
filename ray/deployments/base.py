@@ -283,13 +283,12 @@ class BaseModelDeployment(BaseDeployment):
 
         if isinstance(exception, NNsightError):
             sys.tracebacklimit = None
-            traceback_content = traceback.format_exc()
             self.respond(
                 status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
                 description="An error has occured during the execution of the intervention graph.",
                 data={"err_message": exception.message,
                       "node_id": exception.node_id,
-                      "traceback": traceback_content}
+                      "traceback": exception.traceback_content}
             )
         else:
             description = traceback.format_exc()
