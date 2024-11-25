@@ -12,10 +12,13 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
 from .metrics import NDIFGauge
+from .util import check_valid_email
+from .logging import load_logger
 
+logger = load_logger(service_name='api', logger_name='gunicorn.error')
 gauge = NDIFGauge(service='app')
 
-llama_405b = 'nnsight.models.LanguageModel.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
+llama_405b = 'nnsight.modeling.language.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
 
 class ApiKeyStore:
 
@@ -88,20 +91,30 @@ async def api_key_auth(
     gauge.update_network(request.id, ip_address, user_agent, content_length)
 
     if FIREBASE_CREDS_PATH is not None:
-        check_405b = False
-        if request.model_key == llama_405b:
-            check_405b = True
+        check_405b = True if request.model_key == llama_405b else False
         
         doc = api_key_store.fetch_document(api_key)
-        if api_key_store.does_api_key_exist(doc, check_405b):
-            user_id = api_key_store.get_uid(doc)
-            gauge.update(request=request, api_key=api_key, status=ResponseModel.JobStatus.APPROVED, user_id=user_id)
-            return request
 
+        # Check if the API key exists and is valid
+        if api_key_store.does_api_key_exist(doc, check_405b):
+            # Check if the document contains a valid email
+            user_id = api_key_store.get_uid(doc)
+            logger.info(user_id)
+            if check_valid_email(user_id):
+                gauge.update(request=request, api_key=api_key, status=ResponseModel.JobStatus.APPROVED, user_id=user_id)
+                return request
+            else:
+                # Handle case where API key exists but doesn't contain a valid email
+                gauge.update(request, api_key, ResponseModel.JobStatus.ERROR)
+                raise HTTPException(
+                    status_code=HTTP_401_UNAUTHORIZED,
+                    detail="Invalid API key: A valid API key must contain an email. Please visit https://login.ndif.us/ to create a new one."
+                )
         else:
+            # Handle case where API key does not exist or is invalid
             gauge.update(request, api_key, ResponseModel.JobStatus.ERROR)
             raise HTTPException(
-                status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one."
             )
-
     return request
