@@ -10,8 +10,7 @@ from ray.serve import Application
 from ...schema import BackendRequestModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (load_hf_model_from_cache,
-                                patch_intervention_protocol)
+from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
