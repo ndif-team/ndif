@@ -10,10 +10,9 @@ from ray.serve import Application
 from ...schema import BackendRequestModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (
-    load_hf_model_from_cache,
-    patch_intervention_protocol,
-)
+from ..distributed.util import (load_hf_model_from_cache,
+                                patch_intervention_protocol)
+from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
 
@@ -72,15 +71,11 @@ class ModelDeployment(BaseModelDeployment):
                     f"tcp://{ip_address}:{self.torch_distributed_port}"
                 )
 
-            print(
-                f"=> Torch distributed address: {self.torch_distributed_address}"
-            )
+            print(f"=> Torch distributed address: {self.torch_distributed_address}")
 
             self.worker_deployments = []
 
-            for worker_world_rank in range(
-                1, self.torch_distributed_world_size
-            ):
+            for worker_world_rank in range(1, self.torch_distributed_world_size):
 
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
@@ -121,6 +116,8 @@ class ModelDeployment(BaseModelDeployment):
 
         self.init_distributed()
 
+        self.timer = NNsightTimer(self.execution_timeout)
+
     def init_distributed(self):
 
         print(
@@ -138,9 +135,7 @@ class ModelDeployment(BaseModelDeployment):
             device_id=self.device,
         )
 
-        print(
-            f"Initialized distributed worker: {self.torch_distributed_world_rank}."
-        )
+        print(f"Initialized distributed worker: {self.torch_distributed_world_rank}.")
 
         parallel_dims = ParallelDims(
             dp=self.data_parallelism_size,
@@ -164,9 +159,7 @@ class ModelDeployment(BaseModelDeployment):
             world_mesh["tp"],
         )
 
-        print(
-            f"Parallelized distributed worker: {self.torch_distributed_world_rank}."
-        )
+        print(f"Parallelized distributed worker: {self.torch_distributed_world_rank}.")
         print(
             f"Loading model for distributed worker: {self.torch_distributed_world_rank}..."
         )
@@ -187,6 +180,12 @@ class ModelDeployment(BaseModelDeployment):
         self.model._dispatched = True
 
         torch.cuda.empty_cache()
+
+    def execute(self, request: BackendRequestModel):
+
+        with self.timer:
+
+            return super().execute(request)
 
     def pre(self, request: BackendRequestModel):
         if self.head:

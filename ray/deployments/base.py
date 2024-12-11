@@ -241,14 +241,18 @@ class BaseModelDeployment(BaseDeployment):
         """
 
         # For tracking peak GPU usage
-        reset_peak_memory_stats()
-
-        model_memory = memory_allocated()
+        if torch.cuda.is_available():   
+            reset_peak_memory_stats()
+            model_memory = memory_allocated()
 
         # Execute object.
         result = ExtractionBackend()(graph)
 
-        gpu_mem = max_memory_allocated() - model_memory
+        # Compute GPU memory usage
+        if torch.cuda.is_available():
+            gpu_mem = max_memory_allocated() - model_memory
+        else:
+            gpu_mem = 0
 
         return result, gpu_mem
 
