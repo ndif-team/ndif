@@ -3,25 +3,14 @@ from functools import wraps
 from typing import Any, NamedTuple
 
 import torch
-from accelerate import load_checkpoint_and_dispatch
-from accelerate.utils import modeling
-from accelerate.utils.imports import (
-    is_mlu_available,
-    is_mps_available,
-    is_musa_available,
-    is_npu_available,
-    is_peft_available,
-    is_torch_xla_available,
-    is_xpu_available,
-)
-from accelerate.utils.modeling import check_device_same, clear_device_cache
+
 from safetensors.torch import load_file
 from torch.distributed._tensor import DTensor, Replicate
 from tqdm import tqdm
 from transformers.utils.hub import cached_file
 
 from nnsight import util
-from nnsight.intervention import InterventionProtocol
+from nnsight.intervention.protocols import InterventionProtocol
 
 
 def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
