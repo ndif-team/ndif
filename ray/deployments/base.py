@@ -298,7 +298,7 @@ class BaseModelDeployment(BaseDeployment):
             description = traceback.format_exc()
 
             self.respond(
-                status=BackendResponseModel.JobStatus.ERROR, description=description
+                status=BackendResponseModel.JobStatus.ERROR, description=f"{description}\n{str(exception)}"
             )
 
     def cleanup(self):
