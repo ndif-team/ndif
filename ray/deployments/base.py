@@ -1,22 +1,21 @@
 import gc
 import json
 import os
+import sys
 import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
-import sys
 from typing import Any, Dict
 
 import ray
 import socketio
-from nnsight.util import NNsightError
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
+from ray import serve
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.intervention.contexts import RemoteContext
@@ -25,11 +24,16 @@ from nnsight.schema.request import StreamValueModel
 from nnsight.tracing.backends import Backend
 from nnsight.tracing.graph import Graph
 from nnsight.tracing.protocols import StopProtocol
+from nnsight.util import NNsightError
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
-                       BackendResultModel)
+from ...schema import (
+    RESULT,
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ..util import set_cuda_env_var
 from . import protocols
 
@@ -241,7 +245,7 @@ class BaseModelDeployment(BaseDeployment):
         """
 
         # For tracking peak GPU usage
-        if torch.cuda.is_available():   
+        if torch.cuda.is_available():
             reset_peak_memory_stats()
             model_memory = memory_allocated()
 
@@ -290,16 +294,28 @@ class BaseModelDeployment(BaseDeployment):
             self.respond(
                 status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
                 description="An error has occured during the execution of the intervention graph.",
-                data={"err_message": exception.message,
-                      "node_id": exception.node_id,
-                      "traceback": exception.traceback_content}
+                data={
+                    "err_message": exception.message,
+                    "node_id": exception.node_id,
+                    "traceback": exception.traceback_content,
+                },
             )
         else:
             description = traceback.format_exc()
 
             self.respond(
-                status=BackendResponseModel.JobStatus.ERROR, description=f"{description}\n{str(exception)}"
+                status=BackendResponseModel.JobStatus.ERROR,
+                description=f"{description}\n{str(exception)}",
             )
+
+        if "device-side assert triggered" in str(exception):
+            self.restart()
+
+    def restart(self):
+        
+        app_name = serve.get_replica_context().app_name
+
+        serve.get_app_handle("Controller").restart.remote(app_name)
 
     def cleanup(self):
         """Logic to execute to clean up memory after execution result is post-processed."""
