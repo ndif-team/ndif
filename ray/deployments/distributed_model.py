@@ -7,7 +7,14 @@ import torch.distributed
 from ray import serve
 from ray.serve import Application
 
-from ...schema import BackendRequestModel
+from nnsight.tracing.graph import Graph
+
+from ...schema import (
+    RESULT,
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
@@ -89,6 +96,7 @@ class ModelDeployment(BaseModelDeployment):
                     tensor_parallelism_size=self.tensor_parallelism_size,
                     data_parallelism_size=self.data_parallelism_size,
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
+                    execution_timeout=self.execution_timeout,
                 )
 
                 print(f"=> Binding distributed worker: {worker_world_rank}...")
@@ -180,31 +188,43 @@ class ModelDeployment(BaseModelDeployment):
 
         torch.cuda.empty_cache()
 
-    def execute(self, request: BackendRequestModel):
+    def execute(self, graph: Graph):
 
         with self.timer:
 
-            return super().execute(request)
+            return super().execute(graph)
 
-    def pre(self, request: BackendRequestModel):
+    def pre(self) -> Graph:
+
+        graph = self.request.deserialize(self.model)
+
         if self.head:
-            super().pre(request)
+
+            self.respond(
+                status=BackendResponseModel.JobStatus.RUNNING,
+                description="Your job has started running.",
+            )
 
             for worker_deployment in self.worker_deployments:
 
-                result = worker_deployment.remote(request)
+                worker_deployment.remote(self.request)
 
         torch.distributed.barrier()
 
+        return graph
+
     def post(self, *args, **kwargs):
+
         if self.head:
             super().post(*args, **kwargs)
 
     def exception(self, *args, **kwargs):
+
         if self.head:
             super().exception(*args, **kwargs)
 
     def log(self, *args, **kwargs):
+
         if self.head:
             super().log(*args, **kwargs)
 

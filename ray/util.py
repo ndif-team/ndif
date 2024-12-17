@@ -118,4 +118,6 @@ class NNsightTimer(AbstractContextManager):
     def check(self):
         
         if self.timeout is not None and time.time() - self.start > self.timeout:
-            raise TimeoutError()
+            raise Exception(
+                f"Job took longer than timeout: {self.timeout} seconds"
+            )
