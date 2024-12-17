@@ -90,6 +90,7 @@ class ModelDeployment(BaseModelDeployment):
                     tensor_parallelism_size=self.tensor_parallelism_size,
                     data_parallelism_size=self.data_parallelism_size,
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
+                    execution_timeout=self.execution_timeout
                 )
 
                 print(f"=> Binding distributed worker: {worker_world_rank}...")
