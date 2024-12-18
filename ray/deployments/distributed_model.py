@@ -1,4 +1,6 @@
+import asyncio
 from datetime import timedelta
+import time
 from typing import Any, Dict
 
 import ray
@@ -10,8 +12,7 @@ from ray.serve import Application
 from ...schema import BackendRequestModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (load_hf_model_from_cache,
-                                patch_intervention_protocol)
+from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
@@ -77,6 +78,17 @@ class ModelDeployment(BaseModelDeployment):
 
             for worker_world_rank in range(1, self.torch_distributed_world_size):
 
+                name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
+
+                try:
+
+                    serve.get_app_handle(name)
+
+                    serve.delete(name)
+
+                except:
+                    pass
+
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
                     api_url=self.api_url,
@@ -90,7 +102,7 @@ class ModelDeployment(BaseModelDeployment):
                     tensor_parallelism_size=self.tensor_parallelism_size,
                     data_parallelism_size=self.data_parallelism_size,
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
-                    execution_timeout=self.execution_timeout
+                    execution_timeout=self.execution_timeout,
                 )
 
                 print(f"=> Binding distributed worker: {worker_world_rank}...")
@@ -105,7 +117,7 @@ class ModelDeployment(BaseModelDeployment):
                 worker_deployment = serve._run(
                     worker_application,
                     _blocking=False,
-                    name=f"Shard-{worker_world_rank}:{self.replica_context.app_name}",
+                    name=name,
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
 
@@ -119,6 +131,21 @@ class ModelDeployment(BaseModelDeployment):
 
         self.timer = NNsightTimer(self.execution_timeout)
 
+    def init_process_group(self):
+        
+        print("Initializing torch.distributed process group...")
+
+        torch.distributed.init_process_group(
+            "nccl",
+            init_method=self.torch_distributed_address,
+            timeout=timedelta(seconds=self.torch_distributed_world_timeout_seconds),
+            world_size=self.torch_distributed_world_size,
+            rank=self.torch_distributed_world_rank,
+            device_id=self.device,
+        )
+        
+        print("Initialized torch.distributed process group.")
+
     def init_distributed(self):
 
         print(
@@ -127,14 +154,7 @@ class ModelDeployment(BaseModelDeployment):
 
         self.device = torch.device("cuda:0")
 
-        torch.distributed.init_process_group(
-            "nccl",
-            init_method=self.torch_distributed_address,
-            timeout=timedelta(self.torch_distributed_world_timeout_seconds),
-            world_size=self.torch_distributed_world_size,
-            rank=self.torch_distributed_world_rank,
-            device_id=self.device,
-        )
+        self.init_process_group()
 
         print(f"Initialized distributed worker: {self.torch_distributed_world_rank}.")
 
@@ -189,6 +209,7 @@ class ModelDeployment(BaseModelDeployment):
             return super().execute(request)
 
     def pre(self, request: BackendRequestModel):
+
         if self.head:
             super().pre(request)
 
@@ -199,16 +220,49 @@ class ModelDeployment(BaseModelDeployment):
         torch.distributed.barrier()
 
     def post(self, request: BackendRequestModel, result: Any):
+
         if self.head:
             super().post(request, result)
 
     def exception(self, request: BackendRequestModel, exception: Exception):
+
         if self.head:
             super().exception(request, exception)
 
     def log(self, data: Any, request: BackendRequestModel):
         if self.head:
             super().log(data, request)
+
+    def cleanup(self):
+
+        if self.timer.start == 0:
+            
+            print("Restarting torch.distributed process group...")
+
+            try:
+
+                # If so, destroy the existing process group (if it exists)
+                torch.distributed.destroy_process_group()
+
+            except Exception as e:
+                pass
+
+            # This is needed or else the creating of the process groups hangs sometimes
+
+            time.sleep(5)
+
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            if not self.head:
+                time.sleep(2)
+
+            # Re-create process group
+            self.init_process_group()
+            
+            print("Restarted torch.distributed process group.")
+
+        super().cleanup()
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
