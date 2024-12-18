@@ -120,7 +120,7 @@ class NNsightTimer(AbstractContextManager):
 
     def check(self):
 
-        if self.start and time.time() - self.start > self.timeout:
+        if self.timeout is not None and self.start and time.time() - self.start > self.timeout:
             
             self.start = 0
                         
