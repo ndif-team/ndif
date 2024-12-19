@@ -1,4 +1,5 @@
 from datetime import timedelta
+import time
 from typing import Any, Dict
 
 import ray
@@ -82,6 +83,19 @@ class ModelDeployment(BaseModelDeployment):
             self.worker_deployments = []
 
             for worker_world_rank in range(1, self.torch_distributed_world_size):
+                
+                name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
+
+                try:
+                    
+                    print(f"Found existing shard deployment {name}. Deleting...")
+
+                    serve.delete(name)
+                    
+                    print("Deleted.")
+
+                except:
+                    pass
 
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
@@ -111,7 +125,7 @@ class ModelDeployment(BaseModelDeployment):
                 worker_deployment = serve._run(
                     worker_application,
                     _blocking=False,
-                    name=f"Shard-{worker_world_rank}:{self.replica_context.app_name}",
+                    name=name,
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
 
@@ -124,6 +138,22 @@ class ModelDeployment(BaseModelDeployment):
         self.init_distributed()
 
         self.timer = NNsightTimer(self.execution_timeout)
+        
+        
+    def init_process_group(self):
+        
+        print("Initializing torch.distributed process group...")
+
+        torch.distributed.init_process_group(
+            "nccl",
+            init_method=self.torch_distributed_address,
+            timeout=timedelta(seconds=self.torch_distributed_world_timeout_seconds),
+            world_size=self.torch_distributed_world_size,
+            rank=self.torch_distributed_world_rank,
+            device_id=self.device,
+        )
+        
+        print("Initialized torch.distributed process group.")
 
     def init_distributed(self):
 
@@ -133,14 +163,7 @@ class ModelDeployment(BaseModelDeployment):
 
         self.device = torch.device("cuda:0")
 
-        torch.distributed.init_process_group(
-            "nccl",
-            init_method=self.torch_distributed_address,
-            timeout=timedelta(self.torch_distributed_world_timeout_seconds),
-            world_size=self.torch_distributed_world_size,
-            rank=self.torch_distributed_world_rank,
-            device_id=self.device,
-        )
+        self.init_process_group()
 
         print(f"Initialized distributed worker: {self.torch_distributed_world_rank}.")
 
@@ -231,6 +254,40 @@ class ModelDeployment(BaseModelDeployment):
     def stream_send(self, *args, **kwargs):
         if self.head:
             super().stream_send(*args, **kwargs)
+            
+    def cleanup(self):
+
+        # If there was a timeout, it might have crashed nccl/torch.distributed process group
+        # So we will restart it regardless of it did or not.
+        if self.timer.start == 0:
+            
+            print("Restarting torch.distributed process group...")
+
+            try:
+
+                # If so, destroy the existing process group (if it exists)
+                torch.distributed.destroy_process_group()
+
+            except Exception as e:
+                pass
+
+            # This is needed or else the creating of the process groups hangs sometimes
+
+            time.sleep(5)
+
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+            if not self.head:
+                time.sleep(2)
+
+            # Re-create process group
+            self.init_process_group()
+            
+            print("Restarted torch.distributed process group.")
+
+        super().cleanup()
+        
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
