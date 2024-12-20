@@ -141,7 +141,11 @@ class RayState:
                 )
             ],
             args=model_config.args,
-            runtime_env={"env_vars": {"restart_hash": ""}},
+            runtime_env={
+                "env_vars": {"restart_hash": "", 
+                             # For distributed model timeout handling
+                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}
+            },
         )
 
         self.add(application)
