@@ -82,7 +82,7 @@ class RayState:
         self.apply()
 
     def apply(self) -> None:
-        
+
         ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
@@ -141,7 +141,11 @@ class RayState:
                 )
             ],
             args=model_config.args,
-            runtime_env={"env_vars": {"restart_hash": ""}},
+            runtime_env={
+                "env_vars": {"restart_hash": "", 
+                             # For distributed model timeout handling
+                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}
+            },
         )
 
         self.add(application)

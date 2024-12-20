@@ -256,35 +256,8 @@ class ModelDeployment(BaseModelDeployment):
             super().stream_send(*args, **kwargs)
             
     def cleanup(self):
-
-        # If there was a timeout, it might have crashed nccl/torch.distributed process group
-        # So we will restart it regardless of it did or not.
-        if self.timer.start == 0:
-            
-            print("Restarting torch.distributed process group...")
-
-            try:
-
-                # If so, destroy the existing process group (if it exists)
-                torch.distributed.destroy_process_group()
-
-            except Exception as e:
-                pass
-
-            # This is needed or else the creating of the process groups hangs sometimes
-
-            time.sleep(5)
-
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-
-            if not self.head:
-                time.sleep(2)
-
-            # Re-create process group
-            self.init_process_group()
-            
-            print("Restarted torch.distributed process group.")
+        
+        torch.distributed.barrier()
 
         super().cleanup()
         
