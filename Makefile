@@ -66,16 +66,16 @@ up:
 	$(call check_env,$(ENV))
 	@if [ "$(ENV)" = "dev" ] && [ "$(DEV_NNS)" = "True" ]; then \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
-		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
+		docker compose --env-file compose/dev/.env --env-file compose/dev/.env.secret -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
 	else \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
-		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
+		docker compose --env-file compose/dev/.env --env-file compose/dev/.env.secret -f compose/$(ENV)/docker-compose.yml up --detach; \
 	fi
 
 down:
 	$(call set_env)
 	$(call check_env,$(ENV))
-	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose --env-file compose/dev/.env --env-file compose/dev/.env.secret -f compose/$(ENV)/docker-compose.yml down
 
 ta:
 	$(call set_env)

@@ -49,20 +49,36 @@ services:
       WORKERS: 1
       RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
 
-  prometheus:
-    image: prom/prometheus:latest
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   network_mode: "host"
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--web.enable-remote-write-receiver'
+  #   volumes:
+  #     - prometheus-data:/prometheus
+  #     - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+  #     - ray-data:/tmp/ray
+  #   depends_on:
+  #     - api
+  #     - ray-head
+
+  influxdb:
+    image: influxdb:2
     network_mode: "host"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--web.enable-remote-write-receiver'
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${SECRET_INFLUXDB_ADMIN_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
     volumes:
-      - prometheus-data:/prometheus
-      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ray-data:/tmp/ray
-    depends_on:
-      - api
-      - ray-head
+      - influxdb2-data:/var/lib/influxdb2
+      - influxdb2-config:/etc/influxdb2
 
   grafana:
     image: grafana/grafana:latest
@@ -70,12 +86,14 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
       - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
-      - prometheus
+      - influxdb
+      #- prometheus
 
   loki:
     image: grafana/loki:2.8.1
@@ -86,5 +104,7 @@ services:
 volumes:
   grafana-storage:
   loki-data:
-  prometheus-data:
+  #prometheus-data:
   ray-data:
+  influxdb2-data:
+  influxdb2-config:
