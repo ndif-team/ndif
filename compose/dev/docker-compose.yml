@@ -36,6 +36,8 @@ services:
       - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       - OBJECT_STORE_URL=${HOST_IP}:${DEV_MINIO_PORT}
       - API_URL=http://${HOST_IP}:${DEV_API_PORT}
+      - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
     env_file:
       - .env
 

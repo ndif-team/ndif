@@ -14,7 +14,7 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from minio import Minio
-from prometheus_fastapi_instrumentator import Instrumentator
+#from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
 from slugify import slugify
 
@@ -74,7 +74,7 @@ object_store = Minio(
 ray.init()
 
 # Prometheus instrumentation (for metrics)
-Instrumentator().instrument(app).expose(app)
+#Instrumentator().instrument(app).expose(app)
 
 
 @app.post("/request")

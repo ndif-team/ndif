@@ -88,7 +88,7 @@ async def api_key_auth(
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 
     ip_address, user_agent, content_length = metadata.values()
-    gauge.update_network(request.id, ip_address, user_agent, content_length)
+    #gauge.update_network(request.id, ip_address, user_agent, content_length)
 
     if FIREBASE_CREDS_PATH is not None:
         check_405b = True if request.model_key == llama_405b else False
