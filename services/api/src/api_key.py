@@ -83,7 +83,7 @@ async def api_key_auth(
     metadata = extract_request_metadata(raw_request)
 
     # TODO: Update the RequestModel to include additional fields (e.g. API key)
-    request = await BackendRequestModel.from_request(raw_request)
+    request = await BackendRequestModel.from_request(raw_request, api_key)
 
     gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 

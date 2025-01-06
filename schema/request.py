@@ -38,7 +38,8 @@ class BackendRequestModel(ObjectStorageMixin):
 
     id: str
     received: datetime
-    
+
+    api_key: str
     
     def deserialize(self, model: NNsight) -> Graph:
         
@@ -51,7 +52,7 @@ class BackendRequestModel(ObjectStorageMixin):
         return RequestModel.deserialize(model, graph, 'json', self.zlib)
 
     @classmethod
-    async def from_request(cls, request: Request, put: bool = True) -> Self:
+    async def from_request(cls, request: Request, api_key: str, put: bool = True) -> Self:
 
         headers = request.headers
 
@@ -68,6 +69,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
             received=datetime.now(),
+            api_key=api_key,
         )
 
     def create_response(
@@ -100,7 +102,7 @@ class BackendRequestModel(ObjectStorageMixin):
                 gauge=gauge,
                 request=self,
                 status=status,
-                api_key="81jalkajlj921289",
+                api_key=self.api_key,
                 gpu_mem=gpu_mem,
             )
         )
