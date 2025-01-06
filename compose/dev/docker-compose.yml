@@ -54,19 +54,19 @@ services:
       INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
 
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   network_mode: "host"
-  #   command:
-  #     - '--config.file=/etc/prometheus/prometheus.yml'
-  #     - '--web.enable-remote-write-receiver'
-  #   volumes:
-  #     - prometheus-data:/prometheus
-  #     - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-  #     - ray-data:/tmp/ray
-  #   depends_on:
-  #     - api
-  #     - ray-head
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "host"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ray-data:/tmp/ray
+    depends_on:
+      - api
+      - ray-head
 
   influxdb:
     image: influxdb:2
@@ -95,7 +95,7 @@ services:
       - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - influxdb
-      #- prometheus
+      - prometheus
 
   loki:
     image: grafana/loki:2.8.1
@@ -106,7 +106,7 @@ services:
 volumes:
   grafana-storage:
   loki-data:
-  #prometheus-data:
+  prometheus-data:
   ray-data:
   influxdb2-data:
   influxdb2-config:

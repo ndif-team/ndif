@@ -53,11 +53,11 @@ class NDIFGauge:
         if service not in cls._instances:
             instance = super(NDIFGauge, cls).__new__(cls)
             instance.service = service
-            # instance._gauge = instance._initialize_gauge()
-            # if (
-            #     service != "ray"
-            # ):  # Only initialize the network gauge if the service is not 'ray'
-            #     instance._network_gauge = instance._initialize_network_gauge()
+            instance._gauge = instance._initialize_gauge()
+            if (
+                service != "ray"
+            ):  # Only initialize the network gauge if the service is not 'ray'
+                instance._network_gauge = instance._initialize_network_gauge()
             instance.influxdb_gauge = InfluxDBClient(url=os.getenv("INFLUXDB_ADDRESS"), token=os.getenv("INFLUXDB_ADMIN_TOKEN"), org="NDIF").write_api(write_options=SYNCHRONOUS)
             cls._instances[service] = instance
         return cls._instances[service]
@@ -97,23 +97,23 @@ class NDIFGauge:
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
 
-        # labels = {
-        #     "request_id": str(request.id),
-        #     "api_key": str(api_key),
-        #     "model_key": str(request.model_key),
-        #     "gpu_mem": str(gpu_mem),
-        #     "timestamp": str(
-        #         request.received
-        #     ),  # Ensure timestamp is string for consistency
-        #     "user_id": str(user_id) if user_id is not None else " ",
-        # }
+        labels = {
+            "request_id": str(request.id),
+            "api_key": str(api_key),
+            "model_key": str(request.model_key),
+            "gpu_mem": str(gpu_mem),
+            "timestamp": str(
+                request.received
+            ),  # Ensure timestamp is string for consistency
+            "user_id": str(user_id) if user_id is not None else " ",
+        }
 
-        # if self.service == "ray":
-        #     # Ray's API uses a different method for setting gauge values
-        #     self._gauge.set(numeric_status, tags=labels)
-        # else:
-        #     # Prometheus Gauge API uses a more traditional labeling approach
-        #     self._gauge.labels(**labels).set(numeric_status)
+        if self.service == "ray":
+            # Ray's API uses a different method for setting gauge values
+            self._gauge.set(numeric_status, tags=labels)
+        else:
+            # Prometheus Gauge API uses a more traditional labeling approach
+            self._gauge.labels(**labels).set(numeric_status)
 
         self.influxdb_gauge.write(bucket="data", org="NDIF", record=Point("requests").tag("user", api_key).field("status", status.value))
 
