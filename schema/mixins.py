@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from io import BytesIO
-from typing import ClassVar
+from typing import ClassVar, TYPE_CHECKING
 
 import torch
 from minio import Minio
@@ -10,7 +10,11 @@ from pydantic import BaseModel
 from typing_extensions import Self
 from urllib3.response import HTTPResponse
 
-from nnsight.schema.response import ResponseModel
+if TYPE_CHECKING:
+    from metrics import NDIFGauge
+    from nnsight.schema.response import ResponseModel
+    from nnsight.schema.request import RequestModel
+
 
 class ObjectStorageMixin(BaseModel):
     """
@@ -146,7 +150,7 @@ class TelemetryMixin:
         backend_log(logger: logging.Logger, message: str, level: str = 'info') -> Self:
             Logs a message with the specified logging level (info, error, exception).
 
-        update_gauge(gauge: NDIFGauge, request: RequestModel, status: ResponseModel.JobStatus, gpu_mem: int = 0) -> Self:
+        update_gauge(gauge: NDIFGauge) -> Self:
             Updates the telemetry gauge to track the status of a request or response.
     """
     def backend_log(self, logger: logging.Logger, message: str, level: str = 'info'):
@@ -158,11 +162,26 @@ class TelemetryMixin:
             logger.exception(message)
         return self
 
-    def update_gauge(self, gauge: "NDIFGauge", request: "BackendRequestModel", status: ResponseModel.JobStatus, api_key:str = " ", gpu_mem: int = 0):
-        gauge.update(
-            request=request,
-            api_key=api_key,
-            status=status,
-            gpu_mem=gpu_mem
-        )
+    def update_gauge(
+        self, 
+        gauge: "NDIFGauge",
+        request: "RequestModel",
+        status: "ResponseModel.JobStatus",
+        **kwargs,
+    ) -> Self:
+        """ Updates the telemetry gauge to track the status of a request or response.
+
+        Args:
+
+        - gauge (NDIFGauge): Telemetry Gauge.
+        - request (RequestModel): user request.
+        - status (ResponseModel.JobStatus): status of the user request.
+        - kwargs: key word arguments to NDIFGauge.update().
+        
+        Returns:
+            Self.
+        """
+
+        gauge.update(request, status, **kwargs)
+
         return self

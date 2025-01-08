@@ -14,6 +14,7 @@ request_labels = (
     "gpu_mem",
     "timestamp",
     "user_id",
+    "msg",
 )
 network_labels = ("request_id", "ip_address", "user_agent")
 
@@ -82,10 +83,11 @@ class NDIFGauge:
     def update(
         self,
         request: RequestModel,
-        api_key: str,
         status: ResponseModel.JobStatus,
+        api_key: str = "",
         user_id=None,
         gpu_mem: int = 0,
+        msg: str = "",
     ) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
@@ -102,6 +104,7 @@ class NDIFGauge:
                 request.received
             ),  # Ensure timestamp is string for consistency
             "user_id": str(user_id) if user_id is not None else " ",
+            "msg": msg,
         }
 
         if self.service == "ray":
