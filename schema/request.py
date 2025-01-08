@@ -25,18 +25,17 @@ class BackendRequestModel(ObjectStorageMixin):
     """
     
     Attributes:
-        - model_config:
-        - graph (Union[bytes, ray.ObjectRef])
-        - model_key:
-        - session_id: 
-        - format:
-        - zlib:
-        - id:
-        - received:
-        - api_key (str): api key associated with this request
-        - _bucket_name:
-        - _file_extension:
-    
+        - model_config: model configuration.
+        - graph (Union[bytes, ray.ObjectRef]): intervention graph object, could be in multiple forms.
+        - model_key (str): model key name.
+        - session_id (Optional[str]): connection session id.
+        - format (str): format of the request body.
+        - zlib (bool): is the request body compressed.
+        - id (str): request id.
+        - received (datetime.datetime): time of the request being received.
+        - api_key (str): api key associated with this request.
+        - _bucket_name (str): request result bucket storage name.
+        - _file_extension (str): file extension.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
@@ -96,7 +95,6 @@ class BackendRequestModel(ObjectStorageMixin):
         description: str = "",
         data: bytes = None,
         gpu_mem: int = 0,
-        msg: str = "",
     ) -> BackendResponseModel:
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 

@@ -73,15 +73,14 @@ def api_key_auth(
     request: "BackendRequestModel",
 ) -> None:
     """
-    Authenticates the API request by extracting metadata and initializing the
-    BackendRequestModel with relevant information, including API key, client details, and headers.
+    Authenticates the API request by extracting metadata and initializing the BackendRequestModel 
+    with relevant information, including API key, client details, and headers.
 
     Args:
-        - raw_request (Request):
-        - request (BackendRequestModel)
+        - raw_request (Request): user request.
+        - request (BackendRequestModel): user request object.
 
     Returns:
-
     """
     
     metadata = extract_request_metadata(raw_request)

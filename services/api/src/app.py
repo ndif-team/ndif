@@ -1,12 +1,12 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Dict
+from typing import Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import FastAPI, Security, Request, HTTPException, Depends
+from fastapi import FastAPI, Security, Request
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -84,13 +84,17 @@ api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 async def request(raw_request: Request, api_key: str = Security(api_key_header)) -> BackendResponseModel:
     """Endpoint to submit request.
 
-    Args:
-        request (BackendRequestModel): _description_
+    Header:
+        - api_key: user api key.
+
+    Request Body:
+        raw_request (Request): user request containing the intervention graph.
 
     Returns:
-        BackendResponseModel: _description_
+        BackendResponseModel: reponse to the user request.
     """
 
+    # extract the request data
     try:
         request: BackendRequestModel = await BackendRequestModel.from_request(raw_request, api_key)
     except Exception as e:
@@ -111,6 +115,7 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
 
         raise e
 
+    # process the request
     try:
 
         response = request.create_response(
@@ -131,15 +136,6 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
         # request = request.model_copy()
         # request.object = object
         # request.save(object_store)
-
-    except HTTPException as e:
-        response = request.create_response(
-            status=ResponseModel.JobStatus.ERROR,
-            description=str(e),
-            logger=logger,
-            gauge=gauge,
-        )
-
     except Exception as exception:
 
         # Create exception response object.
