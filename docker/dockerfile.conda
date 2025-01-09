@@ -1,0 +1,8 @@
+ARG BASE_IMAGE=ndif_base
+FROM ${BASE_IMAGE}:latest
+
+# Update environment with service-specific dependencies
+ARG NAME
+COPY services/${NAME}/environment.yml .
+
+RUN conda env update --name service -f environment.yml

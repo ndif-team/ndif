@@ -2,11 +2,11 @@ services:
   api:
     command: ["bash", "./src/nns_inst.sh"]
     volumes:
-      - ../../services/nns_inst.sh:/src/nns_inst.sh
+      - ../../docker/helpers/nns_inst.sh:/src/nns_inst.sh
       - ${NNS_PATH}:/nnsight
 
   ray-head:
     command: ["bash", "./src/nns_inst.sh"]
     volumes:
-      - ../../services/nns_inst.sh:/src/nns_inst.sh
+      - ../../docker/helpers/nns_inst.sh:/src/nns_inst.sh
       - ${NNS_PATH}:/nnsight
