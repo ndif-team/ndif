@@ -1,7 +1,7 @@
 -include .config
 
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
-N_DEVICES := $(shell nvidia-smi  -L | wc -l)
+N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
 
 # Treat "up", "down" and "ta" as targets (not files)
 .PHONY: up down ta
