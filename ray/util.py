@@ -64,11 +64,12 @@ class NNsightTimer(AbstractContextManager):
             super().__init__()
 
         def __torch_function__(self, func, types, args=(), kwargs=None):
-
+            
             self.timer.check()
 
             if kwargs is None:
                 kwargs = {}
+            
             return func(*args, **kwargs)
 
     def __init__(self, timeout: float):
@@ -86,18 +87,22 @@ class NNsightTimer(AbstractContextManager):
         self.fn_mode = NNsightTimer.FunctionMode(self)
 
     def __enter__(self):
+        
+        if self.timeout is not None:
 
-        self.reset()
+            self.reset()
 
-        self.patcher.__enter__()
-        self.fn_mode.__enter__()
+            self.patcher.__enter__()
+            self.fn_mode.__enter__()
 
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        
+        if self.timeout is not None:
 
-        self.patcher.__exit__(None, None, None)
-        self.fn_mode.__exit__(None, None, None)
+            self.patcher.__exit__(None, None, None)
+            self.fn_mode.__exit__(None, None, None)
 
         if isinstance(exc_value, Exception):
             raise exc_value
@@ -119,5 +124,8 @@ class NNsightTimer(AbstractContextManager):
 
     def check(self):
 
-        if time.time() - self.start > self.timeout:
+        if self.start and time.time() - self.start > self.timeout:
+            
+            self.start = 0
+                        
             raise TimeoutError()

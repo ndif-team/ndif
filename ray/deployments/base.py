@@ -1,5 +1,5 @@
 import gc
-from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import partial, wraps
 from typing import Any, Dict
 
@@ -7,9 +7,9 @@ import ray
 import torch
 from minio import Minio
 from pydantic import BaseModel, ConfigDict
+from ray import serve
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.contexts.backends.RemoteBackend import RemoteMixin
@@ -17,8 +17,7 @@ from nnsight.models.mixins import RemoteableMixin
 
 from ...logging import load_logger
 from ...metrics import NDIFGauge
-from ...schema import (BackendRequestModel, BackendResponseModel,
-                       BackendResultModel)
+from ...schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from . import protocols
 
 
@@ -84,7 +83,7 @@ class BaseModelDeployment(BaseDeployment):
         dtype: str | torch.dtype,
         *args,
         extra_kwargs: Dict[str, Any] = {},
-        **kwargs
+        **kwargs,
     ) -> None:
 
         super().__init__(*args, **kwargs)
@@ -103,7 +102,7 @@ class BaseModelDeployment(BaseDeployment):
             device_map=device_map,
             dispatch=dispatch,
             torch_dtype=dtype,
-            **extra_kwargs
+            **extra_kwargs,
         )
 
         if dispatch:
@@ -114,28 +113,30 @@ class BaseModelDeployment(BaseDeployment):
     async def __call__(self, request: BackendRequestModel) -> Any:
 
         try:
-            
+
             result = None
 
             protocols.LogProtocol.put(partial(self.log, request=request))
 
-            self.pre(request)     
-            
+            self.pre(request)
+
             with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-                
+
                 result = self.execute(request)
-                
+
                 if isinstance(result, Future):
                     result = result.result(timeout=self.execution_timeout)
 
             self.post(request, result)
 
         except TimeoutError as e:
-            
-            exception = Exception(f"Job took longer than timeout: {self.execution_timeout} seconds")
-            
+
+            exception = Exception(
+                f"Job took longer than timeout: {self.execution_timeout} seconds"
+            )
+
             self.exception(request, exception)
-            
+
         except Exception as e:
 
             self.exception(request, e)
@@ -156,10 +157,6 @@ class BaseModelDeployment(BaseDeployment):
             "repo_id": model.config._name_or_path,
         }
 
-    # Ray checks this method and restarts replica if it raises an exception
-    def check_health(self):
-        pass
-
     ### ABSTRACT METHODS #################################
 
     def pre(self, request: BackendRequestModel):
@@ -170,13 +167,13 @@ class BaseModelDeployment(BaseDeployment):
             logger=self.logger,
             gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
-        
+
         request.object = ray.get(request.object)
 
     def execute(self, request: BackendRequestModel):
 
         # For tracking peak GPU usage
-        if torch.cuda.is_available():   
+        if torch.cuda.is_available():
             reset_peak_memory_stats()
             model_memory = memory_allocated()
 
@@ -222,6 +219,12 @@ class BaseModelDeployment(BaseDeployment):
             logger=self.logger,
             gauge=self.gauge,
         ).respond(self.api_url, self.object_store)
+
+    def restart(self):
+
+        app_name = serve.get_replica_context().app_name
+
+        serve.get_app_handle("Controller").restart.remote(app_name)
 
     def cleanup(self):
 
