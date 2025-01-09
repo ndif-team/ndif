@@ -1,14 +1,12 @@
 import asyncio
 import os
-import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
-from io import BytesIO
 
 import ray
 import socketio
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI, Security, Request
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_cache import FastAPICache
@@ -18,11 +16,10 @@ from fastapi_socketio import SocketManager
 from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
-from urllib3 import HTTPResponse
 
 from nnsight.schema.Response import ResponseModel
 
-from .api_key import api_key_auth
+from .api_key import api_key_auth, init_request
 from .logging import load_logger
 from .metrics import NDIFGauge
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
@@ -74,20 +71,44 @@ ray.init()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
+api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 @app.post("/request")
 async def request(
-    request: BackendRequestModel = Depends(api_key_auth),
+    raw_request: Request, 
+    request: BackendRequestModel, 
+    api_key: str = Security(api_key_header)
 ) -> BackendResponseModel:
-    """Endpoint to submit request.
 
-    Args:
-        request (BackendRequestModel): _description_
+    """ Endpoint to submit request.
+
+    Header:
+        - api_key: user api key.
+    
+    Request Body:
+        raw_request (Request): user request containing the intervention graph.
 
     Returns:
-        BackendResponseModel: _description_
+        BackendResponseModel: reponse to the user request.
     """
+
+    request = init_request(request)
+
+    request.api_key = api_key
+
+    # process the request
     try:
+        # Create response object.
+        # Log and save to data backend.
+        response = request.create_response(
+            status=ResponseModel.JobStatus.RECEIVED,
+            description="Your job has been received and is waiting approval.",
+            logger=logger,
+            gauge=gauge,
+        )
+
+        # authenticate api key
+        api_key_auth(raw_request, request)
 
         object = request.object
 
@@ -97,15 +118,6 @@ async def request(
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
-
-        # Create response object.
-        # Log and save to data backend.
-        response = request.create_response(
-            status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting approval.",
-            logger=logger,
-            gauge=gauge,
-        )
 
         # Back up request object by default (to be deleted on successful completion)
         request = request.model_copy()

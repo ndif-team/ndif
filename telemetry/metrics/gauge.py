@@ -5,7 +5,7 @@ from nnsight.schema.Request import RequestModel
 from nnsight.schema.Response import ResponseModel
 
 # Labels for the metrics
-request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp', 'user_id')
+request_labels = ('request_id', 'api_key', 'model_key', 'gpu_mem', 'timestamp', 'user_id', 'msg')
 network_labels = ('request_id', 'ip_address', 'user_agent')
 
 class NDIFGauge:
@@ -55,10 +55,27 @@ class NDIFGauge:
         """Initialize the network-related Gauge. Only used if the service is not 'ray'."""
         return PrometheusGauge('network_data', 'Track network data of requests', network_labels)
 
-    def update(self, request: RequestModel, api_key: str, status : ResponseModel.JobStatus, user_id = None, gpu_mem: int = 0) -> None:
+    def update(
+        self, 
+        request: RequestModel, 
+        status : ResponseModel.JobStatus, 
+        api_key: str, 
+        user_id: Optional[str] = None, 
+        gpu_mem: int = 0,
+        msg: str = "",
+    ) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
+
+        Args:
+            - request (RequestModel): request object.
+            - status (ResponseModel.JobStatus): user request job status.
+            - api_key (str): user api key.
+            - user_id (str):
+            - gpu_mem (int): gpu memory utilization.
+            - msg (str): description of the current job status of the request.
+        Returns:
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
 
@@ -68,7 +85,8 @@ class NDIFGauge:
             "model_key": str(request.model_key),
             "gpu_mem": str(gpu_mem),
             "timestamp": str(request.received),  # Ensure timestamp is string for consistency
-            "user_id": str(user_id) if user_id is not None else " "
+            "user_id": str(user_id) if user_id is not None else " ", 
+            "msg": msg,
         }
 
         if self.service == 'ray':

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
+from typing import ClassVar, TYPE_CHECKING, Optional
 
 from ray import ObjectRef
 
@@ -11,6 +11,9 @@ from nnsight.schema.Response import ResponseModel
 from .mixins import ObjectStorageMixin
 from .Response import BackendResponseModel
 
+if TYPE_CHECKING:
+    from .metrics import NDIFGauge
+
 
 class BackendRequestModel(RequestModel, ObjectStorageMixin):
 
@@ -18,6 +21,8 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
     _file_extension: ClassVar[str] = "json"
 
     object: ObjectRef | str | OBJECT_TYPES
+
+    api_key: Optional[str] = None
 
     def create_response(
         self,
@@ -47,8 +52,9 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
                 gauge=gauge,
                 request=self,
                 status=status,
-                api_key=" ",
+                api_key=self.api_key,
                 gpu_mem=gpu_mem,
+                msg=description,
             )
         )
 

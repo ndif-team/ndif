@@ -4,12 +4,10 @@ import uuid
 import firebase_admin
 from cachetools import TTLCache, cached
 from datetime import datetime
-from fastapi import HTTPException, Request, Security
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import HTTPException, Request
 from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
-from nnsight.schema.Response import ResponseModel
 from .schema import BackendRequestModel
 from .metrics import NDIFGauge
 
@@ -52,8 +50,6 @@ if FIREBASE_CREDS_PATH is not None:
 
     api_key_store = ApiKeyStore(FIREBASE_CREDS_PATH)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
-
 def extract_request_metadata(raw_request: Request) -> dict:
     """
     Extracts relevant metadata from the incoming raw request, such as IP address,
@@ -77,22 +73,23 @@ def init_request(request: BackendRequestModel) -> BackendRequestModel:
         request.received = datetime.now()
     return request
 
-async def api_key_auth(
-    request: BackendRequestModel,
-    raw_request: Request,
-    api_key: str = Security(api_key_header)
-):
+def api_key_auth(
+    raw_request: "Request",
+    request: "BackendRequestModel",
+) -> None:
     """
-    Authenticates the API request by extracting metadata and initializing the
-    BackendRequestModel with relevant information, including API key, client details, and headers.
+    Authenticates the API request by extracting metadata and initializing the BackendRequestModel 
+    with relevant information, including API key, client details, and headers.
+
+     Args:
+        - raw_request (Request): user request.
+        - request (BackendRequestModel): user request object.
+
+    Returns:
     """
+
     # Extract metadata from the raw request
     metadata = extract_request_metadata(raw_request)
-
-    # TODO: Update the RequestModel to include additional fields (e.g. API key)
-    request = init_request(request)
-
-    gauge.update(request, api_key, ResponseModel.JobStatus.RECEIVED)
 
     ip_address, user_agent, content_length = metadata.values()
     gauge.update_network(request.id, ip_address, user_agent, content_length)
@@ -102,16 +99,8 @@ async def api_key_auth(
         if request.model_key == llama_405b:
             check_405b = True
         
-        doc = api_key_store.fetch_document(api_key)
-        if api_key_store.does_api_key_exist(doc, check_405b):
-            user_id = api_key_store.get_uid(doc)
-            gauge.update(request=request, api_key=api_key, status=ResponseModel.JobStatus.APPROVED, user_id=user_id)
-            return request
-
-        else:
-            gauge.update(request, api_key, ResponseModel.JobStatus.ERROR)
+        doc = api_key_store.fetch_document(request.api_key)
+        if not api_key_store.does_api_key_exist(doc, check_405b):
             raise HTTPException(
                 status_code=HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key"
             )
-
-    return request
