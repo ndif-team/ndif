@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar, TYPE_CHECKING
+from typing import ClassVar, TYPE_CHECKING, Optional
 
 from ray import ObjectRef
 
@@ -21,6 +21,8 @@ class BackendRequestModel(RequestModel, ObjectStorageMixin):
     _file_extension: ClassVar[str] = "json"
 
     object: ObjectRef | str | OBJECT_TYPES
+
+    api_key: Optional[str] = None
 
     def create_response(
         self,

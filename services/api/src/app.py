@@ -94,7 +94,7 @@ async def request(
 
     request = init_request(request)
 
-    request.__dict__["api_key"] = api_key
+    request.api_key = api_key
 
     # process the request
     try:
