@@ -26,16 +26,15 @@ set_env = $(eval ENV := $(if $(filter $(words $(MAKECMDGOALS)),1),$(DEFAULT_ENV)
 build_base:
 	docker build --no-cache -t ndif_base:latest -f docker/dockerfile.base .
 
-build_conda:
+build_conda: build_base
 	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME)_conda:latest -f docker/dockerfile.conda .
 
-build_service:
+build_service: build_conda
 	cp docker/helpers/check_and_update_env.sh ./
 	tar -hczvf src.tar.gz services/$(NAME)/src
 	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME):latest -f docker/dockerfile.service  . 
 	rm src.tar.gz
 	rm check_and_update_env.sh
-
 
 build_all_base:
 	$(call set_env)
