@@ -9,4 +9,6 @@ COPY services/${NAME}/start.sh ./start.sh
 RUN tar -xvf ./src.tar.gz \
     && rm ./src.tar.gz
 
-CMD source activate service && bash ./check_and_update_env.sh && bash ./start.sh
+SHELL ["/bin/bash", "-c"]
+
+CMD source activate service && bash ./start.sh
