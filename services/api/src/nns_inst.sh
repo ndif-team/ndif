@@ -1,1 +1,1 @@
-../../nns_inst.sh
+../../../docker/helpers/nns_inst.sh

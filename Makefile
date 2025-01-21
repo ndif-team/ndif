@@ -1,7 +1,7 @@
 -include .config
 
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
-N_DEVICES := $(shell nvidia-smi  -L | wc -l)
+N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
 
 # Treat "up", "down" and "ta" as targets (not files)
 .PHONY: up down ta
@@ -24,40 +24,46 @@ set_env = $(eval ENV := $(if $(filter $(words $(MAKECMDGOALS)),1),$(DEFAULT_ENV)
           $(if $(filter $(words $(MAKECMDGOALS)),1),$(info Using default environment: $(DEFAULT_ENV)),)
 
 build_base:
+	docker build --no-cache -t ndif_base:latest -f docker/dockerfile.base .
 
-	docker build --no-cache -t $(NAME)_base:latest -f ../base.dockerfile .
+build_conda: build_base
+	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME)_conda:latest -f docker/dockerfile.conda .
 
-build_service:
-	cp ../check_and_update_env.sh ./
-	tar -hczvf src.tar.gz src
-	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME):latest -f ../service.dockerfile  . 
+build_service: build_conda
+	cp docker/helpers/check_and_update_env.sh ./
+	tar -hczvf src.tar.gz services/$(NAME)/src
+	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME):latest -f docker/dockerfile.service  . 
 	rm src.tar.gz
-	rm ./check_and_update_env.sh
+	rm check_and_update_env.sh
 
 build_all_base:
 	$(call set_env)
 	$(call check_env,$(ENV))
+	make build_base
 
-	cd services/api && make -f ../../Makefile build_base NAME=api
-	cd services/ray_head && make -f ../../Makefile build_base NAME=ray_head
-	@if [ "$(ENV)" = "prod" ]; then \
-		cd services/ray_worker && make -f ../../Makefile build_base NAME=ray_worker; \
+build_all_conda:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	make build_conda NAME=api
+	make build_conda NAME=ray_head
+	if [ "$(ENV)" = "prod" ]; then \
+		make build_conda NAME=ray_worker; \
 	fi
 
 build_all_service:
 	$(call set_env)
 	$(call check_env,$(ENV))
-
-	cd services/api && make -f ../../Makefile build_service NAME=api
-	cd services/ray_head && make -f ../../Makefile build_service NAME=ray_head
-	@if [ "$(ENV)" = "prod" ]; then \
-		cd services/ray_worker && make -f ../../Makefile build_service NAME=ray_worker; \
+	make build_service NAME=api
+	make build_service NAME=ray_head
+	if [ "$(ENV)" = "prod" ]; then \
+		make build_service NAME=ray_worker; \
 	fi
 
 build:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_all_base
+	make build_all_conda
 	make build_all_service
 	make up $(ENV)
 
