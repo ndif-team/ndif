@@ -14,6 +14,7 @@ request_labels = (
     "gpu_mem",
     "timestamp",
     "user_id",
+    "msg",
 )
 network_labels = ("request_id", "ip_address", "user_agent")
 
@@ -82,14 +83,25 @@ class NDIFGauge:
     def update(
         self,
         request: RequestModel,
-        api_key: str,
         status: ResponseModel.JobStatus,
-        user_id=None,
+        api_key: str = "",
+        user_id: str = None,
         gpu_mem: int = 0,
+        msg: str = "",
     ) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
         Handles both Ray and Prometheus Gauge APIs.
+
+        Args:
+            - request (RequestModel): request object.
+            - status (ResponseModel.JobStatus): user request job status.
+            - api_key (str): user api key.
+            - user_id (str):
+            - gpu_mem (int): gpu memory utilization.
+            - msg (str): description of the current job status of the request.
+
+        Returns:
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
 
@@ -102,6 +114,7 @@ class NDIFGauge:
                 request.received
             ),  # Ensure timestamp is string for consistency
             "user_id": str(user_id) if user_id is not None else " ",
+            "msg": msg,
         }
 
         if self.service == "ray":

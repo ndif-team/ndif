@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-import zlib
 from datetime import datetime
-from io import BytesIO
-from typing import ClassVar, Optional, Union
+from typing import TYPE_CHECKING, ClassVar, Optional, Union
 
-import msgspec
 import ray
-import torch
 from fastapi import Request
 from pydantic import ConfigDict
 from typing_extensions import Self
@@ -21,8 +17,26 @@ from nnsight import NNsight
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
+if TYPE_CHECKING:
+    from .metrics import NDIFGauge
+
 
 class BackendRequestModel(ObjectStorageMixin):
+    """
+    
+    Attributes:
+        - model_config: model configuration.
+        - graph (Union[bytes, ray.ObjectRef]): intervention graph object, could be in multiple forms.
+        - model_key (str): model key name.
+        - session_id (Optional[str]): connection session id.
+        - format (str): format of the request body.
+        - zlib (bool): is the request body compressed.
+        - id (str): request id.
+        - received (datetime.datetime): time of the request being received.
+        - api_key (str): api key associated with this request.
+        - _bucket_name (str): request result bucket storage name.
+        - _file_extension (str): file extension.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
@@ -38,6 +52,8 @@ class BackendRequestModel(ObjectStorageMixin):
 
     id: str
     received: datetime
+
+    api_key: str
     
     
     def deserialize(self, model: NNsight) -> Graph:
@@ -51,7 +67,7 @@ class BackendRequestModel(ObjectStorageMixin):
         return RequestModel.deserialize(model, graph, 'json', self.zlib)
 
     @classmethod
-    async def from_request(cls, request: Request, put: bool = True) -> Self:
+    async def from_request(cls, request: Request, api_key: str, put: bool = True) -> Self:
 
         headers = request.headers
 
@@ -68,6 +84,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
             received=datetime.now(),
+            api_key=api_key,
         )
 
     def create_response(
@@ -75,13 +92,13 @@ class BackendRequestModel(ObjectStorageMixin):
         status: ResponseModel.JobStatus,
         logger: logging.Logger,
         gauge: "NDIFGauge",
-        description: str = None,
+        description: str = "",
         data: bytes = None,
         gpu_mem: int = 0,
     ) -> BackendResponseModel:
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 
-        msg = f"{self.id} - {status.name}: {description}"
+        log_msg = f"{self.id} - {status.name}: {description}"
 
         response = (
             BackendResponseModel(
@@ -94,14 +111,15 @@ class BackendRequestModel(ObjectStorageMixin):
             )
             .backend_log(
                 logger=logger,
-                message=msg,
+                message=log_msg,
             )
             .update_gauge(
                 gauge=gauge,
                 request=self,
                 status=status,
-                api_key=" ",
+                api_key=self.api_key,
                 gpu_mem=gpu_mem,
+                msg=description,
             )
         )
 

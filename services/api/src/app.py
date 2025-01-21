@@ -1,12 +1,13 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Dict
+from typing import Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import Depends, FastAPI, Path, Request
+from fastapi import FastAPI, Security, Request
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_cache import FastAPICache
@@ -17,6 +18,7 @@ from minio import Minio
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
 from slugify import slugify
+from datetime import datetime
 
 from nnsight.schema.request import StreamValueModel
 from nnsight.schema.response import ResponseModel
@@ -76,26 +78,46 @@ ray.init()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
+api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 @app.post("/request")
-async def request(
-    request: BackendRequestModel = Depends(api_key_auth),
-) -> BackendResponseModel:
+async def request(raw_request: Request, api_key: str = Security(api_key_header)) -> BackendResponseModel:
     """Endpoint to submit request.
 
-    Args:
-        request (BackendRequestModel): _description_
+    Header:
+        - api_key: user api key.
+
+    Request Body:
+        raw_request (Request): user request containing the intervention graph.
 
     Returns:
-        BackendResponseModel: _description_
+        BackendResponseModel: reponse to the user request.
     """
-    try:        
-        # Send to request workers waiting to process requests on the "request" queue.
-        # Forget as we don't care about the response.
-        serve.get_app_handle("Request").remote(request)
 
-        # Create response object.
-        # Log and save to data backend.
+    # extract the request data
+    try:
+        request: BackendRequestModel = await BackendRequestModel.from_request(raw_request, api_key)
+    except Exception as e:
+        logger.error(f"{ResponseModel.JobStatus.ERROR.name}: {str(e)}")
+        labels = {
+            "request_id": "",
+            "api_key": api_key,
+            "model_key": "",
+            "gpu_mem": "",
+            "timestamp": str(
+                datetime.now()
+            ),  # Ensure timestamp is string for consistency
+            "user_id": "",
+            "msg": str(e),
+        }
+
+        gauge._gauge.labels(**labels).set(gauge.NumericJobStatus[ResponseModel.JobStatus.ERROR].value)
+
+        raise e
+
+    # process the request
+    try:
+
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
@@ -103,11 +125,17 @@ async def request(
             gauge=gauge,
         )
 
+        # authenticate api key
+        api_key_auth(raw_request, request)
+
+        # Send to request workers waiting to process requests on the "request" queue.
+        # Forget as we don't care about the response.
+        serve.get_app_handle("Request").remote(request)
+
         # Back up request object by default (to be deleted on successful completion)
         # request = request.model_copy()
         # request.object = object
         # request.save(object_store)
-
     except Exception as exception:
 
         # Create exception response object.

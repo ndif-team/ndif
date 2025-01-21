@@ -226,7 +226,7 @@ class BaseModelDeployment(BaseDeployment):
     def pre(self) -> Graph:
         """Logic to execute before execution."""
         graph = self.request.deserialize(self.model)
-
+        
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
@@ -293,7 +293,7 @@ class BaseModelDeployment(BaseDeployment):
             sys.tracebacklimit = None
             self.respond(
                 status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
-                description="An error has occured during the execution of the intervention graph.",
+                description=f"An error has occured during the execution of the intervention graph.\n{exception.traceback_content}",
                 data={
                     "err_message": exception.message,
                     "node_id": exception.node_id,
