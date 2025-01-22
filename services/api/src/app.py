@@ -73,7 +73,7 @@ object_store = Minio(
 )
 
 # Init Ray connection
-ray.init()
+ray.init(logging_level="error")
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
