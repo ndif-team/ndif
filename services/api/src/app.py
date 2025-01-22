@@ -61,7 +61,8 @@ sm = SocketManager(
     client_manager=socketio_manager,
     logger=logger,
     engineio_logger=logger,
-    max_http_buffer_size=1000000000000000
+    max_http_buffer_size=1000000000000000,
+    ping_timeout=60
 )
 
 # Init object_store connection
