@@ -11,11 +11,12 @@ request_labels = (
     "request_id",
     "api_key",
     "model_key",
-    "gpu_mem",
     "timestamp",
     "user_id",
 )
 network_labels = ("request_id", "ip_address", "user_agent")
+
+gpu_mem_labels = ("request_id", "timestamp")
 
 
 class NDIFGauge:
@@ -51,6 +52,7 @@ class NDIFGauge:
             instance = super(NDIFGauge, cls).__new__(cls)
             instance.service = service
             instance._gauge = instance._initialize_gauge()
+            instance._gpu_gauge = instance._initialize_gpumem_gauge()
             if (
                 service != "ray"
             ):  # Only initialize the network gauge if the service is not 'ray'
@@ -79,6 +81,22 @@ class NDIFGauge:
             "network_data", "Track network data of requests", network_labels
         )
 
+    def _initialize_gpumem_gauge(self):
+        """Initialize the gpu mem-related Gauge."""
+        
+        if self.service == "ray":
+            from ray.util.metrics import Gauge as RayGauge
+
+            return RayGauge(
+                "gpu_mem",
+                description="GPU Mem of requests",
+                tag_keys=gpu_mem_labels,
+            )
+        else:
+            return PrometheusGauge(
+            "gpu_mem", "GPU Mem of requests", gpu_mem_labels
+            )
+
     def update(
         self,
         request: RequestModel,
@@ -93,11 +111,13 @@ class NDIFGauge:
         """
         numeric_status = int(self.NumericJobStatus[status.value].value)
 
+        if numeric_status == 4:
+            self.update_gpu_mem(request, gpu_mem)
+
         labels = {
             "request_id": str(request.id),
             "api_key": str(api_key),
             "model_key": str(request.model_key),
-            "gpu_mem": str(gpu_mem),
             "timestamp": str(
                 request.received
             ),  # Ensure timestamp is string for consistency
@@ -133,3 +153,29 @@ class NDIFGauge:
 
         # Set content length in the network gauge
         self._network_gauge.labels(**network_labels).set(content_length)
+
+    def update_gpu_mem(
+        self,
+        request: RequestModel,
+        gpu_mem: int = 0,
+
+    )-> None:
+        """
+        Update the values of the gauge to reflect the current status of a request.
+        Handles both Ray and Prometheus Gauge APIs.
+        """
+
+        labels = {
+            "request_id": str(request.id),
+            "timestamp": str(
+                request.received
+            ),  # Ensure timestamp is string for consistency
+        }
+
+        if self.service == "ray":
+            # Ray's API uses a different method for setting gauge values
+            self._gpu_gauge.set(gpu_mem, tags=labels)
+        else:
+            # Prometheus Gauge API uses a more traditional labeling approach
+            self._gpu_gauge.labels(**labels).set(gpu_mem)
+
