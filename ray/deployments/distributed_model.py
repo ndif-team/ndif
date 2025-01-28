@@ -1,5 +1,4 @@
 from datetime import timedelta
-import time
 from typing import Any, Dict
 
 import ray
@@ -27,6 +26,8 @@ from .base import BaseModelDeployment, BaseModelDeploymentArgs
     ray_actor_options={"num_gpus": 1, "num_cpus": 2},
     health_check_period_s=10000000000000000000000000000000,
     health_check_timeout_s=12000000000000000000000000000000,
+    max_ongoing_requests=200,
+    max_queued_requests=200,
 )
 class ModelDeployment(BaseModelDeployment):
     def __init__(
@@ -83,15 +84,15 @@ class ModelDeployment(BaseModelDeployment):
             self.worker_deployments = []
 
             for worker_world_rank in range(1, self.torch_distributed_world_size):
-                
+
                 name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
 
                 try:
-                    
+
                     print(f"Found existing shard deployment {name}. Deleting...")
 
                     serve.delete(name)
-                    
+
                     print("Deleted.")
 
                 except:
@@ -138,10 +139,9 @@ class ModelDeployment(BaseModelDeployment):
         self.init_distributed()
 
         self.timer = NNsightTimer(self.execution_timeout)
-        
-        
+
     def init_process_group(self):
-        
+
         print("Initializing torch.distributed process group...")
 
         torch.distributed.init_process_group(
@@ -152,7 +152,7 @@ class ModelDeployment(BaseModelDeployment):
             rank=self.torch_distributed_world_rank,
             device_id=self.device,
         )
-        
+
         print("Initialized torch.distributed process group.")
 
     def init_distributed(self):
@@ -254,13 +254,12 @@ class ModelDeployment(BaseModelDeployment):
     def stream_send(self, *args, **kwargs):
         if self.head:
             super().stream_send(*args, **kwargs)
-            
+
     def cleanup(self):
-        
+
         torch.distributed.barrier()
 
         super().cleanup()
-        
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):

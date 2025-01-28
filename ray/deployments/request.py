@@ -16,7 +16,7 @@ from ...schema import BackendRequestModel
 from .base import BaseDeployment, BaseDeploymentArgs
 
 
-@serve.deployment()
+@serve.deployment(max_ongoing_requests=200, max_queued_requests=200)
 class RequestDeployment(BaseDeployment):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -28,7 +28,7 @@ class RequestDeployment(BaseDeployment):
             wait_timeout=10,
         )
 
-    async def __call__(self, request: BackendRequestModel):
+    def __call__(self, request: BackendRequestModel):
 
         try:
 

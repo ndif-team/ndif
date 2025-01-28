@@ -18,6 +18,7 @@ class ThreadedModelDeployment(BaseModelDeployment):
     ray_actor_options={
         "num_cpus": 2,
     },
+    max_ongoing_requests=200, max_queued_requests=200,
     health_check_period_s=10000000000000000000000000000000,
     health_check_timeout_s=12000000000000000000000000000000,
 )

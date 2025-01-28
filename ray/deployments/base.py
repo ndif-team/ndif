@@ -160,7 +160,7 @@ class BaseModelDeployment(BaseDeployment):
 
         RemoteContext.set(self.stream_send, self.stream_receive)
 
-    async def __call__(self, request: BackendRequestModel) -> None:
+    def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
 
         1.) Pre-processing
