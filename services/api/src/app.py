@@ -59,8 +59,6 @@ sm = SocketManager(
     app=app,
     mount_location="/ws",
     client_manager=socketio_manager,
-    logger=logger,
-    engineio_logger=logger,
     max_http_buffer_size=1000000000000000,
     ping_timeout=60
 )
