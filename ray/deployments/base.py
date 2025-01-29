@@ -69,6 +69,7 @@ class BaseDeployment:
         object_store_access_key: str,
         object_store_secret_key: str,
     ) -> None:
+
         super().__init__()
 
         self.api_url = api_url
@@ -89,6 +90,8 @@ class BaseDeployment:
             service_name=str(self.__class__), logger_name="ray.serve"
         )
         self.gauge = NDIFGauge(service="ray")
+
+        self.replica_context = serve.get_replica_context()
 
 
 class BaseDeploymentArgs(BaseModel):
@@ -208,15 +211,6 @@ class BaseModelDeployment(BaseDeployment):
 
             self.cleanup()
 
-    def status(self):
-
-        model: PreTrainedModel = self.model._model
-
-        return {
-            "config_json_string": model.config.to_json_string(),
-            "repo_id": model.config._name_or_path,
-        }
-
     # Ray checks this method and restarts replica if it raises an exception
     def check_health(self):
         pass
@@ -226,7 +220,7 @@ class BaseModelDeployment(BaseDeployment):
     def pre(self) -> Graph:
         """Logic to execute before execution."""
         graph = self.request.deserialize(self.model)
-        
+
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
@@ -312,7 +306,7 @@ class BaseModelDeployment(BaseDeployment):
             self.restart()
 
     def restart(self):
-        
+
         app_name = serve.get_replica_context().app_name
 
         serve.get_app_handle("Controller").restart.remote(app_name)

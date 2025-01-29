@@ -1,4 +1,6 @@
 import asyncio
+from functools import wraps
+import traceback
 
 import ray
 from ray import serve
@@ -46,10 +48,12 @@ class RequestDeployment(BaseDeployment):
             ).respond(self.sio, self.object_store)
 
         except Exception as exception:
+            
+            description = traceback.format_exc()
 
             request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
-                description=str(exception),
+                description=f"{description}\n{str(exception)}",
                 logger=self.logger,
                 gauge=self.gauge,
             ).respond(self.sio, self.object_store)

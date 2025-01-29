@@ -38,6 +38,8 @@ class ControllerDeployment:
         )
 
         self.state.redeploy()
+        
+        self.model_configurations = {}
 
     async def redeploy(self):
         """Redeploy serve configuration using service_config.yml"""
@@ -51,6 +53,14 @@ class ControllerDeployment:
         )
 
         self.state.apply()
+        
+    async def set_model_configuration(self, name:str, configuration: Dict):
+        
+        self.model_configurations[name] = configuration
+        
+    async def get_model_configurations(self):
+        
+        return self.model_configurations
 
 
 class ControllerDeploymentArgs(BaseModel):

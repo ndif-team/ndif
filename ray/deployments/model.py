@@ -23,7 +23,16 @@ class ThreadedModelDeployment(BaseModelDeployment):
     health_check_timeout_s=12000000000000000000000000000000,
 )
 class ModelDeployment(ThreadedModelDeployment):
-    pass
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        config = {
+            "config_json_string": self.model._model.config.to_json_string(),
+            "repo_id": self.model._model.config._name_or_path,
+        }
+        
+        serve.get_app_handle("Controller").set_model_configuration.remote(self.replica_context.app_name, config)
 
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:

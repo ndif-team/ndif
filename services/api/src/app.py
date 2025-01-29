@@ -252,6 +252,8 @@ async def status():
     response = {}
 
     status = serve.status()
+    
+    model_configurations = await serve.get_app_handle("Controller").get_model_configurations.remote()
 
     for application_name, application in status.applications.items():
 
@@ -268,25 +270,11 @@ async def status():
                     num_running_replicas += 1
 
             if num_running_replicas > 0:
-
-                application_status = serve.get_app_handle(
-                    application_name
-                ).status.remote()
-
+                
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
-                    "status": application_status,
+                    "status": model_configurations[application_name],
                 }
-
-    for key, value in list(response.items()):
-
-        try:
-
-            response[key] = await asyncio.wait_for(value["status"], timeout=4)
-
-        except:
-            
-            del response[key]
 
     return response
 

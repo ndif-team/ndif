@@ -9,15 +9,12 @@ from ray.serve import Application
 
 from nnsight.tracing.graph import Graph
 
-from ...schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
+from ..distributed.util import (load_hf_model_from_cache,
+                                patch_intervention_protocol)
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
@@ -49,8 +46,6 @@ class ModelDeployment(BaseModelDeployment):
             extra_kwargs={"meta_buffers": False, "patch_llama_scan": False},
             **kwargs,
         )
-
-        self.replica_context = serve.get_replica_context()
 
         self.torch_distributed_address = torch_distributed_address
         self.torch_distributed_port = torch_distributed_port
@@ -210,6 +205,15 @@ class ModelDeployment(BaseModelDeployment):
         self.model._dispatched = True
 
         torch.cuda.empty_cache()
+        
+        if self.head:
+            
+            config = {
+                "config_json_string": self.model._model.config.to_json_string(),
+                "repo_id": self.model._model.config._name_or_path,
+            }
+        
+            serve.get_app_handle("Controller").set_model_configuration.remote(self.replica_context.app_name, config)
 
     def execute(self, graph: Graph):
 
