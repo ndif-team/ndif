@@ -10,20 +10,19 @@ from fastapi import Request
 from pydantic import ConfigDict
 from typing_extensions import Self
 
+from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 from nnsight.tracing.graph import Graph
-from nnsight import NNsight
+
+from ..metrics import StageLatencyGauge
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
-
-if TYPE_CHECKING:
-    from .metrics import NDIFGauge
 
 
 class BackendRequestModel(ObjectStorageMixin):
     """
-    
+
     Attributes:
         - model_config: model configuration.
         - graph (Union[bytes, ray.ObjectRef]): intervention graph object, could be in multiple forms.
@@ -54,20 +53,23 @@ class BackendRequestModel(ObjectStorageMixin):
     received: datetime
 
     api_key: str
-    
-    
+
+    last_status_update: Optional[datetime] = None
+
     def deserialize(self, model: NNsight) -> Graph:
-        
+
         graph = self.graph
-        
+
         if isinstance(self.graph, ray.ObjectRef):
 
             graph = ray.get(graph)
-        
-        return RequestModel.deserialize(model, graph, 'json', self.zlib)
+
+        return RequestModel.deserialize(model, graph, "json", self.zlib)
 
     @classmethod
-    async def from_request(cls, request: Request, api_key: str, put: bool = True) -> Self:
+    async def from_request(
+        cls, request: Request, api_key: str, put: bool = True
+    ) -> Self:
 
         headers = request.headers
 
@@ -79,7 +81,7 @@ class BackendRequestModel(ObjectStorageMixin):
         return BackendRequestModel(
             graph=graph,
             model_key=headers["model_key"],
-            session_id=headers.get('session_id', None),
+            session_id=headers.get("session_id", None),
             format=headers["format"],
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
@@ -91,14 +93,14 @@ class BackendRequestModel(ObjectStorageMixin):
         self,
         status: ResponseModel.JobStatus,
         logger: logging.Logger,
-        gauge: "NDIFGauge",
         description: str = "",
         data: bytes = None,
-        gpu_mem: int = 0,
     ) -> BackendResponseModel:
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 
         log_msg = f"{self.id} - {status.name}: {description}"
+
+        StageLatencyGauge.update(self, status)
 
         response = (
             BackendResponseModel(
@@ -114,12 +116,7 @@ class BackendRequestModel(ObjectStorageMixin):
                 message=log_msg,
             )
             .update_gauge(
-                gauge=gauge,
-                request=self,
-                status=status,
-                api_key=self.api_key,
-                gpu_mem=gpu_mem,
-                msg=description,
+                self,
             )
         )
 

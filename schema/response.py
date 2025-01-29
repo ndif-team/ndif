@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from typing import Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import requests
 import socketio
 from minio import Minio
 from pydantic import field_serializer
+from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
+from ..metrics import RequestStatusGauge
 from .mixins import ObjectStorageMixin, TelemetryMixin
+
+if TYPE_CHECKING:
+    from . import BackendRequestModel
 
 
 class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
@@ -23,9 +28,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def blocking(self) -> bool:
         return self.session_id is not None
 
-    def respond(
-        self, sio: socketio.SimpleClient, object_store: Minio
-    ) -> ResponseModel:
+    def respond(self, sio: socketio.SimpleClient, object_store: Minio) -> ResponseModel:
         if self.blocking:
 
             fn = sio.client.emit
@@ -51,3 +54,24 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     @field_serializer("received")
     def sreceived(self, value, _info):
         return str(value)
+
+    def update_gauge(
+        self,
+        request: "BackendRequestModel",
+    ) -> Self:
+        """Updates the telemetry gauge to track the status of a request or response.
+
+        Args:
+
+        - gauge (NDIFGauge): Telemetry Gauge.
+        - request (RequestModel): user request.
+        - status (ResponseModel.JobStatus): status of the user request.
+        - kwargs: key word arguments to NDIFGauge.update().
+
+        Returns:
+            Self.
+        """
+
+        RequestStatusGauge.update(request, self)
+
+        return self
