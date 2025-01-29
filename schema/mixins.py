@@ -11,7 +11,6 @@ from typing_extensions import Self
 from urllib3.response import HTTPResponse
 
 if TYPE_CHECKING:
-    from metrics import NDIFGauge
     from nnsight.schema.response import ResponseModel
     from nnsight.schema.request import RequestModel
 
@@ -162,26 +161,3 @@ class TelemetryMixin:
             logger.exception(message)
         return self
 
-    def update_gauge(
-        self, 
-        gauge: "NDIFGauge",
-        request: "RequestModel",
-        status: "ResponseModel.JobStatus",
-        **kwargs,
-    ) -> Self:
-        """ Updates the telemetry gauge to track the status of a request or response.
-
-        Args:
-
-        - gauge (NDIFGauge): Telemetry Gauge.
-        - request (RequestModel): user request.
-        - status (ResponseModel.JobStatus): status of the user request.
-        - kwargs: key word arguments to NDIFGauge.update().
-        
-        Returns:
-            Self.
-        """
-
-        gauge.update(request, status, **kwargs)
-
-        return self

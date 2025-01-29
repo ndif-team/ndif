@@ -27,7 +27,7 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ...logging import load_logger
-from ...metrics import NDIFGauge
+from ...metrics import RequestStatusGauge, GPUMemGauge
 from ...schema import (
     RESULT,
     BackendRequestModel,
@@ -89,8 +89,7 @@ class BaseDeployment:
         self.logger = load_logger(
             service_name=str(self.__class__), logger_name="ray.serve"
         )
-        self.gauge = NDIFGauge(service="ray")
-
+        
         self.replica_context = serve.get_replica_context()
 
 
@@ -162,6 +161,7 @@ class BaseModelDeployment(BaseDeployment):
         protocols.LogProtocol.set(lambda *args: self.log(*args))
 
         RemoteContext.set(self.stream_send, self.stream_receive)
+        
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -272,9 +272,10 @@ class BaseModelDeployment(BaseDeployment):
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
-            description="Your job has been completed.",
-            gpu_mem=gpu_mem,
+            description="Your job has been completed."
         )
+        
+        GPUMemGauge.update(self.request, gpu_mem)
 
     def exception(self, exception: Exception) -> None:
         """Logic to execute of there was an exception.
@@ -368,7 +369,7 @@ class BaseModelDeployment(BaseDeployment):
             self.stream_connect()
 
         self.request.create_response(
-            **kwargs, logger=self.logger, gauge=self.gauge
+            **kwargs, logger=self.logger
         ).respond(self.sio, self.object_store)
 
 

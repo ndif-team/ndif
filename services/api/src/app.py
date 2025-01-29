@@ -1,36 +1,34 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import FastAPI, Security, Request
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security.api_key import APIKeyHeader
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from minio import Minio
+from prometheus_client import Gauge as PrometheusGauge
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
 from slugify import slugify
-from datetime import datetime
 
-from nnsight.schema.request import StreamValueModel
 from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import NDIFGauge
-from .schema import (BackendRequestModel, BackendResponseModel,
-                     BackendResultModel)
+from .metrics import RequestStatusGauge
+from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
-gauge = NDIFGauge(service="app")
 
 
 @asynccontextmanager
@@ -60,7 +58,7 @@ sm = SocketManager(
     mount_location="/ws",
     client_manager=socketio_manager,
     max_http_buffer_size=1000000000000000,
-    ping_timeout=60
+    ping_timeout=60,
 )
 
 # Init object_store connection
@@ -79,8 +77,11 @@ Instrumentator().instrument(app).expose(app)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
+
 @app.post("/request")
-async def request(raw_request: Request, api_key: str = Security(api_key_header)) -> BackendResponseModel:
+async def request(
+    raw_request: Request, api_key: str = Security(api_key_header)
+) -> BackendResponseModel:
     """Endpoint to submit request.
 
     Header:
@@ -95,14 +96,17 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
 
     # extract the request data
     try:
-        request: BackendRequestModel = await BackendRequestModel.from_request(raw_request, api_key)
+        request: BackendRequestModel = await BackendRequestModel.from_request(
+            raw_request, api_key
+        )
     except Exception as e:
+
         logger.error(f"{ResponseModel.JobStatus.ERROR.name}: {str(e)}")
+
         labels = {
             "request_id": "",
             "api_key": api_key,
             "model_key": "",
-            "gpu_mem": "",
             "timestamp": str(
                 datetime.now()
             ),  # Ensure timestamp is string for consistency
@@ -110,7 +114,9 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
             "msg": str(e),
         }
 
-        gauge._gauge.labels(**labels).set(gauge.NumericJobStatus[ResponseModel.JobStatus.ERROR].value)
+        super(RequestStatusGauge, RequestStatusGauge).update(
+            RequestStatusGauge.NumericJobStatus.ERROR.value, ray=False, **labels
+        )
 
         raise e
 
@@ -121,7 +127,6 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
-            gauge=gauge,
         )
 
         # authenticate api key
@@ -142,7 +147,6 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
             status=ResponseModel.JobStatus.ERROR,
             description=str(exception),
             logger=logger,
-            gauge=gauge,
         )
 
     if not response.blocking:
@@ -157,7 +161,7 @@ async def request(raw_request: Request, api_key: str = Security(api_key_header))
 async def connect(session_id: str, environ: Dict):
     params = environ.get("QUERY_STRING")
     params = dict(x.split("=") for x in params.split("&"))
-    
+
     if "job_id" in params:
 
         await sm.enter_room(session_id, params["job_id"])
@@ -170,9 +174,8 @@ async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
 
 @sm.on("stream_upload")
-async def stream_upload(session_id: str, data: bytes, job_id:str):
-    
-    
+async def stream_upload(session_id: str, data: bytes, job_id: str):
+
     await sm.emit("stream_upload", data=data, room=job_id)
 
 
@@ -252,8 +255,10 @@ async def status():
     response = {}
 
     status = serve.status()
-    
-    model_configurations = await serve.get_app_handle("Controller").get_model_configurations.remote()
+
+    model_configurations = await serve.get_app_handle(
+        "Controller"
+    ).get_model_configurations.remote()
 
     for application_name, application in status.applications.items():
 
@@ -270,7 +275,7 @@ async def status():
                     num_running_replicas += 1
 
             if num_running_replicas > 0:
-                
+
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
                     "status": model_configurations[application_name],
