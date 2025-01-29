@@ -22,6 +22,6 @@ class StageLatencyGauge(Metric):
             
             delta = now - request.last_status_update
     
-            super().update(delta.total_seconds(), request_id=request.id, stage=status.name, **kwargs)
+            super().update(delta.total_seconds(), request_id=request.id, stage=status.name, **kwargs, ray=status.name != "RECEIVED")
             
         request.last_status_update = now

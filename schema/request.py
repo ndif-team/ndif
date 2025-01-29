@@ -86,7 +86,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
             received=datetime.now(),
-            last_status_update=datetime.fromtimestamp(headers['sent-timestamp']),
+            last_status_update=datetime.fromtimestamp(float(headers['sent-timestamp'])),
             api_key=api_key,
         )
 
