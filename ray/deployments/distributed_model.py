@@ -84,11 +84,9 @@ class ModelDeployment(BaseModelDeployment):
 
                 try:
 
-                    print(f"Found existing shard deployment {name}. Deleting...")
-
                     serve.delete(name)
-
-                    print("Deleted.")
+                    
+                    print(f"Found existing shard deployment {name}. Deleting...")
 
                 except:
                     pass
@@ -202,7 +200,7 @@ class ModelDeployment(BaseModelDeployment):
             f"Loaded model for distributed worker: {self.torch_distributed_world_rank}."
         )
 
-        self.model._dispatched = True
+        self.model.dispatched = True
 
         torch.cuda.empty_cache()
         
