@@ -15,7 +15,8 @@ from minio import Minio
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 from transformers import PreTrainedModel
 
 from nnsight.intervention.contexts import RemoteContext
@@ -27,13 +28,9 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ...logging import load_logger
-from ...metrics import RequestStatusGauge, GPUMemGauge
-from ...schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from ...metrics import GPUMemGauge, RequestStatusGauge
+from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
 from ..util import set_cuda_env_var
 from . import protocols
 
@@ -264,6 +261,7 @@ class BaseModelDeployment(BaseDeployment):
 
         saves = result[0]
         gpu_mem: int = result[1]
+        
 
         BackendResultModel(
             id=self.request.id,

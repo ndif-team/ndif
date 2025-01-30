@@ -54,7 +54,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
     api_key: str
 
-    last_status_update: Optional[datetime] = None
+    last_status_update: Optional[float] = None
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -86,7 +86,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
             received=datetime.now(),
-            last_status_update=datetime.fromtimestamp(float(headers['sent-timestamp'])),
+            last_status_update=float(headers['sent-timestamp']),
             api_key=api_key,
         )
 
