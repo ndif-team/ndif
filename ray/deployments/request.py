@@ -23,14 +23,15 @@ class RequestDeployment(BaseDeployment):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.sio.connect(
-            self.api_url,
-            socketio_path="/ws/socket.io",
-            transports=["websocket"],
-            wait_timeout=10,
-        )
-
     def __call__(self, request: BackendRequestModel):
+
+        if not self.sio.connected:
+            self.sio.connect(
+                self.api_url,
+                socketio_path="/ws/socket.io",
+                transports=["websocket"],
+                wait_timeout=100000,
+            )
 
         try:
 
