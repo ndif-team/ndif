@@ -344,6 +344,8 @@ class BaseModelDeployment(BaseDeployment):
         self.respond(status=BackendResponseModel.JobStatus.STREAM, data=data)
 
     def stream_receive(self, *args):
+        
+        self.stream_connect()
 
         return StreamValueModel.deserialize(self.sio.receive(5)[1], "json", True)
 
