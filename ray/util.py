@@ -8,10 +8,10 @@ from typing import Callable
 import torch
 from torch.overrides import TorchFunctionMode
 
-from nnsight.patching import Patch, Patcher
+from nnsight.util import Patch, Patcher
 from nnsight.schema.format import functions
-from nnsight.tracing.Graph import Graph
-from nnsight.tracing.Node import Node
+from nnsight.tracing.graph import Graph
+from nnsight.tracing.graph import Node
 
 
 def get_total_cudamemory_MBs(return_ids=False) -> int:
