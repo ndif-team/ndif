@@ -7,10 +7,7 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - git+https://github.com/ndif-team/nnsight@0.4
-    - ray[serve]
+    - git+https://github.com/ndif-team/nnsight@dev
     # Telemetry
     - prometheus_client
     - python-logging-loki
-    # Database
-    - minio

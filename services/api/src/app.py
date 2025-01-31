@@ -1,31 +1,35 @@
 import asyncio
 import os
+import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any, Dict
 
 import ray
 import socketio
 import uvicorn
-from fastapi import FastAPI, Security, Request
-from fastapi.security.api_key import APIKeyHeader
+from fastapi import FastAPI, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security.api_key import APIKeyHeader
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from minio import Minio
+from prometheus_client import Gauge as PrometheusGauge
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
+from slugify import slugify
 
-from nnsight.schema.Response import ResponseModel
+from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth, init_request
 from .logging import load_logger
-from .metrics import NDIFGauge
+from .metrics import RequestStatusGauge
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
-gauge = NDIFGauge(service="app")
 
 
 @asynccontextmanager
@@ -45,16 +49,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async rabbitmq manager for communication between socketio servers
-socketio_manager = socketio.AsyncAioPikaManager(
-    url=os.environ.get("RMQ_URL"), logger=logger
+# Init async manager for communication between socketio servers
+socketio_manager = socketio.AsyncRedisManager(
+    url=os.environ.get("BROKER_URL"), logger=logger
 )
 # Init socketio manager app
 sm = SocketManager(
     app=app,
     mount_location="/ws",
     client_manager=socketio_manager,
-    logger=logger,
+    max_http_buffer_size=1000000000000000,
+    ping_timeout=60,
 )
 
 # Init object_store connection
@@ -66,25 +71,24 @@ object_store = Minio(
 )
 
 # Init Ray connection
-ray.init()
+ray.init(logging_level="error")
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
+# Create a dummy request to ensure app handle is created
+serve.get_app_handle("Request").remote({})
+
 @app.post("/request")
 async def request(
-    raw_request: Request, 
-    request: BackendRequestModel, 
-    api_key: str = Security(api_key_header)
+    raw_request: Request, api_key: str = Security(api_key_header)
 ) -> BackendResponseModel:
-
-    """ Endpoint to submit request.
 
     Header:
         - api_key: user api key.
-    
+
     Request Body:
         raw_request (Request): user request containing the intervention graph.
 
@@ -92,49 +96,66 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    request = init_request(request)
+    # extract the request data
+    try:
+        request: BackendRequestModel = await BackendRequestModel.from_request(
+            raw_request, api_key
+        )
+    except Exception as e:
 
-    request.api_key = api_key
+        description = f"{traceback.format_exc()}\n{str(e)}"
+
+        logger.error(f"{ResponseModel.JobStatus.ERROR.name}: {description}")
+
+        labels = {
+            "request_id": "",
+            "api_key": api_key,
+            "model_key": "",
+            "timestamp": str(
+                datetime.now()
+            ),  # Ensure timestamp is string for consistency
+            "user_id": "",
+            "msg": description,
+        }
+
+        super(RequestStatusGauge, RequestStatusGauge).update(
+            RequestStatusGauge.NumericJobStatus.ERROR.value, ray=False, **labels
+        )
+
+        raise e
 
     # process the request
     try:
-        # Create response object.
-        # Log and save to data backend.
+
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
-            gauge=gauge,
         )
 
         # authenticate api key
         api_key_auth(raw_request, request)
-
-        object = request.object
-
-        # Put object in ray
-        request.object = ray.put(object)
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
         serve.get_app_handle("Request").remote(request)
 
         # Back up request object by default (to be deleted on successful completion)
-        request = request.model_copy()
-        request.object = object
-        request.save(object_store)
-
+        # request = request.model_copy()
+        # request.object = object
+        # request.save(object_store)
     except Exception as exception:
+
+        description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
         response = request.create_response(
             status=ResponseModel.JobStatus.ERROR,
-            description=str(exception),
+            description=description,
             logger=logger,
-            gauge=gauge,
         )
 
-    if not response.blocking():
+    if not response.blocking:
 
         response.save(object_store)
 
@@ -142,26 +163,26 @@ async def request(
     return response
 
 
-async def _blocking_response(response: ResponseModel):
-    logger.info(f"Responding to SID: `{response.session_id}`:")
-    response.log(logger)
+@sm.on("connect")
+async def connect(session_id: str, environ: Dict):
+    params = environ.get("QUERY_STRING")
+    params = dict(x.split("=") for x in params.split("&"))
 
-    await sm.emit(
-        "blocking_response",
-        data=response.model_dump(exclude_defaults=True, exclude_none=True),
-        to=response.session_id,
-    )
+    if "job_id" in params:
+
+        await sm.enter_room(session_id, params["job_id"])
 
 
-@app.post("/blocking_response")
-async def blocking_response(response: BackendResponseModel):
-    """Endpoint to have server respond to sid.
+@sm.on("blocking_response")
+async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
-    Args:
-        id (str): _description_
-    """
+    await sm.emit("blocking_response", data=data, to=client_session_id)
 
-    await _blocking_response(response)
+
+@sm.on("stream_upload")
+async def stream_upload(session_id: str, data: bytes, job_id: str):
+
+    await sm.emit("stream_upload", data=data, room=job_id)
 
 
 @app.get("/response/{id}")
@@ -241,6 +262,10 @@ async def status():
 
     status = serve.status()
 
+    model_configurations = await serve.get_app_handle(
+        "Controller"
+    ).get_model_configurations.remote()
+
     for application_name, application in status.applications.items():
 
         if application_name.startswith("Model"):
@@ -257,24 +282,10 @@ async def status():
 
             if num_running_replicas > 0:
 
-                application_status = serve.get_app_handle(
-                    application_name
-                ).status.remote()
-
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
-                    "status": application_status,
+                    "status": model_configurations[application_name],
                 }
-
-    for key, value in list(response.items()):
-
-        try:
-
-            response[key] = await asyncio.wait_for(value["status"], timeout=4)
-
-        except:
-            
-            del response[key]
 
     return response
 
