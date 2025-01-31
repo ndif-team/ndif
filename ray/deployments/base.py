@@ -47,7 +47,7 @@ class ExtractionBackend(Backend):
 
         except StopProtocol.StopException:
 
-            pass
+            result = BackendResultModel.from_graph(graph)
 
         finally:
 
