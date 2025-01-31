@@ -40,7 +40,7 @@ class CounterMetric:
 
         if cls.counter is None:
             counter_cls = RayCounter if ray else PrometheusCounter
-            cls.counter = counter_cls(cls.name, cls.description, cls.tags)
+            cls.counter = counter_cls(cls.name, cls.description)
             
         cls.counter.inc(value)
 
