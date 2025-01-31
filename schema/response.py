@@ -10,7 +10,7 @@ from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusGauge
+from ..metrics import RequestStatusGauge, RequestCounter
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
@@ -73,5 +73,19 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
         """
 
         RequestStatusGauge.update(request, self)
+
+        return self
+
+    def update_request_counter(
+        self,
+    ) -> Self:
+        """Updates the telementry request_counter to track number of requests with time.
+
+        Returns:
+            Self
+        """
+
+        if self.status == ResponseModel.JobStatus.RECEIVED:
+            RequestCounter.update(ray = False)
 
         return self
