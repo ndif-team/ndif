@@ -82,7 +82,7 @@ class RayState:
         self.apply()
 
     def apply(self) -> None:
-        
+
         ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )

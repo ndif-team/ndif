@@ -24,7 +24,7 @@ from slugify import slugify
 
 from nnsight.schema.response import ResponseModel
 
-from .api_key import api_key_auth, init_request
+from .api_key import api_key_auth
 from .logging import load_logger
 from .metrics import RequestStatusGauge
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
@@ -85,6 +85,7 @@ serve.get_app_handle("Request").remote({})
 async def request(
     raw_request: Request, api_key: str = Security(api_key_header)
 ) -> BackendResponseModel:
+    """Endpoint to submit request.
 
     Header:
         - api_key: user api key.

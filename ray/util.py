@@ -10,9 +10,7 @@ from torch.overrides import TorchFunctionMode
 
 from nnsight.util import Patch, Patcher
 from nnsight.schema.format import functions
-from nnsight.tracing.graph import Graph
-from nnsight.tracing.graph import Node
-
+from nnsight.tracing.graph import Graph, Node
 
 def get_total_cudamemory_MBs(return_ids=False) -> int:
 
@@ -127,5 +125,7 @@ class NNsightTimer(AbstractContextManager):
         if self.start and time.time() - self.start > self.timeout:
             
             self.start = 0
-                        
-            raise TimeoutError()
+            
+            raise Exception(
+                f"Job took longer than timeout: {self.timeout} seconds"
+            )

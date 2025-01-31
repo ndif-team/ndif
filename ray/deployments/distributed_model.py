@@ -1,6 +1,4 @@
-import asyncio
 from datetime import timedelta
-import time
 from typing import Any, Dict
 
 import ray
@@ -9,10 +7,14 @@ import torch.distributed
 from ray import serve
 from ray.serve import Application
 
-from ...schema import BackendRequestModel
+from nnsight.tracing.graph import Graph
+
+from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
+from ..distributed.util import (load_hf_model_from_cache,
+                                patch_intervention_protocol)
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
@@ -21,6 +23,8 @@ from .base import BaseModelDeployment, BaseModelDeploymentArgs
     ray_actor_options={"num_gpus": 1, "num_cpus": 2},
     health_check_period_s=10000000000000000000000000000000,
     health_check_timeout_s=12000000000000000000000000000000,
+    max_ongoing_requests=200,
+    max_queued_requests=200,
 )
 class ModelDeployment(BaseModelDeployment):
     def __init__(
@@ -42,8 +46,6 @@ class ModelDeployment(BaseModelDeployment):
             extra_kwargs={"meta_buffers": False, "patch_llama_scan": False},
             **kwargs,
         )
-
-        self.replica_context = serve.get_replica_context()
 
         self.torch_distributed_address = torch_distributed_address
         self.torch_distributed_port = torch_distributed_port
@@ -82,9 +84,9 @@ class ModelDeployment(BaseModelDeployment):
 
                 try:
 
-                    serve.get_app_handle(name)
-
                     serve.delete(name)
+                    
+                    print(f"Found existing shard deployment {name}. Deleting...")
 
                 except:
                     pass
@@ -132,7 +134,7 @@ class ModelDeployment(BaseModelDeployment):
         self.timer = NNsightTimer(self.execution_timeout)
 
     def init_process_group(self):
-        
+
         print("Initializing torch.distributed process group...")
 
         torch.distributed.init_process_group(
@@ -143,7 +145,7 @@ class ModelDeployment(BaseModelDeployment):
             rank=self.torch_distributed_world_rank,
             device_id=self.device,
         )
-        
+
         print("Initialized torch.distributed process group.")
 
     def init_distributed(self):
@@ -198,40 +200,62 @@ class ModelDeployment(BaseModelDeployment):
             f"Loaded model for distributed worker: {self.torch_distributed_world_rank}."
         )
 
-        self.model._dispatched = True
+        self.model.dispatched = True
 
         torch.cuda.empty_cache()
+        
+        if self.head:
+            
+            config = {
+                "config_json_string": self.model._model.config.to_json_string(),
+                "repo_id": self.model._model.config._name_or_path,
+            }
+        
+            serve.get_app_handle("Controller").set_model_configuration.remote(self.replica_context.app_name, config)
 
-    def execute(self, request: BackendRequestModel):
+    def execute(self, graph: Graph):
 
         with self.timer:
 
-            return super().execute(request)
+            return super().execute(graph)
 
-    def pre(self, request: BackendRequestModel):
+    def pre(self) -> Graph:
+
+        graph = self.request.deserialize(self.model)
 
         if self.head:
-            super().pre(request)
+
+            self.respond(
+                status=BackendResponseModel.JobStatus.RUNNING,
+                description="Your job has started running.",
+            )
 
             for worker_deployment in self.worker_deployments:
 
-                result = worker_deployment.remote(request)
+                worker_deployment.remote(self.request)
 
         torch.distributed.barrier()
 
-    def post(self, request: BackendRequestModel, result: Any):
+        return graph
+
+    def post(self, *args, **kwargs):
 
         if self.head:
-            super().post(request, result)
+            super().post(*args, **kwargs)
 
-    def exception(self, request: BackendRequestModel, exception: Exception):
+    def exception(self, *args, **kwargs):
 
         if self.head:
-            super().exception(request, exception)
+            super().exception(*args, **kwargs)
 
-    def log(self, data: Any, request: BackendRequestModel):
+    def log(self, *args, **kwargs):
+
         if self.head:
-            super().log(data, request)
+            super().log(*args, **kwargs)
+
+    def stream_send(self, *args, **kwargs):
+        if self.head:
+            super().stream_send(*args, **kwargs)
 
     def cleanup(self):
 
