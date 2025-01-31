@@ -3,7 +3,18 @@ from functools import wraps
 from typing import Any, NamedTuple
 
 import torch
+import os
+
+from safetensors.torch import load_file
+from torch.distributed._tensor import DTensor, Replicate
+from tqdm import tqdm
+from transformers.utils.hub import cached_file
+
+from nnsight import util
+from nnsight.intervention.protocols import InterventionProtocol
+
 from accelerate import load_checkpoint_and_dispatch
+from accelerate.utils import modeling
 from accelerate.utils.imports import (
     is_mlu_available,
     is_mps_available,
@@ -16,12 +27,6 @@ from accelerate.utils.imports import (
 from accelerate.utils.modeling import check_device_same, clear_device_cache
 from accelerate.utils import modeling
 from safetensors.torch import load_file
-from torch.distributed._tensor import DTensor, Replicate
-from tqdm import tqdm
-from transformers.utils.hub import cached_file
-
-from nnsight import util
-from nnsight.intervention import InterventionProtocol
 
 
 def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
@@ -42,7 +47,17 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
         pbar.set_postfix({"Current shard": shard_file})
 
         # Get path to shard
-        state_dict = load_file(shard_path, device="cuda")
+        state_dict = load_file(shard_path, device="cpu")
+
+        torch.distributed.barrier()
+
+        if os.environ.get('DELETE_MODEL_SHARDS', '0') == '1' and os.environ['CUDA_VISIBLE_DEVICES'][0] == '0':
+            binary_path = os.path.realpath(shard_path)
+            os.remove(binary_path)
+            os.remove(shard_path)
+
+
+        state_dict = {key: value.cuda() for key, value in state_dict.items()}
 
         model.load_state_dict(state_dict, strict=False, assign=True)
 
@@ -91,15 +106,14 @@ def patch_intervention_protocol() -> None:
                 placement, device_mesh = placement
 
                 return DTensor.from_local(
-                    tensor, device_mesh=device_mesh, placements=placement
-                )
+                    tensor, device_mesh=device_mesh, placements=[Replicate()]
+                ).redistribute(device_mesh=device_mesh, placements=placement)
 
             if len(placements) > 0:
 
                 activations = util.apply(
                     activations, redistribute_tensors, torch.Tensor
                 )
-
             return activations
 
         return intervene_wrapper

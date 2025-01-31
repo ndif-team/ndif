@@ -15,8 +15,7 @@ from ray.serve.schema import (
     ServeDeploySchema,
 )
 
-from .deployments.model import ModelDeploymentArgs
-from .deployments.request import RequestDeploymentArgs
+from .deployments.base import BaseDeploymentArgs, BaseModelDeploymentArgs
 
 
 class ServiceConfigurationSchema(BaseModel):
@@ -57,7 +56,11 @@ class RayState:
         self.api_url = api_url
 
         self.runtime_context = ray.get_runtime_context()
-        self.ray_dashboard_url = f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
+        self.ray_dashboard_url = (
+            f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
+        )
+
+        self.name_to_application: Dict[str, ServeApplicationSchema] = {}
 
     def load_from_disk(self):
 
@@ -65,9 +68,7 @@ class RayState:
             self.ray_config = ServeDeploySchema(**yaml.safe_load(file))
 
         with open(self.service_config_path, "r") as file:
-            self.service_config = ServiceConfigurationSchema(
-                **yaml.safe_load(file)
-            )
+            self.service_config = ServiceConfigurationSchema(**yaml.safe_load(file))
 
     def redeploy(self):
 
@@ -81,12 +82,15 @@ class RayState:
         self.apply()
 
     def apply(self) -> None:
-
-        ServeSubmissionClient(
-            self.ray_dashboard_url
-        ).deploy_applications(
+        
+        ServeSubmissionClient(self.ray_dashboard_url).deploy_applications(
             self.ray_config.dict(exclude_unset=True),
         )
+
+    def add(self, application: ServeApplicationSchema):
+
+        self.ray_config.applications.append(application)
+        self.name_to_application[application.name] = application
 
     def add_request_app(self) -> None:
         application = ServeApplicationSchema(
@@ -97,10 +101,12 @@ class RayState:
                 DeploymentSchema(
                     name="RequestDeployment",
                     num_replicas=self.service_config.request_num_replicas,
-                    ray_actor_options=RayActorOptionsSchema(num_cpus=1),
+                    ray_actor_options=RayActorOptionsSchema(
+                        num_cpus=1, resources={"head": 1}
+                    ),
                 )
             ],
-            args=RequestDeploymentArgs(
+            args=BaseDeploymentArgs(
                 api_url=self.api_url,
                 object_store_url=self.object_store_url,
                 object_store_access_key=self.object_store_access_key,
@@ -108,7 +114,7 @@ class RayState:
             ).model_dump(),
         )
 
-        self.ray_config.applications.append(application)
+        self.add(application)
 
     def add_model_app(
         self, model_config: ServiceConfigurationSchema.ModelConfigurationSchema
@@ -119,12 +125,8 @@ class RayState:
         model_config.args["model_key"] = model_config.model_key
         model_config.args["api_url"] = self.api_url
         model_config.args["object_store_url"] = self.object_store_url
-        model_config.args["object_store_access_key"] = (
-            self.object_store_access_key
-        )
-        model_config.args["object_store_secret_key"] = (
-            self.object_store_secret_key
-        )
+        model_config.args["object_store_access_key"] = self.object_store_access_key
+        model_config.args["object_store_secret_key"] = self.object_store_secret_key
 
         application = ServeApplicationSchema(
             name=f"Model:{model_key}",
@@ -139,6 +141,11 @@ class RayState:
                 )
             ],
             args=model_config.args,
+            runtime_env={
+                "env_vars": {"restart_hash": "", 
+                             # For distributed model timeout handling
+                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}
+            },
         )
 
-        self.ray_config.applications.append(application)
+        self.add(application)

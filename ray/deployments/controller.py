@@ -1,4 +1,5 @@
 import os
+import uuid
 from typing import Dict
 
 from pydantic import BaseModel
@@ -38,10 +39,18 @@ class ControllerDeployment:
 
         self.state.redeploy()
 
-    def redeploy(self):
+    async def redeploy(self):
         """Redeploy serve configuration using service_config.yml"""
 
         self.state.redeploy()
+
+    async def restart(self, name: str):
+        
+        self.state.name_to_application[name].runtime_env["env_vars"]["restart_hash"] = (
+            str(uuid.uuid4())
+        )
+
+        self.state.apply()
 
 
 class ControllerDeploymentArgs(BaseModel):

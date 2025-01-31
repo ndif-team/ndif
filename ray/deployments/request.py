@@ -1,6 +1,8 @@
-import logging
+import asyncio
+from functools import wraps
+import traceback
 
-from pydantic import BaseModel
+import ray
 from ray import serve
 from ray.serve import Application
 from ray.serve.handle import DeploymentHandle
@@ -9,40 +11,27 @@ try:
     from slugify import slugify
 except:
     pass
-from minio import Minio
 
-from nnsight.schema.Request import RequestModel
+from nnsight.schema.response import ResponseModel
 
-from ...schema.Response import ResponseModel
-from ...logging import load_logger
-from ...metrics import NDIFGauge
+from ...schema import BackendRequestModel
+from .base import BaseDeployment, BaseDeploymentArgs
 
-@serve.deployment()
-class RequestDeployment:
-    def __init__(
-        self,
-        api_url: str,
-        object_store_url: str,
-        object_store_access_key: str,
-        object_store_secret_key: str,
-    ):
 
-        self.api_url = api_url
-        self.object_store_url = object_store_url
-        self.object_store_access_key = object_store_access_key
-        self.object_store_secret_key = object_store_secret_key
+@serve.deployment(max_ongoing_requests=200, max_queued_requests=200)
+class RequestDeployment(BaseDeployment):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
-        self.object_store = Minio(
-            self.object_store_url,
-            access_key=self.object_store_access_key,
-            secret_key=self.object_store_secret_key,
-            secure=False,
-        )
+    def __call__(self, request: BackendRequestModel):
 
-        self.logger = load_logger(service_name="ray_request", logger_name="ray.serve")
-        self.gauge = NDIFGauge(service='ray')
-
-    async def __call__(self, request: RequestModel):
+        if not self.sio.connected:
+            self.sio.connect(
+                self.api_url,
+                socketio_path="/ws/socket.io",
+                transports=["websocket"],
+                wait_timeout=100000,
+            )
 
         try:
 
@@ -50,38 +39,28 @@ class RequestDeployment:
 
             app_handle = self.get_ray_app_handle(model_key)
 
-            app_handle.remote(request)
-
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            request.create_response(
                 status=ResponseModel.JobStatus.APPROVED,
                 description="Your job was approved and is waiting to be run.",
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+                logger=self.logger,
+            ).respond(self.sio, self.object_store)
+            
+            app_handle.remote(request)
 
         except Exception as exception:
+            
+            description = traceback.format_exc()
 
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
+            request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
-                description=str(exception),
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
+                description=f"{description}\n{str(exception)}",
+                logger=self.logger,
+            ).respond(self.sio, self.object_store)
 
     def get_ray_app_handle(self, name: str) -> DeploymentHandle:
 
         return serve.get_app_handle(name)
 
 
-class RequestDeploymentArgs(BaseModel):
-
-    api_url: str
-    object_store_url: str
-    object_store_access_key: str
-    object_store_secret_key: str
-
-
-def app(args: RequestDeploymentArgs) -> Application:
+def app(args: BaseDeploymentArgs) -> Application:
     return RequestDeployment.bind(**args.model_dump())

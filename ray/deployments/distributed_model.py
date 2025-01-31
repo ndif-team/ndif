@@ -1,46 +1,30 @@
-import gc
-import inspect
-import logging
+import asyncio
 from datetime import timedelta
-from functools import partial
+import time
 from typing import Any, Dict
 
 import ray
 import torch
 import torch.distributed
-from minio import Minio
 from ray import serve
 from ray.serve import Application
-from torch.cuda import max_memory_allocated, reset_peak_memory_stats
-from torch.amp import autocast
-from transformers import PreTrainedModel
 
-from nnsight.models.mixins import RemoteableMixin
-from nnsight.schema.Request import RequestModel
-
-from ...schema.Response import ResponseModel, ResultModel
+from ...schema import BackendRequestModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (
-    load_hf_model_from_cache,
-    patch_intervention_protocol,
-)
-from ..util import update_nnsight_print_function
-from .model import ModelDeploymentArgs
-from ...logging import load_logger
-from  ...metrics import NDIFGauge
+from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
+from ..util import NNsightTimer
+from .base import BaseModelDeployment, BaseModelDeploymentArgs
+
 
 @serve.deployment(
-    ray_actor_options={"num_gpus": 1, "concurrency_groups": {"io": 5, "compute": 1}}, health_check_timeout_s=1200
+    ray_actor_options={"num_gpus": 1, "num_cpus": 2},
+    health_check_period_s=10000000000000000000000000000000,
+    health_check_timeout_s=12000000000000000000000000000000,
 )
-class ModelDeployment:
+class ModelDeployment(BaseModelDeployment):
     def __init__(
         self,
-        model_key: str,
-        api_url: str,
-        object_store_url: str,
-        object_store_access_key: str,
-        object_store_secret_key: str,
         torch_distributed_address: str,
         torch_distributed_port: int,
         torch_distributed_world_size: int,
@@ -49,15 +33,18 @@ class ModelDeployment:
         data_parallelism_size: int,
         tensor_parallelism_size: int,
         pipeline_parallelism_size: int,
+        *args,
+        **kwargs,
     ):
+
+        super().__init__(
+            *args,
+            extra_kwargs={"meta_buffers": False, "patch_llama_scan": False},
+            **kwargs,
+        )
 
         self.replica_context = serve.get_replica_context()
 
-        self.model_key = model_key
-        self.api_url = api_url
-        self.object_store_url = object_store_url
-        self.object_store_access_key = object_store_access_key
-        self.object_store_secret_key = object_store_secret_key
         self.torch_distributed_address = torch_distributed_address
         self.torch_distributed_port = torch_distributed_port
         self.torch_distributed_world_size = torch_distributed_world_size
@@ -69,27 +56,14 @@ class ModelDeployment:
         self.tensor_parallelism_size = tensor_parallelism_size
         self.pipeline_parallelism_size = pipeline_parallelism_size
 
-        self.model = RemoteableMixin.from_model_key(
-            self.model_key, meta_buffers=False, patch_llama_scan=False
-        )
-
         # Patches nnsight intervention protocol to handle DTensors.
         patch_intervention_protocol()
 
-        self.logger = load_logger(service_name=f"ray.distributed_model_{torch_distributed_world_rank}", logger_name="ray.serve")
-        self.gauge = NDIFGauge(service='ray')
         self.head = torch_distributed_world_rank == 0
 
         if self.head:
 
             print("Initializing distributed head...")
-
-            self.object_store = Minio(
-                self.object_store_url,
-                access_key=self.object_store_access_key,
-                secret_key=self.object_store_secret_key,
-                secure=False,
-            )
 
             if self.torch_distributed_address is None:
 
@@ -98,15 +72,22 @@ class ModelDeployment:
                     f"tcp://{ip_address}:{self.torch_distributed_port}"
                 )
 
-            print(
-                f"=> Torch distributed address: {self.torch_distributed_address}"
-            )
+            print(f"=> Torch distributed address: {self.torch_distributed_address}")
 
             self.worker_deployments = []
 
-            for worker_world_rank in range(
-                1, self.torch_distributed_world_size
-            ):
+            for worker_world_rank in range(1, self.torch_distributed_world_size):
+
+                name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
+
+                try:
+
+                    serve.get_app_handle(name)
+
+                    serve.delete(name)
+
+                except:
+                    pass
 
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
@@ -121,6 +102,7 @@ class ModelDeployment:
                     tensor_parallelism_size=self.tensor_parallelism_size,
                     data_parallelism_size=self.data_parallelism_size,
                     pipeline_parallelism_size=self.pipeline_parallelism_size,
+                    execution_timeout=self.execution_timeout,
                 )
 
                 print(f"=> Binding distributed worker: {worker_world_rank}...")
@@ -135,7 +117,7 @@ class ModelDeployment:
                 worker_deployment = serve._run(
                     worker_application,
                     _blocking=False,
-                    name=f"Shard-{worker_world_rank}:{self.replica_context.app_name}",
+                    name=name,
                     route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
                 )
 
@@ -147,6 +129,23 @@ class ModelDeployment:
 
         self.init_distributed()
 
+        self.timer = NNsightTimer(self.execution_timeout)
+
+    def init_process_group(self):
+        
+        print("Initializing torch.distributed process group...")
+
+        torch.distributed.init_process_group(
+            "nccl",
+            init_method=self.torch_distributed_address,
+            timeout=timedelta(seconds=self.torch_distributed_world_timeout_seconds),
+            world_size=self.torch_distributed_world_size,
+            rank=self.torch_distributed_world_rank,
+            device_id=self.device,
+        )
+        
+        print("Initialized torch.distributed process group.")
+
     def init_distributed(self):
 
         print(
@@ -155,18 +154,9 @@ class ModelDeployment:
 
         self.device = torch.device("cuda:0")
 
-        torch.distributed.init_process_group(
-            "nccl",
-            init_method=self.torch_distributed_address,
-            timeout=timedelta(self.torch_distributed_world_timeout_seconds),
-            world_size=self.torch_distributed_world_size,
-            rank=self.torch_distributed_world_rank,
-            device_id=self.device,
-        )
+        self.init_process_group()
 
-        print(
-            f"Initialized distributed worker: {self.torch_distributed_world_rank}."
-        )
+        print(f"Initialized distributed worker: {self.torch_distributed_world_rank}.")
 
         parallel_dims = ParallelDims(
             dp=self.data_parallelism_size,
@@ -179,7 +169,6 @@ class ModelDeployment:
         world_mesh = parallel_dims.build_mesh(device_type=f"cuda")
 
         torch.set_default_device(self.device)
-        torch.set_default_dtype(torch.bfloat16)
 
         print(
             f"Parallelizing distributed worker: {self.torch_distributed_world_rank}..."
@@ -191,9 +180,7 @@ class ModelDeployment:
             world_mesh["tp"],
         )
 
-        print(
-            f"Parallelized distributed worker: {self.torch_distributed_world_rank}."
-        )
+        print(f"Parallelized distributed worker: {self.torch_distributed_world_rank}.")
         print(
             f"Loading model for distributed worker: {self.torch_distributed_world_rank}..."
         )
@@ -215,113 +202,48 @@ class ModelDeployment:
 
         torch.cuda.empty_cache()
 
-    @ray.method(concurrency_group="compute")
-    async def __call__(self, request: RequestModel):
+    def execute(self, request: BackendRequestModel):
+
+        with self.timer:
+
+            return super().execute(request)
+
+    def pre(self, request: BackendRequestModel):
 
         if self.head:
-
-            ResponseModel(
-                id=request.id,
-                session_id=request.session_id,
-                received=request.received,
-                status=ResponseModel.JobStatus.RUNNING,
-                description="Your job has started running.",
-            ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
-            update_nnsight_print_function(
-                partial(
-                    self.log_to_user,
-                    params={
-                        "id": request.id,
-                        "session_id": request.session_id,
-                        "received": request.received,
-                    },
-                )
-            )
+            super().pre(request)
 
             for worker_deployment in self.worker_deployments:
 
-                worker_deployment.remote(request)
+                result = worker_deployment.remote(request)
 
         torch.distributed.barrier()
 
-        local_result = None
+    def post(self, request: BackendRequestModel, result: Any):
 
-        try:
-            # For tracking peak GPU usage of current worker
-            reset_peak_memory_stats()
+        if self.head:
+            super().post(request, result)
 
-            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+    def exception(self, request: BackendRequestModel, exception: Exception):
 
-                # Deserialize request
-                obj = request.deserialize(self.model)
-                
-                local_result = obj.local_backend_execute()
+        if self.head:
+            super().exception(request, exception)
 
-            # Peak VRAM usage (in bytes) of current worker during execution
-            gpu_mem = max_memory_allocated()
+    def log(self, data: Any, request: BackendRequestModel):
+        if self.head:
+            super().log(data, request)
 
-            if self.head:
+    def cleanup(self):
 
-                ResultModel(
-                    id=request.id,
-                    value=obj.remote_backend_postprocess_result(local_result),
-                ).save(self.object_store)
+        torch.distributed.barrier()
 
-                ResponseModel(
-                    id=request.id,
-                    session_id=request.session_id,
-                    received=request.received,
-                    status=ResponseModel.JobStatus.COMPLETED,
-                    description="Your job has been completed.",
-                ).log(self.logger).update_gauge(self.gauge, request, gpu_mem).respond(self.api_url, self.object_store)
-
-        except Exception as exception:
-
-            if self.head:
-
-                ResponseModel(
-                    id=request.id,
-                    session_id=request.session_id,
-                    received=request.received,
-                    status=ResponseModel.JobStatus.ERROR,
-                    description=str(exception),
-                ).log(self.logger).update_gauge(self.gauge, request).respond(self.api_url, self.object_store)
-
-        del request
-        del local_result
-
-        self.model._model.zero_grad()
-
-        gc.collect()
-
-        torch.cuda.empty_cache()
-
-    # # Ray checks this method and restarts replica if it raises an exception
-    # async def check_health(self):
-
-    #     for device in range(torch.cuda.device_count()):
-    #         torch.cuda.mem_get_info(device)
-
-    def log_to_user(self, data: Any, params: Dict[str, Any]):
-
-        ResponseModel(
-            **params,
-            status=ResponseModel.JobStatus.LOG,
-            description=str(data),
-        ).log(self.logger).respond(self.api_url, self.object_store)
-
-    @ray.method(concurrency_group="io")
-    async def status(self):
-
-        model: PreTrainedModel = self.model._model
-
-        return {
-            "config_json_string": model.config.to_json_string(),
-            "repo_id": model.config._name_or_path,
-        }
+        super().cleanup()
 
 
-class DistributedModelDeploymentArgs(ModelDeploymentArgs):
+class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
+
+    device_map: str | None = None
+    dispatch: bool = False
 
     torch_distributed_address: str = None
     torch_distributed_port: int = None

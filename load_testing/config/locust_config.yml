@@ -1,4 +1,38 @@
-num_users: 10
-spawn_rate: 10
-deterministic: false
-base_url: "http://localhost:5001"
+# General Locust Configuration
+locust:
+  wait_time_min: 1          # Minimum wait time between tasks (in seconds)
+  wait_time_max: 5          # Maximum wait time between tasks (in seconds)
+  stop_timeout: 300         
+
+# Custom options
+custom:
+  generate_fake_ip: true         # Whether to generate fake IP addresses for users
+  deterministic: false           # Whether to make user behavior deterministic
+  base_url: "http://localhost:5001"
+  ws_url: "ws://localhost:5001"
+
+  # API key settings
+  api_keys:
+    random: true                 # Whether to select API keys randomly
+
+  # Logging settings
+  logging:
+    name: "load_testing"
+    level: "info"
+
+  # Model key settings
+  model_keys:
+    random: true                 # Whether to select model keys randomly
+    keys:                        # List of available model keys
+      - "openai-community/gpt2"
+
+# Task-specific settings for LoadTestingTasks
+load_testing:
+  max_sequence_length: 20        # Max length for the input sequence in LoadTestingTasks
+
+# Task-specific settings for BenchmarkTasks
+benchmarking:
+  min_num_tokens: 1              # Minimum number of tokens to start with
+  max_num_tokens: 1000000        # Maximum number of tokens allowed
+  increment_strategy: "multiply" # Strategy for incrementing tokens (e.g., "multiply" or "add")
+  increment_value: 10             # Value to multiply or add, depending on strategy
