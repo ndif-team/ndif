@@ -1,6 +1,6 @@
 from typing import Dict, Tuple, Union
-from ray.util.metrics import Gauge as RayGauge
-from prometheus_client import Gauge as PrometheusGauge
+from ray.util.metrics import Gauge as RayGauge, Counter as RayCounter
+from prometheus_client import Gauge as PrometheusGauge, Counter as PrometheusCounter
 
 
 class Metric:
@@ -27,4 +27,20 @@ class Metric:
         else:
             cls.gauge.labels(**tags).set(value)
 
+class CounterMetric:
+    name = ""
+    description = ""
+
+    def __init_subclass__(cls):
+                
+        cls.counter: Union[RayCounter, PrometheusCounter] = None
+
+    @classmethod
+    def update(cls, value: float = 1, ray: bool = True):
+
+        if cls.counter is None:
+            counter_cls = RayCounter if ray else PrometheusCounter
+            cls.counter = counter_cls(cls.name, cls.description, cls.tags)
+            
+        cls.counter.inc(value)
 

@@ -86,7 +86,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
             received=datetime.now(),
-            last_status_update=float(headers['sent-timestamp']),
+        #    last_status_update=float(headers['sent-timestamp']),
             api_key=api_key,
         )
 
@@ -119,6 +119,7 @@ class BackendRequestModel(ObjectStorageMixin):
             .update_gauge(
                 self,
             )
+            .update_request_counter()
         )
 
         return response
