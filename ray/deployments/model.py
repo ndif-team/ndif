@@ -28,7 +28,7 @@ class ModelDeployment(ThreadedModelDeployment):
         super().__init__(*args, **kwargs)
         
         config = {
-            "config_json_string": self.model._model.config.to_json_string(),
+            "config_string": self.model._model.config.to_json_string(),
             "repo_id": self.model._model.config._name_or_path,
         }
         

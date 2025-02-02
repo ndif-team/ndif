@@ -207,7 +207,7 @@ class ModelDeployment(BaseModelDeployment):
         if self.head:
             
             config = {
-                "config_json_string": self.model._model.config.to_json_string(),
+                "config_string": self.model._model.config.to_json_string(),
                 "repo_id": self.model._model.config._name_or_path,
             }
         
