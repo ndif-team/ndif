@@ -44,7 +44,7 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -79,7 +79,10 @@ Instrumentator().instrument(app).expose(app)
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 # Create a dummy request to ensure app handle is created
-serve.get_app_handle("Request").remote({})
+try:
+    serve.get_app_handle("Request").remote({})
+except:
+    pass
 
 @app.post("/request")
 async def request(
@@ -285,7 +288,7 @@ async def status():
 
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
-                    "status": model_configurations[application_name],
+                    **model_configurations[application_name],
                 }
 
     return response
