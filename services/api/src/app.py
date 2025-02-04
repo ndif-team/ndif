@@ -285,10 +285,23 @@ async def status():
                     num_running_replicas += 1
 
             if num_running_replicas > 0:
+                
+                ####### temporary
+                
+                config = model_configurations[application_name]
+                
+                if "config_string" in config:
+                    
+                    config["config_json_string"] = config["config_string"]
+                    
+                    del config["config_string"]
+                    
+                    
+                ##################
 
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
-                    **model_configurations[application_name],
+                    **config,
                 }
 
     return response
