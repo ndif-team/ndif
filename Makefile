@@ -15,6 +15,7 @@ DEFAULT_ENV ?= dev
 # Configs for local nnsight installation
 DEV_NNS ?= False
 NNS_PATH ?= ~/nnsight
+TAG ?= latest
 
 # Function to check if the environment is valid
 check_env = $(if $(filter $(1),$(VALID_ENVS)),,$(error Invalid environment '$(1)'. Use one of: $(VALID_ENVS)))
@@ -24,15 +25,15 @@ set_env = $(eval ENV := $(if $(filter $(words $(MAKECMDGOALS)),1),$(DEFAULT_ENV)
           $(if $(filter $(words $(MAKECMDGOALS)),1),$(info Using default environment: $(DEFAULT_ENV)),)
 
 build_base:
-	docker build --no-cache -t ndif_base:latest -f docker/dockerfile.base .
+	docker build --no-cache -t ndif_base:$(TAG) -f docker/dockerfile.base .
 
 build_conda:
-	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME)_conda:latest -f docker/dockerfile.conda .
+	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME)_conda:$(TAG) -f docker/dockerfile.conda .
 
 build_service:
 	cp docker/helpers/check_and_update_env.sh ./
 	tar -hczvf src.tar.gz --directory=services/$(NAME) src
-	docker build --no-cache --build-arg NAME=$(NAME) -t $(NAME):latest -f docker/dockerfile.service  . 
+	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service  . 
 	rm src.tar.gz
 	rm check_and_update_env.sh
 
