@@ -1,5 +1,5 @@
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from influxdb_client import InfluxDBClient
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -9,8 +9,7 @@ if TYPE_CHECKING:
 
 class Metric:
 
-    def __init_subclass__(cls):
-        cls.gauge: InfluxDBClient = None
+    gauge: Optional[InfluxDBClient] = None
     
     @classmethod
     def update(cls, point: "Point"):

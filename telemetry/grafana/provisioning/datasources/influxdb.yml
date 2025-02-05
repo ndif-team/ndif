@@ -12,4 +12,3 @@ datasources:
       tlsSkipVerify: true
     secureJsonData:
       token: ${INFLUXDB_ADMIN_TOKEN}
-       
