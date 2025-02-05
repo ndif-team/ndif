@@ -1,30 +1,24 @@
-from typing import Dict, Tuple, Union
-from ray.util.metrics import Gauge as RayGauge
-from prometheus_client import Gauge as PrometheusGauge
+import os
+from typing import TYPE_CHECKING
 
+from influxdb_client import InfluxDBClient
+from influxdb_client.client.write_api import SYNCHRONOUS
+
+if TYPE_CHECKING:
+    from influxdb_client import Point
 
 class Metric:
 
-    name = ""
-    tags = tuple()
-    description = ""
-
     def __init_subclass__(cls):
-                
-        cls.gauge: Union[RayGauge, PrometheusGauge] = None
-
+        cls.gauge: InfluxDBClient = None
+    
     @classmethod
-    def update(cls, value:float, ray: bool = True, **tags):
+    def update(cls, point: "Point"):
 
         if cls.gauge is None:
 
-            gauge_cls = RayGauge if ray else PrometheusGauge
+            cls.gauge = InfluxDBClient(url=os.getenv("INFLUXDB_ADDRESS"), token=os.getenv("INFLUXDB_ADMIN_TOKEN"), org=os.getenv("INFLUXDB_ORG")).write_api(write_options=SYNCHRONOUS)
 
-            cls.gauge = gauge_cls(cls.name, cls.description, cls.tags)
-            
-        if ray:
-            cls.gauge.set(value, tags=tags)
-        else:
-            cls.gauge.labels(**tags).set(value)
+        cls.gauge.write(bucket=os.getenv("INFLUXDB_BUCKET"), org=os.getenv("INFLUXDB_ORG"), record=point)
 
 

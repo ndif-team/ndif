@@ -1,11 +1,11 @@
-from . import Metric
+from influxdb_client import Point
 
+from . import Metric
 
 class NetworkStatusGauge(Metric):
 
-    name = "network_data"
-    description = "Track network data of requests"
-    tags = ("request_id", "ip_address", "user_agent")
+    measurement: str = "network_data"
+    field: str = "content_lenght"
 
     @classmethod
     def update(
@@ -14,7 +14,6 @@ class NetworkStatusGauge(Metric):
         ip_address: str,
         user_agent: str,
         content_length: int,
-        **kwargs
     ) -> None:
         """
         Update the values of the network-related gauge.
@@ -27,4 +26,11 @@ class NetworkStatusGauge(Metric):
             "user_agent": user_agent,
         }
 
-        super().update(content_length, **network_labels, **kwargs, ray=False)
+        point: Point = Point(cls.measurement)
+
+        for tag, value in network_labels.items():
+            point.tag(tag, value)
+
+        point.field(cls.field, content_length)
+
+        super().update(point)

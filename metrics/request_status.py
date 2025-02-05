@@ -1,6 +1,8 @@
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from influxdb_client import Point
+
 from nnsight.schema.response import ResponseModel
 
 from . import Metric
@@ -33,23 +35,15 @@ class RequestStatusGauge(Metric):
         STREAM = 7
         NNSIGHT_ERROR = 8
 
-    name = "request_status"
-    description = "Track status of requests"
-    tags = (
-        "request_id",
-        "api_key",
-        "model_key",
-        "timestamp",
-        "user_id",
-        "msg",
-    )
+    measurement: str = "request_status"
+    field: str = "status"
+
 
     @classmethod
     def update(
         cls,
         request: "BackendRequestModel",
         response: "BackendResponseModel",
-        **kwargs
     ) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
@@ -70,11 +64,15 @@ class RequestStatusGauge(Metric):
             "request_id": str(request.id),
             "api_key": str(request.api_key),
             "model_key": str(request.model_key),
-            "timestamp": str(
-                request.received
-            ),  # Ensure timestamp is string for consistency
             "user_id":  " ",
             "msg": response.description,
         }
+
+        point: Point = Point(cls.measurement)
+
+        for tag, value in labels.items():
+            point.tag(tag, value)
+
+        point.field(cls.field, numeric_status)
         
-        super().update(numeric_status, **labels, **kwargs, ray = numeric_status != 1)
+        super().update(point)

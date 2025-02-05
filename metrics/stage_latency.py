@@ -1,6 +1,8 @@
 import time
 from typing import TYPE_CHECKING
 
+from influxdb_client import Point
+
 from . import Metric
 
 if TYPE_CHECKING:
@@ -10,16 +12,14 @@ if TYPE_CHECKING:
 
 class StageLatencyGauge(Metric):
 
-    name = "stage_latency"
-    description = "Latency in seconds between stages"
-    tags = ("request_id", "stage")
+    measurement: str = "stage_latency"
+    field: str = "latency"
 
     @classmethod
     def update(
         cls,
         request: "BackendRequestModel",
         status: "BackendResponseModel.JobStatus",
-        **kwargs
     ):
 
         now = time.time()
@@ -28,12 +28,8 @@ class StageLatencyGauge(Metric):
 
             delta = now - request.last_status_update
 
-            super().update(
-                delta,
-                request_id=request.id,
-                stage=status.name,
-                **kwargs,
-                ray=status.name != "RECEIVED"
-            )
+            point: Point = Point(cls.measurement).tag("request_id", request.id).field(cls.field, delta)
+
+            super().update(point)
 
         request.last_status_update = now

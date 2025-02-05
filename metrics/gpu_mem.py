@@ -1,6 +1,8 @@
 from typing import TYPE_CHECKING
 from . import Metric
 
+from influxdb_client import Point
+
 if TYPE_CHECKING:
 
     from ..schema import BackendRequestModel
@@ -8,11 +10,12 @@ if TYPE_CHECKING:
 
 class GPUMemGauge(Metric):
     
-    name = "gpu_mem"
-    description = "GPU Mem of requests"
-    tags = ("request_id",)
+    measurement: str = "gpu_mem"
+    field: str = "gpu_mem"
 
     @classmethod
-    def update(cls, request: "BackendRequestModel", gpu_mem:float, **kwargs):    
+    def update(cls, request: "BackendRequestModel", gpu_mem:float):    
+
+        point: Point = Point(cls.measurement).tag("request_id", request.id).field(cls.field, gpu_mem)
     
-        super().update(gpu_mem, request_id=request.id, **kwargs)
+        super().update(point)
