@@ -25,7 +25,7 @@ from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import RequestStatusGauge, Metric
+from .metrics import RequestStatusMetric, Metric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
@@ -118,14 +118,14 @@ async def request(
             "msg": description,
         }
 
-        point: Point = Point(RequestStatusGauge.measurement)
+        point: Point = Point(RequestStatusMetric.name)
 
         for tag, value in labels.items():
             point.tag(tag, value)
 
-        point.field(RequestStatusGauge.field, RequestStatusGauge.NumericJobStatus.ERROR.value)
+        point.field(RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value)
 
-        Metric.update(point)
+        RequestStatusMetric.update(point)
 
         raise e
 

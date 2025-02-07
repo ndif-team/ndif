@@ -10,7 +10,7 @@ from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusGauge
+from ..metrics import RequestStatusMetric
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def sreceived(self, value, _info):
         return str(value)
 
-    def update_gauge(
+    def update_metric(
         self,
         request: "BackendRequestModel",
     ) -> Self:
@@ -72,6 +72,6 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             Self.
         """
 
-        RequestStatusGauge.update(request, self)
+        RequestStatusMetric.update(request, self)
 
         return self

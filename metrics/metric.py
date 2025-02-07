@@ -1,23 +1,34 @@
 import os
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
-from influxdb_client import InfluxDBClient
+from influxdb_client import InfluxDBClient, WriteApi
 from influxdb_client.client.write_api import SYNCHRONOUS
+from influxdb_client import Point
 
-if TYPE_CHECKING:
-    from influxdb_client import Point
 
 class Metric:
 
-    gauge: Optional[InfluxDBClient] = None
-    
+    name: str
+    client: Optional[WriteApi] = None
+
     @classmethod
-    def update(cls, point: "Point"):
+    def update(cls, measurement: Union[Any,Point], **tags):
 
-        if cls.gauge is None:
+        if Metric.client is None:
 
-            cls.gauge = InfluxDBClient(url=os.getenv("INFLUXDB_ADDRESS"), token=os.getenv("INFLUXDB_ADMIN_TOKEN"), org=os.getenv("INFLUXDB_ORG")).write_api(write_options=SYNCHRONOUS)
+            Metric.client = InfluxDBClient(
+                url=os.getenv("INFLUXDB_ADDRESS"),
+                token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
+            ).write_api(write_options=SYNCHRONOUS)
+            
+        if isinstance(measurement, Point):
+            point = measurement
+        else:
 
-        cls.gauge.write(bucket=os.getenv("INFLUXDB_BUCKET"), org=os.getenv("INFLUXDB_ORG"), record=point)
+            point: Point = Point(cls.name).field(cls.name, measurement)
 
+            for key, value in tags.items():
 
+                point = point.tag(key, value)
+
+        Metric.client.write(bucket=os.getenv("INFLUXDB_BUCKET"), org=os.getenv("INFLUXDB_ORG"), record=point)

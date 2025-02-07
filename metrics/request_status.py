@@ -1,17 +1,14 @@
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from influxdb_client import Point
-
-from nnsight.schema.response import ResponseModel
-
 from . import Metric
+
 if TYPE_CHECKING:
 
     from ..schema import BackendRequestModel, BackendResponseModel
 
 
-class RequestStatusGauge(Metric):
+class RequestStatusMetric(Metric):
     """
     This class abstracts the usage of metrics for tracking the status of requests across different services.
     Specifically, it handles the complexity introduced by Ray's distributed system when using Prometheus.
@@ -35,9 +32,7 @@ class RequestStatusGauge(Metric):
         STREAM = 7
         NNSIGHT_ERROR = 8
 
-    measurement: str = "request_status"
-    field: str = "status"
-
+    name: str = "request_status"
 
     @classmethod
     def update(
@@ -60,19 +55,11 @@ class RequestStatusGauge(Metric):
         """
         numeric_status = int(cls.NumericJobStatus[response.status.value].value)
 
-        labels = {
-            "request_id": str(request.id),
-            "api_key": str(request.api_key),
-            "model_key": str(request.model_key),
-            "user_id":  " ",
-            "msg": response.description,
-        }
-
-        point: Point = Point(cls.measurement)
-
-        for tag, value in labels.items():
-            point.tag(tag, value)
-
-        point.field(cls.field, numeric_status)
-        
-        super().update(point)
+        super().update(
+            numeric_status,
+            request_id=str(request.id),
+            api_key=str(request.api_key),
+            model_key=str(request.model_key),
+            user_id=" ",
+            msg=response.description,
+        )

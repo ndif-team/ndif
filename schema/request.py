@@ -15,7 +15,6 @@ from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 from nnsight.tracing.graph import Graph
 
-from ..metrics import StageLatencyGauge
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
@@ -53,8 +52,6 @@ class BackendRequestModel(ObjectStorageMixin):
     received: datetime
 
     api_key: str
-
-    last_status_update: Optional[float] = None
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -101,8 +98,6 @@ class BackendRequestModel(ObjectStorageMixin):
 
         log_msg = f"{self.id} - {status.name}: {description}"
 
-        StageLatencyGauge.update(self, status)
-
         response = (
             BackendResponseModel(
                 id=self.id,
@@ -116,7 +111,7 @@ class BackendRequestModel(ObjectStorageMixin):
                 logger=logger,
                 message=log_msg,
             )
-            .update_gauge(
+            .update_metric(
                 self,
             )
         )
