@@ -8,7 +8,7 @@ from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from .logging import load_logger
-from .metrics import NetworkStatusGauge
+from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
 from .util import check_valid_email
 
@@ -95,7 +95,7 @@ def api_key_auth(
     metadata = extract_request_metadata(raw_request)
 
     ip_address, user_agent, content_length = metadata.values()
-    NetworkStatusGauge.update(request.id, ip_address, user_agent, content_length)
+    NetworkStatusMetric.update(request.id, ip_address, user_agent, content_length)
 
     if FIREBASE_CREDS_PATH is not None:
         check_405b = True if request.model_key == llama_405b else False

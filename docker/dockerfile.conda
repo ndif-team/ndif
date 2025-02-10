@@ -1,5 +1,6 @@
 ARG BASE_IMAGE=ndif_base
-FROM ${BASE_IMAGE}:latest
+ARG TAG=latest
+FROM ${BASE_IMAGE}:${TAG}
 
 # Update environment with service-specific dependencies
 ARG NAME

@@ -28,7 +28,7 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ...logging import load_logger
-from ...metrics import GPUMemGauge, RequestStatusGauge
+from ...metrics import GPUMemMetric, RequestStatusMetric
 from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
                        BackendResultModel)
 from ..util import set_cuda_env_var
@@ -273,7 +273,7 @@ class BaseModelDeployment(BaseDeployment):
             description="Your job has been completed."
         )
         
-        GPUMemGauge.update(self.request, gpu_mem)
+        GPUMemMetric.update(self.request, gpu_mem)
 
     def exception(self, exception: Exception) -> None:
         """Logic to execute of there was an exception.

@@ -7,6 +7,10 @@ services:
     network_mode: "host"
     environment:
       RAY_ADDRESS: 127.0.0.1:6379
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
     deploy:
       replicas: 1
       resources:

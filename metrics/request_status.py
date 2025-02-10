@@ -1,15 +1,14 @@
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from nnsight.schema.response import ResponseModel
-
 from . import Metric
+
 if TYPE_CHECKING:
 
     from ..schema import BackendRequestModel, BackendResponseModel
 
 
-class RequestStatusGauge(Metric):
+class RequestStatusMetric(Metric):
     """
     This class abstracts the usage of metrics for tracking the status of requests across different services.
     Specifically, it handles the complexity introduced by Ray's distributed system when using Prometheus.
@@ -33,23 +32,13 @@ class RequestStatusGauge(Metric):
         STREAM = 7
         NNSIGHT_ERROR = 8
 
-    name = "request_status"
-    description = "Track status of requests"
-    tags = (
-        "request_id",
-        "api_key",
-        "model_key",
-        "timestamp",
-        "user_id",
-        "msg",
-    )
+    name: str = "request_status"
 
     @classmethod
     def update(
         cls,
         request: "BackendRequestModel",
         response: "BackendResponseModel",
-        **kwargs
     ) -> None:
         """
         Update the values of the gauge to reflect the current status of a request.
@@ -66,15 +55,11 @@ class RequestStatusGauge(Metric):
         """
         numeric_status = int(cls.NumericJobStatus[response.status.value].value)
 
-        labels = {
-            "request_id": str(request.id),
-            "api_key": str(request.api_key),
-            "model_key": str(request.model_key),
-            "timestamp": str(
-                request.received
-            ),  # Ensure timestamp is string for consistency
-            "user_id":  " ",
-            "msg": response.description,
-        }
-        
-        super().update(numeric_status, **labels, **kwargs, ray = numeric_status != 1)
+        super().update(
+            numeric_status,
+            request_id=str(request.id),
+            api_key=str(request.api_key),
+            model_key=str(request.model_key),
+            user_id=" ",
+            msg=response.description,
+        )

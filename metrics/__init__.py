@@ -1,6 +1,5 @@
 from .metric import Metric
 
-from .gpu_mem import GPUMemGauge
-from .network_data import NetworkStatusGauge
-from .request_status import RequestStatusGauge
-from .stage_latency import StageLatencyGauge
+from .gpu_mem import GPUMemMetric
+from .network_data import NetworkStatusMetric
+from .request_status import RequestStatusMetric
