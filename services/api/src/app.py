@@ -125,7 +125,7 @@ async def request(
 
         point.field(RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value)
 
-        RequestStatusMetric.update(point)
+        super(RequestStatusMetric, RequestStatusMetric).update(point)
 
         raise e
 
