@@ -17,16 +17,15 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from minio import Minio
-from prometheus_client import Gauge as PrometheusGauge
+from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
-from slugify import slugify
 
 from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import RequestStatusGauge
+from .metrics import RequestStatusMetric, Metric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
@@ -79,10 +78,10 @@ Instrumentator().instrument(app).expose(app)
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 # Create a dummy request to ensure app handle is created
-try:
-    serve.get_app_handle("Request").remote({})
-except:
-    pass
+# try:
+#     serve.get_app_handle("Request").remote({})
+# except:
+#     pass
 
 @app.post("/request")
 async def request(
@@ -115,16 +114,18 @@ async def request(
             "request_id": "",
             "api_key": api_key,
             "model_key": "",
-            "timestamp": str(
-                datetime.now()
-            ),  # Ensure timestamp is string for consistency
             "user_id": "",
             "msg": description,
         }
 
-        super(RequestStatusGauge, RequestStatusGauge).update(
-            RequestStatusGauge.NumericJobStatus.ERROR.value, ray=False, **labels
-        )
+        point: Point = Point(RequestStatusMetric.name)
+
+        for tag, value in labels.items():
+            point.tag(tag, value)
+
+        point.field(RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value)
+
+        RequestStatusMetric.update(point)
 
         raise e
 

@@ -32,6 +32,10 @@ services:
       LOKI_URL: http://${PROD_HOST_IP}:${PROD_LOKI_PORT}/loki/api/v1/push
       OBJECT_STORE_URL: ${PROD_HOST_IP}:${PROD_MINIO_PORT}
       API_URL: https://ndif.dev
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
     env_file:
       - .env
     deploy:
@@ -61,6 +65,10 @@ services:
       RAY_ADDRESS: ray://${PROD_HOST_IP}:${PROD_RAY_HEAD_PORT}
       LOKI_URL: http://${PROD_HOST_IP}:${PROD_LOKI_PORT}/loki/api/v1/push
       FIREBASE_CREDS_PATH: /src/creds.json  
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
   
   prometheus:
     image: prom/prometheus:latest
@@ -76,18 +84,34 @@ services:
       - api
       - ray-head
 
+  influxdb:
+    image: influxdb:2
+    network_mode: "host"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${SECRET_INFLUXDB_ADMIN_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
+    volumes:
+      - influxdb2-data:/var/lib/influxdb2
+      - influxdb2-config:/etc/influxdb2
+
   grafana:
     image: grafana/grafana:latest
     network_mode: "host"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../../telemetry/grafana/provisioning:/etc/grafana/provisioning
       - ../../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
       - prometheus
+      - influxdb
 
   loki:
     image: grafana/loki:2.8.1
@@ -100,3 +124,5 @@ volumes:
   loki-data:
   prometheus-data:
   ray-data:
+  influxdb2-data:
+  influxdb2-config:
