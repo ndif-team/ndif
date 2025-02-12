@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+import time
 from typing import TYPE_CHECKING, ClassVar, Optional, Union
 
 import ray
@@ -49,7 +49,10 @@ class BackendRequestModel(ObjectStorageMixin):
     zlib: bool
 
     id: str
-    received: datetime
+    
+    received: float
+    
+    sent: Optional[float] = None
 
     api_key: str
 
@@ -82,8 +85,8 @@ class BackendRequestModel(ObjectStorageMixin):
             format=headers["format"],
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
-            received=datetime.now(),
-            last_status_update=float(headers['sent-timestamp']),
+            received=time.time(),
+            sent=float(headers.get("sent-timestamp", None)),
             api_key=api_key,
         )
 
@@ -102,7 +105,6 @@ class BackendRequestModel(ObjectStorageMixin):
             BackendResponseModel(
                 id=self.id,
                 session_id=self.session_id,
-                received=self.received,
                 status=status,
                 description=description,
                 data=data,

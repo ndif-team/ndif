@@ -25,7 +25,7 @@ from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import RequestStatusMetric, Metric
+from .metrics import RequestStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
@@ -50,7 +50,7 @@ app.add_middleware(
 
 # Init async manager for communication between socketio servers
 socketio_manager = socketio.AsyncRedisManager(
-    url=os.environ.get("BROKER_URL"), logger=logger
+    url=os.environ.get("BROKER_URL")
 )
 # Init socketio manager app
 sm = SocketManager(
@@ -131,6 +131,8 @@ async def request(
 
     # process the request
     try:
+        
+        TransportLatencyMetric.update(request)
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
