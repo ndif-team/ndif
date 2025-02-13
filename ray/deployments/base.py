@@ -2,6 +2,7 @@ import gc
 import json
 import os
 import sys
+import time
 import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
@@ -15,8 +16,7 @@ from minio import Minio
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from transformers import PreTrainedModel
 
 from nnsight.intervention.contexts import RemoteContext
@@ -28,9 +28,13 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ...logging import load_logger
-from ...metrics import GPUMemMetric, RequestStatusMetric
-from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
-                       BackendResultModel)
+from ...metrics import GPUMemMetric, ExecutionTimeMetric
+from ...schema import (
+    RESULT,
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ..util import set_cuda_env_var
 from . import protocols
 
@@ -86,7 +90,7 @@ class BaseDeployment:
         self.logger = load_logger(
             service_name=str(self.__class__), logger_name="ray.serve"
         )
-        
+
         self.replica_context = serve.get_replica_context()
 
 
@@ -158,7 +162,6 @@ class BaseModelDeployment(BaseDeployment):
         protocols.LogProtocol.set(lambda *args: self.log(*args))
 
         RemoteContext.set(self.stream_send, self.stream_receive)
-        
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -240,8 +243,12 @@ class BaseModelDeployment(BaseDeployment):
             reset_peak_memory_stats()
             model_memory = memory_allocated()
 
+        execution_time = time.time()
+
         # Execute object.
         result = ExtractionBackend()(graph)
+
+        execution_time = time.time() - execution_time
 
         # Compute GPU memory usage
         if torch.cuda.is_available():
@@ -249,7 +256,7 @@ class BaseModelDeployment(BaseDeployment):
         else:
             gpu_mem = 0
 
-        return result, gpu_mem
+        return result, gpu_mem, execution_time
 
     def post(self, result: Any) -> None:
         """Logic to execute after execution with result from `.execute`.
@@ -261,7 +268,7 @@ class BaseModelDeployment(BaseDeployment):
 
         saves = result[0]
         gpu_mem: int = result[1]
-        
+        execution_time_s: float = result[2]
 
         BackendResultModel(
             id=self.request.id,
@@ -270,10 +277,11 @@ class BaseModelDeployment(BaseDeployment):
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
-            description="Your job has been completed."
+            description="Your job has been completed.",
         )
-        
+
         GPUMemMetric.update(self.request, gpu_mem)
+        ExecutionTimeMetric.update(self.request, execution_time_s)
 
     def exception(self, exception: Exception) -> None:
         """Logic to execute of there was an exception.
@@ -344,7 +352,7 @@ class BaseModelDeployment(BaseDeployment):
         self.respond(status=BackendResponseModel.JobStatus.STREAM, data=data)
 
     def stream_receive(self, *args):
-        
+
         self.stream_connect()
 
         return StreamValueModel.deserialize(self.sio.receive(5)[1], "json", True)
@@ -368,9 +376,9 @@ class BaseModelDeployment(BaseDeployment):
 
             self.stream_connect()
 
-        self.request.create_response(
-            **kwargs, logger=self.logger
-        ).respond(self.sio, self.object_store)
+        self.request.create_response(**kwargs, logger=self.logger).respond(
+            self.sio, self.object_store
+        )
 
 
 class BaseModelDeploymentArgs(BaseDeploymentArgs):
