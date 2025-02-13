@@ -49,9 +49,7 @@ app.add_middleware(
 )
 
 # Init async manager for communication between socketio servers
-socketio_manager = socketio.AsyncRedisManager(
-    url=os.environ.get("BROKER_URL")
-)
+socketio_manager = socketio.AsyncRedisManager(url=os.environ.get("BROKER_URL"))
 # Init socketio manager app
 sm = SocketManager(
     app=app,
@@ -83,6 +81,7 @@ api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 # except:
 #     pass
 
+
 @app.post("/request")
 async def request(
     raw_request: Request, api_key: str = Security(api_key_header)
@@ -96,7 +95,7 @@ async def request(
         raw_request (Request): user request containing the intervention graph.
 
     Returns:
-        BackendResponseModel: reponse to the user request.
+        BackendResponseModel: response to the user request.
     """
 
     # extract the request data
@@ -123,7 +122,9 @@ async def request(
         for tag, value in labels.items():
             point.tag(tag, value)
 
-        point.field(RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value)
+        point.field(
+            RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value
+        )
 
         super(RequestStatusMetric, RequestStatusMetric).update(point)
 
@@ -131,7 +132,7 @@ async def request(
 
     # process the request
     try:
-        
+
         TransportLatencyMetric.update(request)
 
         response = request.create_response(
@@ -288,18 +289,17 @@ async def status():
                     num_running_replicas += 1
 
             if num_running_replicas > 0:
-                
+
                 ####### temporary
-                
+
                 config = model_configurations[application_name]
-                
+
                 if "config_string" in config:
-                    
+
                     config["config_json_string"] = config["config_string"]
-                    
+
                     del config["config_string"]
-                    
-                    
+
                 ##################
 
                 response[application_name] = {
