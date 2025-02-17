@@ -1,5 +1,6 @@
 import pytest
 import shutil
+import os
 from tests.utils.deployment import ServiceProfile
 
 def test_pytest_working():
@@ -18,6 +19,11 @@ def test_imports():
 def test_docker_compose_installed():
     """Test that docker-compose is installed"""
     assert shutil.which("docker-compose"), "docker-compose is installed"
+
+def test_docker_compose_socket_mounted():
+    """Test that the docker socket is mounted"""
+    assert os.path.exists("/var/run/docker.sock"), "docker socket is mounted"
+
 
 @pytest.mark.unit
 def test_deployment_profiles():
