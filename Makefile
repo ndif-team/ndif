@@ -4,7 +4,7 @@ IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
 
 # Treat "up", "down" and "ta" as targets (not files)
-.PHONY: up down ta
+.PHONY: up down ta test test-unit test-integration test-e2e
 
 # Define valid environments
 VALID_ENVS := dev prod delta
@@ -47,6 +47,7 @@ build_all_conda:
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
 	make build_conda NAME=ray_head
+	make build_conda NAME=tests
 	if [ "$(ENV)" = "prod" ]; then \
 		make build_conda NAME=ray_worker; \
 	fi
@@ -56,6 +57,7 @@ build_all_service:
 	$(call check_env,$(ENV))
 	make build_service NAME=api
 	make build_service NAME=ray_head
+	make build_service NAME=tests
 	if [ "$(ENV)" = "prod" ]; then \
 		make build_service NAME=ray_worker; \
 	fi
@@ -102,3 +104,32 @@ reset-vars:
 # Consumes the second argument (e.g. 'dev', 'prod') so it doesn't cause an error.
 %:
 	@:
+
+# Test targets
+test-unit:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=unit DEPLOY_SERVICES=0 && \
+	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
+
+test-integration:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=integration DEPLOY_SERVICES=1 && \
+	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
+
+test-e2e:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=e2e DEPLOY_SERVICES=1 && \
+	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
+
+# General test target that defaults to unit tests
+test:
+	$(call set_env)
+	$(call check_env,$(ENV))
+	@if [ -n "$(TEST_TYPE)" ]; then \
+		make test-$(TEST_TYPE) $(ENV); \
+	else \
+		make test-unit $(ENV); \
+	fi

@@ -110,15 +110,16 @@ services:
 
   tests:
     image: tests:latest
+    profiles:
+      - test
     environment:
-      - PYTEST_PATH=src
+      - PYTEST_PATH=src/tests
       - PYTEST_WORKERS=1
       - PYTEST_TIMEOUT=300
       - PYTEST_COV=1
       - COV_REPORT=term
-    depends_on:
-      - api
-      - ray-head
+      - TEST_TYPE=${TEST_TYPE:-unit}
+      - DEPLOY_SERVICES=${DEPLOY_SERVICES:-0}
 
 volumes:
   grafana-storage:
