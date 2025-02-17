@@ -16,6 +16,10 @@
 : ${PYTEST_COV:=1}      # Set to 0 to disable coverage reporting
 : ${COV_REPORT:="term"} # Coverage report format: term, html, xml, etc.
 
+# Test type configuration
+: ${TEST_TYPE:="unit"}         # Type of tests to run (unit, integration, e2e)
+: ${DEPLOY_SERVICES:=0}        # Whether to deploy services before testing
+
 # Build command based on configuration
 CMD="pytest"
 
@@ -52,6 +56,16 @@ fi
 
 # Add test path
 CMD="$CMD $PYTEST_PATH"
+
+# Add test type if specified
+if [ ! -z "$TEST_TYPE" ]; then
+    CMD="$CMD --test-type $TEST_TYPE"
+fi
+
+# Add deploy services flag if enabled
+if [ $DEPLOY_SERVICES -eq 1 ]; then
+    CMD="$CMD --deploy-services"
+fi
 
 # Print the final command
 echo "Running: $CMD"
