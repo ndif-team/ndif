@@ -1,18 +1,21 @@
 services:
   message_broker:
     image: redis:latest
+    profiles: [ndif, frontend]
     ports:
       - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
   minio:
     image: minio/minio:latest
     command: server /data
+    profiles: [ndif, frontend]
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray-head:
     image: ray_head:latest
     shm_size: '15gb'
+    profiles: [ndif, backend]
     volumes:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
       - ./service_config.yml:/src/ray/config/service_config.yml
@@ -45,6 +48,7 @@ services:
 
   api:
     image: api:latest
+    profiles: [ndif, frontend]
     ports:
       - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
@@ -61,6 +65,7 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    profiles: [ndif, telemetry]
     network_mode: "host"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -75,6 +80,7 @@ services:
 
   influxdb:
     image: influxdb:2
+    profiles: [ndif, telemetry]
     network_mode: "host"
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
@@ -89,6 +95,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
+    profiles: [ndif, telemetry]
     network_mode: "host"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
@@ -104,14 +111,14 @@ services:
 
   loki:
     image: grafana/loki:2.8.1
+    profiles: [ndif, telemetry]
     network_mode: "host"
     volumes:
       - loki-data:/loki
 
   tests:
     image: tests:latest
-    profiles:
-      - test
+    profiles: [test]
     environment:
       - PYTEST_PATH=src/tests
       - PYTEST_WORKERS=1
