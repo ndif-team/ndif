@@ -109,18 +109,21 @@ reset-vars:
 test-unit:
 	$(call set_env)
 	$(call check_env,$(ENV))
+	make build_service NAME=tests
 	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=unit DEPLOY_SERVICES=0 && \
 	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
 
 test-integration:
 	$(call set_env)
 	$(call check_env,$(ENV))
+	make build_service NAME=tests
 	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=integration DEPLOY_SERVICES=1 && \
 	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
 
 test-e2e:
 	$(call set_env)
 	$(call check_env,$(ENV))
+	make build_service NAME=tests
 	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TEST_TYPE=e2e DEPLOY_SERVICES=1 && \
 	docker compose -f compose/$(ENV)/docker-compose.yml --profile test up tests
 
@@ -128,6 +131,7 @@ test-e2e:
 test:
 	$(call set_env)
 	$(call check_env,$(ENV))
+	make build_service NAME=tests
 	@if [ -n "$(TEST_TYPE)" ]; then \
 		make test-$(TEST_TYPE) $(ENV); \
 	else \

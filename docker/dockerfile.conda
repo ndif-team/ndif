@@ -7,3 +7,12 @@ ARG NAME
 COPY services/${NAME}/environment.yml .
 
 RUN conda env update --name service -f environment.yml
+
+# Install docker-compose if testing
+RUN if [ "${NAME}" = "tests" ]; then \
+    apt-get update && \
+    apt-get install -y docker.io && \
+    wget -O /usr/local/bin/docker-compose "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" && \
+    chmod +x /usr/local/bin/docker-compose && \
+    usermod -aG docker root; \
+    fi
