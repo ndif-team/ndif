@@ -108,6 +108,18 @@ services:
     volumes:
       - loki-data:/loki
 
+  tests:
+    image: tests:latest
+    environment:
+      - PYTEST_PATH=src
+      - PYTEST_WORKERS=1
+      - PYTEST_TIMEOUT=300
+      - PYTEST_COV=1
+      - COV_REPORT=term
+    depends_on:
+      - api
+      - ray-head
+
 volumes:
   grafana-storage:
   loki-data:
