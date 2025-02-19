@@ -95,7 +95,7 @@ async def request(
         raw_request (Request): user request containing the intervention graph.
 
     Returns:
-        BackendResponseModel: response to the user request.
+        BackendResponseModel: reponse to the user request.
     """
 
     # extract the request data
@@ -290,17 +290,7 @@ async def status():
 
             if num_running_replicas > 0:
 
-                ####### temporary
-
                 config = model_configurations[application_name]
-
-                if "config_string" in config:
-
-                    config["config_json_string"] = config["config_string"]
-
-                    del config["config_string"]
-
-                ##################
 
                 response[application_name] = {
                     "num_running_replicas": num_running_replicas,
