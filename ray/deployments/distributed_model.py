@@ -78,15 +78,6 @@ class _ModelDeployment(BaseModelDeployment):
 
                 name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
 
-                try:
-
-                    serve.delete(name)
-
-                    print(f"Found existing shard deployment {name}. Deleting...")
-
-                except:
-                    pass
-
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
                     api_url=self.api_url,
@@ -220,7 +211,7 @@ class _ModelDeployment(BaseModelDeployment):
 
             for worker_deployment in self.worker_actors:
 
-                worker_deployment.remote(self.request)
+                worker_deployment.__call__.remote(self.request)
 
         torch.distributed.barrier()
 

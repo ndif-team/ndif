@@ -54,7 +54,7 @@ class BackendRequestModel(ObjectStorageMixin):
     
     sent: Optional[float] = None
 
-    api_key: str
+    api_key: Optional[str] = None
 
     def deserialize(self, model: NNsight) -> Graph:
 

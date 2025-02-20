@@ -50,11 +50,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     @field_serializer("status")
     def sstatus(self, value, _info):
         return value.value
-
-    @field_serializer("received")
-    def sreceived(self, value, _info):
-        return str(value)
-
+    
     def update_metric(
         self,
         request: "BackendRequestModel",
