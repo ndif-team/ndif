@@ -49,12 +49,10 @@ class BackendRequestModel(ObjectStorageMixin):
     zlib: bool
 
     id: str
-    
-    received: float
-    
+        
     sent: Optional[float] = None
 
-    api_key: str
+    api_key: Optional[str] = ''
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -85,7 +83,6 @@ class BackendRequestModel(ObjectStorageMixin):
             format=headers["format"],
             zlib=headers["zlib"],
             id=str(uuid.uuid4()),
-            received=time.time(),
             sent=float(headers.get("sent-timestamp", None)),
             api_key=api_key,
         )
