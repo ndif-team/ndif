@@ -1,3 +1,4 @@
+import time
 from typing import TYPE_CHECKING
 from . import Metric
 
@@ -15,4 +16,4 @@ class TransportLatencyMetric(Metric):
         
         if request.sent is not None:
     
-            super().update(request.received - request.sent, request_id=request.id)
+            super().update(time.time() - request.sent, request_id=request.id)
