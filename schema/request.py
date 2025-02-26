@@ -6,11 +6,12 @@ import time
 from typing import TYPE_CHECKING, ClassVar, Optional, Union
 
 import ray
-from fastapi import Request
+from fastapi import Request, HTTPException
+from starlette.status import HTTP_426_UPGRADE_REQUIRED
 from pydantic import ConfigDict
 from typing_extensions import Self
 
-from nnsight import NNsight
+from nnsight import NNsight, __version__
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 from nnsight.tracing.graph import Graph
@@ -32,6 +33,7 @@ class BackendRequestModel(ObjectStorageMixin):
         - id (str): request id.
         - received (datetime.datetime): time of the request being received.
         - api_key (str): api key associated with this request.
+        - version (str): version of the user's NNsight client.
         - _bucket_name (str): request result bucket storage name.
         - _file_extension (str): file extension.
     """
@@ -53,6 +55,7 @@ class BackendRequestModel(ObjectStorageMixin):
     sent: Optional[float] = None
 
     api_key: Optional[str] = ''
+    version: str
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -75,7 +78,22 @@ class BackendRequestModel(ObjectStorageMixin):
 
         if put:
             graph = ray.put(graph)
+        upgrade_message = f"You must upgrade your NNsight client to version {__version__} or later. You can do so by running `pip install --upgrade nnsight`"
 
+        if 'version' not in headers:
+            raise HTTPException(
+                status_code=HTTP_426_UPGRADE_REQUIRED, 
+                detail=upgrade_message
+            )
+
+        client_version = headers['version'].split('.')[:2]
+        current_version = __version__.split('.')[:2]
+        
+        if client_version != current_version:
+            raise HTTPException(
+                status_code=HTTP_426_UPGRADE_REQUIRED,
+                detail=f"Client version {headers['version']} is outdated. {upgrade_message}"
+            )
         return BackendRequestModel(
             graph=graph,
             model_key=headers["model_key"],
@@ -85,6 +103,7 @@ class BackendRequestModel(ObjectStorageMixin):
             id=str(uuid.uuid4()),
             sent=float(headers.get("sent-timestamp", None)),
             api_key=api_key,
+            version=headers['version'],
         )
 
     def create_response(
