@@ -1,0 +1,15 @@
+TokenGeneration:
+  - model: 
+      - 'nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+    num_requests: 10
+    params:
+      batch_size:
+        - 1
+        - 5
+      prompt_length:
+        - 1
+        - 10
+      num_tokens:
+        - 1
+        - 10
+        - 50

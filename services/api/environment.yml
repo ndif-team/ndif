@@ -35,4 +35,4 @@ dependencies:
     - torch
     - python-slugify
     - influxdb-client
-    - git+https://github.com/ndif-team/nnsight@0.4
+    - git+https://github.com/ndif-team/nnsight@dev
