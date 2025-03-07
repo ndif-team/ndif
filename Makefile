@@ -2,12 +2,13 @@
 
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
+COMMIT_HASH := $(shell git rev-parse HEAD)
 
 # Treat "up", "down" and "ta" as targets (not files)
 .PHONY: up down ta
 
 # Define valid environments
-VALID_ENVS := dev prod delta
+VALID_ENVS := dev prod delta harness
 
 # Default environment
 DEFAULT_ENV ?= dev
@@ -47,7 +48,8 @@ build_all_conda:
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
 	make build_conda NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
+	make build_conda NAME=harness
+	@if [ "$(ENV)" = "prod" ]; then \
 		make build_conda NAME=ray_worker; \
 	fi
 
@@ -56,7 +58,8 @@ build_all_service:
 	$(call check_env,$(ENV))
 	make build_service NAME=api
 	make build_service NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
+	make build_service NAME=harness
+	@if [ "$(ENV)" = "prod" ]; then \
 		make build_service NAME=ray_worker; \
 	fi
 
@@ -74,6 +77,9 @@ up:
 	@if [ "$(ENV)" = "dev" ] && [ "$(DEV_NNS)" = "True" ]; then \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
 		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
+	elif [ "$(ENV)" = "harness" ]; then \
+		export export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
+		docker compose --env-file compose/dev/.env  --env-file compose/dev/.env.harness -f compose/dev/docker-compose.harness.yml up --detach; \
 	else \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
 		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
@@ -82,7 +88,19 @@ up:
 down:
 	$(call set_env)
 	$(call check_env,$(ENV))
-	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down
+	@if [ "$(ENV)" = "harness" ]; then \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
+		docker compose --env-file compose/dev/.env  --env-file compose/dev/.env.harness -f compose/dev/docker-compose.harness.yml down; \
+	else \
+		export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down; \
+	fi
+
+test:
+	@if ! docker ps --filter "name=dev-harness-1" --format '{{.Names}}' | grep -q "dev-harness-1"; then \
+		make up harness; \
+	fi
+
+	docker exec dev-harness-1 bash -c "source activate service && bash /start.sh"
 
 ta:
 	$(call set_env)

@@ -1,6 +1,0 @@
-from nnsight import CONFIG
-
-CONFIG.API.HOST = "localhost:5001"
-CONFIG.API.SSL = False
-CONFIG.API.APIKEY = "hi"
-CONFIG.APP.REMOTE_LOGGING = False

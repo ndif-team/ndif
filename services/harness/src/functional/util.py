@@ -1,21 +1,23 @@
 from typing import TYPE_CHECKING, Dict, Any, Optional, Callable
 
 import requests
-import yaml
+import os
 import uuid
 import pytest
+import yaml
 import itertools
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
 from nnsight.schema.response import ResponseModel
 from nnsight.intervention.backends import RemoteBackend
+import nnsight
 
 if TYPE_CHECKING:
     from nnsight.modeling.mixins import RemoteableMixin
 
 #### Parsing CONFIG.yaml ####
 
-with open("CONFIG.yaml", "r") as file:
+with open(os.getenv("CONFIG_PATH"), "r") as file:
     config = yaml.safe_load(file)
 
 CONFIG = dict()
@@ -40,8 +42,6 @@ for test_name, test in config.items():
 
     CONFIG["tests"][test_name] = ("model, num_requests, " + param_names, tests)
 
-print(CONFIG)
-
 ##############################
 
 INFLUXDB_CLIENT = InfluxDBClient(
@@ -50,6 +50,9 @@ INFLUXDB_CLIENT = InfluxDBClient(
                 ).write_api(write_options=SYNCHRONOUS)
 
 RUN_ID = uuid.uuid4()
+COMMIT_HASH = os.getenv("COMMIT_HASH")
+TEST_ENV = os.getenv("TEST_ENV")
+NNSIGHT_VERSION = nnsight.__version__
 
 class BaseTest:
 
@@ -82,6 +85,9 @@ class BaseTest:
 
             self.log_test(
                 result,
+                commit=COMMIT_HASH,
+                env=TEST_ENV,
+                nnsight_version=NNSIGHT_VERSION,
                 run_id=RUN_ID,
                 test_id=test_id, 
                 request_id=request_id, 

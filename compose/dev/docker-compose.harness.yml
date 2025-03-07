@@ -1,0 +1,20 @@
+services:
+    harness:
+        image: harness:latest
+        network_mode: "host"
+        command: tail -f /dev/null
+        volumes:
+            - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+            - ../../services/harness/CONFIG.yml:/src/CONFIG.yml
+        environment:
+            - CONFIG_PATH=${CONFIG_PATH}
+            - COMMIT_HASH=${COMMIT_HASH}
+            - TEST_ENV=${TEST_ENV}
+            - API_HOST=${API_HOST}
+            - API_SSL=${API_SSL}
+            - API_KEY=${API_KEY}
+            - APP_REMOTE_LOGGING=${APP_REMOTE_LOGGING}
+            - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+            - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+            - INFLUXDB_ORG=${INFLUXDB_ORG}
+            - INFLUXDB_BUCKET=${INFLUXDB_TEST_BUCKET}
