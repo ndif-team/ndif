@@ -19,9 +19,9 @@ def pytest_generate_tests(metafunc):
         else:
             # Get the test config
             if test_name in CONFIG["tests"].keys():
-                test = CONFIG["tests"][test_name]
+                tests = CONFIG["tests"][test_name]
                 # Parametrize the test with the config params
-                metafunc.parametrize(test[0], test[1], indirect=["model"])
+                metafunc.parametrize(tests[0], tests[1], indirect=["model"])
 
 
 @pytest.fixture(scope="module")

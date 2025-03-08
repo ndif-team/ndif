@@ -5,7 +5,7 @@ services:
         command: tail -f /dev/null
         volumes:
             - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-            - ../../services/harness/CONFIG.yml:/src/CONFIG.yml
+            - ../../services/harness/configs:/configs
         environment:
             - CONFIG_PATH=${CONFIG_PATH}
             - COMMIT_HASH=${COMMIT_HASH}

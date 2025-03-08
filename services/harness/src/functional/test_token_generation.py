@@ -17,33 +17,6 @@ class TestTokenGeneration(BaseTest):
         - num_tokens (int): number of tokens to generate.
     """
     
-    @pytest.fixture(scope="class")
-    def batch_size(self):
-        """Batch size for model inference.
-        
-        Returns:
-            int: defaults to 1.
-        """
-        return 1
-    
-    @pytest.fixture(scope="class")
-    def prompt_length(self):
-        """Length of the input prompt.
-        
-        Returns:
-            int: defaults to 1.
-        """
-        return 1
-    
-    @pytest.fixture(scope="class")
-    def num_tokens(self):
-        """Number of tokens to generate.
-        
-        Returns:
-            int: defaults to 10.
-        """
-        return 10
-    
     def test(self, model: "RemoteableMixin", num_requests: int, batch_size: int, prompt_length: int, num_tokens: int):
         print(num_requests, batch_size, prompt_length, num_tokens)
         """Parametrized test function.

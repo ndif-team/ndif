@@ -79,7 +79,7 @@ up:
 		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
 	elif [ "$(ENV)" = "harness" ]; then \
 		export export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
-		docker compose --env-file compose/dev/.env  --env-file compose/dev/.env.harness -f compose/dev/docker-compose.harness.yml up --detach; \
+		docker compose --env-file compose/dev/.env  --env-file services/harness/.config.harness -f compose/dev/docker-compose.harness.yml up --detach; \
 	else \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
 		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
@@ -90,7 +90,7 @@ down:
 	$(call check_env,$(ENV))
 	@if [ "$(ENV)" = "harness" ]; then \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
-		docker compose --env-file compose/dev/.env  --env-file compose/dev/.env.harness -f compose/dev/docker-compose.harness.yml down; \
+		docker compose -f compose/dev/docker-compose.harness.yml down; \
 	else \
 		export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down; \
 	fi
