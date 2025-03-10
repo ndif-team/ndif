@@ -43,5 +43,4 @@ class TestTokenGeneration(BaseTest):
                 out = model.generator.output.save()
 
 
-        assert self.run_test(token_generation, model, num_requests, num_tokens=num_tokens, batch_size=batch_size)
-
+        assert self.run_test(token_generation, model, num_requests, batch_size=batch_size, prompt_length=prompt_length, num_tokens=num_tokens)
