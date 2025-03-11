@@ -16,3 +16,5 @@ dependencies:
     # Database
     - minio
     - influxdb-client
+    # Google cal scheduling
+    - google-api-python-client

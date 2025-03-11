@@ -6,34 +6,12 @@ except:
     pass
 import ray
 import yaml
-from pydantic import BaseModel
 from ray.dashboard.modules.serve.sdk import ServeSubmissionClient
-from ray.serve.schema import (
-    DeploymentSchema,
-    RayActorOptionsSchema,
-    ServeApplicationSchema,
-    ServeDeploySchema,
-)
+from ray.serve.schema import (DeploymentSchema, RayActorOptionsSchema,
+                              ServeApplicationSchema, ServeDeploySchema)
 
-from .deployments.base import BaseDeploymentArgs, BaseModelDeploymentArgs
-
-
-class ServiceConfigurationSchema(BaseModel):
-    class ModelConfigurationSchema(BaseModel):
-
-        model_import_path: str = None
-
-        ray_actor_options: Dict[str, Any] = {}
-        args: Dict[str, Any] = {}
-
-        model_key: str
-        num_replicas: int
-
-    default_model_import_path: str
-    request_import_path: str
-    request_num_replicas: int
-
-    models: List[ModelConfigurationSchema]
+from .deployments.base import BaseDeploymentArgs
+from .schema import ModelConfigurationSchema, ServiceConfigurationSchema
 
 
 class RayState:
@@ -62,6 +40,13 @@ class RayState:
 
         self.name_to_application: Dict[str, ServeApplicationSchema] = {}
 
+    def reset(self):
+        
+        self.ray_config.applications = self.ray_config.applications[:1]
+        self.name_to_application.clear()
+        
+        self.add_request_app()  
+
     def load_from_disk(self):
 
         with open(self.ray_config_path, "r") as file:
@@ -69,6 +54,10 @@ class RayState:
 
         with open(self.service_config_path, "r") as file:
             self.service_config = ServiceConfigurationSchema(**yaml.safe_load(file))
+
+    def app_name_from_model_key(self, model_key:str):
+        
+        return f"Model:{slugify(model_key)}"
 
     def redeploy(self):
 
@@ -117,22 +106,21 @@ class RayState:
         self.add(application)
 
     def add_model_app(
-        self, model_config: ServiceConfigurationSchema.ModelConfigurationSchema
+        self, model_config: ModelConfigurationSchema
     ) -> None:
 
-        model_key = slugify(model_config.model_key)
+        app_name = self.app_name_from_model_key(model_config.args.model_key)
 
-        model_config.args["model_key"] = model_config.model_key
-        model_config.args["api_url"] = self.api_url
-        model_config.args["object_store_url"] = self.object_store_url
-        model_config.args["object_store_access_key"] = self.object_store_access_key
-        model_config.args["object_store_secret_key"] = self.object_store_secret_key
+        model_config.args.api_url = self.api_url
+        model_config.args.object_store_url = self.object_store_url
+        model_config.args.object_store_access_key = self.object_store_access_key
+        model_config.args.object_store_secret_key = self.object_store_secret_key
 
         application = ServeApplicationSchema(
-            name=f"Model:{model_key}",
+            name=f"{app_name}",
             import_path=model_config.model_import_path
-            or self.service_config.default_model_import_path,
-            route_prefix=f"/Model:{model_key}",
+            or self.service_config.model_import_path,
+            route_prefix=f"/{app_name}",
             deployments=[
                 DeploymentSchema(
                     name="ModelDeployment",
