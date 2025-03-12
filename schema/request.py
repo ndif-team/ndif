@@ -11,7 +11,8 @@ from starlette.status import HTTP_426_UPGRADE_REQUIRED
 from pydantic import ConfigDict
 from typing_extensions import Self
 
-from nnsight import NNsight, __version__
+from nnsight import NNsight
+from nnsight import __version__ as NNSIGHT_VERSION
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 from nnsight.tracing.graph import Graph
@@ -33,7 +34,7 @@ class BackendRequestModel(ObjectStorageMixin):
         - id (str): request id.
         - received (datetime.datetime): time of the request being received.
         - api_key (str): api key associated with this request.
-        - version (str): version of the user's NNsight client.
+        - nnsight_version (str): version of the user's NNsight client.
         - _bucket_name (str): request result bucket storage name.
         - _file_extension (str): file extension.
     """
@@ -55,7 +56,7 @@ class BackendRequestModel(ObjectStorageMixin):
     sent: Optional[float] = None
 
     api_key: Optional[str] = ''
-    version: str
+    nnsight_version: str
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -78,22 +79,25 @@ class BackendRequestModel(ObjectStorageMixin):
 
         if put:
             graph = ray.put(graph)
-        upgrade_message = f"You must upgrade your NNsight client to version {__version__} or later. You can do so by running `pip install --upgrade nnsight`"
+        
+        # Check if the client version is compatible with the server version.
+        upgrade_message = f"You must upgrade your NNsight client to version {NNSIGHT_VERSION} or later. You can do so by running `pip install --upgrade nnsight`"
 
-        if 'version' not in headers:
+        if 'nnsight-version' not in headers:
             raise HTTPException(
                 status_code=HTTP_426_UPGRADE_REQUIRED, 
                 detail=upgrade_message
             )
 
-        client_version = headers['version'].split('.')[:2]
-        current_version = __version__.split('.')[:2]
+        client_version = headers['nnsight-version'].split('.')[:3]
+        current_version = NNSIGHT_VERSION.split('.')[:3]
         
         if client_version != current_version:
             raise HTTPException(
                 status_code=HTTP_426_UPGRADE_REQUIRED,
-                detail=f"Client version {headers['version']} is outdated. {upgrade_message}"
+                detail=f"Client version {headers['nnsight-version']} is outdated. {upgrade_message}"
             )
+
         return BackendRequestModel(
             graph=graph,
             model_key=headers["model_key"],
@@ -103,7 +107,7 @@ class BackendRequestModel(ObjectStorageMixin):
             id=str(uuid.uuid4()),
             sent=float(headers.get("sent-timestamp", None)),
             api_key=api_key,
-            version=headers['version'],
+            nnsight_version=headers['nnsight-version'],
         )
 
     def create_response(
