@@ -6,6 +6,7 @@ import uuid
 import pytest
 import yaml
 import random
+import time
 import itertools
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -94,16 +95,18 @@ class BaseTest:
         """
 
         test_id = uuid.uuid4()
-        def log_result(result: bool, request_id: str) -> None:
+        def log_result(result: bool, request_id: str, request_latency: float) -> None:
             """ Constructs the logging call of the test result.
             
             Args:
                 - result (int): test result, 1 is passed and 0 is failed.
                 - request_id (str): request id, single iteration of the test.
+                - request_latency (float): latency of the request in seconds.
             """
 
             self.log_test(
                 result,
+                rq_lt=request_latency,
                 commit=COMMIT_HASH,
                 env=TEST_ENV,
                 nnsight_version=NNSIGHT_VERSION,
@@ -119,8 +122,9 @@ class BaseTest:
         for ii in range(num_requests):
             backend = BackendTest(model.to_model_key())
             try:
+                start_time = time.time()
                 response = test(backend) # running test
-                log_result(1, backend.job_id) # logging passed
+                log_result(1, backend.job_id, time.time() - start_time) # logging passed
             except Exception as e:
                 print(e)
                 log_result(0, backend.job_id) # logging failed
