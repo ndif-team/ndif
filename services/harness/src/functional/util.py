@@ -50,7 +50,9 @@ INFLUXDB_CLIENT = InfluxDBClient(
                     token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
                 ).write_api(write_options=SYNCHRONOUS)
 
-RUN_ID = uuid.uuid4()
+RUN_ID = os.getenv("RUN_ID") if os.getenv("RUN_ID") != "" else uuid.uuid4()
+print(f"RUN_ID: {RUN_ID}")
+
 COMMIT_HASH = os.getenv("COMMIT_HASH")
 TEST_ENV = os.getenv("TEST_ENV")
 NNSIGHT_VERSION = nnsight.__version__

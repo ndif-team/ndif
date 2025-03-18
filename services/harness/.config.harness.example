@@ -12,3 +12,4 @@ CONFIG_PATH=/configs/config.example.yml
 
 # env
 TEST_ENV=kumamoto
+RUN_ID=""
