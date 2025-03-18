@@ -23,7 +23,7 @@ class TestWarmUp(BaseTest):
         Returns:
             int: Number of warmup requests (default: 3)
         """
-        return 3
+        return 10
 
     def test(self, model: "RemoteableMixin", num_requests: int):
         """Parametrized test function.
@@ -40,7 +40,7 @@ class TestWarmUp(BaseTest):
                 model (RemoteableMixin): model.
             """
 
-            with model.trace(["Hello"], backend=backend):
+            with model.trace(self.generate_inputs(model.tokenizer, 1, 1), backend=backend):
                 out = model.output.save()
 
         assert self.run_test(warmup, model, num_requests=num_requests)

@@ -1,10 +1,11 @@
-from typing import TYPE_CHECKING, Dict, Any, Optional, Callable
+from typing import TYPE_CHECKING, Dict, Any, Optional, Callable, List
 
 import requests
 import os
 import uuid
 import pytest
 import yaml
+import random
 import itertools
 from influxdb_client import InfluxDBClient, Point
 from influxdb_client.client.write_api import SYNCHRONOUS
@@ -60,6 +61,22 @@ class BaseTest:
     def name(cls) -> str:
         """Test name convention."""
         return cls.__name__[4:]
+
+    @classmethod
+    def generate_inputs(cls, tokenizer, prompt_length: int, batch_size: int) -> List[str]:
+        """Generates random inputs for the test.
+        
+        Args:
+            tokenizer (Tokenizer): The tokenizer to use for generating inputs
+            prompt_length (int): Number of tokens to generate per input
+            batch_size (int): Number of inputs to generate
+            
+        Returns:
+            List[str]: List of randomly generated input strings
+        """
+
+        vocab = list(tokenizer.get_vocab().keys())
+        return [" ".join(random.choices(vocab, k=prompt_length)) for _ in range(batch_size)]
 
     def run_test(self, test: Callable, model: "RemoteableMixin", num_requests: int, **tags) -> bool:
         """ Runs a test function and reports to the result storage database.

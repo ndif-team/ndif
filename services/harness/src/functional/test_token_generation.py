@@ -36,9 +36,7 @@ class TestTokenGeneration(BaseTest):
                 backend: Backend to use for generation
             """
 
-            inputs = ["Hello" + ("Hello" * (prompt_length - 1))] * batch_size
-
-            with model.generate(inputs, max_new_tokens=num_tokens, backend=backend, remote=True):
+            with model.generate(BaseTest.generate_inputs(model.tokenizer, prompt_length, batch_size), max_new_tokens=num_tokens, backend=backend, remote=True):
                 
                 out = model.generator.output.save()
 
