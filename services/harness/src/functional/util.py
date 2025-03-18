@@ -46,8 +46,8 @@ for test_name, test in config.items():
 ##############################
 
 INFLUXDB_CLIENT = InfluxDBClient(
-                    url="http://localhost:8086",
-                    token="njkldhsfbdsfkl2o32==",
+                    url=os.getenv("INFLUXDB_ADDRESS"),
+                    token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
                 ).write_api(write_options=SYNCHRONOUS)
 
 RUN_ID = uuid.uuid4()
