@@ -90,8 +90,14 @@ class BaseDeployment:
         self.logger = load_logger(
             service_name=str(self.__class__), logger_name="ray.serve"
         )
+        
+        try:
 
-        self.replica_context = serve.get_replica_context()
+            self.replica_context = serve.get_replica_context()
+            
+        except:
+            
+            self.replica_context = None
 
 
 class BaseDeploymentArgs(BaseModel):

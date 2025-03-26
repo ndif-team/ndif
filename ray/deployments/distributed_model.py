@@ -9,24 +9,20 @@ from ray.serve import Application
 
 from nnsight.tracing.graph import Graph
 
-from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
-                       BackendResultModel)
+from ...schema import (
+    RESULT,
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import (load_hf_model_from_cache,
-                                patch_intervention_protocol)
+from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
 
-@serve.deployment(
-    ray_actor_options={"num_gpus": 1, "num_cpus": 2},
-    health_check_period_s=10000000000000000000000000000000,
-    health_check_timeout_s=12000000000000000000000000000000,
-    max_ongoing_requests=200,
-    max_queued_requests=200,
-)
-class ModelDeployment(BaseModelDeployment):
+class _ModelDeployment(BaseModelDeployment):
     def __init__(
         self,
         torch_distributed_address: str,
@@ -76,20 +72,11 @@ class ModelDeployment(BaseModelDeployment):
 
             print(f"=> Torch distributed address: {self.torch_distributed_address}")
 
-            self.worker_deployments = []
+            self.worker_actors = []
 
             for worker_world_rank in range(1, self.torch_distributed_world_size):
 
                 name = f"Shard-{worker_world_rank}:{self.replica_context.app_name}"
-
-                try:
-
-                    serve.delete(name)
-                    
-                    print(f"Found existing shard deployment {name}. Deleting...")
-
-                except:
-                    pass
 
                 distributed_model_deployment_args = DistributedModelDeploymentArgs(
                     model_key=self.model_key,
@@ -107,25 +94,15 @@ class ModelDeployment(BaseModelDeployment):
                     execution_timeout=self.execution_timeout,
                 )
 
-                print(f"=> Binding distributed worker: {worker_world_rank}...")
+                print(f"=> Creating distributed worker: {worker_world_rank}...")
 
-                worker_application = ModelDeployment.bind(
+                worker_actor = ModelDeploymentShard.options(name=name).remote(
                     **distributed_model_deployment_args.model_dump()
                 )
 
-                print(f"=> Bound distributed worker: {worker_world_rank}.")
-                print(f"=> Serving distributed worker: {worker_world_rank}...")
+                self.worker_actors.append(worker_actor)
 
-                worker_deployment = serve._run(
-                    worker_application,
-                    _blocking=False,
-                    name=name,
-                    route_prefix=f"/{self.replica_context.app_name}-{worker_world_rank}",
-                )
-
-                print(f"=> Served distributed worker: {worker_world_rank}.")
-
-                self.worker_deployments.append(worker_deployment)
+                print(f"=> Created distributed worker: {worker_world_rank}.")
 
             print(f"Initialized distributed head.")
 
@@ -203,15 +180,17 @@ class ModelDeployment(BaseModelDeployment):
         self.model.dispatched = True
 
         torch.cuda.empty_cache()
-        
+
         if self.head:
-            
+
             config = {
                 "config_json_string": self.model._model.config.to_json_string(),
                 "repo_id": self.model._model.config._name_or_path,
             }
-        
-            serve.get_app_handle("Controller").set_model_configuration.remote(self.replica_context.app_name, config)
+
+            serve.get_app_handle("Controller").set_model_configuration.remote(
+                self.replica_context.app_name, config
+            )
 
     def execute(self, graph: Graph):
 
@@ -230,9 +209,9 @@ class ModelDeployment(BaseModelDeployment):
                 description="Your job has started running.",
             )
 
-            for worker_deployment in self.worker_deployments:
+            for worker_deployment in self.worker_actors:
 
-                worker_deployment.remote(self.request)
+                worker_deployment.__call__.remote(self.request)
 
         torch.distributed.barrier()
 
@@ -262,6 +241,22 @@ class ModelDeployment(BaseModelDeployment):
         torch.distributed.barrier()
 
         super().cleanup()
+
+
+@serve.deployment(
+    ray_actor_options={"num_gpus": 1, "num_cpus": 2},
+    health_check_period_s=10000000000000000000000000000000,
+    health_check_timeout_s=12000000000000000000000000000000,
+    max_ongoing_requests=200,
+    max_queued_requests=200,
+)
+class ModelDeployment(_ModelDeployment):
+    pass
+
+
+@ray.remote(num_cpus=2, num_gpus=1)
+class ModelDeploymentShard(_ModelDeployment):
+    pass
 
 
 class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
