@@ -290,13 +290,17 @@ class BaseModelDeployment(BaseDeployment):
         ExecutionTimeMetric.update(self.request, execution_time_s)
 
     def exception(self, exception: Exception) -> None:
-        """Logic to execute of there was an exception.
-
+        """Handles exceptions that occur during model execution.
+        
+        This method processes different types of exceptions and sends appropriate error responses
+        back to the client. For NNsight-specific errors, it includes detailed traceback information.
+        For other errors, it includes the full exception traceback and message.
+        
         Args:
-            exception (Exception): Exception.
+            exception (Exception): The exception that was raised during __call__.
         """
-
         if isinstance(exception, NNsightError):
+            # Remove traceback limit to get full stack trace
             sys.tracebacklimit = None
             self.respond(
                 status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
@@ -308,78 +312,126 @@ class BaseModelDeployment(BaseDeployment):
                 },
             )
         else:
+            # For non-NNsight errors, include full traceback
             description = traceback.format_exc()
-
             self.respond(
                 status=BackendResponseModel.JobStatus.ERROR,
                 description=f"{description}\n{str(exception)}",
             )
 
+        # Special handling for CUDA device-side assertion errors
         if "device-side assert triggered" in str(exception):
             self.restart()
 
     def restart(self):
-
+        """Restarts the Ray serve deployment in response to critical errors.
+        
+        This is typically called when encountering CUDA device-side assertion errors
+        or other critical failures that require a fresh replica state.
+        """
         app_name = serve.get_replica_context().app_name
-
         serve.get_app_handle("Controller").restart.remote(app_name)
 
     def cleanup(self):
-        """Logic to execute to clean up memory after execution result is post-processed."""
-
+        """Performs cleanup operations after request processing.
+        
+        This method:
+        1. Disconnects from socketio if connected
+        2. Zeros out model gradients
+        3. Forces garbage collection
+        4. Clears CUDA cache
+        
+        This cleanup is important for preventing memory leaks and ensuring
+        the replica is ready for the next request.
+        """
         if self.sio.connected:
-
             self.sio.disconnect()
 
         self.model._model.zero_grad()
-
         gc.collect()
-
         torch.cuda.empty_cache()
 
     def log(self, *data):
-        """Logic to execute for logging data during execution.
-
+        """Logs data during model execution.
+        
+        This method is used to send log messages back to the client through
+        the websocket connection. It joins all provided data into a single string
+        and sends it as a LOG status response.
+        
         Args:
-            data (Any): Data to log.
+            *data: Variable number of arguments to be converted to strings and logged.
         """
-
         description = "".join([str(_data) for _data in data])
-
         self.respond(status=BackendResponseModel.JobStatus.LOG, description=description)
 
     def stream_send(self, data: Any):
-        """Logic to execute to stream data back during execution.
-
+        """Sends streaming data back to the client.
+        
+        This method is used to send intermediate results or progress updates
+        during model execution. It wraps the data in a STREAM status response.
+        
         Args:
-            data (Any): Data to stream back.
+            data (Any): The data to stream back to the client.
         """
-
         self.respond(status=BackendResponseModel.JobStatus.STREAM, data=data)
 
     def stream_receive(self, *args):
-
+        """Receives streaming data from the client.
+        
+        This method establishes a websocket connection if needed and waits
+        for data from the client. It has a 5-second timeout for receiving data.
+        
+        Returns:
+            The deserialized data received from the client.
+        """
         self.stream_connect()
-
         return StreamValueModel.deserialize(self.sio.receive(5)[1], "json", True)
 
     def stream_connect(self):
-
-        if self.sio.client is None:
-
+        """Establishes a websocket connection if one doesn't exist.
+        
+        This method ensures that there is an active websocket connection
+        before attempting to send or receive data. It:
+        1. Checks if a connection exists
+        2. If not, creates a new connection with appropriate parameters
+        3. Adds a small delay to ensure the connection is fully established
+        
+        The connection is established with:
+        - WebSocket transport only (no polling fallback)
+        - 10-second timeout for connection establishment
+        - Job ID included in the connection URL for proper routing of receiving stream data from the user.
+        """
+        if self.sio.client is None or not self.sio.connected:
             self.sio.connected = False
-
             self.sio.connect(
                 f"{self.api_url}?job_id={self.request.id}",
                 socketio_path="/ws/socket.io",
                 transports=["websocket"],
                 wait_timeout=10,
             )
+            # Wait for connection to be fully established
+            time.sleep(0.1)  # Small delay to ensure connection is ready
 
     def respond(self, **kwargs) -> None:
-
+        """Sends a response back to the client.
+        
+        This method handles sending responses through either websocket
+        or object store, depending on whether a session_id exists.
+        
+        If session_id exists:
+        1. Establishes websocket connection if needed
+        2. Sends response through websocket
+        
+        If no session_id:
+        1. Saves response to object store
+        
+        Args:
+            **kwargs: Arguments to be passed to create_response, including:
+                - status: The job status
+                - description: Human-readable status description
+                - data: Optional additional data
+        """
         if self.request.session_id is not None:
-
             self.stream_connect()
 
         self.request.create_response(**kwargs, logger=self.logger).respond(
