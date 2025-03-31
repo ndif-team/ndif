@@ -180,7 +180,8 @@ class _ModelDeployment(BaseModelDeployment):
 
             config = {
                 "config_json_string": self.model._model.config.to_json_string(),
-                "repo_id": self.model._model.config._name_or_path,
+                "title": self.model._model.config._name_or_path,
+                "model_key": self.model_key,
             }
 
             serve.get_app_handle("Controller").set_model_configuration.remote(
