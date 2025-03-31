@@ -10,6 +10,7 @@ from ..raystate import RayState
 from .scheduler import SchedulingActor
 from ..evaluator import ModelEvaluator
 
+
 class BaseControllerDeployment:
     def __init__(
         self,
@@ -21,7 +22,7 @@ class BaseControllerDeployment:
         api_url: str,
     ):
         self.replica_context = serve.get_replica_context()
-        
+
         self.ray_config_path = ray_config_path
         self.service_config_path = service_config_path
         self.object_store_url = object_store_url
@@ -41,6 +42,35 @@ class BaseControllerDeployment:
         self.state.redeploy()
         self.model_configurations = {}
 
+    async def status(self):
+        """
+        Get status of all deployments.
+
+        Returns:
+            Dict: A dictionary containing:
+                - deployments: Dict of deployment status information
+        """
+        response = {}
+        status = serve.status()
+
+        for application_name, application in status.applications.items():
+            if application_name.startswith("Model"):
+                deployment = application.deployments["ModelDeployment"]
+                total_replicas = len(deployment.replica_states)
+                config = self.model_configurations.get(application_name, {})
+                # Use config['title'] as the key instead of application_name
+                title = config.get("model_key")
+
+                response[title] = {
+                    "total_replicas": total_replicas,
+                    "status": application.status,
+                    **config,
+                }
+
+        return {
+            "deployments": response
+        }
+
     async def redeploy(self):
         """Redeploy serve configuration using service_config.yml"""
         self.state.redeploy()
@@ -50,17 +80,14 @@ class BaseControllerDeployment:
             str(uuid.uuid4())
         )
         self.state.apply()
-        
-    async def set_model_configuration(self, name:str, configuration: Dict):
+
+    async def set_model_configuration(self, name: str, configuration: Dict):
         self.model_configurations[name] = configuration
-        
-    async def get_model_configurations(self):
-        return self.model_configurations
+
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment(BaseControllerDeployment):
     pass
-
 
 
 class ControllerDeploymentArgs(BaseModel):
@@ -79,6 +106,7 @@ class ControllerDeploymentArgs(BaseModel):
 def app(args: ControllerDeploymentArgs) -> Application:
     return ControllerDeployment.bind(**args.model_dump())
 
+
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class SchedulingControllerDeployment(BaseControllerDeployment):
     def __init__(
@@ -89,20 +117,18 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
         accelerator_bytes: float,
         num_accelerators_per_node: int,
         padding_factor: float,
-        **kwargs
+        **kwargs,
     ):
         # Initialize the base controller first
-        super().__init__(
-            **kwargs
-        )
-        
+        super().__init__(**kwargs)
+
         self.google_creds_path = google_creds_path
         self.google_calendar_id = google_calendar_id
         self.check_interval_s = check_interval_s
-        
+
         # Create a handle to this deployment for the scheduler to use
         handle = serve.get_app_handle(self.replica_context.app_name)
-        
+
         # Initialize the scheduler actor
         self.scheduler = SchedulingActor.remote(
             google_credentials_path=self.google_creds_path,
@@ -110,7 +136,7 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
             check_interval=self.check_interval_s,
             controller_handle=handle,
         )
-                
+
         self.evaluator = ModelEvaluator(
             accelerator_bytes,
             num_accelerators_per_node,
@@ -118,25 +144,63 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
             self.state.service_config.distributed_model_import_path,
             padding_factor,
         )
-        
+
         self.scheduler.start.remote()
+
+    async def status(self):
+        """
+        Get status of all deployments including their scheduling information.
+
+        Returns:
+            Dict: A dictionary containing:
+                - deployments: Dict of deployment status information
+                - calendar_id: ID of the Google Calendar used for scheduling
+        """
+        # Get base status information from parent class
+        base_status = await super().status()
         
+        print(f"Base status: {base_status}")
+
+        # Get schedule information from the scheduler
+        schedule = await self.scheduler.get_schedule.remote()
+
+        # Add future scheduled models that aren't currently deployed
+        for model_key, schedule_info in schedule.items():
+            if model_key in base_status["deployments"]:
+                print(f"Updating existing entry for {model_key} with schedule information")
+                # Update the existing entry with schedule information
+                base_status["deployments"][model_key]["schedule"] = schedule_info
+            else:
+                print(f"Creating new entry for {model_key} with schedule information")
+                # Create a new entry for future scheduled models
+                base_status["deployments"][model_key] = {
+                    "status": "SCHEDULED",
+                    "config_json_string": "{}",
+                    "title": schedule_info["title"],
+                    "schedule": schedule_info,
+                }
+
+        return {
+            "deployments": base_status["deployments"],
+            "calendar_id": self.google_calendar_id
+        }
+
     async def deploy(self, model_keys: Union[List[str], str]):
         """
         Deploy models based on the provided model keys.
-        
+
         Args:
             model_keys: List of model keys to be deployed
         """
-        
+
         if isinstance(model_keys, str):
             model_keys = [model_keys]
-        
+
         print(f"Deploying models from scheduling actor: {model_keys}")
-        
+
         # First, reset the state to clear existing model deployments
         self.state.reset()
-        
+
         # Create and add model configurations for each model key
         for model_key in model_keys:
 
@@ -145,7 +209,7 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
             self.state.add_model_app(model_config)
 
         self.state.apply()
-        
+
 
 class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
     google_creds_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", None)
@@ -156,6 +220,7 @@ class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
         os.environ.get("CLUSTER_NUM_ACCELERATORS_PER_NODE")
     )
     padding_factor: float = float(os.environ.get("CLUSTER_PADDING_FACTOR", ".15"))
+
 
 def scheduling_app(args: SchedulingControllerDeploymentArgs) -> Application:
     return SchedulingControllerDeployment.bind(**args.model_dump())

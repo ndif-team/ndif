@@ -1,8 +1,8 @@
 import asyncio
-import hashlib
+
 import logging
 import re
-import time
+
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
@@ -76,6 +76,21 @@ class SchedulingActor:
             # Wait for the next check interval
             await asyncio.sleep(self.check_interval)
     
+    def sanitize(self, description: str) -> str:
+        """
+        Sanitize event description by removing HTML tags and newlines.
+        
+        Args:
+            description: Raw event description string
+            
+        Returns:
+            str: Cleaned description string
+        """
+        description = description.replace("\n", "")
+        CLEANR = re.compile("<.*?>")
+        description = re.sub(CLEANR, "", description)
+        return description
+
     def check_calendar(self):
         """
         Check the Google Calendar for events and process any changes.
@@ -94,20 +109,13 @@ class SchedulingActor:
             timeMin=now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             timeMax=future.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             singleEvents=True,
-            orderBy='startTime'
+            orderBy='startTime',
+            timeZone='UTC'
         ).execute()
         
         events = events_result.get('items', [])
         
-        def sanitize(description: str):
-
-            description = description.replace("\n", "")
-
-            CLEANR = re.compile("<.*?>")
-            description = re.sub(CLEANR, "", description)
-            return description
-
-        model_keys = sorted([sanitize(event["description"]) for event in events])
+        model_keys = sorted([self.sanitize(event["description"]) for event in events])
         
         # Generate a hash of the model keys to check for changes
         current_hash = hash("".join(model_keys))
@@ -124,3 +132,55 @@ class SchedulingActor:
 
             
     async def get_schedule(self):
+        """
+        Get scheduled events for the next week.
+        
+        Returns:
+            Dict[str, Dict]: A dictionary mapping model_keys to their schedule information
+                           containing start_time and end_time
+        """
+        # Calculate time boundaries for events (now to 1 week in the future)
+        now = datetime.now(timezone.utc)
+        future = now + timedelta(weeks=1)
+        
+        # Fetch events from the calendar
+        events_result = self.service.events().list(
+            calendarId=self.google_calendar_id,
+            timeMin=now.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            timeMax=future.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            singleEvents=True,
+            orderBy='startTime',
+            timeZone='UTC'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        schedule = {}
+        
+        for event in events:
+            # Sanitize the description (model key) using existing sanitize function
+            model_key = self.sanitize(event["description"])
+            
+            # Handle both all-day events and events with specific times
+            if "dateTime" in event["start"]:
+                # Event with specific time
+                start_time = datetime.fromisoformat(event["start"]["dateTime"].replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(event["end"]["dateTime"].replace('Z', '+00:00'))
+            else:
+                # All-day event
+                start_time = datetime.fromisoformat(event["start"]["date"])
+                end_time = datetime.fromisoformat(event["end"]["date"])
+                # Set times to start and end of day
+                start_time = start_time.replace(hour=0, minute=0, second=0, tzinfo=timezone.utc)
+                # For all-day events, Google Calendar returns the next day as the end date
+                # So we need to subtract one day to get the actual end time
+                end_time = (end_time - timedelta(days=1)).replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+            
+            # Get the event title
+            event_title = event.get("summary", model_key)
+            
+            schedule[model_key] = {
+                "start_time": start_time,
+                "end_time": end_time,
+                "title": event_title
+            }
+        return schedule
