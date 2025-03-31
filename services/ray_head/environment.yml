@@ -16,3 +16,4 @@ dependencies:
     # Database
     - minio
     - influxdb-client
+    - google-api-python-client
