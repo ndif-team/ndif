@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import ray
 import torch
@@ -19,7 +19,7 @@ from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
 from ..util import NNsightTimer
-from .base import BaseModelDeployment, BaseModelDeploymentArgs
+from .model import BaseModelDeployment, BaseModelDeploymentArgs
 
 
 class _ModelDeployment(BaseModelDeployment):
@@ -264,16 +264,16 @@ class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
     device_map: str | None = None
     dispatch: bool = False
 
-    torch_distributed_address: str = None
-    torch_distributed_port: int = None
+    torch_distributed_address: Optional[str] = None
+    torch_distributed_port: int = 5003
     torch_distributed_world_rank: int = 0
+    torch_distributed_world_timeout_seconds: int = 30
 
     torch_distributed_world_size: int
-    torch_distributed_world_timeout_seconds: int
+
 
     data_parallelism_size: int = 1
     tensor_parallelism_size: int = 1
-    pipeline_parallelism_size: int = 1
 
 
 def app(args: DistributedModelDeploymentArgs) -> Application:
