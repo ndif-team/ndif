@@ -9,12 +9,7 @@ from ray.serve import Application
 
 from nnsight.tracing.graph import Graph
 
-from ...schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from ...schema import BackendResponseModel
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
 from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
@@ -271,9 +266,9 @@ class DistributedModelDeploymentArgs(BaseModelDeploymentArgs):
 
     torch_distributed_world_size: int
 
-
     data_parallelism_size: int = 1
     tensor_parallelism_size: int = 1
+    pipeline_parallelism_size: int = 1
 
 
 def app(args: DistributedModelDeploymentArgs) -> Application:

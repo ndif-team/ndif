@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import re
@@ -6,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 import ray
-from ray.serve import DeploymentHandle
+from ray.serve.handle import DeploymentHandle
 from googleapiclient.discovery import build
 from google.oauth2 import service_account
 
@@ -58,7 +59,7 @@ class SchedulingActor:
         self.service = build('calendar', 'v3', credentials=credentials)
        
         
-    def start(self):
+    async def start(self):
         """
         Start the scheduling loop.
         
@@ -73,7 +74,7 @@ class SchedulingActor:
             self.check_calendar()
 
             # Wait for the next check interval
-            time.sleep(self.check_interval)
+            await asyncio.sleep(self.check_interval)
     
     def check_calendar(self):
         """
@@ -122,3 +123,4 @@ class SchedulingActor:
             self.controller_handle.deploy.remote(model_keys)
 
             
+    async def get_schedule(self):

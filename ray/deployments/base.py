@@ -7,7 +7,7 @@ import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import ray
 import socketio
@@ -104,11 +104,10 @@ class BaseDeploymentArgs(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    api_url: str
-    object_store_url: str
-    object_store_access_key: str
-    object_store_secret_key: str
-
+    api_url: Optional[str] = None
+    object_store_url: Optional[str] = None
+    object_store_access_key: Optional[str] = None
+    object_store_secret_key: Optional[str] = None
 
 def threaded(method, size: int = 1):
 

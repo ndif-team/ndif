@@ -1,23 +1,18 @@
 import os
 import gc
-import json
 import sys
 import time
 import traceback
 import weakref
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
-from functools import wraps
+from concurrent.futures import Future, TimeoutError
 from typing import Any, Dict
 
-import ray
-import socketio
+
 import torch
-from minio import Minio
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 from ray import serve
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
-from transformers import PreTrainedModel
 
 from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
@@ -349,7 +344,7 @@ class BaseModelDeploymentArgs(BaseDeploymentArgs):
     execution_timeout: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
-    dtype: str | torch.dtype = torch.bfloat16
+    dtype: str | torch.dtype = "bfloat16"
 
 
 class ThreadedModelDeployment(BaseModelDeployment):

@@ -8,8 +8,8 @@ from ray.serve import Application
 
 from ..raystate import RayState
 from .scheduler import SchedulingActor
-from ..deployments.model import BaseModelDeploymentArgs 
-from ..schema import ModelConfigurationSchema
+from ..evaluator import ModelEvaluator
+
 class BaseControllerDeployment:
     def __init__(
         self,
@@ -86,6 +86,9 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
         google_creds_path: str,
         google_calendar_id: str,
         check_interval_s: float,
+        accelerator_bytes: float,
+        num_accelerators_per_node: int,
+        padding_factor: float,
         **kwargs
     ):
         # Initialize the base controller first
@@ -98,7 +101,7 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
         self.check_interval_s = check_interval_s
         
         # Create a handle to this deployment for the scheduler to use
-        handle = self.replica_context.deployment_handle
+        handle = serve.get_app_handle(self.replica_context.app_name)
         
         # Initialize the scheduler actor
         self.scheduler = SchedulingActor.remote(
@@ -107,8 +110,15 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
             check_interval=self.check_interval_s,
             controller_handle=handle,
         )
+                
+        self.evaluator = ModelEvaluator(
+            accelerator_bytes,
+            num_accelerators_per_node,
+            self.state.service_config.model_import_path,
+            self.state.service_config.distributed_model_import_path,
+            padding_factor,
+        )
         
-        # Start the scheduler
         self.scheduler.start.remote()
         
     async def deploy(self, model_keys: Union[List[str], str]):
@@ -127,36 +137,13 @@ class SchedulingControllerDeployment(BaseControllerDeployment):
         # First, reset the state to clear existing model deployments
         self.state.reset()
         
-        # Create a dictionary of existing model configurations by model key for quick lookup
-        existing_configs = {
-            config.args.model_key: config
-            for config in self.state.service_config.models
-            if hasattr(config.args, 'model_key')
-        }
-        
         # Create and add model configurations for each model key
         for model_key in model_keys:
-            # Check if we have an existing configuration for this model
-            if model_key in existing_configs:
-                # Use the existing configuration
-                model_config = existing_configs[model_key]
-                print(f"Using existing configuration for model: {model_key}")
-            else:
-       
-                # Create the model configuration
-                model_config = ModelConfigurationSchema(
-                    args=BaseModelDeploymentArgs(
-                        model_key=model_key,
-                    ),
-                    num_replicas=1,  # Default to 1 replica
-                    ray_actor_options={"num_cpus": 1, "num_gpus": 1}  # Default actor options
-                )
-                print(f"Created new configuration for model: {model_key}")
-            
-            # Add the model to the state
+
+            model_config = self.evaluator(model_key)
+
             self.state.add_model_app(model_config)
-        
-        # Apply the changes to update the deployments
+
         self.state.apply()
         
 
@@ -164,7 +151,11 @@ class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
     google_creds_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", None)
     google_calendar_id: str = os.environ.get("SCHEDULING_GOOGLE_CALENDAR_ID", None)
     check_interval_s: float = float(os.environ.get("SCHEDULING_CHECK_INTERVAL_S", "60"))
-
+    accelerator_bytes: float = float(os.environ.get("CLUSTER_ACCELERATOR_CAPACITY_B"))
+    num_accelerators_per_node: int = int(
+        os.environ.get("CLUSTER_NUM_ACCELERATORS_PER_NODE")
+    )
+    padding_factor: float = float(os.environ.get("CLUSTER_PADDING_FACTOR", ".15"))
 
 def scheduling_app(args: SchedulingControllerDeploymentArgs) -> Application:
     return SchedulingControllerDeployment.bind(**args.model_dump())
