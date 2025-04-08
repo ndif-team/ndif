@@ -8,6 +8,7 @@ from typing import Any, Dict
 import ray
 import socketio
 import uvicorn
+import boto3
 from fastapi import FastAPI, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -16,7 +17,6 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from minio import Minio
 from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
 from ray import serve
@@ -60,11 +60,15 @@ sm = SocketManager(
 )
 
 # Init object_store connection
-object_store = Minio(
-    os.environ.get("OBJECT_STORE_URL"),
-    access_key=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-    secret_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
-    secure=False,
+object_store = boto3.client(
+    's3',
+    endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
+    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "admin"),
+    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "admin"),
+    # Skip verification for local or custom S3 implementations
+    verify=False,
+    # Set to path style for compatibility with non-AWS S3 implementations
+    config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
 )
 
 # Init Ray connection

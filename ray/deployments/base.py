@@ -12,7 +12,7 @@ from typing import Any, Dict
 import ray
 import socketio
 import torch
-from minio import Minio
+import boto3
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
@@ -78,11 +78,16 @@ class BaseDeployment:
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
 
-        self.object_store = Minio(
-            self.object_store_url,
-            access_key=self.object_store_access_key,
-            secret_key=self.object_store_secret_key,
-            secure=False,
+        # Initialize S3 client (either AWS S3 or compatible service like MinIO)
+        self.object_store = boto3.client(
+            's3',
+            endpoint_url=f"http://{self.object_store_url}",
+            aws_access_key_id=self.object_store_access_key,
+            aws_secret_access_key=self.object_store_secret_key,
+            # Skip verification for local or custom S3 implementations
+            verify=False,
+            # Set to path style for compatibility with non-AWS S3 implementations
+            config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
         )
 
         self.sio = socketio.SimpleClient(reconnection_attempts=10)
@@ -92,11 +97,8 @@ class BaseDeployment:
         )
         
         try:
-
             self.replica_context = serve.get_replica_context()
-            
         except:
-            
             self.replica_context = None
 
 

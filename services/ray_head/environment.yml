@@ -14,5 +14,5 @@ dependencies:
     - prometheus_client
     - python-logging-loki
     # Database
-    - minio
+    - boto3
     - influxdb-client
