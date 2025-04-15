@@ -17,6 +17,7 @@ DEFAULT_ENV ?= dev
 DEV_NNS ?= False
 NNS_PATH ?= ~/nnsight
 TAG ?= latest
+HARNESS_CONFIG ?= services/harness/configs/harness.example
 
 # Function to check if the environment is valid
 check_env = $(if $(filter $(1),$(VALID_ENVS)),,$(error Invalid environment '$(1)'. Use one of: $(VALID_ENVS)))
@@ -79,7 +80,7 @@ up:
 		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
 	elif [ "$(ENV)" = "harness" ]; then \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
-		docker compose --env-file compose/dev/.env  --env-file services/harness/.config.harness -f compose/dev/docker-compose.harness.yml up --detach; \
+		docker compose --env-file compose/dev/.env  --env-file $(HARNESS_CONFIG) -f compose/dev/docker-compose.harness.yml up --detach; \
 	else \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
 		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
@@ -90,7 +91,7 @@ down:
 	$(call check_env,$(ENV))
 	@if [ "$(ENV)" = "harness" ]; then \
 		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) COMMIT_HASH=$(COMMIT_HASH) ENV=$(ENV) && \
-		docker compose --env-file compose/dev/.env  --env-file services/harness/.config.harness -f compose/dev/docker-compose.harness.yml down; \
+		docker compose --env-file compose/dev/.env  --env-file $(HARNESS_CONFIG) -f compose/dev/docker-compose.harness.yml down; \
 	else \
 		export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down; \
 	fi
@@ -106,7 +107,11 @@ ta:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make down $(ENV)
-	make build_all_service
+	@if [ "$(ENV)" = "harness" ]; then \
+		make build_service NAME=harness; \
+	else \
+		make build_all_service; \
+	fi
 	make up $(ENV)
 
 save-vars:

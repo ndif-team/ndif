@@ -1,6 +1,12 @@
 .config
 __pycache__/
 creds.json
+
+services/harness/configs/tags/*
+services/harness/configs/tests/*
 services/harness/configs/*
-!services/harness/configs/config.example.yml
-services/harness/.config.harness
+
+!services/harness/configs/*/
+!services/harness/configs/harness.example
+!services/harness/configs/tests/token_generation.example.yml
+!services/harness/configs/tags/tags.example

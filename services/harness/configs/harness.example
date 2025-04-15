@@ -8,8 +8,5 @@ APP_REMOTE_LOGGING=true
 INFLUXDB_TEST_BUCKET=TEST
 
 # pytest
-CONFIG_PATH=/configs/config.example.yml
-
-# env
-TEST_ENV=kumamoto
-RUN_ID=""
+CONFIG_PATH=/configs/tests/token_generation.example.yml
+TAGS_PATH=/configs/tags/tags.example

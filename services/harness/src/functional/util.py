@@ -17,7 +17,7 @@ import nnsight
 if TYPE_CHECKING:
     from nnsight.modeling.mixins import RemoteableMixin
 
-#### Parsing CONFIG.yaml ####
+#########   CONFIG   #########
 
 with open(os.getenv("CONFIG_PATH"), "r") as file:
     config = yaml.safe_load(file)
@@ -44,19 +44,32 @@ for test_name, test in config.items():
 
     CONFIG["tests"][test_name] = ("model, num_requests, " + param_names, tests)
 
-##############################
+###########   TAGS   #########
+
+with open(os.getenv("TAGS_PATH"), "r") as file:
+    TAGS = {}
+    tags = yaml.safe_load(file)
+    for var in tags.split(" "):
+        key, value = var.split("=")
+        TAGS[key] = value
+
+if TAGS["run_id"] == "":
+    TAGS["run_id"] = uuid.uuid4()
+
+print(f"\nRUN_ID: {TAGS['run_id']}\n")
+
+TAGS["commit_hash"] = os.getenv("COMMIT_HASH")
+TAGS["nnsight_version"] = nnsight.__version__
+
+###########  InfluxDB Client  #########
 
 INFLUXDB_CLIENT = InfluxDBClient(
                     url=os.getenv("INFLUXDB_ADDRESS"),
                     token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
                 ).write_api(write_options=SYNCHRONOUS)
 
-RUN_ID = os.getenv("RUN_ID") if os.getenv("RUN_ID") != "" else uuid.uuid4()
-print(f"RUN_ID: {RUN_ID}")
+#######################################
 
-COMMIT_HASH = os.getenv("COMMIT_HASH")
-TEST_ENV = os.getenv("TEST_ENV")
-NNSIGHT_VERSION = nnsight.__version__
 
 class BaseTest:
 
@@ -107,14 +120,11 @@ class BaseTest:
             self.log_test(
                 result,
                 rq_lt=request_latency,
-                commit=COMMIT_HASH,
-                env=TEST_ENV,
-                nnsight_version=NNSIGHT_VERSION,
-                run_id=RUN_ID,
                 test_id=test_id, 
                 request_id=request_id, 
                 model_key=model.to_model_key(),
                 model_size=get_model_size(model),
+                **TAGS,
                 **tags
             )
 

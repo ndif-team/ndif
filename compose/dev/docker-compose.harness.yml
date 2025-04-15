@@ -8,9 +8,8 @@ services:
             - ../../services/harness/configs:/configs
         environment:
             - CONFIG_PATH=${CONFIG_PATH}
+            - TAGS_PATH=${TAGS_PATH}
             - COMMIT_HASH=${COMMIT_HASH}
-            - TEST_ENV=${TEST_ENV}
-            - RUN_ID=${RUN_ID}
             - API_HOST=${API_HOST}
             - API_SSL=${API_SSL}
             - API_KEY=${API_KEY}
