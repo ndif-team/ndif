@@ -2,8 +2,8 @@ ARG BASE_IMAGE=ndif_base
 ARG TAG=latest
 FROM ${BASE_IMAGE}:${TAG}
 
-# Update environment with service-specific dependencies
+# Install service-specific package
 ARG NAME
-COPY services/${NAME}/environment.yml .
+COPY ndif-${NAME} ./ndif-${NAME}
 
-RUN conda env update --name service -f environment.yml
+RUN conda run --name service pip install -e ./ndif-${NAME}

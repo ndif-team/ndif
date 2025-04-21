@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ndif-core"
+version = "0.1.0"
+authors = [
+    { name = "Michael Ripa", email = "m.ripa@northeastern.edu" },
+]
+description = "Core shared functionality for the NDIF project"
+requires-python = ">=3.7"
+
+dependencies = [
+    # Core utilities
+    "nnsight",
+    
+    # Telemetry (shared across services)
+    "prometheus_client",
+    "python-logging-loki",
+    "influxdb-client",
+    "minio",
+    
+    # Basic utilities
+    "setuptools",
+    "requests",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["ndif.core"]

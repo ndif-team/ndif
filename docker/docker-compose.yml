@@ -1,0 +1,117 @@
+services:
+  message_broker:
+    image: redis:latest
+    ports:
+      - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
+
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    ports:
+      - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
+
+  ray:
+    image: ray:${TAG}
+    shm_size: '15gb'
+    volumes:
+      - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - ../ndif-ray/src/ndif/ray/config/service_config.yml:/ndif-ray/src/ndif/ray/config/service_config.yml
+      - ../ndif-ray/src/ndif/ray/config/ray_config.yml:/ndif-ray/src/ndif/ray/config/ray_config.yml
+      - ./ray/start.sh:/start.sh
+      - ray-data:/tmp/ray/
+    ports:
+      - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
+      - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
+      - ${DEV_RAY_DASHBOARD_PORT}:${RAY_DASHBOARD_INTERNAL_PORT}
+      - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${N_DEVICES}
+              capabilities: [ gpu ]
+    environment:
+      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      - OBJECT_STORE_URL=${HOST_IP}:${DEV_MINIO_PORT}
+      - API_URL=http://${HOST_IP}:${DEV_API_PORT}
+      - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+      - INFLUXDB_ORG=${INFLUXDB_ORG}
+      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
+    env_file:
+      - .env
+
+  api:
+    image: api:${TAG}
+    ports:
+      - ${DEV_API_PORT}:${API_INTERNAL_PORT}
+    environment:
+      OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
+      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
+      WORKERS: 1
+      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+
+  prometheus:
+    image: prom/prometheus:latest
+    network_mode: "host"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../ndif-core/src/ndif/core/telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ray-data:/tmp/ray
+    depends_on:
+      - api
+      - ray
+
+  influxdb:
+    image: influxdb:2
+    network_mode: "host"
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${SECRET_INFLUXDB_ADMIN_PASSWORD}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET}
+    volumes:
+      - influxdb2-data:/var/lib/influxdb2
+      - influxdb2-config:/etc/influxdb2
+
+  grafana:
+    image: grafana/grafana:latest
+    network_mode: "host"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ../ndif-core/src/ndif/core/telemetry/grafana/provisioning:/etc/grafana/provisioning
+      - ../ndif-core/src/ndif/core/telemetry/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - prometheus
+      - influxdb
+
+  loki:
+    image: grafana/loki:2.8.1
+    network_mode: "host"
+    volumes:
+      - loki-data:/loki
+
+volumes:
+  grafana-storage:
+  loki-data:
+  prometheus-data:
+  ray-data:
+  influxdb2-data:
+  influxdb2-config:

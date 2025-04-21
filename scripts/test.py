@@ -11,4 +11,4 @@ with model.trace("ayy", remote=True):
     
     output = model.output.save()
     
-print(output)
+print("Test passed!")

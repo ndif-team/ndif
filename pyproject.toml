@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ndif"
+version = "0.1.0"
+authors = [
+    { name = "Michael Ripa", email = "m.ripa@northeastern.edu" },
+]
+description = "A Python package for the NDIF project"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+# Meta-package dependencies
+dependencies = [
+    "ndif-api",
+    "ndif-ray",
+]
+
+[project.urls]
+"Homepage" = "https://ndif.us"
+"Bug Tracker" = "https://github.com/ndif-team/ndif/issues" 

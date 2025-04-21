@@ -7,7 +7,7 @@ N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc
 .PHONY: up down ta
 
 # Define valid environments
-VALID_ENVS := dev prod delta
+VALID_ENVS := dev
 
 # Default environment
 DEFAULT_ENV ?= dev
@@ -15,7 +15,7 @@ DEFAULT_ENV ?= dev
 # Configs for local nnsight installation
 DEV_NNS ?= False
 NNS_PATH ?= ~/nnsight
-TAG ?= latest
+TAG ?= 0.1
 
 # Function to check if the environment is valid
 check_env = $(if $(filter $(1),$(VALID_ENVS)),,$(error Invalid environment '$(1)'. Use one of: $(VALID_ENVS)))
@@ -31,11 +31,7 @@ build_conda:
 	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME)_conda:$(TAG) -f docker/dockerfile.conda .
 
 build_service:
-	cp docker/helpers/check_and_update_env.sh ./
-	tar -hczvf src.tar.gz --directory=services/$(NAME) src
-	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service  . 
-	rm src.tar.gz
-	rm check_and_update_env.sh
+	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service .
 
 build_all_base:
 	$(call set_env)
@@ -46,19 +42,13 @@ build_all_conda:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
-	make build_conda NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
-		make build_conda NAME=ray_worker; \
-	fi
+	make build_conda NAME=ray
 
 build_all_service:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_service NAME=api
-	make build_service NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
-		make build_service NAME=ray_worker; \
-	fi
+	make build_service NAME=ray
 
 build:
 	$(call set_env)
@@ -71,18 +61,18 @@ build:
 up:
 	$(call set_env)
 	$(call check_env,$(ENV))
-	@if [ "$(ENV)" = "dev" ] && [ "$(DEV_NNS)" = "True" ]; then \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
-		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
+	@if [ "$(DEV_NNS)" = "True" ]; then \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TAG=$(TAG) && \
+		docker compose -f docker/docker-compose.yml -f docker/docker-compose.nnsight.yml up --detach; \
 	else \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
-		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) TAG=$(TAG) && \
+		docker compose -f docker/docker-compose.yml up --detach; \
 	fi
 
 down:
 	$(call set_env)
 	$(call check_env,$(ENV))
-	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f compose/$(ENV)/docker-compose.yml down
+	export HOST_IP=${IP_ADDR} N_DEVICES=${N_DEVICES} && docker compose -f docker/docker-compose.yml down
 
 ta:
 	$(call set_env)

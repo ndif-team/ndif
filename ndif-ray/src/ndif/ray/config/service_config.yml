@@ -1,0 +1,8 @@
+default_model_import_path: ndif.ray.deployments.model:app
+request_import_path: ndif.ray.deployments.request:app
+request_num_replicas: 1
+models:
+  - model_key: 'nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+    ray_actor_options:
+      num_gpus: 1
+    num_replicas: 1
