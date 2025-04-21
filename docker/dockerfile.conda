@@ -6,4 +6,5 @@ FROM ${BASE_IMAGE}:${TAG}
 ARG NAME
 COPY ndif-${NAME} ./ndif-${NAME}
 
+# Install service-specific package (mainly for dependencies)
 RUN conda run --name service pip install -e ./ndif-${NAME}

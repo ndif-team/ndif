@@ -17,6 +17,7 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
 # Create base environment and install core package
 RUN conda create --name service python=3.10 pip git
 
+# Install core package (mainly for dependencies)
 WORKDIR /app
 COPY ndif-core ./ndif-core
-RUN conda run --name service pip install -e ./ndif-core
+RUN conda run --name service pip install --only-deps ./ndif-core

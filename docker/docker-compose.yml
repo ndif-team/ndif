@@ -15,8 +15,8 @@ services:
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - ../ndif-ray/src/ndif/ray/config/service_config.yml:/ndif-ray/src/ndif/ray/config/service_config.yml
-      - ../ndif-ray/src/ndif/ray/config/ray_config.yml:/ndif-ray/src/ndif/ray/config/ray_config.yml
+      - ../ndif-ray/:/ndif-ray/
+      - ../ndif-core:/ndif-core
       - ./ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
     ports:
@@ -58,6 +58,9 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+    volumes:
+      - ../ndif-api:/ndif-api
+      - ../ndif-core:/ndif-core
 
   prometheus:
     image: prom/prometheus:latest
