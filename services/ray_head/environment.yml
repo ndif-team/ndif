@@ -8,6 +8,7 @@ dependencies:
     - pip
     - setuptools
     - git+https://github.com/ndif-team/nnsight@dev
+    - nnsight
     - ray[serve]
     - python-slugify
     # Telemetry
