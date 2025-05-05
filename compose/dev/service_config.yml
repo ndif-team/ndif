@@ -2,9 +2,9 @@ default_model_import_path: src.ray.deployments.model:app
 request_import_path: src.ray.deployments.request:app
 request_num_replicas: 1
 models:
-
-  - model_key: 'nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2"}'
+  - model_key: 'nnsight.modeling.language.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-8B"}'
     ray_actor_options:
       num_gpus: 1
     num_replicas: 1
+    use_8bit: false
 

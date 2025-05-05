@@ -131,6 +131,8 @@ class BaseModelDeployment(BaseDeployment):
         if os.environ.get("CUDA_VISIBLE_DEVICES", "") == "":
             set_cuda_env_var()
 
+        use_8bit = os.environ.get("NNSIGHT_USE_8BIT", "false") == "true"
+
         self.model_key = model_key
         self.execution_timeout = execution_timeout
 
@@ -139,6 +141,17 @@ class BaseModelDeployment(BaseDeployment):
             dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
+
+        print(f"use_8bit: {use_8bit}")
+        if use_8bit:
+            from transformers import BitsAndBytesConfig
+
+            extra_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+                #bnb_4bit_use_double_quant=True,
+                #bnb_4bit_quant_type="nf4",
+            )
+            
 
         self.model = RemoteableMixin.from_model_key(
             self.model_key,

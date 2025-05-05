@@ -16,3 +16,5 @@ dependencies:
     # Database
     - minio
     - influxdb-client
+    # Quantization
+    - bitsandbytes

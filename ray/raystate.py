@@ -28,6 +28,7 @@ class ServiceConfigurationSchema(BaseModel):
 
         model_key: str
         num_replicas: int
+        use_8bit: bool = False
 
     default_model_import_path: str
     request_import_path: str
@@ -144,7 +145,8 @@ class RayState:
             runtime_env={
                 "env_vars": {"restart_hash": "", 
                              # For distributed model timeout handling
-                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}
+                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
+                             "NNSIGHT_USE_8BIT": "true" if model_config.use_8bit else "false"}
             },
         )
 
