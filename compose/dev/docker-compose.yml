@@ -58,6 +58,8 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+    env_file:
+      - postgres.env
 
   prometheus:
     image: prom/prometheus:latest
