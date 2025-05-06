@@ -65,6 +65,7 @@ object_store = boto3.client(
     endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
     aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "admin"),
     aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "admin"),
+    region_name='us-east-1',
     # Skip verification for local or custom S3 implementations
     verify=False,
     # Set to path style for compatibility with non-AWS S3 implementations
@@ -227,11 +228,11 @@ async def result(id: str) -> BackendResultModel:
     """
 
     # Get cursor to bytes stored in data backend.
-    object = BackendResultModel.load(object_store, id, stream=True)
+    object, content_length = BackendResultModel.load(object_store, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
-        "Content-Length": object.headers["Content-Length"],
+        "Content-length": str(content_length),
     }
 
     def stream():

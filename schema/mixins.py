@@ -78,7 +78,7 @@ class ObjectStorageMixin(BaseModel):
         response = client.get_object(Bucket=bucket_name, Key=object_name)
         
         if stream:
-            return response['Body']
+            return response['Body'], response['ContentLength']
 
         data = response['Body'].read()
         response['Body'].close()
