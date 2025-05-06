@@ -1,9 +1,12 @@
 import asyncio
 import os
+import threading
+import time
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict
+import uuid
 
 import ray
 import socketio
@@ -25,7 +28,7 @@ from nnsight.schema.response import ResponseModel
 
 from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import RequestStatusMetric, TransportLatencyMetric
+from .metrics import RequestStatusMetric, TransportLatencyMetric, CriticalErrorMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 logger = load_logger(service_name="app", logger_name="gunicorn.error")
@@ -63,8 +66,8 @@ sm = SocketManager(
 object_store = boto3.client(
     's3',
     endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
-    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "admin"),
-    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "admin"),
+    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
+    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
     region_name='us-east-1',
     # Skip verification for local or custom S3 implementations
     verify=False,
@@ -73,18 +76,31 @@ object_store = boto3.client(
 )
 
 # Init Ray connection
-ray.init(logging_level="error")
+RETRY_INTERVAL_S = 5
+
+def connect_to_ray():
+    while True:
+        if not ray.is_initialized():
+            ray.shutdown()
+            serve.context._set_global_client(None)
+            try:
+                ray.init(logging_level="error")
+                logger.info("Connected to Ray cluster.")
+            except Exception as e:
+                CriticalErrorMetric.update(f"Failed to connect to Ray cluster: {e}")
+                logger.warning(f"Failed to connect to Ray cluster: {e}")
+                
+        time.sleep(RETRY_INTERVAL_S)
+        
+        
+# Start the background thread
+ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
+ray_watchdog.start()
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
-
-# Create a dummy request to ensure app handle is created
-# try:
-#     serve.get_app_handle("Request").remote({})
-# except:
-#     pass
 
 
 @app.post("/request")
@@ -108,32 +124,30 @@ async def request(
         request: BackendRequestModel = await BackendRequestModel.from_request(
             raw_request, api_key
         )
-    except Exception as e:
+    except Exception as exception:
+        
+        headers = raw_request.headers
 
-        description = f"{traceback.format_exc()}\n{str(e)}"
-
-        logger.error(f"{ResponseModel.JobStatus.ERROR.name}: {description}")
-
-        labels = {
-            "request_id": "",
-            "api_key": api_key,
-            "model_key": "",
-            "user_id": "",
-            "msg": description,
-        }
-
-        point: Point = Point(RequestStatusMetric.name)
-
-        for tag, value in labels.items():
-            point.tag(tag, value)
-
-        point.field(
-            RequestStatusMetric.name, RequestStatusMetric.NumericJobStatus.ERROR.value
+        request = BackendRequestModel(
+            model_key=headers["model_key"],
+            session_id=headers.get("session_id", None),
+            format=headers["format"],
+            zlib=headers["zlib"],
+            id=str(uuid.uuid4()),
+            sent=float(headers.get("sent-timestamp", None)),
+            api_key=api_key,
         )
+        
+        if 'ray ' in str(exception).lower():
+            description = "Issue with Ray. NDIF compute backend must be down :("
+        else:
+            description = f"{traceback.format_exc()}\n{str(exception)}"
 
-        super(RequestStatusMetric, RequestStatusMetric).update(point)
-
-        raise e
+        return request.create_response(
+            status=ResponseModel.JobStatus.ERROR,
+            description=description,
+            logger=logger,
+        )
 
     # process the request
     try:
@@ -159,7 +173,10 @@ async def request(
         # request.save(object_store)
     except Exception as exception:
 
-        description = f"{traceback.format_exc()}\n{str(exception)}"
+        if 'ray ' in str(e).lower():
+            description = "Issue with Ray. NDIF compute backend must be down :("
+        else:
+            description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
         response = request.create_response(

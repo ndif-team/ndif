@@ -41,7 +41,7 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    graph: Union[bytes, ray.ObjectRef]
+    graph: Optional[Union[bytes, ray.ObjectRef]] = None
 
     model_key: str
     session_id: Optional[str] = None
