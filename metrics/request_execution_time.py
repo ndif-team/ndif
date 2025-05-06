@@ -13,4 +13,9 @@ class ExecutionTimeMetric(Metric):
     @classmethod
     def update(cls, request: "BackendRequestModel", time_s:float):    
             
-        super().update(time_s, request_id=request.id)
+        super().update(
+            time_s, 
+            request_id=request.id,
+            api_key=request.api_key,
+            model_key=request.model_key,
+        )

@@ -16,4 +16,9 @@ class TransportLatencyMetric(Metric):
         
         if request.sent is not None:
     
-            super().update(time.time() - request.sent, request_id=request.id)
+            super().update(
+                time.time() - request.sent, 
+                request_id=request.id,
+                api_key=request.api_key,
+                model_key=request.model_key,
+            )
