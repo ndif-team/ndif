@@ -5,4 +5,3 @@ from .network_data import NetworkStatusMetric
 from .request_status import RequestStatusMetric
 from .request_transport_latency import TransportLatencyMetric
 from .request_execution_time import ExecutionTimeMetric
-from .critical_error import CriticalErrorMetric
