@@ -61,11 +61,11 @@ class ObjectStorageMixin(BaseModel):
             client.create_bucket(Bucket=bucket_name)
 
         # Upload object to S3
-        client.put_object(
+        client.upload_fileobj(
+            Fileobj=data,
             Bucket=bucket_name,
             Key=object_name,
-            Body=data,
-            ContentType=content_type,
+            ExtraArgs={'ContentType': content_type}
         )
 
     @classmethod
