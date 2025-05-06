@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 from io import BytesIO
-from typing import ClassVar, TYPE_CHECKING
+from typing import ClassVar, TYPE_CHECKING, Union, Any
 
 import torch
-from minio import Minio
+import boto3
+from botocore.response import StreamingBody
 from pydantic import BaseModel
 from typing_extensions import Self
-from urllib3.response import HTTPResponse
 
 if TYPE_CHECKING:
     from nnsight.schema.response import ResponseModel
@@ -17,10 +17,10 @@ if TYPE_CHECKING:
 
 class ObjectStorageMixin(BaseModel):
     """
-    Mixin to provide object storage functionality for models using Minio.
+    Mixin to provide object storage functionality for models using S3.
     
-    This mixin allows models to save and load themselves from an object store, 
-    such as Minio, by serializing their data and interacting with the object storage API.
+    This mixin allows models to save and load themselves from an S3 object store
+    by serializing their data and interacting with the S3 API.
 
     Attributes:
         id (str): Unique identifier for the object to be stored.
@@ -31,14 +31,14 @@ class ObjectStorageMixin(BaseModel):
         object_name(id: str) -> str:
             Returns the object name based on the provided ID and file extension.
         
-        save(client: Minio) -> Self:
-            Serializes and saves the object to the Minio storage.
+        save(client: boto3.client) -> Self:
+            Serializes and saves the object to S3 storage.
         
-        load(client: Minio, id: str, stream: bool = False) -> HTTPResponse | Self:
-            Loads and deserializes the object from Minio storage.
+        load(client: boto3.client, id: str, stream: bool = False) -> StreamingBody | Self:
+            Loads and deserializes the object from S3 storage.
         
-        delete(client: Minio, id: str) -> None:
-            Deletes the object from Minio storage.
+        delete(client: boto3.client, id: str) -> None:
+            Deletes the object from S3 storage.
     """
     id: str
     _bucket_name: ClassVar[str] = "default"
@@ -46,96 +46,79 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def object_name(cls, id: str):
-
         return f"{id}.{cls._file_extension}"
 
-    def _save(self, client: Minio, data: BytesIO, content_type: str, bucket_name: str = None) -> None:
-
+    def _save(self, client: boto3.client, data: BytesIO, content_type: str, bucket_name: str = None) -> None:
         bucket_name = self._bucket_name if bucket_name is None else bucket_name
         object_name = self.object_name(self.id)
 
         data.seek(0)
 
-        length = data.getbuffer().nbytes
+        # Check if bucket exists, create if it doesn't
+        try:
+            client.head_bucket(Bucket=bucket_name)
+        except client.exceptions.ClientError:
+            client.create_bucket(Bucket=bucket_name)
 
-        if not client.bucket_exists(bucket_name):
-            client.make_bucket(bucket_name)
-
-        client.put_object(
-            bucket_name,
-            object_name,
-            data,
-            length,
-            content_type=content_type,
+        # Upload object to S3
+        client.upload_fileobj(
+            Fileobj=data,
+            Bucket=bucket_name,
+            Key=object_name,
+            ExtraArgs={'ContentType': content_type}
         )
 
     @classmethod
     def _load(
-        cls, client: Minio, id: str, stream: bool = False
-    ) -> HTTPResponse | bytes:
-
+        cls, client: boto3.client, id: str, stream: bool = False
+    ) -> Union[StreamingBody, bytes]:
         bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
 
-        object = client.get_object(bucket_name, object_name)
-
+        response = client.get_object(Bucket=bucket_name, Key=object_name)
+        
         if stream:
-            return object
+            return response['Body'], response['ContentLength']
 
-        _object = object.read()
+        data = response['Body'].read()
+        response['Body'].close()
 
-        object.close()
+        return data
 
-        return _object
-
-    def save(self, client: Minio) -> Self:
-
+    def save(self, client: boto3.client) -> Self:
         if self._file_extension == "json":
-
             data = BytesIO(self.model_dump_json().encode("utf-8"))
-
             content_type = "application/json"
-
         elif self._file_extension == "pt":
-
             data = BytesIO()
-
             torch.save(self.model_dump(), data)
-
             content_type = "application/octet-stream"
 
         self._save(client, data, content_type)
-
         return self
 
     @classmethod
-    def load(cls, client: Minio, id: str, stream: bool = False) -> HTTPResponse | Self:
-
-        object = cls._load(client, id, stream=stream)
+    def load(cls, client: boto3.client, id: str, stream: bool = False) -> Union[StreamingBody, Self]:
+        object_data = cls._load(client, id, stream=stream)
 
         if stream:
-            return object
+            return object_data
 
         if cls._file_extension == "json":
-
-            return cls.model_validate_json(object.decode("utf-8"))
-
+            return cls.model_validate_json(object_data.decode("utf-8"))
         elif cls._file_extension == "pt":
-
-            return torch.load(object, map_location="cpu", weights_only=False)
+            return torch.load(BytesIO(object_data), map_location="cpu", weights_only=False)
 
     @classmethod
-    def delete(cls, client: Minio, id: str) -> None:
-
+    def delete(cls, client: boto3.client, id: str) -> None:
         bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
 
         try:
-
-            client.remove_object(bucket_name, object_name)
-
+            client.delete_object(Bucket=bucket_name, Key=object_name)
         except:
             pass
+
 
 class TelemetryMixin:
     """

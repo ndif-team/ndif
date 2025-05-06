@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import requests
 import socketio
-from minio import Minio
+import boto3
 from pydantic import field_serializer
 from typing_extensions import Self
 
@@ -28,7 +28,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def blocking(self) -> bool:
         return self.session_id is not None
 
-    def respond(self, sio: socketio.SimpleClient, object_store: Minio) -> ResponseModel:
+    def respond(self, sio: socketio.SimpleClient, object_store: boto3.client) -> ResponseModel:
         if self.blocking:
 
             fn = sio.client.emit

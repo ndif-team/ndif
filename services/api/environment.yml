@@ -28,7 +28,7 @@ dependencies:
     - gunicorn
     - eventlet
     # Database
-    - minio
+    - boto3
     # Tasks
     - ray[serve]
     - requests

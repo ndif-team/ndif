@@ -5,5 +5,5 @@ from .mixins import ObjectStorageMixin
 
 class BackendResultModel(ResultModel, ObjectStorageMixin):
 
-    _bucket_name: ClassVar[str] = "results"
+    _bucket_name: ClassVar[str] = "dev-ndif-results"
     _file_extension: ClassVar[str] = "pt"
