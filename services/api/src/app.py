@@ -26,12 +26,15 @@ from ray import serve
 
 from nnsight.schema.response import ResponseModel
 
-from .api_key import api_key_auth
 from .logging import load_logger
-from .metrics import RequestStatusMetric, TransportLatencyMetric, CriticalErrorMetric
+
+logger = load_logger(service_name="API", logger_name="gunicorn.error")
+
+
+from .api_key import api_key_auth
+from .metrics import TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
-logger = load_logger(service_name="app", logger_name="gunicorn.error")
 
 
 @asynccontextmanager
@@ -87,8 +90,7 @@ def connect_to_ray():
                 ray.init(logging_level="error")
                 logger.info("Connected to Ray cluster.")
             except Exception as e:
-                CriticalErrorMetric.update(f"Failed to connect to Ray cluster: {e}")
-                logger.warning(f"Failed to connect to Ray cluster: {e}")
+                logger.error(f"Failed to connect to Ray cluster: {e}")
                 
         time.sleep(RETRY_INTERVAL_S)
         

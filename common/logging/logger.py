@@ -1,0 +1,196 @@
+import logging
+import logging_loki
+import os
+import socket
+import sys
+import traceback
+from typing import Dict, Optional, Any
+import time
+from functools import wraps
+
+# Environment variables for Loki configuration
+LOKI_URL = os.environ.get('LOKI_URL')
+LOKI_RETRY_COUNT = int(os.environ.get('LOKI_RETRY_COUNT', '3'))  # Number of retry attempts for failed log sends
+
+# Global logger instance
+LOGGER: Optional[logging.Logger] = None
+
+class CustomJSONFormatter(logging.Formatter):
+    """
+    Custom JSON formatter for structured logging.
+    
+    Extends the standard logging.Formatter to add additional fields
+    like service name, hostname, and metrics data to log records.
+    """
+    def __init__(self, service_name, fmt=None, datefmt=None, style='%', *args, **kwargs):
+        """
+        Initialize the formatter with service information.
+        
+        Args:
+            service_name: Name of the service generating logs
+            fmt: Log format string
+            datefmt: Date format string
+            style: Style of the format string (%, {, or $)
+        """
+        super().__init__(fmt=fmt, datefmt=datefmt, style=style, *args, **kwargs)
+        self.service_name = service_name
+        self.hostname = socket.gethostname()
+
+    def format(self, record):
+        """
+        Format the log record by adding custom fields.
+        
+        Args:
+            record: The log record to format
+            
+        Returns:
+            Formatted log record as a string
+        """
+        # Add custom fields to the log record
+        record.service_name = self.service_name
+        record.hostname = self.hostname
+        record.process_id = os.getpid()
+        record.thread_name = record.threadName
+        
+        # Add exception info if present
+        if record.exc_info:
+            record.exception = traceback.format_exception(*record.exc_info)
+        else:
+            record.exception = None
+            
+        # Add code location
+        record.code_file = record.pathname
+        record.code_line = record.lineno
+        
+        # Add metrics data if available
+        if hasattr(record, 'metrics'):
+            record.metrics_data = record.metrics
+        else:
+            record.metrics_data = None
+            
+        # Format the log record using the standard logging format
+        return super().format(record)
+
+class RetryingLokiHandler(logging_loki.LokiHandler):
+    """
+    Extended Loki handler with retry capability for handling network issues.
+    
+    Attempts to resend logs to Loki if initial attempts fail, using
+    exponential backoff between retries.
+    """
+    def __init__(self, retry_count=LOKI_RETRY_COUNT, *args, **kwargs):
+        """
+        Initialize the handler with retry configuration.
+        
+        Args:
+            retry_count: Number of times to retry sending logs
+            *args, **kwargs: Arguments passed to LokiHandler
+        """
+        self.retry_count = retry_count
+        super().__init__(*args, **kwargs)
+        
+    def emit(self, record):
+        """
+        Send the log record to Loki with retry logic.
+        
+        Args:
+            record: The log record to send
+        """
+        for attempt in range(self.retry_count):
+            try:
+                super().emit(record)
+                return
+            except Exception as e:
+                if attempt == self.retry_count - 1:
+                    sys.stderr.write(f"Failed to send log to Loki after {self.retry_count} attempts: {e}\n")
+                else:
+                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+
+def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
+    """
+    Configure and return a logger with console and optional Loki handlers.
+    
+    Sets up a logger with structured JSON formatting for Loki and simpler
+    formatting for console output. Uses a singleton pattern to avoid
+    creating multiple loggers.
+    
+    Args:
+        service_name: Name of the service using the logger
+        logger_name: Name for the logger instance
+        
+    Returns:
+        Configured logging.Logger instance
+    """
+    global LOGGER
+    
+    if LOGGER is not None:
+        return LOGGER
+
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.DEBUG)
+    logger.handlers.clear()
+
+    # JSON format for structured logging (used by Loki handler)
+    json_format = '''{
+        "timestamp": "%(asctime)s",
+        "service": {
+            "name": "%(service_name)s",
+            "hostname": "%(hostname)s",
+            "process_id": %(process_id)d
+        },
+        "log": {
+            "level": "%(levelname)s",
+            "logger": "%(name)s",
+            "function": "%(funcName)s",
+            "thread": "%(thread_name)s"
+        },
+        "code": {
+            "file": "%(code_file)s",
+            "line": %(code_line)d
+        },
+        "message": "%(message)s",
+        "exception": %(exception)s,
+        "metrics": %(metrics_data)s
+    }'''
+    
+    # Simpler format for console output
+    console_format = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
+    
+    # Create formatters for different outputs
+    json_formatter = CustomJSONFormatter(
+        fmt=json_format,
+        service_name=service_name,
+        datefmt="%Y-%m-%d %H:%M:%S.%f%z"
+    )
+
+    console_formatter = logging.Formatter(
+        fmt=console_format,
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    
+    # Set up console handler for local debugging
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_formatter)
+    console_handler.setLevel(logging.DEBUG)
+    logger.addHandler(console_handler)
+
+    # Set up Loki handler if URL is configured
+    if LOKI_URL is not None:
+        # Loki handler configuration with batching and retries
+        loki_handler = RetryingLokiHandler(
+            url=LOKI_URL,
+            tags={
+                "application": service_name,
+                "hostname": socket.gethostname(),
+            },
+            auth=None,
+            version="1",
+
+        )
+        loki_handler.setFormatter(json_formatter)
+        loki_handler.setLevel(logging.INFO)  # Only send INFO and above to Loki
+        logger.addHandler(loki_handler)
+
+
+    LOGGER = logger
+    return logger
