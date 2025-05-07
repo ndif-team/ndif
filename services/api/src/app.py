@@ -28,7 +28,7 @@ from nnsight.schema.response import ResponseModel
 
 from .logging import load_logger
 
-logger = load_logger(service_name="API", logger_name="gunicorn.error")
+logger = load_logger(service_name="API", logger_name="API")
 
 
 from .api_key import api_key_auth
@@ -175,7 +175,7 @@ async def request(
         # request.save(object_store)
     except Exception as exception:
 
-        if 'ray ' in str(e).lower():
+        if 'ray ' in str(exception).lower():
             description = "Issue with Ray. NDIF compute backend must be down :("
         else:
             description = f"{traceback.format_exc()}\n{str(exception)}"
