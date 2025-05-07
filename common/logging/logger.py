@@ -51,22 +51,9 @@ class CustomJSONFormatter(logging.Formatter):
         record.hostname = self.hostname
         record.process_id = os.getpid()
         record.thread_name = record.threadName
-        
-        # Add exception info if present
-        if record.exc_info:
-            record.exception = traceback.format_exception(*record.exc_info)
-        else:
-            record.exception = None
-            
         # Add code location
         record.code_file = record.pathname
         record.code_line = record.lineno
-        
-        # Add metrics data if available
-        if hasattr(record, 'metrics'):
-            record.metrics_data = record.metrics
-        else:
-            record.metrics_data = None
             
         # Format the log record using the standard logging format
         return super().format(record)
@@ -149,8 +136,6 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
             "line": %(code_line)d
         },
         "message": "%(message)s",
-        "exception": %(exception)s,
-        "metrics": %(metrics_data)s
     }'''
     
     # Simpler format for console output
