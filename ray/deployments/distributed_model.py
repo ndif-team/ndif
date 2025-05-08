@@ -1,6 +1,7 @@
 from datetime import timedelta
 from typing import Any, Dict
 
+import time
 import ray
 import torch
 import torch.distributed
@@ -196,7 +197,29 @@ class _ModelDeployment(BaseModelDeployment):
 
         with self.timer:
 
-            return super().execute(graph)
+            try:
+
+                results = super().execute(graph)
+
+                return results
+        
+            except RuntimeError as e:
+                if "NCCL" in str(e):
+                    print("NCCL error detected. Attempting to recover...")
+                    try:
+                        torch.distributed.destroy_process_group()
+                    except Exception as destroy_error:
+                        print(f"Error during destroy_process_group: {destroy_error}")
+
+                    time.sleep(5)  # Wait to ensure all processes have cleaned up
+
+                    try:
+                        self.init_process_group()
+                        print("Process group reinitialized.")
+                    except Exception as init_error:
+                        print(f"Error during init_process_group: {init_error}")
+                else:
+                    raise e
 
     def pre(self) -> Graph:
 

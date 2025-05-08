@@ -144,7 +144,7 @@ class RayState:
             runtime_env={
                 "env_vars": {"restart_hash": "", 
                              # For distributed model timeout handling
-                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0"}
+                             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1"}
             },
         )
 
