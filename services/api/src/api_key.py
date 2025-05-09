@@ -6,12 +6,14 @@ from typing import Optional
 #import firebase_admin
 #from cachetools import TTLCache, cached
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 #from firebase_admin import credentials, firestore
-from starlette.status import HTTP_401_UNAUTHORIZED
+from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 
 from .logging import load_logger
 from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
+import json
 #from .util import check_valid_email
 
 if TYPE_CHECKING:
@@ -68,7 +70,8 @@ class AccountsDB:
             port=port,
             database=database,
             user=user,
-            password=password
+            password=password,
+            connect_timeout=10
         )
         self.cur = self.conn.cursor()
 
@@ -78,57 +81,79 @@ class AccountsDB:
 
     def api_key_exists(self, key_id: str) -> bool:
         """Check if a key exists"""
-        self.cur.execute("SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)", (key_id,))
-        result = self.cur.fetchone()
-        return result[0] if result else None
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)", (key_id,))
+                result = cur.fetchone()
+                return True if result else False
+        except Exception as e:
+            logger.error(f"Error checking if key exists: {e}")
+            self.conn.rollback()
+            return False
+        else:
+            self.conn.commit()
 
     def model_id_from_key(self, key_id: str) -> Optional[str]:
         """Get the model ID from a key ID"""
-        self.cur.execute("SELECT model_id FROM models WHERE checkpoint_id = %s", (key_id,))
-        result = self.cur.fetchone()
-        return result[0] if result else None
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT model_id FROM models WHERE checkpoint_id = %s", (key_id,))
+                result = cur.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting model ID from key ID: {e}")
+            self.conn.rollback()
+            return None
+        else:
+            self.conn.commit()
 
     def key_has_access_to_model(self, key_id: str, model_id: str) -> bool:
         """Check if a key has access to a model"""
-        self.cur.execute("""
-            SELECT * FROM key_tier_assignments
-            JOIN model_tier_assignments ON key_tier_assignments.tier_id = model_tier_assignments.tier_id
-            WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
-        """, (key_id, model_id))
-        result = self.cur.fetchone()
-        return result is not None
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                SELECT * FROM key_tier_assignments
+                JOIN model_tier_assignments ON key_tier_assignments.tier_id = model_tier_assignments.tier_id
+                WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
+                """, (key_id, model_id))
+                result = cur.fetchone()
+                return result is not None
+        except Exception as e:
+            logger.error(f"Error checking if key has access to model: {e}")
+            self.conn.rollback()
+            return False
+        else:
+            self.conn.commit()
 
     def validate_key_to_model(self, key_id: str, model_key: str) -> bool:
         """Check if a key has access to a model"""
 
         # First, check that the key exists
         if not self.api_key_exists(key_id):
-            print(f"Key {key_id} does not exist")
+            logger.info(f"Key {key_id} does not exist")
             return False
+
+        logger.info(f"Key {key_id} exists")
 
         # Next, get the model ID from the key (and verify that it exists)
         model_id = self.model_id_from_key(model_key)
         if not model_id:
-            print(f"Model {model_key} does not exist")
+            logger.info(f"Model {model_key} does not exist")
             return False
+
+        logger.info(f"Model {model_key} exists")
 
         # Finally, check that the key has a tier that allows access to the model
         return self.key_has_access_to_model(key_id, model_id)
 
 
 
-#FIREBASE_CREDS_PATH = os.environ.get("FIREBASE_CREDS_PATH", None)
-
 host = os.environ.get("POSTGRES_HOST")
 port = os.environ.get("POSTGRES_PORT")
-database = os.environ.get("POSTGRES_DATABASE")
+database = os.environ.get("POSTGRES_DB")
 user = os.environ.get("POSTGRES_USER")
 password = os.environ.get("POSTGRES_PASSWORD")
 
-
-#if FIREBASE_CREDS_PATH is not None:
-
-#    api_key_store = ApiKeyStore(FIREBASE_CREDS_PATH)
 
 # Currently forcing this to be required so that it doesn't silently fail
 api_key_store = AccountsDB(host, port, database, user, password)
@@ -166,18 +191,33 @@ def api_key_auth(
     ip_address, user_agent, content_length = metadata.values()
     NetworkStatusMetric.update(request.id, ip_address, user_agent, content_length)
 
-    #check_405b = True if request.model_key == llama_405b else False
-    
-    # TODO: I probably should keep this flow the same as it was before for the time being.
     # TODO: There should be some form of caching here
     # TODO: I should reintroduce the user email check here (unless we choose not to migrate keys which are missing an email)        
-    if not api_key_store.validate_key_to_model(request.api_key, request.model_key):
+    json_part = request.model_key.split(":", 1)[1]
+    model_key = json.loads(json_part)["repo_id"]
+    
+    # Check if the API key exists and is valid
+    if not api_key_store.api_key_exists(request.api_key):
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
+        )
 
-        #doc = api_key_store.fetch_document(request.api_key)
+    model_id = api_key_store.model_id_from_key(model_key)
+    if not model_id:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="Invalid model key. Please visit https://nnsight.net/status/ to see the list of available models.",
+        )
 
-        # Check if the API key exists and is valid
-        #if api_key_store.does_api_key_exist(doc, check_405b):
-            # Check if the document contains a valid email
+    # Check if the model has access to the API key
+    if not api_key_store.key_has_access_to_model(request.api_key, model_id):
+        raise HTTPException(
+            status_code=HTTP_401_UNAUTHORIZED,
+            detail=f"API key does not have authorization to access the requested model: {model_key}.",
+        )
+
+    # Check if the document contains a valid email
             #user_id = api_key_store.get_uid(doc)
             #logger.info(user_id)
             #if not check_valid_email(user_id):
@@ -186,11 +226,3 @@ def api_key_auth(
         #        status_code=HTTP_401_UNAUTHORIZED,
         #        detail="Invalid API key: A valid API key must contain an email. Please visit https://login.ndif.us/ to create a new one.",
         #    )
-        #else:
-            # Handle case where API key does not exist or is invalid
-
-
-        raise HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
-        )
