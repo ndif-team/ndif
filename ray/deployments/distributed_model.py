@@ -1,24 +1,22 @@
 from datetime import timedelta
 from typing import Any, Dict
 
-import time
 import ray
 import torch
 import torch.distributed
 from ray import serve
 from ray.serve import Application
+from torch.distributed import DistBackendError
 
 from nnsight.tracing.graph import Graph
+from nnsight.util import NNsightError
 
-from ...schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from ...schema import (RESULT, BackendRequestModel, BackendResponseModel,
+                       BackendResultModel)
 from ..distributed.parallel_dims import ParallelDims
 from ..distributed.tensor_parallelism import parallelize_model
-from ..distributed.util import load_hf_model_from_cache, patch_intervention_protocol
+from ..distributed.util import (load_hf_model_from_cache,
+                                patch_intervention_protocol)
 from ..util import NNsightTimer
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
@@ -115,6 +113,8 @@ class _ModelDeployment(BaseModelDeployment):
 
         print("Initializing torch.distributed process group...")
 
+        torch.distributed.WORLD = None
+
         torch.distributed.init_process_group(
             "nccl",
             init_method=self.torch_distributed_address,
@@ -203,23 +203,22 @@ class _ModelDeployment(BaseModelDeployment):
 
                 return results
         
-            except RuntimeError as e:
-                if "NCCL" in str(e):
+            except (NNsightError, DistBackendError) as e:
+                if not (isinstance(e, NNsightError) and "Job took longer than timeout" not in str(e)):
                     print("NCCL error detected. Attempting to recover...")
+                    self.logger.error("NNsightTimeOut or NCCL error detected. Attempting to recover...")
+
                     try:
                         torch.distributed.destroy_process_group()
                     except Exception as destroy_error:
-                        print(f"Error during destroy_process_group: {destroy_error}")
-
-                    time.sleep(5)  # Wait to ensure all processes have cleaned up
+                        self.logger.error(f"Error during destroy_process_group: {destroy_error}")
 
                     try:
                         self.init_process_group()
-                        print("Process group reinitialized.")
                     except Exception as init_error:
-                        print(f"Error during init_process_group: {init_error}")
-                else:
-                    raise e
+                        self.logger.error(f"Error during init_process_group: {init_error}") 
+
+                raise e
 
     def pre(self) -> Graph:
 
