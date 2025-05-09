@@ -1,3 +1,4 @@
+import time
 from datetime import timedelta
 from typing import Any, Dict
 
@@ -212,6 +213,9 @@ class _ModelDeployment(BaseModelDeployment):
                         torch.distributed.destroy_process_group()
                     except Exception as destroy_error:
                         self.logger.error(f"Error during destroy_process_group: {destroy_error}")
+
+                    while torch.distributed.is_initialized():
+                        time.sleep(1)
 
                     try:
                         self.init_process_group()
