@@ -206,7 +206,6 @@ class _ModelDeployment(BaseModelDeployment):
         
             except (NNsightError, DistBackendError) as e:
                 if not (isinstance(e, NNsightError) and "Job took longer than timeout" not in str(e)):
-                    print("NCCL error detected. Attempting to recover...")
                     self.logger.error("NNsightTimeOut or NCCL error detected. Attempting to recover...")
 
                     try:
