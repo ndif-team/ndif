@@ -112,7 +112,7 @@ class _ModelDeployment(BaseModelDeployment):
 
     def init_process_group(self):
 
-        print("Initializing torch.distributed process group...")
+        self.logger.error("Initializing torch.distributed process group...")
 
         torch.distributed.WORLD = None
 
@@ -125,7 +125,7 @@ class _ModelDeployment(BaseModelDeployment):
             device_id=self.device,
         )
 
-        print("Initialized torch.distributed process group.")
+        self.logger.error("Initialized torch.distributed process group.")
 
     def init_distributed(self):
 
@@ -237,6 +237,11 @@ class _ModelDeployment(BaseModelDeployment):
             for worker_deployment in self.worker_actors:
 
                 worker_deployment.__call__.remote(self.request)
+
+        if not torch.distributed.is_initialized():
+            self.logger.error("Reinitializing torch.distributed process group...")
+
+            self.init_process_group()
 
         torch.distributed.barrier()
 
