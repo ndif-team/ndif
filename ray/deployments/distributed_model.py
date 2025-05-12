@@ -213,8 +213,10 @@ class _ModelDeployment(BaseModelDeployment):
                     except Exception as destroy_error:
                         self.logger.error(f"Error during destroy_process_group: {destroy_error}")
 
+                    self.logger.error("Waiting for torch.distributed process group to be destroyed...")
                     while torch.distributed.is_initialized():
                         time.sleep(1)
+                    self.logger.error("Torch.distributed process group destroyed.")
 
                     try:
                         self.init_process_group()
