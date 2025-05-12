@@ -3,11 +3,8 @@ from typing import TYPE_CHECKING
 import psycopg2
 from typing import Optional
 
-#import firebase_admin
-#from cachetools import TTLCache, cached
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
-#from firebase_admin import credentials, firestore
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 
 from .logging import load_logger
@@ -22,43 +19,6 @@ if TYPE_CHECKING:
     from .schema import BackendRequestModel
 
 logger = load_logger(service_name="api", logger_name="gunicorn.error")
-
-
-#llama_405b = 'nnsight.modeling.language.LanguageModel:{"repo_id": "meta-llama/Meta-Llama-3.1-405B"}'
-
-
-# class ApiKeyStore:
-
-#     def __init__(self, cred_path: str) -> None:
-
-#         self.cred = credentials.Certificate(cred_path)
-
-#         try:
-
-#             self.app = firebase_admin.get_app()
-#         except ValueError as e:
-
-#             firebase_admin.initialize_app(self.cred)
-
-#         self.firestore_client = firestore.client()
-
-#     @cached(cache=TTLCache(maxsize=1024, ttl=60))
-#     def fetch_document(self, api_key: str):
-
-#         doc = self.firestore_client.collection("keys").document(api_key).get()
-#         return doc
-
-#     def does_api_key_exist(self, doc, check_405b: bool = False) -> bool:
-
-#         return (
-#             doc.exists and doc.to_dict().get("tier") == "405b"
-#             if check_405b
-#             else doc.exists
-#         )
-
-#     def get_uid(self, doc):
-#         user_id = doc.to_dict().get("user_id")
-#         return user_id
 
 # TODO: Make this be derived from a base class
 
@@ -125,27 +85,6 @@ class AccountsDB:
         else:
             self.conn.commit()
 
-    def validate_key_to_model(self, key_id: str, model_key: str) -> bool:
-        """Check if a key has access to a model"""
-
-        # First, check that the key exists
-        if not self.api_key_exists(key_id):
-            logger.info(f"Key {key_id} does not exist")
-            return False
-
-        logger.info(f"Key {key_id} exists")
-
-        # Next, get the model ID from the key (and verify that it exists)
-        model_id = self.model_id_from_key(model_key)
-        if not model_id:
-            logger.info(f"Model {model_key} does not exist")
-            return False
-
-        logger.info(f"Model {model_key} exists")
-
-        # Finally, check that the key has a tier that allows access to the model
-        return self.key_has_access_to_model(key_id, model_id)
-
 
 
 host = os.environ.get("POSTGRES_HOST")
@@ -191,6 +130,10 @@ def api_key_auth(
     ip_address, user_agent, content_length = metadata.values()
     NetworkStatusMetric.update(request.id, ip_address, user_agent, content_length)
 
+    # For local development, we don't want to check the API key
+    if host is None:
+        return
+
     # TODO: There should be some form of caching here
     # TODO: I should reintroduce the user email check here (unless we choose not to migrate keys which are missing an email)        
     json_part = request.model_key.split(":", 1)[1]
@@ -216,13 +159,3 @@ def api_key_auth(
             status_code=HTTP_401_UNAUTHORIZED,
             detail=f"API key does not have authorization to access the requested model: {model_key}.",
         )
-
-    # Check if the document contains a valid email
-            #user_id = api_key_store.get_uid(doc)
-            #logger.info(user_id)
-            #if not check_valid_email(user_id):
-                # Handle case where API key exists but doesn't contain a valid email
-        #    raise HTTPException(
-        #        status_code=HTTP_401_UNAUTHORIZED,
-        #        detail="Invalid API key: A valid API key must contain an email. Please visit https://login.ndif.us/ to create a new one.",
-        #    )
