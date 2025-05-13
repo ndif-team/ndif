@@ -137,7 +137,7 @@ def api_key_auth(
     # TODO: There should be some form of caching here
     # TODO: I should reintroduce the user email check here (unless we choose not to migrate keys which are missing an email)        
     json_part = request.model_key.split(":", 1)[1]
-    model_key = json.loads(json_part)["repo_id"]
+    model_key = json.loads(json_part)["repo_id"].lower()
     
     # Check if the API key exists and is valid
     if not api_key_store.api_key_exists(request.api_key):
