@@ -79,7 +79,7 @@ object_store = boto3.client(
 )
 
 # Init Ray connection
-RETRY_INTERVAL_S = 5
+RAY_RETRY_INTERVAL_S = os.environ.get("RAY_RETRY_INTERVAL_S", 5)
 
 def connect_to_ray():
     while True:
@@ -92,7 +92,7 @@ def connect_to_ray():
             except Exception as e:
                 logger.error(f"Failed to connect to Ray cluster: {e}")
                 
-        time.sleep(RETRY_INTERVAL_S)
+        time.sleep(RAY_RETRY_INTERVAL_S)
         
         
 # Start the background thread
