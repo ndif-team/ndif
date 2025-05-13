@@ -221,7 +221,8 @@ class _ModelDeployment(BaseModelDeployment):
                         try:
                             self.init_process_group()
                         except Exception as init_error:
-                            self.logger.error(f"Error during init_process_group: {init_error}") 
+                            self.logger.error(f"Error during init_process_group: {init_error}")
+                            time.sleep(3)
 
                 raise e
 
