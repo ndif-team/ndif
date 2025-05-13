@@ -148,10 +148,8 @@ def api_key_auth(
 
     model_id = api_key_store.model_id_from_key(model_key)
     if not model_id:
-        raise HTTPException(
-            status_code=HTTP_400_BAD_REQUEST,
-            detail="Invalid model key. Please visit https://nnsight.net/status/ to see the list of available models.",
-        )
+        # Let them have access by default (to support future usecase of dynamic model loading)
+        return
 
     # Check if the model has access to the API key
     if not api_key_store.key_has_access_to_model(request.api_key, model_id):
