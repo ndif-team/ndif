@@ -222,8 +222,13 @@ class _ModelDeployment(BaseModelDeployment):
                             self.init_process_group()
                         except Exception as init_error:
                             self.logger.error(f"Error during init_process_group: {init_error}")
-                            time.sleep(3)
+                            torch.distributed.destroy_process_group()
+                            #time.sleep(3)
 
+                # self.logger.error("Handling exception in distributed worker...")
+
+                raise e
+            except Exception as e:
                 raise e
 
     def pre(self) -> Graph:
@@ -259,11 +264,17 @@ class _ModelDeployment(BaseModelDeployment):
 
         if self.head:
             super().exception(*args, **kwargs)
+        # else:
+        #     import time
+        #     print([{time.strftime('%Y-%m-%d %H:%M:%S')}], f"EXCEPTION ", *args, **kwargs)
 
     def log(self, *args, **kwargs):
 
         if self.head:
             super().log(*args, **kwargs)
+        # else:
+        #     import time
+        #     print([{time.strftime('%Y-%m-%d %H:%M:%S')}], f"LOG ", *args, **kwargs)
 
     def stream_send(self, *args, **kwargs):
         if self.head:
@@ -271,7 +282,11 @@ class _ModelDeployment(BaseModelDeployment):
 
     def cleanup(self):
 
+        self.logger.error("Hitting barrier...")
+
         torch.distributed.barrier()
+
+        self.logger.error("Exit barrier in cleanup.")
 
         super().cleanup()
 
