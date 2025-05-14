@@ -263,7 +263,6 @@ async def result(id: str) -> BackendResultModel:
                 yield data
         finally:
             object.close()
-            object.release_conn()
 
             BackendResultModel.delete(object_store, id)
             BackendResponseModel.delete(object_store, id)
