@@ -94,8 +94,9 @@ user = os.environ.get("POSTGRES_USER")
 password = os.environ.get("POSTGRES_PASSWORD")
 
 
-# Currently forcing this to be required so that it doesn't silently fail
-api_key_store = AccountsDB(host, port, database, user, password)
+api_key_store = None
+if host is not None:
+    api_key_store = AccountsDB(host, port, database, user, password)
 
 def extract_request_metadata(raw_request: "Request") -> dict:
     """
