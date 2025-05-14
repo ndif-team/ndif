@@ -58,6 +58,7 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      API_INTERNAL_PORT: ${API_INTERNAL_PORT}
 
   prometheus:
     image: prom/prometheus:latest
