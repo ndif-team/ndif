@@ -73,7 +73,7 @@ class AccountsDB:
                 WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
                 """, (key_id, model_id))
                 result = cur.fetchone()
-                return result is not None
+                return result[0] if result else False
         except Exception as e:
             logger.error(f"Error checking if key has access to model: {e}")
             self.conn.rollback()
