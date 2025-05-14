@@ -30,7 +30,7 @@ dependencies:
     # Database
     - boto3
     # Tasks
-    - ray[serve]
+    - ray[serve]==2.45.0
     - requests
     - torch
     - python-slugify
