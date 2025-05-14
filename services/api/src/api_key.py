@@ -45,13 +45,11 @@ class AccountsDB:
             with self.conn.cursor() as cur:
                 cur.execute("SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)", (key_id,))
                 result = cur.fetchone()
-                return True if result else False
+                return result[0] if result else False
         except Exception as e:
             logger.error(f"Error checking if key exists: {e}")
             self.conn.rollback()
             return False
-        else:
-            self.conn.commit()
 
     def model_id_from_key(self, key_id: str) -> Optional[str]:
         """Get the model ID from a key ID"""
@@ -64,8 +62,6 @@ class AccountsDB:
             logger.error(f"Error getting model ID from key ID: {e}")
             self.conn.rollback()
             return None
-        else:
-            self.conn.commit()
 
     def key_has_access_to_model(self, key_id: str, model_id: str) -> bool:
         """Check if a key has access to a model"""
@@ -82,9 +78,6 @@ class AccountsDB:
             logger.error(f"Error checking if key has access to model: {e}")
             self.conn.rollback()
             return False
-        else:
-            self.conn.commit()
-
 
 
 host = os.environ.get("POSTGRES_HOST")
