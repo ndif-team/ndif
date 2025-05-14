@@ -25,8 +25,11 @@ class Metric:
                     token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
                 ).write_api(write_options=SYNCHRONOUS)
 
+            # If youre providing a Point directly, use it as is
             if isinstance(measurement, Point):
                 point = measurement
+                
+            #Otherwise build it from the value (measurement) and its tags.
             else:
 
                 point: Point = Point(cls.name).field(cls.name, measurement)
