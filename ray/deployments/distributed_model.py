@@ -222,7 +222,7 @@ class _ModelDeployment(BaseModelDeployment):
                             self.init_process_group()
                         except Exception as init_error:
                             self.logger.error(f"Error during init_process_group: {init_error}")
-                            torch.distributed.destroy_process_group()
+                            torch.distributed.distributed_c10d._world.group_count = 0
                             #time.sleep(3)
 
                 # self.logger.error("Handling exception in distributed worker...")
