@@ -13,7 +13,8 @@ dependencies:
     - fastapi-socketio
     - python-socketio
     - redis
-    - firebase-admin
+    #- firebase-admin
+    - psycopg2-binary
     # Telemetry
     - asgiref
     - opentelemetry-api
