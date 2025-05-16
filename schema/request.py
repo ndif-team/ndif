@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 import time
-from typing import TYPE_CHECKING, ClassVar, Optional, Union
+from typing import TYPE_CHECKING, ClassVar, Optional, Union, Coroutine
 
 import ray
 from fastapi import Request
@@ -41,7 +41,7 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    graph: Optional[Union[bytes, ray.ObjectRef]] = None
+    graph: Optional[Union[Coroutine[bytes], bytes, ray.ObjectRef]] = None
 
     model_key: str
     session_id: Optional[str] = None
@@ -65,19 +65,14 @@ class BackendRequestModel(ObjectStorageMixin):
         return RequestModel.deserialize(model, graph, "json", self.zlib)
 
     @classmethod
-    async def from_request(
-        cls, request: Request, api_key: str, put: bool = True
+    def from_request(
+        cls, request: Request, api_key: str
     ) -> Self:
 
         headers = request.headers
 
-        graph = await request.body()
-
-        if put:
-            graph = ray.put(graph)
-
         return BackendRequestModel(
-            graph=graph,
+            graph=request.body(),
             model_key=headers["model_key"],
             session_id=headers.get("session_id", None),
             format=headers["format"],

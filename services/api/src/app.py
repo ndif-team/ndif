@@ -63,6 +63,7 @@ sm = SocketManager(
     client_manager=socketio_manager,
     max_http_buffer_size=1000000000000000,
     ping_timeout=60,
+    always_connect=True,
 )
 
 # Init object_store connection
@@ -122,34 +123,10 @@ async def request(
     """
 
     # extract the request data
-    try:
-        request: BackendRequestModel = await BackendRequestModel.from_request(
-            raw_request, api_key
-        )
-    except Exception as exception:
-        
-        headers = raw_request.headers
-
-        request = BackendRequestModel(
-            model_key=headers["model_key"],
-            session_id=headers.get("session_id", None),
-            format=headers["format"],
-            zlib=headers["zlib"],
-            id=str(uuid.uuid4()),
-            sent=float(headers.get("sent-timestamp", None)),
-            api_key=api_key,
-        )
-        
-        if 'ray ' in str(exception).lower():
-            description = "Issue with Ray. NDIF compute backend must be down :("
-        else:
-            description = f"{traceback.format_exc()}\n{str(exception)}"
-
-        return request.create_response(
-            status=ResponseModel.JobStatus.ERROR,
-            description=description,
-            logger=logger,
-        )
+    
+    request: BackendRequestModel = await BackendRequestModel.from_request(
+        raw_request, api_key
+    )
 
     # process the request
     try:
@@ -164,6 +141,9 @@ async def request(
 
         # authenticate api key
         api_key_auth(raw_request, request)
+        
+        request.graph = await request.graph
+        request.graph = ray.put(request.graph)
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
