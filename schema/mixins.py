@@ -41,8 +41,11 @@ class ObjectStorageMixin(BaseModel):
             Deletes the object from S3 storage.
     """
     id: str
+    size: int = None
+    
     _bucket_name: ClassVar[str] = "default"
     _file_extension: ClassVar[str] = "json"
+    
 
     @classmethod
     def object_name(cls, id: str):
@@ -93,8 +96,11 @@ class ObjectStorageMixin(BaseModel):
             data = BytesIO()
             torch.save(self.model_dump(), data)
             content_type = "application/octet-stream"
+            
+        self.size = data.getbuffer().nbytes
 
         self._save(client, data, content_type)
+        
         return self
 
     @classmethod

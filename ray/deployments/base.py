@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
-from transformers import PreTrainedModel
 
 from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
@@ -28,7 +27,7 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ...logging import load_logger
-from ...metrics import GPUMemMetric, ExecutionTimeMetric
+from ...metrics import GPUMemMetric, ExecutionTimeMetric, RequestResponseSizeMetric
 from ...schema import (
     RESULT,
     BackendRequestModel,
@@ -278,7 +277,7 @@ class BaseModelDeployment(BaseDeployment):
         gpu_mem: int = result[1]
         execution_time_s: float = result[2]
 
-        BackendResultModel(
+        result = BackendResultModel(
             id=self.request.id,
             result=saves,
         ).save(self.object_store)
@@ -288,6 +287,7 @@ class BaseModelDeployment(BaseDeployment):
             description="Your job has been completed.",
         )
 
+        RequestResponseSizeMetric.update(self.request, result.size)
         GPUMemMetric.update(self.request, gpu_mem)
         ExecutionTimeMetric.update(self.request, execution_time_s)
 
