@@ -41,7 +41,7 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    graph: Union[bytes, ray.ObjectRef]
+    graph: Optional[Union[bytes, ray.ObjectRef]] = None
 
     model_key: str
     session_id: Optional[str] = None
@@ -97,6 +97,14 @@ class BackendRequestModel(ObjectStorageMixin):
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 
         log_msg = f"{self.id} - {status.name}: {description}"
+        
+        logging_level = "info"
+
+        if status == ResponseModel.JobStatus.ERROR:
+            logging_level = "exception"
+        elif status == ResponseModel.JobStatus.NNSIGHT_ERROR:
+            logging_level = "exception"
+            
 
         response = (
             BackendResponseModel(
@@ -109,6 +117,7 @@ class BackendRequestModel(ObjectStorageMixin):
             .backend_log(
                 logger=logger,
                 message=log_msg,
+                level=logging_level,
             )
             .update_metric(
                 self,

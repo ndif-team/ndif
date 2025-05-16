@@ -8,7 +8,7 @@ dependencies:
     - pip
     - setuptools
     - nnsight
-    - ray[serve]
+    - ray[serve]==2.45.0
     - python-slugify
     # Telemetry
     - prometheus_client
