@@ -124,7 +124,7 @@ async def request(
 
     # extract the request data
     
-    request: BackendRequestModel = await BackendRequestModel.from_request(
+    request: BackendRequestModel = BackendRequestModel.from_request(
         raw_request, api_key
     )
 
