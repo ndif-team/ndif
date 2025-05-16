@@ -55,7 +55,7 @@ class AccountsDB:
         """Get the model ID from a key ID"""
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT model_id FROM models WHERE checkpoint_id = %s", (key_id,))
+                cur.execute("SELECT model_id FROM models WHERE model_key = %s", (key_id,))
                 result = cur.fetchone()
                 return result[0] if result else None
         except Exception as e:
@@ -68,9 +68,11 @@ class AccountsDB:
         try:
             with self.conn.cursor() as cur:
                 cur.execute("""
-                SELECT * FROM key_tier_assignments
-                JOIN model_tier_assignments ON key_tier_assignments.tier_id = model_tier_assignments.tier_id
-                WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
+                SELECT EXISTS(
+                    SELECT 1 FROM key_tier_assignments
+                    JOIN model_tier_assignments ON key_tier_assignments.tier_id = model_tier_assignments.tier_id
+                    WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
+                )
                 """, (key_id, model_id))
                 result = cur.fetchone()
                 return result[0] if result else False
@@ -130,8 +132,6 @@ def api_key_auth(
 
     # TODO: There should be some form of caching here
     # TODO: I should reintroduce the user email check here (unless we choose not to migrate keys which are missing an email)        
-    json_part = request.model_key.split(":", 1)[1]
-    model_key = json.loads(json_part)["repo_id"].lower()
     
     # Check if the API key exists and is valid
     if not api_key_store.api_key_exists(request.api_key):
@@ -139,7 +139,8 @@ def api_key_auth(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
         )
-
+    model_key = request.model_key.lower()
+    # Get the model ID from the API key
     model_id = api_key_store.model_id_from_key(model_key)
     if not model_id:
         # Let them have access by default (to support future usecase of dynamic model loading)

@@ -80,11 +80,6 @@ Instrumentator().instrument(app).expose(app)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
-# Create a dummy request to ensure app handle is created
-# try:
-#     serve.get_app_handle("Request").remote({})
-# except:
-#     pass
 
 
 @app.post("/request")
