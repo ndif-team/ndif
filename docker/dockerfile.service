@@ -5,7 +5,7 @@ FROM ${NAME}_conda:${TAG}
 # New build stage, so need to redeclare NAME
 ARG NAME
 COPY ./src.tar.gz ./src.tar.gz
-COPY services/${NAME}/start.sh ./start.sh
+COPY src/services/${NAME}/start.sh ./start.sh
 
 RUN tar -xvf ./src.tar.gz \
     && rm ./src.tar.gz
