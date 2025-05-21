@@ -1,10 +1,12 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from . import Metric
 
 if TYPE_CHECKING:
 
     from ..schema import BackendRequestModel
 
+else:
+    BackendRequestModel = Any
 
 class NetworkStatusMetric(Metric):
 
