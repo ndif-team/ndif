@@ -84,15 +84,15 @@ RAY_RETRY_INTERVAL_S = os.environ.get("RAY_RETRY_INTERVAL_S", 5)
 
 def connect_to_ray():
     while True:
-        if not ray.is_initialized():
-            ray.shutdown()
-            serve.context._set_global_client(None)
-            try:
+        try:
+            if not ray.is_initialized():
+                ray.shutdown()
+                serve.context._set_global_client(None)
                 ray.init(logging_level="error")
                 logger.info("Connected to Ray cluster.")
-            except Exception as e:
-                logger.error(f"Failed to connect to Ray cluster: {e}")
-                
+        except Exception as e:
+            logger.error(f"Failed to connect to Ray cluster: {e}")
+            
         time.sleep(RAY_RETRY_INTERVAL_S)
         
         
