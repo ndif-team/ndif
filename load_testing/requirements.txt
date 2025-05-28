@@ -1,6 +1,0 @@
-locust
-nnsight @ git+https://github.com/ndif-team/nnsight@main
-python-dotenv
-torch
-tqdm
-yaml

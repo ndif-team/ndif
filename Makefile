@@ -32,7 +32,7 @@ build_conda:
 
 build_service:
 	cp docker/helpers/check_and_update_env.sh ./
-	tar -hczvf src.tar.gz --directory=services/$(NAME) src
+	tar -hczvf src.tar.gz --directory=src/services/$(NAME) src
 	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service  . 
 	rm src.tar.gz
 	rm check_and_update_env.sh
@@ -46,19 +46,15 @@ build_all_conda:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
-	make build_conda NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
-		make build_conda NAME=ray_worker; \
-	fi
+	make build_conda NAME=ray
+	
 
 build_all_service:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_service NAME=api
-	make build_service NAME=ray_head
-	if [ "$(ENV)" = "prod" ]; then \
-		make build_service NAME=ray_worker; \
-	fi
+	make build_service NAME=ray
+	
 
 build:
 	$(call set_env)
