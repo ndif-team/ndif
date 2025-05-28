@@ -46,14 +46,14 @@ build_all_conda:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
-	make build_conda NAME=ray_head
+	make build_conda NAME=ray
 	
 
 build_all_service:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_service NAME=api
-	make build_service NAME=ray_head
+	make build_service NAME=ray
 	
 
 build:
