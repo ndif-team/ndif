@@ -10,14 +10,14 @@ services:
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
-  ray-head:
-    image: ray_head:latest
+  ray:
+    image: ray:latest
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
       - ./service_config.yml:/src/ray/config/service_config.yml
       - ./ray_config.yml:/src/ray/config/ray_config.yml
-      - ../../services/ray_head/start.sh:/start.sh
+      - ../../src/services/ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
     ports:
       - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
@@ -72,7 +72,7 @@ services:
       - ray-data:/tmp/ray
     depends_on:
       - api
-      - ray-head
+      - ray
 
   influxdb:
     image: influxdb:2
