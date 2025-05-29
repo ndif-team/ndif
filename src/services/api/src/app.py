@@ -103,12 +103,11 @@ ray_watchdog.start()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 
 @app.post("/request")
 async def request(
-    raw_request: Request, api_key: str = Security(api_key_header)
+    raw_request: Request
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -125,7 +124,7 @@ async def request(
     # extract the request data
     
     request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request, api_key
+        raw_request
     )
 
     # process the request
@@ -140,10 +139,10 @@ async def request(
         )
 
         # authenticate api key
-        api_key_auth(raw_request, request)
+        api_key_auth(request.api_key, request)
         
-        request.graph = await request.graph
-        request.graph = ray.put(request.graph)
+        request.request = await request.request
+        request.request = ray.put(request.request)
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.
