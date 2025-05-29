@@ -15,5 +15,5 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
     && rm ~/miniconda.sh
 
 # Create base environment with minimal dependencies
-COPY services/base/environment.yml .
+COPY src/services/base/environment.yml .
 RUN conda env create --name service -f environment.yml
