@@ -27,6 +27,7 @@ from ...schema import (
 )
 from ..util import set_cuda_env_var
 from ..nn.backend import RemoteExecutionBackend
+from ..nn.ops import StdoutRedirect
 class BaseDeployment:
 
     def __init__(
@@ -216,7 +217,8 @@ class BaseModelDeployment(BaseDeployment):
         execution_time = time.time()
 
         # Execute object.
-        result = RemoteExecutionBackend(request.interventions)(request.tracer)
+        with StdoutRedirect(self.log):
+            result = RemoteExecutionBackend(request.interventions)(request.tracer)
 
         execution_time = time.time() - execution_time
 
