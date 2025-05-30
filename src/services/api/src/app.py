@@ -32,7 +32,7 @@ logger = load_logger(service_name="API", logger_name="API")
 
 
 from .api_key import api_key_auth
-from .metrics import TransportLatencyMetric
+from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 
@@ -103,12 +103,11 @@ ray_watchdog.start()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 
 @app.post("/request")
 async def request(
-    raw_request: Request, api_key: str = Security(api_key_header)
+    raw_request: Request
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -122,28 +121,29 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    # extract the request data
-    
-    request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request, api_key
-    )
-
     # process the request
     try:
-
-        TransportLatencyMetric.update(request)
+        
+        # extract the request data
+        request: BackendRequestModel = BackendRequestModel.from_request(
+            raw_request
+        )
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
         )
+        
+        TransportLatencyMetric.update(request)
+        
+        NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key
-        api_key_auth(raw_request, request)
+        api_key_auth(request)
         
-        request.graph = await request.graph
-        request.graph = ray.put(request.graph)
+        request.request = await request.request
+        request.request = ray.put(request.request)
 
         # Send to request workers waiting to process requests on the "request" queue.
         # Forget as we don't care about the response.

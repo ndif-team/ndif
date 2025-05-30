@@ -9,8 +9,6 @@ import torch
 from torch.overrides import TorchFunctionMode
 
 from nnsight.util import Patch, Patcher
-from nnsight.schema.format import functions
-from nnsight.tracing.graph import Graph, Node
 
 def get_total_cudamemory_MBs(return_ids=False) -> int:
 
@@ -44,88 +42,82 @@ def set_cuda_env_var(ids=None):
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(x) for x in ids])
 
 
-def update_nnsight_print_function(new_function):
 
-    new_function.__name__ = functions.get_function_name(print)
+# class NNsightTimer(AbstractContextManager):
 
-    functions.FUNCTIONS_WHITELIST[functions.get_function_name(print)] = new_function
+#     class FunctionMode(TorchFunctionMode):
 
+#         def __init__(self, timer: "NNsightTimer"):
 
-class NNsightTimer(AbstractContextManager):
+#             self.timer = timer
 
-    class FunctionMode(TorchFunctionMode):
+#             super().__init__()
 
-        def __init__(self, timer: "NNsightTimer"):
-
-            self.timer = timer
-
-            super().__init__()
-
-        def __torch_function__(self, func, types, args=(), kwargs=None):
+#         def __torch_function__(self, func, types, args=(), kwargs=None):
             
-            self.timer.check()
+#             self.timer.check()
 
-            if kwargs is None:
-                kwargs = {}
+#             if kwargs is None:
+#                 kwargs = {}
             
-            return func(*args, **kwargs)
+#             return func(*args, **kwargs)
 
-    def __init__(self, timeout: float):
+#     def __init__(self, timeout: float):
 
-        self.timeout = timeout
-        self.start: float = None
+#         self.timeout = timeout
+#         self.start: float = None
 
-        self.patcher = Patcher(
-            [
-                Patch(Node, self.wrap(Node.execute), "execute"),
-                Patch(Graph, self.wrap(Graph.execute), "execute"),
-            ]
-        )
+#         self.patcher = Patcher(
+#             [
+#                 Patch(Node, self.wrap(Node.execute), "execute"),
+#                 Patch(Graph, self.wrap(Graph.execute), "execute"),
+#             ]
+#         )
 
-        self.fn_mode = NNsightTimer.FunctionMode(self)
+#         self.fn_mode = NNsightTimer.FunctionMode(self)
 
-    def __enter__(self):
+#     def __enter__(self):
         
-        if self.timeout is not None:
+#         if self.timeout is not None:
 
-            self.reset()
+#             self.reset()
 
-            self.patcher.__enter__()
-            self.fn_mode.__enter__()
+#             self.patcher.__enter__()
+#             self.fn_mode.__enter__()
 
-        return self
+#         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+#     def __exit__(self, exc_type, exc_value, traceback):
         
-        if self.timeout is not None:
+#         if self.timeout is not None:
 
-            self.patcher.__exit__(None, None, None)
-            self.fn_mode.__exit__(None, None, None)
+#             self.patcher.__exit__(None, None, None)
+#             self.fn_mode.__exit__(None, None, None)
 
-        if isinstance(exc_value, Exception):
-            raise exc_value
+#         if isinstance(exc_value, Exception):
+#             raise exc_value
 
-    def reset(self):
+#     def reset(self):
 
-        self.start = time.time()
+#         self.start = time.time()
 
-    def wrap(self, fn: Callable):
+#     def wrap(self, fn: Callable):
 
-        @wraps(fn)
-        def inner(*args, **kwargs):
+#         @wraps(fn)
+#         def inner(*args, **kwargs):
 
-            self.check()
+#             self.check()
 
-            return fn(*args, **kwargs)
+#             return fn(*args, **kwargs)
 
-        return inner
+#         return inner
 
-    def check(self):
+#     def check(self):
 
-        if self.start and time.time() - self.start > self.timeout:
+#         if self.start and time.time() - self.start > self.timeout:
             
-            self.start = 0
+#             self.start = 0
             
-            raise Exception(
-                f"Job took longer than timeout: {self.timeout} seconds"
-            )
+#             raise Exception(
+#                 f"Job took longer than timeout: {self.timeout} seconds"
+#             )

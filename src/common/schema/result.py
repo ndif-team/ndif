@@ -1,9 +1,10 @@
 from typing import ClassVar
-
-from nnsight.schema.result import ResultModel
+from pydantic import ConfigDict
 from .mixins import ObjectStorageMixin
 
-class BackendResultModel(ResultModel, ObjectStorageMixin):
+class BackendResultModel(ObjectStorageMixin):
+    
+    model_config = ConfigDict(extra='allow')
 
     _bucket_name: ClassVar[str] = "dev-ndif-results"
     _file_extension: ClassVar[str] = "pt"

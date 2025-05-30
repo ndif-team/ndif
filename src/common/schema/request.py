@@ -13,7 +13,6 @@ from typing_extensions import Self
 from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
-from nnsight.tracing.graph import Graph
 
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
@@ -41,11 +40,10 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    graph: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
+    request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
     model_key: str
     session_id: Optional[str] = None
-    format: str
     zlib: bool
 
     id: str
@@ -54,32 +52,31 @@ class BackendRequestModel(ObjectStorageMixin):
 
     api_key: Optional[str] = ''
 
-    def deserialize(self, model: NNsight) -> Graph:
+    def deserialize(self, model: NNsight):
 
-        graph = self.graph
+        request = self.request
 
-        if isinstance(self.graph, ray.ObjectRef):
+        if isinstance(self.request, ray.ObjectRef):
 
-            graph = ray.get(graph)
+            request = ray.get(request)
 
-        return RequestModel.deserialize(model, graph, "json", self.zlib)
+        return RequestModel.deserialize(model, request, self.zlib)
 
     @classmethod
     def from_request(
-        cls, request: Request, api_key: str
+        cls, request: Request
     ) -> Self:
 
         headers = request.headers
 
         return BackendRequestModel(
-            graph=request.body(),
-            model_key=headers["model_key"],
-            session_id=headers.get("session_id", None),
-            format=headers["format"],
-            zlib=headers["zlib"],
             id=str(uuid.uuid4()),
-            sent=float(headers.get("sent-timestamp", None)),
-            api_key=api_key,
+            request=request.body(),
+            model_key=headers["nnsight-model-key"],
+            session_id=headers.get("ndif-session_id", None),
+            zlib=headers["nnsight-zlib"],
+            sent=float(headers.get("ndif-timestamp", None)),
+            api_key=headers.get("ndif-api-key", None),
         )
 
     def create_response(
