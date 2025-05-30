@@ -1,5 +1,4 @@
 import gc
-import json
 import os
 import sys
 import time
@@ -9,7 +8,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
 from typing import Any, Dict
 
-import ray
 import socketio
 import torch
 import boto3
@@ -18,48 +16,17 @@ from ray import serve
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
-from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
-from nnsight.schema.request import StreamValueModel
-from nnsight.tracing.backends import Backend
-from nnsight.tracing.graph import Graph
-from nnsight.tracing.protocols import StopProtocol
-from nnsight.util import NNsightError
-
+from nnsight.schema.request import RequestModel
 from ...logging import load_logger
 from ...metrics import GPUMemMetric, ExecutionTimeMetric, RequestResponseSizeMetric
 from ...schema import (
-    RESULT,
     BackendRequestModel,
     BackendResponseModel,
     BackendResultModel,
 )
 from ..util import set_cuda_env_var
-from . import protocols
-
-
-class ExtractionBackend(Backend):
-
-    def __call__(self, graph: Graph) -> RESULT:
-
-        try:
-
-            graph.nodes[-1].execute()
-
-            result = BackendResultModel.from_graph(graph)
-
-        except StopProtocol.StopException:
-
-            result = BackendResultModel.from_graph(graph)
-
-        finally:
-
-            graph.nodes.clear()
-            graph.stack.clear()
-
-        return result
-
-
+from ..nn.backend import RemoteExecutionBackend
 class BaseDeployment:
 
     def __init__(
@@ -166,10 +133,6 @@ class BaseModelDeployment(BaseDeployment):
 
         self.request: BackendRequestModel
 
-        protocols.LogProtocol.set(lambda *args: self.log(*args))
-
-        RemoteContext.set(self.stream_send, self.stream_receive)
-
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
 
@@ -224,18 +187,18 @@ class BaseModelDeployment(BaseDeployment):
 
     ### ABSTRACT METHODS #################################
 
-    def pre(self) -> Graph:
+    def pre(self) -> RequestModel:
         """Logic to execute before execution."""
-        graph = self.request.deserialize(self.model)
+        request = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
 
-        return graph
+        return request
 
-    def execute(self, graph: Graph) -> Any:
+    def execute(self, request: RequestModel) -> Any:
         """Execute request.
 
         Args:
@@ -253,7 +216,7 @@ class BaseModelDeployment(BaseDeployment):
         execution_time = time.time()
 
         # Execute object.
-        result = ExtractionBackend()(graph)
+        result = RemoteExecutionBackend(request.interventions)(request.tracer)
 
         execution_time = time.time() - execution_time
 
@@ -279,7 +242,7 @@ class BaseModelDeployment(BaseDeployment):
 
         result = BackendResultModel(
             id=self.request.id,
-            result=saves,
+            **saves,
         ).save(self.object_store)
 
         self.respond(
@@ -301,25 +264,24 @@ class BaseModelDeployment(BaseDeployment):
         Args:
             exception (Exception): The exception that was raised during __call__.
         """
-        if isinstance(exception, NNsightError):
-            # Remove traceback limit to get full stack trace
-            sys.tracebacklimit = None
-            self.respond(
-                status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
-                description=f"An error has occured during the execution of the intervention graph.\n{exception.traceback_content}",
-                data={
-                    "err_message": exception.message,
-                    "node_id": exception.node_id,
-                    "traceback": exception.traceback_content,
-                },
-            )
-        else:
-            # For non-NNsight errors, include full traceback
-            description = traceback.format_exc()
-            self.respond(
-                status=BackendResponseModel.JobStatus.ERROR,
-                description=f"{description}\n{str(exception)}",
-            )
+        # if isinstance(exception, NNsightError):
+        #     # Remove traceback limit to get full stack trace
+        #     sys.tracebacklimit = None
+        #     self.respond(
+        #         status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
+        #         description=f"An error has occured during the execution of the intervention graph.\n{exception.traceback_content}",
+        #         data={
+        #             "err_message": exception.message,
+        #             "node_id": exception.node_id,
+        #             "traceback": exception.traceback_content,
+        #         },
+        #     )
+        # For non-NNsight errors, include full traceback
+        description = traceback.format_exc()
+        self.respond(
+            status=BackendResponseModel.JobStatus.ERROR,
+            description=f"{description}\n{str(exception)}",
+        )
 
         # Special handling for CUDA device-side assertion errors
         if "device-side assert triggered" in str(exception):

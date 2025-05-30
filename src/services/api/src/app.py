@@ -32,7 +32,7 @@ logger = load_logger(service_name="API", logger_name="API")
 
 
 from .api_key import api_key_auth
-from .metrics import TransportLatencyMetric
+from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 
@@ -121,25 +121,26 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    # extract the request data
-    
-    request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request
-    )
-
     # process the request
     try:
-
-        TransportLatencyMetric.update(request)
+        
+        # extract the request data
+        request: BackendRequestModel = BackendRequestModel.from_request(
+            raw_request
+        )
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
         )
+        
+        TransportLatencyMetric.update(request)
+        
+        NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key
-        api_key_auth(request.api_key, request)
+        api_key_auth(request)
         
         request.request = await request.request
         request.request = ray.put(request.request)

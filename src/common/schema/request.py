@@ -13,7 +13,6 @@ from typing_extensions import Self
 from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
-from nnsight.tracing.graph import Graph
 
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
@@ -53,15 +52,15 @@ class BackendRequestModel(ObjectStorageMixin):
 
     api_key: Optional[str] = ''
 
-    def deserialize(self, model: NNsight) -> Graph:
+    def deserialize(self, model: NNsight):
 
-        graph = self.graph
+        request = self.request
 
-        if isinstance(self.graph, ray.ObjectRef):
+        if isinstance(self.request, ray.ObjectRef):
 
-            graph = ray.get(graph)
+            request = ray.get(request)
 
-        return RequestModel.deserialize(model, graph, "json", self.zlib)
+        return RequestModel.deserialize(model, request, self.zlib)
 
     @classmethod
     def from_request(
@@ -118,4 +117,3 @@ class BackendRequestModel(ObjectStorageMixin):
         )
 
         return response
-\
