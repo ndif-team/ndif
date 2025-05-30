@@ -1,14 +1,11 @@
-import asyncio
 import os
-import threading
-import time
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict
 import uuid
+import base64
 
-import ray
 import socketio
 import uvicorn
 import boto3
@@ -22,7 +19,8 @@ from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
-from ray import serve
+from slugify import slugify
+import requests
 
 from nnsight.schema.response import ResponseModel
 
@@ -30,12 +28,9 @@ from .logging import load_logger
 
 logger = load_logger(service_name="API", logger_name="API")
 
-
 from .api_key import api_key_auth
 from .metrics import TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,27 +74,6 @@ object_store = boto3.client(
     config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
 )
 
-# Init Ray connection
-RAY_RETRY_INTERVAL_S = os.environ.get("RAY_RETRY_INTERVAL_S", 5)
-
-def connect_to_ray():
-    while True:
-        try:
-            if not ray.is_initialized():
-                ray.shutdown()
-                serve.context._set_global_client(None)
-                ray.init(logging_level="error")
-                logger.info("Connected to Ray cluster.")
-        except Exception as e:
-            logger.error(f"Failed to connect to Ray cluster: {e}")
-            
-        time.sleep(RAY_RETRY_INTERVAL_S)
-        
-        
-# Start the background thread
-ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
-ray_watchdog.start()
-
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
@@ -142,23 +116,41 @@ async def request(
         # authenticate api key
         api_key_auth(raw_request, request)
         
-        request.graph = await request.graph
-        request.graph = ray.put(request.graph)
-
-        # Send to request workers waiting to process requests on the "request" queue.
-        # Forget as we don't care about the response.
-        serve.get_app_handle("Request").remote(request)
-
-        # Back up request object by default (to be deleted on successful completion)
-        # request = request.model_copy()
-        # request.object = object
-        # request.save(object_store)
+        try:
+            # Await the graph coroutine before serializing
+            graph_data = await request.graph
+            request.graph = graph_data  # Ensure the graph is set to the awaited value
+            
+            logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
+            queue_response = requests.post(
+                f"http://{os.environ.get('QUEUE_URL')}/queue",
+                data=graph_data,  # Use the awaited graph data
+                headers={
+                    "Content-Type": "application/octet-stream",  # Since we're sending raw data
+                    "model_key": request.model_key,
+                    "format": request.format,
+                    "zlib": str(request.zlib),
+                    "session_id": request.session_id if request.session_id else "",
+                    "sent-timestamp": str(request.sent) if request.sent else "",
+                    "ndif-api-key": request.api_key,
+                },
+            )
+            
+            if not queue_response.ok:
+                raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
+                
+            logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
+        except Exception as e:
+            description = f"Failed to send request to queue: {e}"
+            logger.error(description)
+            response = request.create_response(
+                status=ResponseModel.JobStatus.ERROR,
+                description=description,
+                logger=logger,
+            )
     except Exception as exception:
 
-        if 'ray ' in str(exception).lower():
-            description = "Issue with Ray. NDIF compute backend must be down :("
-        else:
-            description = f"{traceback.format_exc()}\n{str(exception)}"
+        description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
         response = request.create_response(
