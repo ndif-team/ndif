@@ -153,11 +153,26 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     
+    # Check for nnsight loggers
+    nnsight_logger_names = ['nnsight', 'nnsight_remote']
+    has_nnsight_console_handler = False
+    for name in nnsight_logger_names:
+        nnsight_logger = logging.getLogger(name)
+        if nnsight_logger.hasHandlers():
+            for handler in nnsight_logger.handlers:
+                if isinstance(handler, logging.StreamHandler):
+                    has_nnsight_console_handler = True
+                    break
+        if has_nnsight_console_handler:
+            break
+
     # Set up console handler for local debugging
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(console_formatter)
-    console_handler.setLevel(logging.DEBUG)
-    logger.addHandler(console_handler)
+    # Only add handler if nnsight hasn't already set up a console handler
+    if not has_nnsight_console_handler:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(console_formatter)
+        console_handler.setLevel(logging.DEBUG)
+        logger.addHandler(console_handler)
 
     # Set up Loki handler if URL is configured
     if LOKI_URL is not None:
