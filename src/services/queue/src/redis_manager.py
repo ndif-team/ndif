@@ -1,9 +1,7 @@
 import redis
 from typing import List, Optional
-import ray
 import base64
-import zlib
-
+import pickle
 from .schema import BackendRequestModel
 from .logging import load_logger
 
@@ -40,31 +38,27 @@ class RedisQueueManager:
         """Add a request to the queue."""
         queue_key = get_queue_key(request.model_key)
         
-        # Convert graph to base64 for JSON serialization
-        if isinstance(request.graph, bytes):
-            request.graph = base64.b64encode(request.graph).decode('utf-8')
-        
-        # Convert pydantic model to JSON string
-        request_json = request.model_dump_json()
-        self.redis.lpush(queue_key, request_json)
+        # Convert to pickle
+        request_pickle = pickle.dumps(request)
+        # Convert to base64 string (format which redis can store)
+        request_b64 = base64.b64encode(request_pickle).decode('utf-8')
+        self.redis.lpush(queue_key, request_b64)
+        logger.debug(f"Enqueued request: {request.id}")
 
     def dequeue(self, model_key: str) -> Optional[BackendRequestModel]:
         """Remove and return the next request from the queue."""
         queue_key = get_queue_key(model_key)
         
         # Get the last item (FIFO)
-        result_json = self.redis.rpop(queue_key)
-        if not result_json:
+        result_b64 = self.redis.rpop(queue_key)
+        if not result_b64:
             return None
         
         try:
-            # Parse the model
-            model = BackendRequestModel.model_validate_json(result_json)
-            
-            # Convert base64 graph back to bytes if it's a string
-            if isinstance(model.graph, str):
-                model.graph = base64.b64decode(model.graph.encode('utf-8'))
-                
+            # Decode from base64 and unpickle
+            result_pickle = base64.b64decode(result_b64.encode('utf-8'))
+            model : BackendRequestModel = pickle.loads(result_pickle)
+            logger.debug(f"Dequeued request: {model.id}")
             return model
         except Exception as e:
             logger.error(f"Error parsing dequeued item: {e}")

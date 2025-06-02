@@ -65,10 +65,7 @@ class Dispatcher:
     async def dispatch_request(self, model_key: str, task: BackendRequestModel):
         """Dispatch a request to Ray."""
         try:
-            # Upload graph to Ray object store
-            if isinstance(task.graph, bytes):
-                task.graph = ray.put(task.graph)
-                
+            task.graph = ray.put(task.graph)
             model_key = f"Model:{slugify(task.model_key)}"
             actor = serve.get_app_handle(model_key)
             if not actor:

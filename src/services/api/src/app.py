@@ -117,27 +117,18 @@ async def request(
         api_key_auth(raw_request, request)
         
         try:
-            # Await the graph coroutine before serializing
-            graph_data = await request.graph
-            request.graph = graph_data  # Ensure the graph is set to the awaited value
+            body = await raw_request.body()
+            headers = dict(raw_request.headers)
             
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(
                 f"http://{os.environ.get('QUEUE_URL')}/queue",
-                data=graph_data,  # Use the awaited graph data
-                headers={
-                    "Content-Type": "application/octet-stream",  # Since we're sending raw data
-                    "model_key": request.model_key,
-                    "format": request.format,
-                    "zlib": str(request.zlib),
-                    "session_id": request.session_id if request.session_id else "",
-                    "sent-timestamp": str(request.sent) if request.sent else "",
-                    "ndif-api-key": request.api_key,
-                },
+                data=body,
+                headers=headers,
             )
             
-            if not queue_response.ok:
-                raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
+            #if not queue_response.ok:
+            #    raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
                 
             logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
         except Exception as e:

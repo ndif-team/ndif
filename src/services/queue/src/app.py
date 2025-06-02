@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
 import socketio
 import boto3
 import redis
@@ -20,7 +21,7 @@ from .redis_manager import RedisQueueManager
 from .dispatcher import Dispatcher
 from .logging import load_logger
 
-logger = load_logger(service_name="API", logger_name="API")
+logger = load_logger(service_name="Queue", logger_name="Queue")
 
 app = FastAPI()
 
@@ -45,12 +46,7 @@ object_store = boto3.client(
     config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
 )
 
-sio = socketio.SimpleClient(
-    url=os.environ.get("BROKER_URL"),
-    socketio_path="/ws/socket.io",
-    transports=["websocket"],
-    wait_timeout=100000,
-)
+sio = socketio.SimpleClient(reconnection_attempts=10)
 
 queue_manager = RedisQueueManager(
     os.environ.get("REDIS_HOST"),
@@ -78,6 +74,8 @@ def connect_to_ray():
 ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
 ray_watchdog.start()
 
+api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
+
 Instrumentator().instrument(app).expose(app)
 
 @app.on_event("startup")
@@ -88,34 +86,43 @@ async def startup_event():
 async def shutdown_event():
     await dispatcher.stop()
 
+def stream_connect(job_id: str):
+    if sio.client is None:
+        sio.connect(
+            f"{os.environ.get('API_URL')}?job_id={job_id}",
+            socketio_path="/ws/socket.io",
+            transports=["websocket"],
+            wait_timeout=10,
+        )
+        time.sleep(0.1)
+
 @app.post("/queue")
-async def queue(request: Request):
+async def queue(request: Request, api_key: str = Security(api_key_header)):
     """Endpoint to add a request to the queue."""
+    
     try:
-        body = await request.body()
-        headers = request.headers
+        # First, get the request body as bytes to avoid coroutine issues
+        request_body = await request.body()
         
-        backend_request = BackendRequestModel(
-            graph=body,
-            model_key=headers["model_key"],
-            session_id=headers.get("session_id"),
-            format=headers["format"],
-            zlib=headers.get("zlib", "False").lower() == "true",
-            id=str(uuid.uuid4()),
-            sent=float(headers.get("sent-timestamp", time.time())),
-            api_key=headers.get("ndif-api-key", ""),
+        # Create a modified request object with the resolved body
+        backend_request = BackendRequestModel.from_request(
+            request, api_key
         )
 
-        await queue_manager.enqueue(backend_request)
+        logger.debug(f"Received request: {backend_request.id}")
+        
+        # Replace the coroutine graph with the actual bytes
+        backend_request.graph = request_body
+        queue_manager.enqueue(backend_request)
+        logger.debug(f"Enqueued request: {backend_request.id}")
 
+        stream_connect(backend_request.id)
         response = backend_request.create_response(
             status=ResponseModel.JobStatus.APPROVED,
             description="Your job was approved and is waiting to be run.",
             logger=logger,
-        )
-        
-        await response.respond(sio, object_store)
-        return {"status": "success", "message": "Request queued successfully"}
+        ).respond(sio, object_store)
+        return response
         
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
