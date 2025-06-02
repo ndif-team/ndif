@@ -10,8 +10,6 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 from .logging import load_logger
 from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
-import json
-#from .util import check_valid_email
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -93,21 +91,9 @@ api_key_store = None
 if host is not None:
     api_key_store = AccountsDB(host, port, database, user, password)
 
-def extract_request_metadata(raw_request: "Request") -> dict:
-    """
-    Extracts relevant metadata from the incoming raw request, such as IP address,
-    user agent, and content length, and returns them as a dictionary.
-    """
-    metadata = {
-        "ip_address": raw_request.client.host,
-        "user_agent": raw_request.headers.get("user-agent"),
-        "content_length": int(raw_request.headers.get("content-length", 0)),
-    }
-    return metadata
 
 
 def api_key_auth(
-    raw_request: "Request",
     request: "BackendRequestModel",
 ) -> None:
     """
@@ -120,11 +106,6 @@ def api_key_auth(
 
     Returns:
     """
-
-    metadata = extract_request_metadata(raw_request)
-
-    ip_address, user_agent, content_length = metadata.values()
-    NetworkStatusMetric.update(request, ip_address, user_agent, content_length)
 
     # For local development, we don't want to check the API key
     if host is None:
