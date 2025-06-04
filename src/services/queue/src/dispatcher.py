@@ -1,10 +1,10 @@
 import asyncio
-from .redis_manager import RedisQueueManager
 import os
 import ray
 from ray import serve
 from slugify import slugify
 from .schema import BackendRequestModel
+from .queue_manager import QueueManager
 from .logging import load_logger
 
 logger = load_logger(service_name="Dispatcher", logger_name="Dispatcher")
@@ -12,7 +12,7 @@ logger = load_logger(service_name="Dispatcher", logger_name="Dispatcher")
 poll_interval = float(os.getenv("DISPATCHER_POLL_INTERVAL", "1.0"))
 
 class Dispatcher:
-    def __init__(self, queue_manager: RedisQueueManager, ray_url: str, poll_interval: float = poll_interval):
+    def __init__(self, queue_manager: QueueManager, ray_url: str, poll_interval: float = poll_interval):
         self.queue_manager = queue_manager
         self.ray_url = ray_url
         self.poll_interval = poll_interval

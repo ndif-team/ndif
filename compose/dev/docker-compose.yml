@@ -68,7 +68,6 @@ services:
     environment:
       OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
       BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
-      QUEUE_WORKERS: ${QUEUE_WORKERS}
       RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
       API_URL: http://${HOST_IP}:${DEV_API_PORT}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
@@ -78,9 +77,6 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      REDIS_DB: ${REDIS_DB}
 
   prometheus:
     image: prom/prometheus:latest

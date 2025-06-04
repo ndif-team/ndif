@@ -2,7 +2,6 @@ from fastapi import FastAPI, Request, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 import socketio
 import boto3
-import redis
 import os
 import time
 import threading
@@ -12,12 +11,10 @@ from ray import serve
 from fastapi_socketio import SocketManager
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-import uvicorn
-import uuid
 
 from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
-from .redis_manager import RedisQueueManager
+from .queue_manager import QueueManager
 from .dispatcher import Dispatcher
 from .logging import load_logger
 
@@ -48,11 +45,7 @@ object_store = boto3.client(
 
 sio = socketio.SimpleClient(reconnection_attempts=10)
 
-queue_manager = RedisQueueManager(
-    os.environ.get("REDIS_HOST"),
-    os.environ.get("REDIS_PORT"),
-    os.environ.get("REDIS_DB"),
-)
+queue_manager = QueueManager()
 
 dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
 
@@ -106,7 +99,7 @@ async def queue(request: Request, api_key: str = Security(api_key_header)):
         
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
-            request, api_key
+            request, api_key 
         )
 
         logger.debug(f"Received request: {backend_request.id}")
@@ -146,6 +139,3 @@ async def queue(model_key: Optional[str] = None):
 async def ping():
     """Endpoint to check if the server is online."""
     return "pong"
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=6001, workers=os.environ.get("WORKERS", 1))
