@@ -404,15 +404,20 @@ class BaseModelDeployment(BaseDeployment):
         - Job ID included in the connection URL for proper routing of receiving stream data from the user.
         """
         if self.sio.client is None or not self.sio.connected:
-            self.sio.connected = False
-            self.sio.connect(
-                f"{self.api_url}?job_id={self.request.id}",
-                socketio_path="/ws/socket.io",
-                transports=["websocket"],
-                wait_timeout=10,
-            )
-            # Wait for connection to be fully established
-            time.sleep(0.1)  # Small delay to ensure connection is ready
+            try:
+                self.sio.connected = False
+                self.sio.connect(
+                    f"{self.api_url}?job_id={self.request.id}",
+                    socketio_path="/ws/socket.io",
+                    transports=["websocket"],
+                    wait_timeout=10,
+                )
+                # Wait for connection to be fully established
+                time.sleep(0.1)  # Small delay to ensure connection is ready
+            except Exception as e:
+                print(f"Error connecting to socketio: {e}")
+                time.sleep(1)
+                self.stream_connect()
 
     def respond(self, **kwargs) -> None:
         """Sends a response back to the client.
