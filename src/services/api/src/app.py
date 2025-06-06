@@ -119,6 +119,7 @@ async def request(
         try:
             body = await raw_request.body()
             headers = dict(raw_request.headers)
+            headers["request_id"] = request.id
             
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(

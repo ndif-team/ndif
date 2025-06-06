@@ -1,14 +1,14 @@
-from fastapi import FastAPI, Request, HTTPException, Security
-from fastapi.security.api_key import APIKeyHeader
-import socketio
+import asyncio
 import boto3
 import os
+import ray
+import socketio
 import time
 import threading
-import ray
 from typing import Optional
 from ray import serve
-from fastapi_socketio import SocketManager
+from fastapi import FastAPI, Request, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -18,7 +18,7 @@ from .queue_manager import QueueManager
 from .dispatcher import Dispatcher
 from .logging import load_logger
 
-logger = load_logger(service_name="Queue", logger_name="Queue")
+logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
 app = FastAPI()
 
@@ -44,6 +44,8 @@ object_store = boto3.client(
 )
 
 sio = socketio.SimpleClient(reconnection_attempts=10)
+connection_event = asyncio.Event()
+connection_task = None
 
 queue_manager = QueueManager()
 
@@ -74,54 +76,87 @@ Instrumentator().instrument(app).expose(app)
 @app.on_event("startup")
 async def startup_event():
     await dispatcher.start()
+    # Start the socket connection task
+    global connection_task
+    connection_task = asyncio.create_task(manage_socket_connection())
 
 @app.on_event("shutdown")
 async def shutdown_event():
     await dispatcher.stop()
+    if connection_task:
+        connection_task.cancel()
+        try:
+            await connection_task
+        except asyncio.CancelledError:
+            pass
 
-def stream_connect(job_id: str):
-    if sio.client is None:
-        sio.connect(
-            f"{os.environ.get('API_URL')}?job_id={job_id}",
-            socketio_path="/ws/socket.io",
-            transports=["websocket"],
-            wait_timeout=10,
-        )
-        time.sleep(0.1)
+async def manage_socket_connection():
+    """Background task to manage socket connection."""
+    while True:
+        try:
+            if not sio.connected:
+                api_url = os.environ.get('API_URL')
+                sio.connected = False
+                sio.connect(
+                    api_url,
+                    socketio_path="/ws/socket.io",
+                    transports=["websocket"],
+                    wait_timeout=100000,
+                )
+                connection_event.set()
+                logger.debug(f"Connected to SocketIO mount: {api_url}")
+            await asyncio.sleep(1)  # Check connection status periodically
+        except Exception as e:
+            logger.error(f"Failed to connect to API: {e}")
+            connection_event.clear()
+            await asyncio.sleep(5)  # Wait before retrying
+
+async def ensure_socket_connection(request: Request, call_next):
+    """Middleware to ensure socket connection for /queue endpoint."""
+    if request.url.path == "/queue" and request.method == "POST":
+        if not sio.connected:
+            # Wait for connection with timeout
+            try:
+                await asyncio.wait_for(connection_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Socket connection timeout")
+    
+    response = await call_next(request)
+    return response
+
+app.middleware("http")(ensure_socket_connection)
 
 @app.post("/queue")
-async def queue(request: Request, api_key: str = Security(api_key_header)):
+async def queue(request: Request):
     """Endpoint to add a request to the queue."""
     
     try:
-        # First, get the request body as bytes to avoid coroutine issues
-        request_body = await request.body()
-        
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
-            request, api_key 
+            request, request.headers.get("api_key")  # TODO 
         )
+        backend_request.id = request.headers.get("request_id")
 
-        logger.debug(f"Received request: {backend_request.id}")
-        
         # Replace the coroutine graph with the actual bytes
-        backend_request.graph = request_body
+        backend_request.graph = await backend_request.graph
         queue_manager.enqueue(backend_request)
         logger.debug(f"Enqueued request: {backend_request.id}")
 
-        stream_connect(backend_request.id)
+        logger.debug(f"Creating response for request: {backend_request.id}")
         response = backend_request.create_response(
             status=ResponseModel.JobStatus.APPROVED,
             description="Your job was approved and is waiting to be run.",
             logger=logger,
-        ).respond(sio, object_store)
+        )
+        logger.debug(f"Responding to request: {backend_request.id}")
+        logger.debug(f"SIO client is non-null: {sio.client is not None}")
+        response.respond(sio, object_store)
+        logger.debug(f"Responded to request: {backend_request.id}")
         return response
         
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.head("/queue/{model_key}/{request_id}")
 async def queue(model_key: Optional[str] = None):
     """Endpoint to verify the request is in the queue."""
