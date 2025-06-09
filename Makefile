@@ -68,10 +68,12 @@ up:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	@if [ "$(ENV)" = "dev" ] && [ "$(DEV_NNS)" = "True" ]; then \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) \
+		RAY_VERSION=$(TAG) API_VERSION=$(TAG) QUEUE_VERSION=$(TAG) && \
 		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
 	else \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) \
+		RAY_VERSION=$(TAG) API_VERSION=$(TAG) QUEUE_VERSION=$(TAG) && \
 		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
 	fi
 
