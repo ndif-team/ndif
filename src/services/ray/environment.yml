@@ -16,3 +16,6 @@ dependencies:
     # Database
     - boto3
     - influxdb-client
+    # Google Cal Scheduling
+    - google-api-python-client
+    - google

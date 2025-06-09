@@ -265,7 +265,7 @@ async def ping():
     return "pong"
 
 
-@app.get("/stats", status_code=200)
+@app.get("/status", status_code=200)
 @cache(expire=600)
 async def status():
 
