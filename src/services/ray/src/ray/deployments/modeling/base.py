@@ -7,68 +7,28 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
 from typing import Any, Dict, List, Optional
-
+import time
 import boto3
+import ray
 import socketio
 import torch
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
+from ray._private.internal_api import free as ray_free
+from ray.experimental.locations import get_local_object_locations, get_object_locations
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
+
 from ....logging import load_logger
 from ....metrics import ExecutionTimeMetric, GPUMemMetric, RequestResponseSizeMetric
-from ....schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
-from ..util import set_cuda_env_var
-from ..nn.backend import RemoteExecutionBackend
-from ..nn.ops import StdoutRedirect
-class BaseDeployment:
-from . import protocols
-from ray._private.internal_api import free as ray_free
-from ray.experimental.locations import get_local_object_locations, get_object_locations
-import ray.cloudpickle as cpickle
-import base64
-
-def object_ref_from_id(id:str) -> ray.ObjectRef:
-    
-    obj_bytes = base64.b64decode(id)
-
-    return cpickle.loads(obj_bytes)
-
-def object_ref_to_id(obj_ref:ray.ObjectRef) -> str:
-    
-    obj_bytes = cpickle.dumps(obj_ref)
-    
-    return base64.b64encode(obj_bytes).decode('utf-8')
-
-class ExtractionBackend(Backend):
-
-    def __call__(self, graph: Graph) -> RESULT:
-
-        try:
-
-            graph.nodes[-1].execute()
-
-            result = BackendResultModel.from_graph(graph)
-
-        except StopProtocol.StopException:
-
-            result = BackendResultModel.from_graph(graph)
-
-        finally:
-
-            graph.nodes.clear()
-            graph.stack.clear()
-
-        return result
+from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ...nn.backend import RemoteExecutionBackend
+from ...nn.ops import StdoutRedirect
 
 
 def threaded(method, size: int = 1):
@@ -129,18 +89,17 @@ class BaseModelDeployment:
         self.logger = load_logger(
             service_name=str(self.__class__), logger_name="ray.serve"
         )
-        
-        
-        
+
         self.runtime_context = ray.get_runtime_context()
 
         try:
             self.replica_context = serve.get_replica_context()
         except:
             self.replica_context = None
-            
-            
-        self.cache_actor = ray.get_actor(f"CacheActor:{self.runtime_context.worker.node._node_id}")
+
+        self.cache_actor = ray.get_actor(
+            f"CacheActor:{self.runtime_context.worker.node._node_id}"
+        )
 
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -164,31 +123,43 @@ class BaseModelDeployment:
             self.model = self.load_from_disk()
 
         if dispatch:
-            self.model._model.requires_grad_(False)
+            self.model._module.requires_grad_(False)
 
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
 
     def load_from_disk(self):
+        
+        start = time.time()
 
         self.logger.info(f"Loading model from disk for model key {self.model_key}")
-        
-        return RemoteableMixin.from_model_key(
+
+        model = RemoteableMixin.from_model_key(
             self.model_key,
             device_map="auto",
             dispatch=self.dispatch,
             torch_dtype=self.dtype,
             **self.extra_kwargs,
         )
-    
+        
+        self.logger.info(f"Model loaded from disk took {time.time() - start} seconds")
+        
+        return model
+
     def load_from_cache(self):
         
+        start = time.time()
+
         self.logger.info(f"Loading model from cache for model key {self.model_key}")
 
         model = ray.get(ray.get(self.cache_actor.get.remote(self.model_key)))
+
+        self.logger.info(f"Model loaded from cache for model key {self.model_key}")
         
-        self.logger.info(f"Model loaded from cache for model key {model}")
+        self.logger.info(f"Model loading from cache took {time.time() - start} seconds")
+        
+        start = time.time()
 
         # Automatically compute balanced memory allocation
         max_memory = get_balanced_memory(model._module)
@@ -198,16 +169,17 @@ class BaseModelDeployment:
 
         # Dispatch the model according to the inferred device map
         model._module = dispatch_model(model._module, device_map=device_map)
+        
+        self.logger.info(f"Model dispatching from cache took {time.time() - start} seconds")
 
         return model
-    
+
     def __del__(self):
-        
-        
+
         if not self.cached:
-            self.cache_actor.cache.remote(self.model_key, self.dtype, **self.extra_kwargs)
-        
-        
+            self.cache_actor.cache.remote(
+                self.model_key, self.dtype, **self.extra_kwargs
+            )
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -488,14 +460,14 @@ class BaseModelDeployment:
 class BaseModelDeploymentArgs(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
+
     model_key: str
 
     api_url: str
     object_store_url: str
     object_store_access_key: str
     object_store_secret_key: str
-    
+
     cached: bool = False
 
     execution_timeout: float | None = None

@@ -3,8 +3,9 @@ from enum import Enum
 from typing import Dict, List, Optional, Set
 
 from ... import MODEL_KEY
-from .deployment import Deployment, DeploymentLevel
 from ..cache_actor import CacheActor
+from .deployment import Deployment, DeploymentLevel
+
 
 class CandidateLevel(Enum):
 
@@ -40,7 +41,6 @@ class Resources:
     total_memory_bytes: int
 
     available_gpus: int = 0
-    available_memory_bytes: int = 0
 
     def gpus_required(self, model_size_in_bytes: int) -> int:
 
@@ -54,9 +54,9 @@ class Resources:
             f"gpu_memory_bytes={self.gpu_memory_bytes}, "
             f"total_memory_bytes={self.total_memory_bytes}, "
             f"available_gpus={self.available_gpus}, "
-            f"available_memory_bytes={self.available_memory_bytes}"
             f")"
         )
+
 
 class Node:
 
@@ -68,9 +68,10 @@ class Node:
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
         self.cached: Set[MODEL_KEY] = set()
-        
-        self.cache_actor = CacheActor.options(name=f"CacheActor:{self.id}").remote()
 
+        self.cache_actor = CacheActor.options(
+            name=f"CacheActor:{self.id}", resources={f"node:{self.name}": 0.01}
+        ).remote(self.resources.total_memory_bytes)
 
     def deploy(
         self,
@@ -102,7 +103,7 @@ class Node:
         self.resources.available_gpus += self.deployments[model_key].gpus_required
 
         del self.deployments[model_key]
-        
+
         self.cached.add(model_key)
 
     def evaluate(
@@ -118,13 +119,15 @@ class Node:
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
         cached = model_key in self.cached
-                 
+
         gpus_required = self.resources.gpus_required(model_size_in_bytes)
 
         if gpus_required <= self.resources.available_gpus:
 
             return Candidate(
-                candidate_level=CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE,
+                candidate_level=(
+                    CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
+                ),
                 gpus_required=gpus_required,
             )
 

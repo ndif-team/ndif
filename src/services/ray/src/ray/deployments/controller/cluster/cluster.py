@@ -86,7 +86,6 @@ class Cluster:
             resources = available_resources[id]
             
             self.nodes[id].resources.available_gpus = resources.get("GPU", 0)
-            self.nodes[id].resources.available_memory_bytes = resources.get("object_store_memory", 0)
             
             LOGGER.info(f"=> Node {name} updated with resources: {self.nodes[id].resources}")
             
