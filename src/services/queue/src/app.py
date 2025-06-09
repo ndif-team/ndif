@@ -1,12 +1,8 @@
 import asyncio
 import boto3
 import os
-import ray
 import socketio
-import time
-import threading
 from typing import Optional
-from ray import serve
 from fastapi import FastAPI, Request, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,26 +44,8 @@ connection_event = asyncio.Event()
 connection_task = None
 
 queue_manager = QueueManager()
-
 dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
 
-def connect_to_ray():
-    while True:
-        try:
-            if not ray.is_initialized():
-                ray.shutdown()
-                serve.context._set_global_client(None)
-                ray.init(logging_level="error")
-                logger.info("Connected to Ray cluster.")
-        except Exception as e:
-            logger.error(f"Failed to connect to Ray cluster: {e}")
-            
-        time.sleep(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
-        
-        
-# Start the background thread
-ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
-ray_watchdog.start()
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 

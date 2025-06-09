@@ -41,14 +41,14 @@ class QueueManager:
         return model_keys
 
     def enqueue(self, request: BackendRequestModel) -> None:
-        """Add a request to the queue."""
+        """Add a request to the start of the queue (LIFO)."""
         queue_key = get_queue_key(request.model_key)
         
         # Initialize queue if it doesn't exist
         if queue_key not in self.queues:
             self.queues[queue_key] = self.manager.list()
         
-        # Add to the beginning of the list (LIFO for lpush equivalent)
+        # Add to the beginning of the list (LIFO)
         queue = self.queues[queue_key]
         queue.insert(0, request)
         self.queues[queue_key] = queue
