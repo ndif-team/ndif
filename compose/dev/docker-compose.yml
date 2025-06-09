@@ -93,7 +93,7 @@ services:
       - ray
 
   influxdb:
-    image: influxdb:2
+    image: influxdb:${INFLUXDB_VERSION}
     network_mode: "host"
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
