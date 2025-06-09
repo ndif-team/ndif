@@ -3,14 +3,16 @@ import os
 from ray import serve
 
 from nnsight.tracing.graph import Graph
+from nnsight.schema.request import RequestModel
+from ..util import set_cuda_env_var
 from .base import BaseModelDeployment, BaseModelDeploymentArgs, threaded
 
 
 class ThreadedModelDeployment(BaseModelDeployment):
 
     @threaded
-    def execute(self, graph: Graph):
-        return super().execute(graph)
+    def execute(self, request: RequestModel):
+        return super().execute(request)
 
 
 @serve.deployment(
