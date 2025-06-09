@@ -1,17 +1,17 @@
 services:
   message_broker:
-    image: redis:latest
+    image: redis:${REDIS_VERSION}
     ports:
       - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:${MINIO_VERSION}
     command: server /data
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray:
-    image: ray:latest
+    image: ray:${RAY_VERSION}
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
@@ -44,7 +44,7 @@ services:
       - .env
 
   api:
-    image: api:latest
+    image: api:${API_VERSION}
     ports:
       - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
@@ -62,7 +62,7 @@ services:
 
     
   queue:
-    image: queue:latest
+    image: queue:${QUEUE_VERSION}
     ports:
       - ${DEV_QUEUE_PORT}:${QUEUE_INTERNAL_PORT}
     environment:
@@ -79,7 +79,7 @@ services:
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:${PROMETHEUS_VERSION}
     network_mode: "host"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -107,7 +107,7 @@ services:
       - influxdb2-config:/etc/influxdb2
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:${GRAFANA_VERSION}
     network_mode: "host"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
@@ -122,7 +122,7 @@ services:
       - influxdb
 
   loki:
-    image: grafana/loki:2.8.1
+    image: grafana/loki:${LOKI_VERSION}
     network_mode: "host"
     volumes:
       - loki-data:/loki
