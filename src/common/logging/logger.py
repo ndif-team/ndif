@@ -15,6 +15,8 @@ LOKI_RETRY_COUNT = int(os.environ.get('LOKI_RETRY_COUNT', '3'))  # Number of ret
 # Global logger instance
 LOGGER: Optional[logging.Logger] = None
 
+logging.getLogger("urllib3.connectionpool").setLevel(logging.CRITICAL)
+
 class CustomJSONFormatter(logging.Formatter):
     """
     Custom JSON formatter for structured logging.
@@ -154,7 +156,7 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
     )
     
     # Set up console handler for local debugging
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(stream=sys.stdout)
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(logging.DEBUG)
     logger.addHandler(console_handler)
