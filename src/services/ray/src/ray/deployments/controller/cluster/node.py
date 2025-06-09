@@ -12,8 +12,9 @@ class CandidateLevel(Enum):
     DEPLOYED = 0
     CACHED_AND_FREE = 1
     FREE = 2
-    EVICTABLE = 3
+    CACHED_AND_FULL = 3
     FULL = 4
+    CANT_ACCOMMODATE = 5
 
 
 class Candidate:
@@ -105,6 +106,30 @@ class Node:
         del self.deployments[model_key]
 
         self.cached.add(model_key)
+        
+    def eviction(self, gpus_required: int) -> List[MODEL_KEY]:
+        #TODO might not be able to evict enough
+        deployments = sorted(list(self.deployments.values()), key=lambda x: x.gpus_required)
+        
+        gpus_needed = gpus_required - self.resources.available_gpus
+        
+        evictions = []
+        
+        for deployment in deployments:
+            
+            if deployment.deployment_level == DeploymentLevel.DEDICATED:
+                
+                continue
+            
+            evictions.append(deployment.model_key)
+            
+            gpus_needed -= deployment.gpus_required
+            
+            if gpus_needed <= 0:
+                
+                break
+            
+        return evictions
 
     def evaluate(
         self, model_key: MODEL_KEY, model_size_in_bytes: int, dedicated: bool = False
@@ -131,6 +156,15 @@ class Node:
                 gpus_required=gpus_required,
             )
 
+        elif gpus_required <= self.resources.total_gpus:
+
+            return Candidate(
+                candidate_level=(
+                    CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL,
+                ),
+                gpus_required=gpus_required,
+            )
+
         else:
 
-            return Candidate(candidate_level=CandidateLevel.FULL)
+            return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)

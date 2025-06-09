@@ -76,7 +76,7 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         return BackendRequestModel(
-            id=str(uuid.uuid4()),
+            id=request.headers.get("ndif-request_id", str(uuid.uuid4())),
             request=request.body(),
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),

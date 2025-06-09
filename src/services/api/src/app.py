@@ -2,11 +2,6 @@ import os
 import traceback
 from contextlib import asynccontextmanager
 from typing import Any, Dict
-<<<<<<< HEAD
-=======
-import uuid
-import base64
->>>>>>> queue
 
 import socketio
 import uvicorn
@@ -129,23 +124,10 @@ async def request(
         # authenticate api key
         api_key_auth(request)
         
-<<<<<<< HEAD
-        request.request = await request.request
-        request.request = ray.put(request.request)
-
-        # Send to request workers waiting to process requests on the "request" queue.
-        # Forget as we don't care about the response.
-        serve.get_app_handle("Request").remote(request)
-
-        # Back up request object by default (to be deleted on successful completion)
-        # request = request.model_copy()
-        # request.object = object
-        # request.save(object_store)
-=======
         try:
             body = await raw_request.body()
             headers = dict(raw_request.headers)
-            headers["request_id"] = request.id
+            headers["ndif-request_id"] = request.id
             
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(
@@ -166,7 +148,6 @@ async def request(
                 description=description,
                 logger=logger,
             )
->>>>>>> queue
     except Exception as exception:
 
         description = f"{traceback.format_exc()}\n{str(exception)}"

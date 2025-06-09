@@ -119,6 +119,8 @@ class Cluster:
         # Sort models by size in descending order
         sorted_models = sorted(model_sizes_in_bytes.items(), key=lambda x: x[1], reverse=True)
         
+        results = {}
+        
         for model_key, size_in_bytes in sorted_models:
             
             LOGGER.info(f"=> Evaluating {model_key} with size {size_in_bytes}...")
@@ -153,13 +155,19 @@ class Cluster:
                         
                         candidates = {node.id:candidate}
                         
+                        
+            # TODO: This should be a better strategy for selecting the node
             node_id, candidate = random.choice(list(candidates.items()))
+            
+            candidate.evictions = self.nodes[node_id].eviction(candidate.gpus_required)
             
             LOGGER.info(f"==> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name}")
             
+            results[model_key] = candidate.candidate_level.name
+            
             self.nodes[node_id].deploy(model_key, candidate, dedicated=dedicated)
             
-                        
+        return results
             
             
     # def get_object_store_info(self):

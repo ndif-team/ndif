@@ -4,7 +4,6 @@ import os
 import socketio
 from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, Security
-from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -47,7 +46,6 @@ queue_manager = QueueManager()
 dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
 
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 Instrumentator().instrument(app).expose(app)
 
@@ -111,12 +109,11 @@ async def queue(request: Request):
     try:
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
-            request, request.headers.get("api_key")  # TODO 
+            request  # TODO 
         )
-        backend_request.id = request.headers.get("request_id")
 
         # Replace the coroutine graph with the actual bytes
-        backend_request.graph = await backend_request.graph
+        backend_request.request = await backend_request.request
         queue_manager.enqueue(backend_request)
         logger.debug(f"Enqueued request: {backend_request.id}")
 

@@ -7,6 +7,7 @@ from ray import serve
 from slugify import slugify
 from typing import Dict, Union
 from .schema import BackendRequestModel
+from nnsight.schema.response import ResponseModel
 from .queue_manager import QueueManager
 from .logging import load_logger
 
@@ -47,6 +48,14 @@ class Dispatcher:
         self._task = None
         # Store Ray ObjectRefs or asyncio Tasks for dispatched requests
         self._dispatched_requests: Dict[str, Union[ray.ObjectRef, asyncio.Task]] = {}
+        
+        self._controller = None
+        
+    @property
+    def controller(self):
+        if self._controller is None:
+            self._controller = serve.get_app_handle("Controller")
+        return self._controller
 
     async def start(self):
         """Start the dispatcher loop."""
@@ -117,29 +126,20 @@ class Dispatcher:
         
         handle_or_task = self._dispatched_requests[ray_model_key]
         
-        # Handle Ray ObjectRef case
-        if hasattr(handle_or_task, 'hex'):  # Ray ObjectRef has hex() method
-            try:
-                ready, not_ready = ray.wait([handle_or_task], timeout=0)
-                if ready:
-                    # Task is complete, allow new dispatch
-                    return True
-                else:
-                    logger.debug(f"Request for {ray_model_key} still running")
-                    return False
-            except Exception as e:
-                logger.warning(f"Error checking Ray ObjectRef for {ray_model_key}: {e}")
-                del self._dispatched_requests[ray_model_key]
-                return True
-        
-        # Handle asyncio.Task case (doesn't seem to be used, but keeping it here for now)
-        elif isinstance(handle_or_task, asyncio.Task):
-            if handle_or_task.done():
+        try:
+            ready, _ = ray.wait([handle_or_task], timeout=0)
+            if ready:
                 # Task is complete, allow new dispatch
                 return True
             else:
-                logger.debug(f"Async task for {ray_model_key} still running")
+                logger.debug(f"Request for {ray_model_key} still running")
                 return False
+        except Exception as e:
+            logger.warning(f"Error checking Ray ObjectRef for {ray_model_key}: {e}")
+            del self._dispatched_requests[ray_model_key]
+            return True
+        
+      
         
         logger.warning(f"Unknown handle type for {ray_model_key}: {type(handle_or_task)}")
         del self._dispatched_requests[ray_model_key]
@@ -148,8 +148,7 @@ class Dispatcher:
     async def dispatch_request(self, model_key: str, task: BackendRequestModel):
         """Dispatch a request to Ray."""
         try:
-            # Put the graph data in Ray's object store for efficient sharing
-            task.graph = ray.put(task.graph)
+           
             ray_model_key = f"Model:{slugify(task.model_key)}"
             
             # Get the Ray Serve handle for the model
@@ -165,4 +164,17 @@ class Dispatcher:
             
         except Exception as e:
             logger.error(f"Error dispatching request {task.id} to {model_key}: {e}")
-            raise
+            
+            #TODO say the model isnt available / tell the controller
+            # task.create_response(
+            #     status=ResponseModel.JobStatus.ERROR,
+            #     description=f"Failed to dispatch request {task.id} to {model_key}: {e}",
+            #     logger=logger,
+            # )
+            
+            
+            # TODO: This should probably be batched instead of doing it per request
+            
+            self.controller.deploy.remote([model_key])
+            
+            self.queue_manager.enqueue(task)

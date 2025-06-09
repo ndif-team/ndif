@@ -83,9 +83,11 @@ class _ControllerDeployment:
 
         LOGGER.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        self.cluster.deploy(model_keys, dedicated=dedicated)
+        results = self.cluster.deploy(model_keys, dedicated=dedicated)
 
         self.apply()
+                
+        return results
 
     def deployment_to_application(
         self, deployment: Deployment, node_name: str, cached: bool = False

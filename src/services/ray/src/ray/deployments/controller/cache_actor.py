@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import asyncio
 from typing import Dict
 
 import ray
@@ -29,6 +30,8 @@ class CacheActor:
     async def cache(self, model_key: str, dtype: torch.dtype, **extra_kwargs):
 
         if model_key not in self.cache:
+            
+            await asyncio.sleep(10)
 
             object_ref = ray.put(self.load(model_key, dtype, **extra_kwargs))
             
