@@ -1,6 +1,7 @@
 import asyncio
 import boto3
 import os
+import traceback
 import socketio
 from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, Security
@@ -126,15 +127,20 @@ async def queue(request: Request):
             description="Your job was approved and is waiting to be run.",
             logger=logger,
         )
-        logger.debug(f"Responding to request: {backend_request.id}")
-        logger.debug(f"SIO client is non-null: {sio.client is not None}")
         response.respond(sio, object_store)
         logger.debug(f"Responded to request: {backend_request.id}")
         return response
         
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        response = backend_request.create_response(
+            status=ResponseModel.JobStatus.ERROR,
+            description=f"{traceback.format_exc()}\n{str(e)}",
+            logger=logger,
+        )
+        response.respond(sio, object_store)
+        return response
+
 @app.head("/queue/{model_key}/{request_id}")
 async def queue(model_key: Optional[str] = None):
     """Endpoint to verify the request is in the queue."""
