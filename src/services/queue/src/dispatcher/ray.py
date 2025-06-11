@@ -15,6 +15,8 @@ logger = load_logger(service_name="Dispatcher", logger_name="Dispatcher")
 poll_interval = float(os.getenv("DISPATCHER_POLL_INTERVAL", "1.0"))
 
 class RayDispatcher(BaseDispatcher):
+    """Dispatches requests to Ray cluster with proper resource management."""
+    
     def __init__(self, queue_manager: QueueManager, ray_url: str, poll_interval: float = poll_interval):
         super().__init__(poll_interval)
         self.queue_manager = queue_manager
@@ -22,8 +24,10 @@ class RayDispatcher(BaseDispatcher):
         self.ray_watchdog = threading.Thread(target=RayDispatcher.connect_to_ray, args=(self.ray_url,), daemon=True)
         self.ray_watchdog.start()
         self._dispatched_requests: Dict[str, List[ray.ObjectRef]] = defaultdict(list)
+    
     @staticmethod
     def connect_to_ray(ray_url: str):
+        """Connect to Ray cluster."""
         retry_interval = int(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
         while True:
             try:
@@ -36,17 +40,23 @@ class RayDispatcher(BaseDispatcher):
             except Exception as e:
                 logger.error(f"Failed to connect to Ray cluster: {e}")
             time.sleep(retry_interval)
+    
     async def get_task_sources(self) -> List[str]:
+        """Get all model keys that should be checked for dispatching."""
         return list(self.queue_manager.keys())
+    
     async def has_pending_tasks(self, task_source: str) -> bool:
+        """Check if we can dispatch a new request for the given model key."""
         model_key = f"Model:{slugify(task_source)}"
         if model_key not in self._dispatched_requests:
             logger.debug(f"No active request for {model_key}, can dispatch")
             return True
+        
         handles = self._dispatched_requests[model_key]
         if not handles:
             del self._dispatched_requests[model_key]
             return True
+        
         try:
             ready, not_ready = ray.wait(handles, num_returns=len(handles), timeout=0)
             if len(ready) == len(handles):
@@ -59,21 +69,29 @@ class RayDispatcher(BaseDispatcher):
             logger.warning(f"Error checking Ray ObjectRefs for {model_key}: {e}")
             del self._dispatched_requests[model_key]
             return True
+    
     async def get_next_batch(self, task_source: str) -> List[BackendRequestModel]:
+        """Get the next batch of tasks to dispatch for the given model key."""
         task = self.queue_manager.dequeue(task_source)
         return [task] if task else []
+    
     async def dispatch(self, task: BackendRequestModel):
+        """Dispatch a single task."""
         model_key = f"Model:{slugify(task.model_key)}"
         deployment = serve.get_app_handle(model_key)
         if not deployment:
             raise ValueError(f"Ray Serve app '{model_key}' not found")
+        
         task.graph = ray.put(task.graph)
         handle = deployment.remote(task)
         self._dispatched_requests[model_key].append(await handle._to_object_ref())
         logger.info(f"Dispatcher dispatched request {task.id} to {model_key}")
+    
     async def dispatch_batch(self, batch: List[BackendRequestModel]):
+        """Dispatch pending tasks for the given model key."""
         if not batch:
             return
+        
         try:
             for task in batch:
                 await self.dispatch(task)
