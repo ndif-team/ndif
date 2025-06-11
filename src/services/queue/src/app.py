@@ -14,6 +14,7 @@ from .schema import BackendRequestModel
 from .queue_manager import QueueManager
 from .dispatcher import Dispatcher
 from .logging import load_logger
+from .models.state import QueueState
 
 logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
@@ -44,7 +45,8 @@ sio = socketio.SimpleClient(reconnection_attempts=10)
 connection_event = asyncio.Event()
 connection_task = None
 
-queue_manager = QueueManager()
+queue_state = QueueState()
+queue_manager = QueueManager(queue_state)
 dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
 
 

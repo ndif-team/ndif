@@ -85,6 +85,7 @@ class RayDispatcher(BaseDispatcher):
         task.graph = ray.put(task.graph)
         handle = deployment.remote(task)
         self._dispatched_requests[model_key].append(await handle._to_object_ref())
+        self.queue_manager.state.update_dispatch(task.model_key)
         logger.info(f"Dispatcher dispatched request {task.id} to {model_key}")
     
     async def dispatch_batch(self, batch: List[BackendRequestModel]):
