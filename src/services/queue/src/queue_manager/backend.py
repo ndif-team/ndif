@@ -1,0 +1,60 @@
+import queue
+from multiprocessing import Manager
+from typing import Optional, Any
+from ..schema import BackendRequestModel
+from ..logging import load_logger
+from .base import BaseQueueManager
+
+logger = load_logger(service_name="QueueManager", logger_name="QueueManager")
+
+class BackendQueueManager(BaseQueueManager):
+    """Queue manager for backend requests using multiprocessing-safe queues."""
+    def __init__(self):
+        self.manager = Manager()
+        self.queues = self.manager.dict()
+    def __getitem__(self, key: str) -> queue.Queue:
+        if key not in self.queues:
+            raise KeyError(f"No queue found for key: {key}")
+        return self.queues[key]
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key not in self.queues:
+            self.queues[key] = self.manager.Queue()
+        q = self.queues[key]
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                q.put(item)
+        else:
+            q.put(value)
+    def __delitem__(self, key: str) -> None:
+        if key in self.queues:
+            del self.queues[key]
+        else:
+            raise KeyError(f"No queue found for key: {key}")
+    def __iter__(self):
+        return iter(self.queues.keys())
+    def __len__(self) -> int:
+        return len(self.queues)
+    def __contains__(self, key: str) -> bool:
+        return key in self.queues
+    def enqueue(self, request: BackendRequestModel) -> None:
+        key = request.model_key
+        if key not in self.queues:
+            self.queues[key] = self.manager.Queue()
+        self.queues[key].put(request)
+        logger.debug(f"Enqueued request: {request.id}")
+    def dequeue(self, key: str) -> Optional[BackendRequestModel]:
+        if key not in self.queues:
+            return None
+        q = self.queues[key]
+        try:
+            item = q.get_nowait()
+            if q.empty():
+                del self.queues[key]
+            logger.debug(f"Dequeued request: {item.id}")
+            return item
+        except queue.Empty:
+            del self.queues[key]
+            return None
+
+# For backward compatibility
+QueueManager = BackendQueueManager 
