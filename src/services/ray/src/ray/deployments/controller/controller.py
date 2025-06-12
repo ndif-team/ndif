@@ -168,12 +168,8 @@ class _ControllerDeployment:
 
             if application_name.startswith("Model"):
 
-                deployment = application.deployments["ModelDeployment"]
-
-                replica_state = list(deployment.replica_states.keys())[0]
-
                 status[application_name] = {
-                    "replica_state": replica_state,
+                    "application_state": application.status.value,
                 }
 
         for node in self.cluster.nodes.values():
@@ -185,7 +181,8 @@ class _ControllerDeployment:
                 status[application_name] = { **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "model_key": deployment.model_key,
-                    "config": self.cluster.evaluator.config_cache[deployment.model_key],
+                    "title": self.cluster.evaluator.config_cache[deployment.model_key]._name_or_path,
+                    "config": self.cluster.evaluator.config_cache[deployment.model_key].to_json_string(),
                 }
                 
             for cached_model_key in node.cache.keys():
@@ -197,10 +194,11 @@ class _ControllerDeployment:
                     status[application_name] = {
                         "deployment_level": DeploymentLevel.WARM.name,
                         "model_key": cached_model_key,
-                        "config": self.cluster.evaluator.config_cache[cached_model_key],
+                        "title": self.cluster.evaluator.config_cache[cached_model_key]._name_or_path,
+                        "config": self.cluster.evaluator.config_cache[cached_model_key].to_json_string(),
                     }
 
-        return status
+        return {"deployments": status}
 
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})

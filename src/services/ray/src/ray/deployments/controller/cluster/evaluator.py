@@ -50,7 +50,7 @@ class ModelEvaluator:
         model_size_bytes += model_size_bytes * self.padding_factor
 
         self.size_in_bytes_cache[model_key] = model_size_bytes
-        self.config_cache[model_key] = meta_model.config.to_json_string()
+        self.config_cache[model_key] = meta_model.config
         
         LOGGER.info(f"=> Evaluator: New model {model_key} size: {model_size_bytes}")
         

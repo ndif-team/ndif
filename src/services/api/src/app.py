@@ -255,7 +255,7 @@ async def ping():
 
 
 @app.get("/status", status_code=200)
-@cache(expire=600)
+@cache(expire=60)
 async def status():
     return requests.get(
         f"http://{os.environ.get('QUEUE_URL')}/status",
