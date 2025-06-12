@@ -1,17 +1,20 @@
 import asyncio
-import boto3
 import os
-import socketio
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, Security
+
+import boto3
+import socketio
+from fastapi import FastAPI, HTTPException, Request, Security
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from ray import serve
 
 from nnsight.schema.response import ResponseModel
-from .schema import BackendRequestModel
-from .queue_manager import QueueManager
+
 from .dispatcher import Dispatcher
 from .logging import load_logger
+from .queue_manager import QueueManager
+from .schema import BackendRequestModel
 
 logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
@@ -132,6 +135,8 @@ async def queue(request: Request):
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
 @app.head("/queue/{model_key}/{request_id}")
 async def queue(model_key: Optional[str] = None):
     """Endpoint to verify the request is in the queue."""
@@ -149,3 +154,9 @@ async def queue(model_key: Optional[str] = None):
 async def ping():
     """Endpoint to check if the server is online."""
     return "pong"
+
+
+@app.get("/status", status_code=200)
+async def status():
+    """Endpoint to check if the server is online."""
+    return await serve.get_app_handle("Controller").status.remote()

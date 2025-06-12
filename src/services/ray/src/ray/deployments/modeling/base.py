@@ -7,7 +7,7 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
 from typing import Any, Dict, List, Optional
-import time
+
 import boto3
 import ray
 import socketio
@@ -16,17 +16,18 @@ from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
-from ray._private.internal_api import free as ray_free
-from ray.experimental.locations import get_local_object_locations, get_object_locations
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 
 from ....logging import load_logger
-from ....metrics import ExecutionTimeMetric, GPUMemMetric, RequestResponseSizeMetric
-from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
+                         RequestResponseSizeMetric)
+from ....schema import (BackendRequestModel, BackendResponseModel,
+                        BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 
@@ -47,12 +48,12 @@ class BaseModelDeployment:
 
     def __init__(
         self,
-        cached: bool,
+        model_key: str,
+        cuda_devices:str,
         api_url: str,
         object_store_url: str,
         object_store_access_key: str,
         object_store_secret_key: str,
-        model_key: str,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -62,13 +63,19 @@ class BaseModelDeployment:
     ) -> None:
 
         super().__init__()
-
-        self.cached = cached
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         self.api_url = api_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
+        
+        self.model_key = model_key
+        self.execution_timeout = execution_timeout
+        self.dispatch = dispatch
+        self.dtype = dtype
+        self.extra_kwargs = extra_kwargs
 
         # Initialize S3 client (either AWS S3 or compatible service like MinIO)
         self.object_store = boto3.client(
@@ -92,21 +99,6 @@ class BaseModelDeployment:
 
         self.runtime_context = ray.get_runtime_context()
 
-        try:
-            self.replica_context = serve.get_replica_context()
-        except:
-            self.replica_context = None
-
-        self.cache_actor = ray.get_actor(
-            f"CacheActor:{self.runtime_context.worker.node._node_id}"
-        )
-
-        self.model_key = model_key
-        self.execution_timeout = execution_timeout
-        self.dispatch = dispatch
-        self.dtype = dtype
-        self.extra_kwargs = extra_kwargs
-
         if isinstance(dtype, str):
 
             dtype = getattr(torch, dtype)
@@ -117,10 +109,8 @@ class BaseModelDeployment:
         #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
         #     ray_free(object_refs, local_only=True)
 
-        if self.cached:
-            self.model = self.load_from_cache()
-        else:
-            self.model = self.load_from_disk()
+
+        self.model = self.load_from_disk()
 
         if dispatch:
             self.model._module.requires_grad_(False)
@@ -133,7 +123,7 @@ class BaseModelDeployment:
         
         start = time.time()
 
-        self.logger.info(f"Loading model from disk for model key {self.model_key}")
+        self.logger.info(f"Loading model from disk for model key {self.model_key}...")
 
         model = RemoteableMixin.from_model_key(
             self.model_key,
@@ -143,43 +133,33 @@ class BaseModelDeployment:
             **self.extra_kwargs,
         )
         
-        self.logger.info(f"Model loaded from disk took {time.time() - start} seconds")
+        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds")
         
         return model
+    
+    def to_cache(self):
+        
+        self.model.cpu()
 
-    def load_from_cache(self):
+    def from_cache(self, cuda_devices:str):
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
         
         start = time.time()
-
-        self.logger.info(f"Loading model from cache for model key {self.model_key}")
-
-        model = ray.get(ray.get(self.cache_actor.get.remote(self.model_key)))
-
-        self.logger.info(f"Model loaded from cache for model key {self.model_key}")
         
-        self.logger.info(f"Model loading from cache took {time.time() - start} seconds")
+        self.logger.info(f"Loading model from cache for model key {self.model_key}...")
         
-        start = time.time()
-
         # Automatically compute balanced memory allocation
-        max_memory = get_balanced_memory(model._module)
+        max_memory = get_balanced_memory(self.model._module)
 
         # Infer an optimal device map based on the computed memory allocation
-        device_map = infer_auto_device_map(model._module, max_memory=max_memory)
+        device_map = infer_auto_device_map(self.model._module, max_memory=max_memory)
 
         # Dispatch the model according to the inferred device map
-        model._module = dispatch_model(model._module, device_map=device_map)
+        self.model._module = dispatch_model(self.model._module, device_map=device_map)
         
-        self.logger.info(f"Model dispatching from cache took {time.time() - start} seconds")
+        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds")
 
-        return model
-
-    def __del__(self):
-
-        if not self.cached:
-            self.cache_actor.cache.remote(
-                self.model_key, self.dtype, **self.extra_kwargs
-            )
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -462,6 +442,7 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: str
+    node_name: str
 
     api_url: str
     object_store_url: str

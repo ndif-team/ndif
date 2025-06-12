@@ -257,39 +257,11 @@ async def ping():
 @app.get("/status", status_code=200)
 @cache(expire=600)
 async def status():
+    return requests.get(
+        f"http://{os.environ.get('QUEUE_URL')}/status",
+    ).json()
 
-    response = {}
-
-    status = serve.status()
-
-    model_configurations = await serve.get_app_handle(
-        "Controller"
-    ).get_model_configurations.remote()
-
-    for application_name, application in status.applications.items():
-
-        if application_name.startswith("Model"):
-
-            deployment = application.deployments["ModelDeployment"]
-
-            num_running_replicas = 0
-
-            for replica_status in deployment.replica_states:
-
-                if replica_status == "RUNNING":
-
-                    num_running_replicas += 1
-
-            if num_running_replicas > 0:
-
-                config = model_configurations[application_name]
-
-                response[application_name] = {
-                    "num_running_replicas": num_running_replicas,
-                    **config,
-                }
-
-    return response
+    
 
 
 if __name__ == "__main__":

@@ -6,19 +6,15 @@ from pydantic import BaseModel
 from ray import serve
 from ray.dashboard.modules.serve.sdk import ServeSubmissionClient
 from ray.serve import Application
-from ray.serve.schema import (
-    DeploymentSchema,
-    RayActorOptionsSchema,
-    ServeApplicationSchema,
-    ServeDeploySchema,
-    ServeInstanceDetails,
-)
+from ray.serve.schema import (DeploymentSchema, RayActorOptionsSchema,
+                              ServeApplicationSchema, ServeDeploySchema,
+                              ServeInstanceDetails)
 from slugify import slugify
 
-from ..modeling.base import BaseModelDeploymentArgs
-from .. import MODEL_KEY
-from .cluster import Cluster, Deployment
 from ....logging.logger import load_logger
+from .. import MODEL_KEY
+from ..modeling.base import BaseModelDeploymentArgs
+from .cluster import Cluster, Deployment, DeploymentLevel
 
 LOGGER = load_logger("Controller")
 
@@ -32,7 +28,9 @@ class _ControllerDeployment:
         object_store_access_key: str,
         object_store_secret_key: str,
         api_url: str,
-        execution_timeout: float,
+        execution_timeout_seconds: float,
+        minimum_deployment_time_seconds: float,
+        model_cache_percentage: float,
     ):
 
         super().__init__()
@@ -42,8 +40,9 @@ class _ControllerDeployment:
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
         self.api_url = api_url
-        self.execution_timeout = execution_timeout
-
+        self.execution_timeout_seconds = execution_timeout_seconds
+        self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
+        self.model_cache_percentage = model_cache_percentage
         self.runtime_context = ray.get_runtime_context()
         self.replica_context = serve.get_replica_context()
 
@@ -74,7 +73,7 @@ class _ControllerDeployment:
 
         self.controller_application = list(serve_details.applications.values())[0]
 
-        self.cluster = Cluster()
+        self.cluster = Cluster(minimum_deployment_time_seconds=self.minimum_deployment_time_seconds, model_cache_percentage=self.model_cache_percentage)
 
         # self.deploy(self.deployments, dedicated=True)
 
@@ -83,9 +82,10 @@ class _ControllerDeployment:
 
         LOGGER.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        results = self.cluster.deploy(model_keys, dedicated=dedicated)
+        results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
 
-        self.apply()
+        if change:
+            self.apply()
                 
         return results
 
@@ -96,13 +96,16 @@ class _ControllerDeployment:
         slugified_model_key = slugify(deployment.model_key)
 
         deployment_args = BaseModelDeploymentArgs(
+            model_key=deployment.model_key,
+            node_name=node_name,
+            cached=cached,
+            
             api_url=self.api_url,
             object_store_url=self.object_store_url,
             object_store_access_key=self.object_store_access_key,
             object_store_secret_key=self.object_store_secret_key,
-            model_key=deployment.model_key,
-            execution_timeout=self.execution_timeout,
-            cached=cached,
+            execution_timeout=self.execution_timeout_seconds,
+            
         )
 
         return ServeApplicationSchema(
@@ -137,7 +140,7 @@ class _ControllerDeployment:
         for node in self.cluster.nodes.values():
             for deployment in node.deployments.values():
                 
-                cached = deployment.model_key in node.cached
+                cached = deployment.model_key in node.cache
                 
                 self.state.applications.append(
                     self.deployment_to_application(
@@ -179,10 +182,23 @@ class _ControllerDeployment:
 
                 application_name = f"Model:{slugify(deployment.model_key)}"
 
-                status[application_name] = {
-                    "deployment_level": deployment.deployment_level,
+                status[application_name] = { **status[application_name],
+                    "deployment_level": deployment.deployment_level.name,
                     "model_key": deployment.model_key,
+                    "config": self.cluster.evaluator.config_cache[deployment.model_key],
                 }
+                
+            for cached_model_key in node.cache.keys():
+                
+                application_name = f"Model:{slugify(cached_model_key)}"
+                
+                if application_name not in status:
+                    
+                    status[application_name] = {
+                        "deployment_level": DeploymentLevel.WARM.name,
+                        "model_key": cached_model_key,
+                        "config": self.cluster.evaluator.config_cache[cached_model_key],
+                    }
 
         return status
 
@@ -205,8 +221,9 @@ class ControllerDeploymentArgs(BaseModel):
     )
     api_url: str = os.environ.get("API_URL", None)
     model_import_path: str = "src.ray.deployments.modeling.model:app"
-    execution_timeout: float = 600
-
+    execution_timeout_seconds: Optional[float] = None
+    minimum_deployment_time_seconds: Optional[float] = None
+    model_cache_percentage: Optional[float] = 0.5
 
 def app(args: ControllerDeploymentArgs) -> Application:
     return ControllerDeployment.bind(**args.model_dump())

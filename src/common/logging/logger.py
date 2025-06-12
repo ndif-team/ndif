@@ -17,6 +17,9 @@ LOGGER: Optional[logging.Logger] = None
 
 logging.getLogger("urllib3.connectionpool").setLevel(logging.CRITICAL)
 logging.getLogger("botocore").setLevel(logging.CRITICAL)
+logging.getLogger("boto3").setLevel(logging.CRITICAL)
+logging.getLogger("s3transfer").setLevel(logging.CRITICAL)
+
 
 
 class CustomJSONFormatter(logging.Formatter):
