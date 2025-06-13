@@ -32,13 +32,13 @@ from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from .util import load_with_cache_deletion_retry
 
-
 class BaseModelDeployment:
 
     def __init__(
         self,
         model_key: str,
         cuda_devices:str,
+        app: str,
         api_url: str,
         object_store_url: str,
         object_store_access_key: str,
@@ -60,6 +60,7 @@ class BaseModelDeployment:
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
         
+        self.app = app
         self.model_key = model_key
         self.execution_timeout = execution_timeout
         self.dispatch = dispatch
@@ -135,9 +136,11 @@ class BaseModelDeployment:
         
         self.model.cpu()
 
-    def from_cache(self, cuda_devices:str):
+    def from_cache(self, cuda_devices:str, app:str):
         
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+        
+        self.app = app
         
         start = time.time()
         
@@ -317,8 +320,7 @@ class BaseModelDeployment:
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        app_name = serve.get_replica_context().app_name
-        serve.get_app_handle("Controller").restart.remote(app_name)
+        serve.get_app_handle(self.app).restart.remote()
 
     def cleanup(self):
         """Performs cleanup operations after request processing.

@@ -130,13 +130,6 @@ class _ControllerDeployment:
                 )
             ],
             args=deployment_args.model_dump(),
-            runtime_env={
-                "env_vars": {
-                    "restart_hash": "",
-                    # For distributed model timeout handling
-                    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "0",
-                }
-            },
         )
 
     def build(self):

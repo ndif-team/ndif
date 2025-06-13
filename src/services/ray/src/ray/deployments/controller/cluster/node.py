@@ -171,10 +171,10 @@ class Node:
 
             if gpus_needed <= 0:
 
-                break
-    
-        return evictions
-
+                return evictions
+            
+        return list()
+            
     def evaluate(
         self, model_key: MODEL_KEY, model_size_in_bytes: int, dedicated: bool = False
     ) -> Candidate:
