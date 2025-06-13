@@ -182,42 +182,9 @@ class Cluster:
                         candidates[node.id] = candidate
                         
                     # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
-                    elif candidate.candidate_level > candidate_level:
+                    elif candidate.candidate_level < candidate_level:
                         
-                        candidates = {node.id:candidate}
-                        
-            candidate_level = list(candidates.values())[0].candidate_level
-
-            # If the candate set is free, we can just select a random node.
-            if candidate_level >= CandidateLevel.FREE:
-                
-                pass
-                
-            # If we only have full nodes, we need to find out if we can evict some models for each node
-            elif candidate_level >= CandidateLevel.FULL:
-                
-                # For all full nodes
-                for node_id, candidate in list(candidates.items()):
-                    
-                    # Populates the candidate with the evictions necasssary. 
-                    # If there is no eviction set that would deploy the model, change the candidate level to CANT_ACCOMMODATE
-                    candidate = self.nodes[node_id].eviction(candidate, dedicated=dedicated)
-                    
-                    if len(candidates) == 0:
-                        
-                        candidates[node.id] = candidate
-                        
-                    else:
-                        
-                        candidate_level = list(candidates.values())[0].candidate_level
-                        
-                        if candidate.candidate_level == candidate_level:
-                            
-                            candidates[node.id] = candidate
-                            
-                        elif candidate.candidate_level > candidate_level:
-                            
-                            candidates = {node.id:candidate}
+                        candidates = {node.id:candidate}          
                                             
             # Pick a random node from the candidates.
             node_id, candidate = random.choice(list(candidates.items()))

@@ -88,10 +88,6 @@ class Node:
         dedicated: Optional[bool] = None,
     ):
 
-        if candidate.candidate_level == CandidateLevel.DEPLOYED:
-
-            return
-
         for eviction in candidate.evictions:
 
             self.evict(eviction)
@@ -145,16 +141,17 @@ class Node:
         
         del self.deployments[model_key]
 
-    def eviction(self, candidate: Candidate, dedicated: bool = False) -> Candidate:
+    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
         deployments = sorted(
             list(self.deployments.values()), key=lambda x: x.gpus_required
         )
 
-        gpus_needed = candidate.gpus_required - self.resources.available_gpus
+        gpus_needed = gpus_required - self.resources.available_gpus
 
         evictions = []
 
         for deployment in deployments:
+            
 
             if deployment.deployment_level == DeploymentLevel.DEDICATED:
 
@@ -175,14 +172,8 @@ class Node:
             if gpus_needed <= 0:
 
                 break
-            
-        candidate.evictions = evictions
-        
-        if gpus_needed > 0:
-            
-            candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
-
-        return candidate
+    
+        return evictions
 
     def evaluate(
         self, model_key: MODEL_KEY, model_size_in_bytes: int, dedicated: bool = False
@@ -210,13 +201,21 @@ class Node:
             )
 
         elif gpus_required <= self.resources.total_gpus:
-
-            return Candidate(
+            
+            candidate = Candidate(
                 candidate_level=(
-                    CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL,
+                    CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
                 ),
                 gpus_required=gpus_required,
             )
+            
+            candidate.evictions = self.evictions(gpus_required, dedicated=dedicated)
+            
+            if len(candidate.evictions) == 0:
+                
+                candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
+
+            return candidate
 
         else:
 
