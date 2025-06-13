@@ -103,10 +103,22 @@ class Cluster:
         
         LOGGER.info(f"Cluster deploying models: {model_keys}, dedicated: {dedicated}...")
         
+        results = {}
+        
         change = False
         
         # First get the size of the models in bytes
         model_sizes_in_bytes = {model_key:self.evaluator(model_key) for model_key in model_keys}
+        
+        for model_key, size_in_bytes in model_sizes_in_bytes.items():
+            
+            if isinstance(size_in_bytes, Exception):
+                
+                LOGGER.error(f"{model_key} failed to evaluate: {size_in_bytes}")
+                
+                del model_sizes_in_bytes[model_key]
+                
+                results[model_key] = str(size_in_bytes)
         
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
@@ -128,7 +140,7 @@ class Cluster:
         # Sort models by size in descending order (deploy biggest ones first)
         sorted_models = sorted(model_sizes_in_bytes.items(), key=lambda x: x[1], reverse=True)
         
-        results = {}
+        
         
         # For each model to deploy, find the best node to deploy it on, if possible.
         for model_key, size_in_bytes in sorted_models:
@@ -189,7 +201,7 @@ class Cluster:
                     
                     # Populates the candidate with the evictions necasssary. 
                     # If there is no eviction set that would deploy the model, change the candidate level to CANT_ACCOMMODATE
-                    candidate = self.nodes[node_id].eviction(candidate)
+                    candidate = self.nodes[node_id].eviction(candidate, dedicated=dedicated)
                     
                     if len(candidates) == 0:
                         

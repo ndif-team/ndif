@@ -30,18 +30,7 @@ from ....schema import (BackendRequestModel, BackendResponseModel,
                         BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-
-
-def threaded(method, size: int = 1):
-
-    group = ThreadPoolExecutor(size)
-
-    @wraps(method)
-    def inner(*args, **kwargs):
-
-        return group.submit(method, *args, **kwargs)
-
-    return inner
+from .util import load_with_cache_deletion_retry
 
 
 class BaseModelDeployment:
@@ -118,22 +107,27 @@ class BaseModelDeployment:
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=1)
 
     def load_from_disk(self):
         
         start = time.time()
 
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
-
-        model = RemoteableMixin.from_model_key(
-            self.model_key,
-            device_map="auto",
-            dispatch=self.dispatch,
-            torch_dtype=self.dtype,
-            **self.extra_kwargs,
-        )
         
-        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds")
+        model = load_with_cache_deletion_retry(
+            lambda: RemoteableMixin.from_model_key(
+                self.model_key,
+                device_map="auto",
+                dispatch=self.dispatch,
+                torch_dtype=self.dtype,
+                **self.extra_kwargs,
+            )
+        )
+
+        
+        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}")
         
         return model
     
@@ -158,7 +152,7 @@ class BaseModelDeployment:
         # Dispatch the model according to the inferred device map
         self.model._module = dispatch_model(self.model._module, device_map=device_map)
         
-        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds")
+        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}")
 
 
     def __call__(self, request: BackendRequestModel) -> None:
@@ -181,12 +175,11 @@ class BaseModelDeployment:
 
             inputs = self.pre()
 
-            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+            #TODO abstract out for distributed execution
+            result = self.thread_pool.submit(self.execute, inputs)
 
-                result = self.execute(inputs)
-
-                if isinstance(result, Future):
-                    result = result.result(timeout=self.execution_timeout)
+            if isinstance(result, Future):
+                result = result.result(timeout=self.execution_timeout)
 
             self.post(result)
 
@@ -235,25 +228,27 @@ class BaseModelDeployment:
         Returns:
             Any: Result.
         """
+        
+        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-        # For tracking peak GPU usage
-        if torch.cuda.is_available():
-            reset_peak_memory_stats()
-            model_memory = memory_allocated()
+            # For tracking peak GPU usage
+            if torch.cuda.is_available():
+                reset_peak_memory_stats()
+                model_memory = memory_allocated()
 
-        execution_time = time.time()
+            execution_time = time.time()
 
-        # Execute object.
-        with StdoutRedirect(self.log):
-            result = RemoteExecutionBackend(request.interventions)(request.tracer)
+            # Execute object.
+            with StdoutRedirect(self.log):
+                result = RemoteExecutionBackend(request.interventions)(request.tracer)
 
-        execution_time = time.time() - execution_time
+            execution_time = time.time() - execution_time
 
-        # Compute GPU memory usage
-        if torch.cuda.is_available():
-            gpu_mem = max_memory_allocated() - model_memory
-        else:
-            gpu_mem = 0
+            # Compute GPU memory usage
+            if torch.cuda.is_available():
+                gpu_mem = max_memory_allocated() - model_memory
+            else:
+                gpu_mem = 0
 
         return result, gpu_mem, execution_time
 

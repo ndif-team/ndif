@@ -145,7 +145,7 @@ class Node:
         
         del self.deployments[model_key]
 
-    def eviction(self, candidate: Candidate) -> Candidate:
+    def eviction(self, candidate: Candidate, dedicated: bool = False) -> Candidate:
         deployments = sorted(
             list(self.deployments.values()), key=lambda x: x.gpus_required
         )
@@ -161,7 +161,8 @@ class Node:
                 continue
 
             if (
-                self.minimum_deployment_time_seconds is not None
+                not dedicated
+                and self.minimum_deployment_time_seconds is not None
                 and time.time() - deployment.deployed
                 < self.minimum_deployment_time_seconds
             ):

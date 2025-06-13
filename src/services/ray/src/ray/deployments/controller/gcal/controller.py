@@ -55,7 +55,7 @@ class SchedulingControllerDeployment(_ControllerDeployment):
                 status["deployments"][application_name] = {
                     "deployment_level": "SCHEDULED",
                     "model_key": model_key,
-                    "title": self.cluster.evaluator.config_cache[
+                    "repo_id": self.cluster.evaluator.config_cache[
                         model_key
                     ]._name_or_path,
                     "config": self.cluster.evaluator.config_cache[

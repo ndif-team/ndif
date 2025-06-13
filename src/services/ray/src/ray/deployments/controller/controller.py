@@ -15,6 +15,7 @@ from ....logging.logger import load_logger
 from .. import MODEL_KEY
 from ..modeling.base import BaseModelDeploymentArgs
 from .cluster import Cluster, Deployment, DeploymentLevel
+from ..modeling.util import get_downloaded_models
 
 LOGGER = load_logger("Controller")
 
@@ -171,6 +172,8 @@ class _ControllerDeployment:
                 status[application_name] = {
                     "application_state": application.status.value,
                 }
+                
+        existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
 
@@ -181,9 +184,11 @@ class _ControllerDeployment:
                 status[application_name] = { **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "model_key": deployment.model_key,
-                    "title": self.cluster.evaluator.config_cache[deployment.model_key]._name_or_path,
+                    "repo_id": self.cluster.evaluator.config_cache[deployment.model_key]._name_or_path,
                     "config": self.cluster.evaluator.config_cache[deployment.model_key].to_json_string(),
                 }
+                
+                existing_repo_ids.add(self.cluster.evaluator.config_cache[deployment.model_key]._name_or_path)
                 
             for cached_model_key in node.cache.keys():
                 
@@ -194,9 +199,23 @@ class _ControllerDeployment:
                     status[application_name] = {
                         "deployment_level": DeploymentLevel.WARM.name,
                         "model_key": cached_model_key,
-                        "title": self.cluster.evaluator.config_cache[cached_model_key]._name_or_path,
+                        "repo_id": self.cluster.evaluator.config_cache[cached_model_key]._name_or_path,
                         "config": self.cluster.evaluator.config_cache[cached_model_key].to_json_string(),
                     }
+                    
+                    existing_repo_ids.add(self.cluster.evaluator.config_cache[cached_model_key]._name_or_path)
+
+        downloaded_models = get_downloaded_models()
+        
+        for repo_id in downloaded_models:
+            
+            if repo_id not in existing_repo_ids:
+                
+                status[repo_id] = {
+                    "deployment_level": DeploymentLevel.COLD.name,
+                    "repo_id": repo_id,
+                }
+            
 
         return {"deployments": status}
 
