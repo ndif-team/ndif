@@ -1,28 +1,21 @@
-import asyncio
 import os
-import threading
-import time
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any, Dict
-import uuid
 
-import ray
 import socketio
 import uvicorn
 import boto3
-from fastapi import FastAPI, Request, Security
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.security.api_key import APIKeyHeader
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
-from ray import serve
+from slugify import slugify
+import requests
 
 from nnsight.schema.response import ResponseModel
 
@@ -30,12 +23,9 @@ from .logging import load_logger
 
 logger = load_logger(service_name="API", logger_name="API")
 
-
 from .api_key import api_key_auth
-from .metrics import TransportLatencyMetric
+from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,36 +69,19 @@ object_store = boto3.client(
     config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
 )
 
-# Init Ray connection
-RAY_RETRY_INTERVAL_S = os.environ.get("RAY_RETRY_INTERVAL_S", 5)
-
-def connect_to_ray():
-    while True:
-        try:
-            if not ray.is_initialized():
-                ray.shutdown()
-                serve.context._set_global_client(None)
-                ray.init(logging_level="error")
-                logger.info("Connected to Ray cluster.")
-        except Exception as e:
-            logger.error(f"Failed to connect to Ray cluster: {e}")
-            
-        time.sleep(RAY_RETRY_INTERVAL_S)
-        
-        
-# Start the background thread
-ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
-ray_watchdog.start()
-
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
+from nnsight import __version__
+import re
+
+# Extract just the base version number (e.g. 0.4.7 from 0.4.7.dev10+gbcb756d)
+SERVER_NNSIGHT_VERSION = re.match(r'^(\d+\.\d+\.\d+)', __version__).group(1)
 
 
 @app.post("/request")
 async def request(
-    raw_request: Request, api_key: str = Security(api_key_header)
+    raw_request: Request
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -122,43 +95,62 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    # extract the request data
-    
-    request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request, api_key
-    )
-
     # process the request
     try:
-
-        TransportLatencyMetric.update(request)
+        
+        request: BackendRequestModel = BackendRequestModel.from_request(
+            raw_request
+        )
+        
+        user_nnsight_version = raw_request.headers.get("nnsight-version", '')
+        # Extract just the base version number from user version
+        user_base_version = re.match(r'^(\d+\.\d+\.\d+)', user_nnsight_version).group(1)
+        
+        if user_base_version != SERVER_NNSIGHT_VERSION:
+            raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
+        # extract the request data
+        
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
         )
+        
+        TransportLatencyMetric.update(request)
+        
+        NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key
-        api_key_auth(raw_request, request)
+        api_key_auth(request)
         
-        request.graph = await request.graph
-        request.graph = ray.put(request.graph)
-
-        # Send to request workers waiting to process requests on the "request" queue.
-        # Forget as we don't care about the response.
-        serve.get_app_handle("Request").remote(request)
-
-        # Back up request object by default (to be deleted on successful completion)
-        # request = request.model_copy()
-        # request.object = object
-        # request.save(object_store)
+        try:
+            body = await request.graph
+            headers = dict(raw_request.headers)
+            headers["ndif-request_id"] = request.id
+            
+            logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
+            queue_response = requests.post(
+                f"http://{os.environ.get('QUEUE_URL')}/queue",
+                data=body,
+                headers=headers,
+            )
+            
+            #if not queue_response.ok:
+            #    raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
+                
+            logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
+        except Exception as e:
+            description = f"Failed to send request to queue: {e}"
+            logger.error(description)
+            response = request.create_response(
+                status=ResponseModel.JobStatus.ERROR,
+                description=description,
+                logger=logger,
+            )
     except Exception as exception:
 
-        if 'ray ' in str(exception).lower():
-            description = "Issue with Ray. NDIF compute backend must be down :("
-        else:
-            description = f"{traceback.format_exc()}\n{str(exception)}"
+        description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
         response = request.create_response(
@@ -258,49 +250,18 @@ async def result(id: str) -> BackendResultModel:
 @app.get("/ping", status_code=200)
 async def ping():
     """Endpoint to check if the server is online.
-
-    Returns:
-        _type_: _description_
     """
     return "pong"
 
 
 @app.get("/status", status_code=200)
-@cache(expire=600)
+@cache(expire=60)
 async def status():
+    return requests.get(
+        f"http://{os.environ.get('QUEUE_URL')}/status",
+    ).json()
 
-    response = {}
-
-    status = serve.status()
-
-    model_configurations = await serve.get_app_handle(
-        "Controller"
-    ).get_model_configurations.remote()
-
-    for application_name, application in status.applications.items():
-
-        if application_name.startswith("Model"):
-
-            deployment = application.deployments["ModelDeployment"]
-
-            num_running_replicas = 0
-
-            for replica_status in deployment.replica_states:
-
-                if replica_status == "RUNNING":
-
-                    num_running_replicas += 1
-
-            if num_running_replicas > 0:
-
-                config = model_configurations[application_name]
-
-                response[application_name] = {
-                    "num_running_replicas": num_running_replicas,
-                    **config,
-                }
-
-    return response
+    
 
 
 if __name__ == "__main__":

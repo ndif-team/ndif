@@ -1,12 +1,11 @@
-from typing import Dict
+from typing import Dict, Union
 
 import torch
 
 from nnsight.modeling.mixins import RemoteableMixin
 
-from ... import MODEL_KEY
-
 from .....logging.logger import load_logger
+from ... import MODEL_KEY
 
 LOGGER = load_logger("Controller")
 
@@ -24,19 +23,25 @@ class ModelEvaluator:
 
         torch.set_default_dtype(torch.bfloat16)
 
-    def __call__(self, model_key: MODEL_KEY) -> float:
+    def __call__(self, model_key: MODEL_KEY) -> Union[float, Exception]:
 
         if model_key in self.size_in_bytes_cache:
             
             LOGGER.info(f"=> Evaluator: Model {model_key} already in cache. Size: {self.size_in_bytes_cache[model_key]}")
 
             return self.size_in_bytes_cache[model_key]
+        
+        try:
 
-        meta_model = RemoteableMixin.from_model_key(
-            model_key,
-            dispatch=False,
-            torch_dtype=torch.bfloat16,
-        )._model
+            meta_model = RemoteableMixin.from_model_key(
+                model_key,
+                dispatch=False,
+                torch_dtype=torch.bfloat16,
+            )._model
+            
+        except Exception as exception:
+            
+            return exception
 
         param_size = 0
         for param in meta_model.parameters():
@@ -50,7 +55,7 @@ class ModelEvaluator:
         model_size_bytes += model_size_bytes * self.padding_factor
 
         self.size_in_bytes_cache[model_key] = model_size_bytes
-        self.config_cache[model_key] = meta_model.config.to_json_string()
+        self.config_cache[model_key] = meta_model.config
         
         LOGGER.info(f"=> Evaluator: New model {model_key} size: {model_size_bytes}")
         

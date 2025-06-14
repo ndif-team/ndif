@@ -1,18 +1,20 @@
+import time
 from dataclasses import dataclass
-from enum import Enum
+from enum import IntEnum
 from typing import Dict, List, Optional, Set
 
 from ... import MODEL_KEY
 from .deployment import Deployment, DeploymentLevel
-from ..cache_actor import CacheActor
 
-class CandidateLevel(Enum):
+
+class CandidateLevel(IntEnum):
 
     DEPLOYED = 0
     CACHED_AND_FREE = 1
     FREE = 2
-    EVICTABLE = 3
+    CACHED_AND_FULL = 3
     FULL = 4
+    CANT_ACCOMMODATE = 5
 
 
 class Candidate:
@@ -37,10 +39,10 @@ class Resources:
     gpu_type: str
     gpu_memory_bytes: int
 
-    total_memory_bytes: int
+    cpu_memory_bytes: int
 
-    available_gpus: int = 0
-    available_memory_bytes: int = 0
+    available_cpu_memory_bytes: int
+    available_gpus: int
 
     def gpus_required(self, model_size_in_bytes: int) -> int:
 
@@ -52,36 +54,39 @@ class Resources:
             f"total_gpus={self.total_gpus}, "
             f"gpu_type={self.gpu_type}, "
             f"gpu_memory_bytes={self.gpu_memory_bytes}, "
-            f"total_memory_bytes={self.total_memory_bytes}, "
+            f"cpu_memory_bytes={self.cpu_memory_bytes}, "
+            f"available_cpu_memory_bytes={self.available_cpu_memory_bytes}, "
             f"available_gpus={self.available_gpus}, "
-            f"available_memory_bytes={self.available_memory_bytes}"
             f")"
         )
 
+
 class Node:
 
-    def __init__(self, id: str, name: str, resources: Resources):
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        resources: Resources,
+        minimum_deployment_time_seconds: float = None,
+    ):
 
         self.id = id
         self.name = name
         self.resources = resources
+        self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
-        self.cached: Set[MODEL_KEY] = set()
-        
-        self.cache_actor = CacheActor.options(name=f"CacheActor:{self.id}").remote()
+        self.cache: Dict[MODEL_KEY, Deployment] = {}
 
 
     def deploy(
         self,
         model_key: MODEL_KEY,
         candidate: Candidate,
+        size_bytes: int,
         dedicated: Optional[bool] = None,
     ):
-
-        if candidate.candidate_level == CandidateLevel.DEPLOYED:
-
-            return
 
         for eviction in candidate.evictions:
 
@@ -93,18 +98,83 @@ class Node:
                 DeploymentLevel.DEDICATED if dedicated else DeploymentLevel.HOT
             ),
             gpus_required=candidate.gpus_required,
+            size_bytes=size_bytes,
         )
 
         self.resources.available_gpus -= candidate.gpus_required
 
     def evict(self, model_key: MODEL_KEY):
-
-        self.resources.available_gpus += self.deployments[model_key].gpus_required
-
-        del self.deployments[model_key]
         
-        self.cached.add(model_key)
+        deployment = self.deployments[model_key]
 
+        self.resources.available_gpus += deployment.gpus_required
+        
+        if self.resources.available_cpu_memory_bytes < deployment.size_bytes:
+            
+            cpu_memory_needed = deployment.size_bytes - self.resources.available_cpu_memory_bytes
+            
+            cache_evictions = []
+            
+            for model_key, deployment in sorted(self.cache.items(), key=lambda x: x[1].size_bytes):
+                
+                cpu_memory_needed -= deployment.size_bytes
+                
+                cache_evictions.append(deployment)
+
+                if cpu_memory_needed <= 0:
+
+                    break
+                
+            for eviction_deployment in cache_evictions:
+                
+                eviction_deployment.remove_from_cache()
+                
+                del self.cache[eviction_deployment.model_key]
+                
+                self.resources.available_cpu_memory_bytes += eviction_deployment.size_bytes
+                
+        self.resources.available_cpu_memory_bytes -= deployment.size_bytes
+        
+        deployment.deployment_level = DeploymentLevel.WARM
+        
+        self.cache[model_key] = deployment
+        
+        del self.deployments[model_key]
+
+    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+        deployments = sorted(
+            list(self.deployments.values()), key=lambda x: x.gpus_required
+        )
+
+        gpus_needed = gpus_required - self.resources.available_gpus
+
+        evictions = []
+
+        for deployment in deployments:
+            
+
+            if deployment.deployment_level == DeploymentLevel.DEDICATED:
+
+                continue
+
+            if (
+                not dedicated
+                and self.minimum_deployment_time_seconds is not None
+                and time.time() - deployment.deployed
+                < self.minimum_deployment_time_seconds
+            ):
+                continue
+
+            evictions.append(deployment.model_key)
+
+            gpus_needed -= deployment.gpus_required
+
+            if gpus_needed <= 0:
+
+                return evictions
+            
+        return list()
+            
     def evaluate(
         self, model_key: MODEL_KEY, model_size_in_bytes: int, dedicated: bool = False
     ) -> Candidate:
@@ -117,17 +187,36 @@ class Node:
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
-        cached = model_key in self.cached
-                 
+        cached = model_key in self.cache
+
         gpus_required = self.resources.gpus_required(model_size_in_bytes)
 
         if gpus_required <= self.resources.available_gpus:
 
             return Candidate(
-                candidate_level=CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE,
+                candidate_level=(
+                    CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
+                ),
                 gpus_required=gpus_required,
             )
 
+        elif gpus_required <= self.resources.total_gpus:
+            
+            candidate = Candidate(
+                candidate_level=(
+                    CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
+                ),
+                gpus_required=gpus_required,
+            )
+            
+            candidate.evictions = self.evictions(gpus_required, dedicated=dedicated)
+            
+            if len(candidate.evictions) == 0:
+                
+                candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
+
+            return candidate
+
         else:
 
-            return Candidate(candidate_level=CandidateLevel.FULL)
+            return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)

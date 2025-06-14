@@ -46,15 +46,15 @@ build_all_conda:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_conda NAME=api
+	make build_conda NAME=queue
 	make build_conda NAME=ray
-	
 
 build_all_service:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	make build_service NAME=api
+	make build_service NAME=queue
 	make build_service NAME=ray
-	
 
 build:
 	$(call set_env)
@@ -68,10 +68,12 @@ up:
 	$(call set_env)
 	$(call check_env,$(ENV))
 	@if [ "$(ENV)" = "dev" ] && [ "$(DEV_NNS)" = "True" ]; then \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) \
+		RAY_VERSION=$(TAG) API_VERSION=$(TAG) QUEUE_VERSION=$(TAG) && \
 		docker compose -f compose/dev/docker-compose.yml -f compose/dev/docker-compose.nnsight.yml up --detach; \
 	else \
-		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) && \
+		export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNS_PATH=$(NNS_PATH) \
+		RAY_VERSION=$(TAG) API_VERSION=$(TAG) QUEUE_VERSION=$(TAG) && \
 		docker compose -f compose/$(ENV)/docker-compose.yml up --detach; \
 	fi
 

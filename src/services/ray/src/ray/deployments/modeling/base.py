@@ -1,4 +1,5 @@
 import gc
+import os
 import sys
 import time
 import traceback
@@ -16,7 +17,8 @@ from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 
 from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
@@ -25,36 +27,18 @@ from nnsight.tracing.backends import Backend
 from nnsight.tracing.graph import Graph
 from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
+from nnsight.schema.request import RequestModel
+from . import protocols
 
 from ....logging import load_logger
-from ....metrics import ExecutionTimeMetric, GPUMemMetric, RequestResponseSizeMetric
-from ....schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
-from . import protocols
-from ray._private.internal_api import free as ray_free
-from ray.experimental.locations import get_local_object_locations, get_object_locations
-import ray.cloudpickle as cpickle
-import base64
-
-def object_ref_from_id(id:str) -> ray.ObjectRef:
-    
-    obj_bytes = base64.b64decode(id)
-
-    return cpickle.loads(obj_bytes)
-
-def object_ref_to_id(obj_ref:ray.ObjectRef) -> str:
-    
-    obj_bytes = cpickle.dumps(obj_ref)
-    
-    return base64.b64encode(obj_bytes).decode('utf-8')
-
+from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
+                         RequestResponseSizeMetric)
+from ....schema import (BackendRequestModel, BackendResponseModel,
+                        BackendResultModel)
+from .util import load_with_cache_deletion_retry
 class ExtractionBackend(Backend):
 
-    def __call__(self, graph: Graph) -> RESULT:
+    def __call__(self, graph: Graph):
 
         try:
 
@@ -72,30 +56,17 @@ class ExtractionBackend(Backend):
             graph.stack.clear()
 
         return result
-
-
-def threaded(method, size: int = 1):
-
-    group = ThreadPoolExecutor(size)
-
-    @wraps(method)
-    def inner(*args, **kwargs):
-
-        return group.submit(method, *args, **kwargs)
-
-    return inner
-
-
 class BaseModelDeployment:
 
     def __init__(
         self,
-        cached: bool,
+        model_key: str,
+        cuda_devices:str,
+        app: str,
         api_url: str,
         object_store_url: str,
         object_store_access_key: str,
         object_store_secret_key: str,
-        model_key: str,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -105,13 +76,20 @@ class BaseModelDeployment:
     ) -> None:
 
         super().__init__()
-
-        self.cached = cached
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         self.api_url = api_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
+        
+        self.app = app
+        self.model_key = model_key
+        self.execution_timeout = execution_timeout
+        self.dispatch = dispatch
+        self.dtype = dtype
+        self.extra_kwargs = extra_kwargs
 
         # Initialize S3 client (either AWS S3 or compatible service like MinIO)
         self.object_store = boto3.client(
@@ -132,24 +110,8 @@ class BaseModelDeployment:
         self.logger = load_logger(
             service_name=str(self.__class__), logger_name="ray.serve"
         )
-        
-        
-        
+
         self.runtime_context = ray.get_runtime_context()
-
-        try:
-            self.replica_context = serve.get_replica_context()
-        except:
-            self.replica_context = None
-            
-            
-        self.cache_actor = ray.get_actor(f"CacheActor:{self.runtime_context.worker.node._node_id}")
-
-        self.model_key = model_key
-        self.execution_timeout = execution_timeout
-        self.dispatch = dispatch
-        self.dtype = dtype
-        self.extra_kwargs = extra_kwargs
 
         if isinstance(dtype, str):
 
@@ -161,60 +123,68 @@ class BaseModelDeployment:
         #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
         #     ray_free(object_refs, local_only=True)
 
-        if self.cached:
-            self.model = self.load_from_cache()
-        else:
-            self.model = self.load_from_disk()
+
+        self.model = self.load_from_disk()
 
         if dispatch:
-            self.model._model.requires_grad_(False)
+            self.model._module.requires_grad_(False)
 
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
-
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+        
         protocols.LogProtocol.set(lambda *args: self.log(*args))
 
         RemoteContext.set(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
-
-        self.logger.info(f"Loading model from disk for model key {self.model_key}")
         
-        return RemoteableMixin.from_model_key(
-            self.model_key,
-            device_map="auto",
-            dispatch=self.dispatch,
-            torch_dtype=self.dtype,
-            **self.extra_kwargs,
+        start = time.time()
+
+        self.logger.info(f"Loading model from disk for model key {self.model_key}...")
+        
+        model = load_with_cache_deletion_retry(
+            lambda: RemoteableMixin.from_model_key(
+                self.model_key,
+                device_map="auto",
+                dispatch=self.dispatch,
+                torch_dtype=self.dtype,
+                **self.extra_kwargs,
+            )
         )
-    
-    def load_from_cache(self):
+
         
-        self.logger.info(f"Loading model from cache for model key {self.model_key}")
-
-        model = ray.get(ray.get(self.cache_actor.get.remote(self.model_key)))
+        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}")
         
-        self.logger.info(f"Model loaded from cache for model key {model}")
-
-        # Automatically compute balanced memory allocation
-        max_memory = get_balanced_memory(model._module)
-
-        # Infer an optimal device map based on the computed memory allocation
-        device_map = infer_auto_device_map(model._module, max_memory=max_memory)
-
-        # Dispatch the model according to the inferred device map
-        model._module = dispatch_model(model._module, device_map=device_map)
-
         return model
     
-    def __del__(self):
+    def to_cache(self):
         
+        self.model.cpu()
+
+    def from_cache(self, cuda_devices:str, app:str):
         
-        if not self.cached:
-            self.cache_actor.cache.remote(self.model_key, self.dtype, **self.extra_kwargs)
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
         
+        self.app = app
         
+        start = time.time()
+        
+        self.logger.info(f"Loading model from cache for model key {self.model_key}...")
+        
+        # Automatically compute balanced memory allocation
+        max_memory = get_balanced_memory(self.model._module)
+
+        # Infer an optimal device map based on the computed memory allocation
+        device_map = infer_auto_device_map(self.model._module, max_memory=max_memory)
+
+        # Dispatch the model according to the inferred device map
+        self.model._module = dispatch_model(self.model._module, device_map=device_map)
+        
+        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}")
+
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -236,12 +206,11 @@ class BaseModelDeployment:
 
             inputs = self.pre()
 
-            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+            #TODO abstract out for distributed execution
+            result = self.thread_pool.submit(self.execute, inputs)
 
-                result = self.execute(inputs)
-
-                if isinstance(result, Future):
-                    result = result.result(timeout=self.execution_timeout)
+            if isinstance(result, Future):
+                result = result.result(timeout=self.execution_timeout)
 
             self.post(result)
 
@@ -270,7 +239,7 @@ class BaseModelDeployment:
 
     ### ABSTRACT METHODS #################################
 
-    def pre(self) -> Graph:
+    def pre(self) -> RequestModel:
         """Logic to execute before execution."""
         graph = self.request.deserialize(self.model)
 
@@ -290,24 +259,26 @@ class BaseModelDeployment:
         Returns:
             Any: Result.
         """
+        
+        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-        # For tracking peak GPU usage
-        if torch.cuda.is_available():
-            reset_peak_memory_stats()
-            model_memory = memory_allocated()
+            # For tracking peak GPU usage
+            if torch.cuda.is_available():
+                reset_peak_memory_stats()
+                model_memory = memory_allocated()
 
-        execution_time = time.time()
+            execution_time = time.time()
 
-        # Execute object.
-        result = ExtractionBackend()(graph)
+            # Execute object.
+            result = ExtractionBackend()(graph)
 
-        execution_time = time.time() - execution_time
+            execution_time = time.time() - execution_time
 
-        # Compute GPU memory usage
-        if torch.cuda.is_available():
-            gpu_mem = max_memory_allocated() - model_memory
-        else:
-            gpu_mem = 0
+            # Compute GPU memory usage
+            if torch.cuda.is_available():
+                gpu_mem = max_memory_allocated() - model_memory
+            else:
+                gpu_mem = 0
 
         return result, gpu_mem, execution_time
 
@@ -377,8 +348,7 @@ class BaseModelDeployment:
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        app_name = serve.get_replica_context().app_name
-        serve.get_app_handle("Controller").restart.remote(app_name)
+        serve.get_app_handle(self.app).restart.remote()
 
     def cleanup(self):
         """Performs cleanup operations after request processing.
@@ -495,14 +465,15 @@ class BaseModelDeployment:
 class BaseModelDeploymentArgs(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    
+
     model_key: str
+    node_name: str
 
     api_url: str
     object_store_url: str
     object_store_access_key: str
     object_store_secret_key: str
-    
+
     cached: bool = False
 
     execution_timeout: float | None = None
