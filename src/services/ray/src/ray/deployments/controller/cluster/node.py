@@ -152,7 +152,7 @@ class Node:
         for deployment in deployments:
             
 
-            if deployment.deployment_level == DeploymentLevel.DEDICATED:
+            if deployment.dedicated:
 
                 continue
 

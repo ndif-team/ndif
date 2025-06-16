@@ -65,7 +65,6 @@ class _ControllerDeployment:
         for application_details in serve_details.applications.values():
 
             application_schema = application_details.deployed_app_config
-            # application_schema.deployments = [deployment.deployment_config for deployment in application_details.deployments.values()]
 
             applications.append(application_schema)
 
@@ -190,16 +189,12 @@ class _ControllerDeployment:
                     "config": self.cluster.evaluator.cache[
                         deployment.model_key
                     ].config.to_json_string(),
-                    "minutesleft": (
-                        (
-                            self.minimum_deployment_time_seconds
-                            - (time.time() - deployment.deployed)
-                        )
-                        // 60
-                        if self.minimum_deployment_time_seconds is not None
-                        else None
-                    ),
                 }
+                
+                if self.minimum_deployment_time_seconds is not None:
+                    status[application_name]["schedule"] = {
+                        "end_time": deployment.end_time(self.minimum_deployment_time_seconds),
+                    }
 
                 existing_repo_ids.add(
                     self.cluster.evaluator.cache[
