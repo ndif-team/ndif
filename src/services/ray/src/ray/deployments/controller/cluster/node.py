@@ -94,11 +94,10 @@ class Node:
 
         self.deployments[model_key] = Deployment(
             model_key=model_key,
-            deployment_level=(
-                DeploymentLevel.DEDICATED if dedicated else DeploymentLevel.HOT
-            ),
+            deployment_level=DeploymentLevel.HOT,
             gpus_required=candidate.gpus_required,
             size_bytes=size_bytes,
+            dedicated=dedicated,
         )
 
         self.resources.available_gpus -= candidate.gpus_required
@@ -183,7 +182,7 @@ class Node:
 
             if dedicated:
 
-                self.deployments[model_key].deployment_level = DeploymentLevel.DEDICATED
+                self.deployments[model_key].dedicated = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 

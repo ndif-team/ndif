@@ -6,9 +6,7 @@ import ray
 
 class DeploymentLevel(Enum):
 
-    DEDICATED = "dedicated"
     HOT = "hot"
-
     WARM = "warm"
     COLD = "cold"
 
@@ -21,12 +19,14 @@ class Deployment:
         deployment_level: DeploymentLevel,
         gpus_required: int,
         size_bytes: int,
+        dedicated: bool = False,
     ):
 
         self.model_key = model_key
         self.deployment_level = deployment_level
         self.gpus_required = gpus_required
         self.size_bytes = size_bytes
+        self.dedicated = dedicated
         
         self.deployed = time.time()
         

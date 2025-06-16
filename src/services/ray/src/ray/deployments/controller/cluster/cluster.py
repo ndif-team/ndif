@@ -129,7 +129,7 @@ class Cluster:
                 
                 for model_key, deployment in list(node.deployments.items()):
                     
-                    if deployment.deployment_level == DeploymentLevel.DEDICATED and model_key not in model_sizes_in_bytes:
+                    if deployment.dedicated and model_key not in model_sizes_in_bytes:
                         
                         LOGGER.info(f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}")
                         
