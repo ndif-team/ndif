@@ -11,10 +11,10 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
+from .models.queue_state import QueueState
 from .queue_manager import QueueManager
 from .dispatcher import Dispatcher
 from .logging import load_logger
-from .models.state import QueueState
 
 logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
@@ -45,10 +45,15 @@ sio = socketio.SimpleClient(reconnection_attempts=10)
 connection_event = asyncio.Event()
 connection_task = None
 
-queue_state = QueueState()
-queue_manager = QueueManager(queue_state)
-dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
+def test_update_position(session_id: str, request_id: str, position: int) -> None:
+    """Test update position via socket."""
+    logger.info(f"Updating position for {session_id} {request_id} {position}")
 
+# Initialize queue state with socket callback
+queue_state = QueueState()
+queue_state.set_socket_callback(test_update_position)
+queue_manager = QueueManager(queue_state, delete_on_empty=False)
+dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
@@ -107,6 +112,11 @@ async def ensure_socket_connection(request: Request, call_next):
 
 app.middleware("http")(ensure_socket_connection)
 
+@app.get("/queue")
+async def get_queue_state():
+    """Get complete queue state."""
+    return queue_state.model_dump()
+
 @app.post("/queue")
 async def queue(request: Request):
     """Endpoint to add a request to the queue."""
@@ -114,7 +124,7 @@ async def queue(request: Request):
     try:
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
-            request, request.headers.get("api_key")  # TODO 
+            request, request.headers.get("api_key")
         )
         backend_request.id = request.headers.get("request_id")
 
@@ -143,18 +153,11 @@ async def queue(request: Request):
         response.respond(sio, object_store)
         return response
 
-@app.head("/queue/{model_key}/{request_id}")
-async def queue(model_key: Optional[str] = None):
-    """Endpoint to verify the request is in the queue."""
-
+@app.delete("/queue/{request_id}")
+async def remove_request(request_id: str):
+    """Remove a request from the queue."""
+    # TODO: Support for removing requests from the queue
     pass
-
-@app.delete("/queue/{model_key}/{request_id}")
-async def queue(model_key: Optional[str] = None):
-    """Endpoint to delete a request from the queue."""
-
-    pass
-
 
 @app.get("/ping", status_code=200)
 async def ping():

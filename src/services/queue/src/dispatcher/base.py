@@ -48,6 +48,8 @@ class BaseDispatcher(ABC):
                 if not batch:
                     continue
                 await self.dispatch_batch(batch)
+            else:
+                await self.handle_idle_task_source(task_source)
     
     @abstractmethod
     async def get_task_sources(self) -> List[str]:
@@ -67,4 +69,9 @@ class BaseDispatcher(ABC):
     @abstractmethod
     async def dispatch_batch(self, batch: List[Any]):
         """Dispatch a batch of tasks."""
+        pass
+
+    @abstractmethod
+    async def handle_idle_task_source(self, task_source: str):
+        """Handle cleanup or maintenance tasks when a task source has no pending tasks."""
         pass 
