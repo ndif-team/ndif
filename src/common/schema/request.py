@@ -48,6 +48,7 @@ class BackendRequestModel(ObjectStorageMixin):
     format: str
     zlib: Optional[bool] = True
     api_key: Optional[str] = ''
+    callback: Optional[str] = ''
 
     id: str
         
@@ -85,6 +86,7 @@ class BackendRequestModel(ObjectStorageMixin):
             zlib=headers.get("zlib", True),
             sent=sent,
             api_key=headers.get("ndif-api-key", ''),
+            callback=headers.get("callback", ''),
         )
 
     def create_response(
@@ -113,6 +115,7 @@ class BackendRequestModel(ObjectStorageMixin):
                 status=status,
                 description=description,
                 data=data,
+                callback=self.callback,
             )
             .backend_log(
                 logger=logger,

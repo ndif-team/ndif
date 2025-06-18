@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
     _bucket_name: ClassVar[str] = "responses"
+    callback: Optional[str] = ''
 
     def __str__(self) -> str:
         return f"{self.id} - {self.status.name}: {self.description}"
@@ -43,13 +44,18 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
             fn("blocking_response", data=(self.session_id, self.pickle()))
         else:
+            if self.callback != '':
+                callback_url = f"{self.callback}?status={self.status.value}"
+                requests.get(callback_url)
+
             self.save(object_store)
 
         return self
 
     @field_serializer("status")
-    def sstatus(self, value, _info):
+    def status(self, value, _info):
         return value.value
+    
     def update_metric(
         self,
         request: "BackendRequestModel",
