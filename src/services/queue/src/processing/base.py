@@ -88,7 +88,7 @@ class Processor(ABC, Generic[T]):
             "queue": [task.state() for task in self.queue],
         }
 
-    async def advance_lifecycle(self) -> bool:
+    def advance_lifecycle(self) -> bool:
         """
         Check whether the processor state needs to be updated.
         
@@ -120,11 +120,11 @@ class Processor(ABC, Generic[T]):
         
         if task_status == self._get_queued_state():
             self._log_error(f"Dispatched task is in queued state, this should not happen")
-            await self._dispatch()
+            self._dispatch()
             return True
 
         if task_status == self._get_pending_state():
-            await self._dispatch()
+            self._dispatch()
             return True
 
         if task_status == self._get_dispatched_state():
@@ -136,14 +136,14 @@ class Processor(ABC, Generic[T]):
             return True
 
         if task_status == self._get_failed_state():
-            await self._handle_failed_dispatch()
+            self._handle_failed_dispatch()
             return True
 
         self._log_warning(f"Processor is in an unexpected state: {current_status}")
         return False
 
     @abstractmethod
-    async def _dispatch(self) -> bool:
+    def _dispatch(self) -> bool:
         """
         Abstract method to dispatch a task.
         
@@ -160,14 +160,14 @@ class Processor(ABC, Generic[T]):
         """
         self.dispatched_task = None
 
-    async def _handle_failed_dispatch(self):
+    def _handle_failed_dispatch(self):
         """
         Handle a failed task.
         """
         if self.dispatched_task.retries < self.max_retries:
             # Try again
             self._log_error(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
-            await self._dispatch()
+            self._dispatch()
             self.dispatched_task.retries += 1
         else:
             try:
@@ -258,3 +258,7 @@ class Processor(ABC, Generic[T]):
     def _log_warning(self, message: str):
         """Log a warning message."""
         print(f"[WARNING] {message}")
+
+    def _log_info(self, message: str):
+        """Log an info message."""
+        print(f"[INFO] {message}")

@@ -1,4 +1,6 @@
 import ray
+import asyncio
+import concurrent.futures
 from typing import Dict, Any
 from .state import TaskState
 from .base import Task
@@ -39,9 +41,9 @@ class RequestTask(Task):
             self._log_error(f"Error checking request {self.id} status: {e}")
             return TaskState.FAILED
 
-    async def run(self, app_handle) -> bool:
+    def run(self, app_handle) -> bool:
         """
-        Run the request using Ray backend.
+        Run the request using Ray backend in a separate thread.
         
         Args:
             app_handle: Ray app handle for the model deployment
@@ -50,13 +52,26 @@ class RequestTask(Task):
             True if the request was successfully started, False otherwise
         """
         try:
-            self._future = await app_handle.remote(self.data)._to_object_ref()
+            # Run the async Ray operation in a separate thread
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(self._resolve_async, app_handle)
+                self._future = future.result()  # This blocks until complete
             self._log_debug(f"Request {self.id} dispatched!")
             self.position = None
             return True
         except Exception as e:
             self._log_error(f"Error running request {self.id}: {e}")
             return False
+
+    def _resolve_async(self, app_handle):
+        """
+        Resolve the async Ray operation in a separate thread.
+        This method runs in its own event loop to avoid conflicts.
+        """
+        async def _async_operation():
+            return await app_handle.remote(self.data)._to_object_ref()
+        
+        return asyncio.run(_async_operation())
 
     def respond(self):
         """

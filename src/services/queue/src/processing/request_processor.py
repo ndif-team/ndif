@@ -106,23 +106,23 @@ class RequestProcessor(Processor[RequestTask]):
         """Return the failed state constant."""
         return TaskState.FAILED
 
-    async def _dispatch(self) -> bool:
+    def _dispatch(self) -> bool:
         """
         Dispatch a request using Ray backend.
         """
-        success = await self.dispatched_task.run(self.app_handle)
+        success = self.dispatched_task.run(self.app_handle)
         if success:
             self.last_dispatch_time = datetime.now()
         return success
 
-    async def _handle_failed_dispatch(self):
+    def _handle_failed_dispatch(self):
         """
         Handle a failed request with Ray-specific logic.
         """
         if self.dispatched_task.is_retryable(self.max_retries):
             # Try again
             self._log_error(f"Request {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
-            await self._dispatch()
+            self._dispatch()
             self.dispatched_task.increment_retries()
         else:
             try: 

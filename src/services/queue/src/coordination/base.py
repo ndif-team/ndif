@@ -133,7 +133,7 @@ class Coordinator(ABC, Generic[T, P]):
         """
         pass
 
-    async def _advance_processor_lifecycles(self):
+    def _advance_processor_lifecycles(self):
         """
         Advance the lifecycle of all active processors.
         """
@@ -141,7 +141,7 @@ class Coordinator(ABC, Generic[T, P]):
         
         for processor_key, processor in self.active_processors.items():
             try:
-                await processor.advance_lifecycle()
+                processor.advance_lifecycle()
                 
                 # Check if processor should be deactivated
                 if self._should_deactivate_processor(processor):
@@ -191,7 +191,7 @@ class Coordinator(ABC, Generic[T, P]):
         while self.running:
             try:
                 await asyncio.sleep(self.tick_interval)
-                await self._advance_processor_lifecycles()
+                self._advance_processor_lifecycles()
                 self._error_count = 0  # Reset error count on successful iteration
             except asyncio.CancelledError:
                 self._log_info("Processor monitoring cancelled")
