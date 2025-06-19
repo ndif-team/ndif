@@ -3,7 +3,8 @@ import os
 import time
 import ray
 from ray import serve
-from typing import Dict, Optional, List
+import threading
+from typing import Dict, Optional, List, Any
 from slugify import slugify
 from ..logging import load_logger
 from ..schema import BackendRequestModel
@@ -18,8 +19,18 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     Coordinates requests between the queue and the model deployments using Ray backend.
     """
 
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3):
+    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None):
         super().__init__(tick_interval, max_retries)
+        self.ray_url = ray_url
+        self.ray_connected = False
+        self.ray_watchdog = threading.Thread(target=self.connect_to_ray, daemon=True)
+        self.ray_watchdog.start()
+
+    def state(self) -> Dict[str, Any]:
+        """Get the state of the coordinator. Adds ray_connected to the base state."""
+        base_state = super().state()
+        base_state["ray_connected"] = self.ray_connected
+        return base_state
 
     async def route_request(self, request: BackendRequestModel) -> bool:
         """Route request to appropriate processor."""
@@ -109,8 +120,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             self._log_error(f"Error getting all processors: {e}")
             return []
 
-    @staticmethod
-    def connect_to_ray(ray_url: str):
+    def connect_to_ray(self):
         """Connect to Ray cluster."""
         retry_interval = int(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
         while True:
@@ -118,8 +128,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                 if not ray.is_initialized():
                     ray.shutdown()
                     serve.context._set_global_client(None)
-                    ray.init(logging_level="error", address=ray_url)
+                    ray.init(logging_level="error", address = self.ray_url)
+                    time.sleep(3)
                     logger.info("Connected to Ray cluster.")
+                    self.ray_connected = True
                     return
             except Exception as e:
                 logger.error(f"Failed to connect to Ray cluster: {e}")

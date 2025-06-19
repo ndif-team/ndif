@@ -43,7 +43,8 @@ sio = socketio.SimpleClient(reconnection_attempts=10)
 connection_event = asyncio.Event()
 connection_task = None
 
-coordinator = RequestCoordinator()
+ray_url = os.environ.get("RAY_ADDRESS")
+coordinator = RequestCoordinator(ray_url=ray_url)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
