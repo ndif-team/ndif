@@ -9,8 +9,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from ray.serve.handle import DeploymentHandle
 
-logger = logging.getLogger(__name__)
-
+logger = logging.getLogger("ndif")
 
 @ray.remote(num_cpus=1)
 class SchedulingActor:
@@ -64,7 +63,7 @@ class SchedulingActor:
         specified interval.
         """
 
-        print("Starting scheduler...")
+        logger.info("Starting scheduler...")
 
         while True:
 
@@ -73,7 +72,7 @@ class SchedulingActor:
             except Exception as e:
                 import traceback
 
-                print(f"Error in check_calendar: {e}")
+                logger.error(f"Error in check_calendar: {e}")
                 traceback.print_exc()
 
             # Wait for the next check interval
@@ -129,7 +128,7 @@ class SchedulingActor:
 
         # Only update if the model keys have changed
         if current_hash != self.previous_model_keys_hash:
-            print(
+            logger.info(
                 "Change in model deployment state. Sending deployment request to Controller..."
             )
             # Update the stored hash

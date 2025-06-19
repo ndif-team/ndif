@@ -11,12 +11,14 @@ from ray import serve
 
 from nnsight.schema.response import ResponseModel
 
+from .logging import set_logger
+
+logger = set_logger("QUEUE")
+
 from .dispatcher import Dispatcher
-from .logging import load_logger
 from .queue_manager import QueueManager
 from .schema import BackendRequestModel
 
-logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
 app = FastAPI()
 

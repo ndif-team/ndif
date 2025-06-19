@@ -9,9 +9,8 @@ from typing import Dict, Union
 from .schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
 from .queue_manager import QueueManager
-from .logging import load_logger
-
-logger = load_logger(service_name="Dispatcher", logger_name="Dispatcher")
+import logging
+logger = logging.getLogger("ndif")
 
 poll_interval = float(os.getenv("DISPATCHER_POLL_INTERVAL", "1.0"))
 

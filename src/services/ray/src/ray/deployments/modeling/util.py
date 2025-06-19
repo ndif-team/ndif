@@ -5,7 +5,8 @@ from typing import Callable
 from huggingface_hub import scan_cache_dir
 from huggingface_hub.utils._cache_manager import CachedRepoInfo
 
-from ....logging.logger import load_logger
+import logging
+logger = logging.getLogger("ndif")
 
 pattern = re.compile(
     r"expected file size is:\s*([0-9]+(?:\.[0-9]+)?)\s*MB.*?only has\s*([0-9]+(?:\.[0-9]+)?)\s*MB",
@@ -28,8 +29,6 @@ def downloaded(repo: CachedRepoInfo):
 
 def make_room(expected_mb: float, available_mb: float):
 
-    LOGGER = load_logger()
-
     hf_info = scan_cache_dir()
 
     repos_by_access = sorted(hf_info.repos, key=lambda repo: repo.last_accessed)
@@ -48,7 +47,7 @@ def make_room(expected_mb: float, available_mb: float):
 
         mb_needed -= repo.size_on_disk / (1024 * 1024)  # Convert bytes to MB
 
-        LOGGER.error(
+        logger.error(
             f"==> Evicting {repo.repo_id} with size {repo.size_on_disk / (1024 * 1024)} MB from HF cache"
         )
 
@@ -61,8 +60,6 @@ def make_room(expected_mb: float, available_mb: float):
 
 
 def load_with_cache_deletion_retry(load_fn: Callable):
-
-    LOGGER = load_logger()
 
     warnings.filterwarnings(
         "error", message="Not enough free disk space to download the file."
@@ -84,7 +81,7 @@ def load_with_cache_deletion_retry(load_fn: Callable):
                 expected_mb = float(m.group(1))
                 available_mb = float(m.group(2))
 
-                LOGGER.error(
+                logger.error(
                     f"=> Not enough free disk space to download the model. Making room for {expected_mb} MB of space. Available: {available_mb} MB"
                 )
 

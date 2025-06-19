@@ -1,9 +1,10 @@
 from multiprocessing import Manager
 from typing import List, Optional
 from .schema import BackendRequestModel
-from .logging import load_logger
+import logging
 
-logger = load_logger(service_name="QueueManager", logger_name="QueueManager")
+logger = logging.getLogger("ndif")
+
 
 def get_queue_key(model_key: str) -> str:
     return f"queue:{model_key}"
