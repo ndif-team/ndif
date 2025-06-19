@@ -11,10 +11,8 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
-from .models.queue_state import QueueState
-from .queue_manager import QueueManager
-from .dispatcher import Dispatcher
 from .logging import load_logger
+from .coordination.request_coordinator import RequestCoordinator
 
 logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
 
@@ -45,15 +43,7 @@ sio = socketio.SimpleClient(reconnection_attempts=10)
 connection_event = asyncio.Event()
 connection_task = None
 
-def test_update_position(session_id: str, request_id: str, position: int) -> None:
-    """Test update position via socket."""
-    logger.info(f"Updating position for {session_id} {request_id} {position}")
-
-# Initialize queue state with socket callback
-queue_state = QueueState()
-queue_state.set_socket_callback(test_update_position)
-queue_manager = QueueManager(queue_state, delete_on_empty=False)
-dispatcher = Dispatcher(queue_manager, os.environ.get("RAY_ADDRESS"))
+coordinator = RequestCoordinator()
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
@@ -61,14 +51,14 @@ Instrumentator().instrument(app).expose(app)
 
 @app.on_event("startup")
 async def startup_event():
-    await dispatcher.start()
+    await coordinator.start()
     # Start the socket connection task
     global connection_task
     connection_task = asyncio.create_task(manage_socket_connection())
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await dispatcher.stop()
+    await coordinator.stop()
     if connection_task:
         connection_task.cancel()
         try:
@@ -115,7 +105,7 @@ app.middleware("http")(ensure_socket_connection)
 @app.get("/queue")
 async def get_queue_state():
     """Get complete queue state."""
-    return queue_state.model_dump()
+    return coordinator.state()
 
 @app.post("/queue")
 async def queue(request: Request):
@@ -130,7 +120,7 @@ async def queue(request: Request):
 
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
-        queue_manager.enqueue(backend_request)
+        await coordinator.route_request(backend_request)
         logger.debug(f"Enqueued request: {backend_request.id}")
 
         logger.debug(f"Creating response for request: {backend_request.id}")
