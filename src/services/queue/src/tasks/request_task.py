@@ -62,7 +62,7 @@ class RequestTask(Task):
             self._log_error(f"Error running request {self.id}: {e}")
             return False
 
-    def respond(self, sio: "SimpleClient", object_store: "boto3.client"):
+    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client"):
         """
         Override the base respond method to provide Ray-specific response logic.
         """

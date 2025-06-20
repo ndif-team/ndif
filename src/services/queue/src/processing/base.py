@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
+from ..tasks.base import Task
 
 # Generic type for tasks
-T = TypeVar('T')
+T = TypeVar('T', bound=Task)
 
 class Processor(ABC, Generic[T]):
     """
