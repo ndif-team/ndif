@@ -153,3 +153,36 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     def _log_error(self, message: str):
         """Log an error message using the service logger."""
         logger.error(message)
+
+
+# TODO: Introduce the concept of time-based states, and canonical ordering of states
+# Then, can just need to return the T previous states which changed
+
+class DevRequestCoordinator(RequestCoordinator):
+    """
+    A development coordinator that stores the T previous states of the coordinator.
+    """
+
+    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, num_previous_states: int = 30):
+        super().__init__(tick_interval, max_retries, ray_url)
+        self.previous_states = []
+        self.num_previous_states = num_previous_states
+
+    def get_previous_states(self) -> List[Dict[str, Any]]:
+        """Get the previous states of the coordinator."""
+        return self.previous_states
+
+    def _advance_processor_lifecycles(self):
+        """Override to add state tracking."""
+
+        # Call the parent method synchronously
+        super()._advance_processor_lifecycles()
+
+        # Add state tracking
+        self.previous_states.append(self.state())
+        if len(self.previous_states) > self.num_previous_states:
+            self.previous_states.pop(0)
+
+if os.environ.get("DEV_MODE", True):
+    logger.info("Using DevRequestCoordinator")
+    RequestCoordinator = DevRequestCoordinator

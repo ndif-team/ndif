@@ -50,6 +50,8 @@ api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
 Instrumentator().instrument(app).expose(app)
 
+dev_mode = os.environ.get("DEV_MODE", True) # TODO: default to false
+
 @app.on_event("startup")
 async def startup_event():
     await coordinator.start()
@@ -104,9 +106,12 @@ async def ensure_socket_connection(request: Request, call_next):
 app.middleware("http")(ensure_socket_connection)
 
 @app.get("/queue")
-async def get_queue_state():
+async def get_queue_state(return_batch: bool = False):
     """Get complete queue state."""
-    return coordinator.state()
+    if dev_mode and return_batch:
+        return coordinator.get_previous_states()
+    else:
+        return coordinator.state()
 
 @app.post("/queue")
 async def queue(request: Request):
