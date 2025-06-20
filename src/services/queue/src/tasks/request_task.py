@@ -32,11 +32,13 @@ class RequestTask(Task):
 
         # Request has been dispatched, check if it has completed
         try:
-            ready, _ = ray.wait([self._future], num_returns=1, timeout=0)
-            if len(ready) > 0:
+            # ray 2.45.0
+            ready = self._future._fetch_future_result_sync(_timeout_s=0)
+            if ready:
                 return TaskState.COMPLETED
-            else:
-                return TaskState.DISPATCHED
+            
+        except TimeoutError:
+            return TaskState.DISPATCHED
         except Exception as e:
             self._log_error(f"Error checking request {self.id} status: {e}")
             return TaskState.FAILED
@@ -52,26 +54,12 @@ class RequestTask(Task):
             True if the request was successfully started, False otherwise
         """
         try:
-            # Run the async Ray operation in a separate thread
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(self._resolve_async, app_handle)
-                self._future = future.result()  # This blocks until complete
-            self._log_debug(f"Request {self.id} dispatched!")
+            self._future = app_handle.remote(self.data)
             self.position = None
             return True
         except Exception as e:
             self._log_error(f"Error running request {self.id}: {e}")
             return False
-
-    def _resolve_async(self, app_handle):
-        """
-        Resolve the async Ray operation in a separate thread.
-        This method runs in its own event loop to avoid conflicts.
-        """
-        async def _async_operation():
-            return await app_handle.remote(self.data)._to_object_ref()
-        
-        return asyncio.run(_async_operation())
 
     def respond(self):
         """
