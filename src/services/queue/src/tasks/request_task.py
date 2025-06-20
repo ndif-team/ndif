@@ -5,6 +5,7 @@ from typing import Dict, Any
 from .state import TaskState
 from .base import Task
 from ..schema import BackendRequestModel
+from nnsight.schema.response import ResponseModel
 from ..logging import load_logger
 
 logger = load_logger(service_name="QUEUE", logger_name="REQUEST_TASK")
@@ -14,7 +15,7 @@ class RequestTask(Task):
     Request for a model deployment using Ray backend.
     """
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
-        super().__init__(request_id, request, position)
+        Task.__init__(self, request_id, request, position)
         self._future = None
 
     @property
@@ -61,7 +62,7 @@ class RequestTask(Task):
             self._log_error(f"Error running request {self.id}: {e}")
             return False
 
-    def respond(self):
+    def respond(self, sio: "SimpleClient", object_store: "boto3.client"):
         """
         Override the base respond method to provide Ray-specific response logic.
         """
@@ -71,7 +72,14 @@ class RequestTask(Task):
             description = f"{self.id} - Status updated to {self.status}"
         
         logger.debug(description)
-        # TODO: Create response object, send to client
+        
+        # Create and send response if networking clients are available
+        response = self.data.create_response(
+            status=ResponseModel.JobStatus.APPROVED,
+            description=description,
+            logger=logger,
+        )
+        response.respond(sio, object_store)
 
     # Override logging methods to use the service logger
     def _log_debug(self, message: str):

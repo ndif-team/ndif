@@ -8,15 +8,17 @@ from .base import Processor
 from .state import ProcessorState
 from ..tasks.request_task import RequestTask
 from ..tasks.state import TaskState
+from ..coordination.mixins import NetworkingMixin
 
 logger = load_logger(service_name="QUEUE", logger_name="REQUEST_PROCESSOR")
 
-class RequestProcessor(Processor[RequestTask]):
+class RequestProcessor(Processor[RequestTask], NetworkingMixin):
     """
     Queue for making requests to model deployments using Ray backend.
     """
-    def __init__(self, model_key: str, max_retries: int = 3):
-        super().__init__(max_retries)
+    def __init__(self, model_key: str, max_retries: int = 3, sio=None, object_store=None):
+        Processor.__init__(self, max_retries)
+        NetworkingMixin.__init__(self, sio, object_store)
         self.model_key = model_key
         self._queue = Manager().list()
 
@@ -115,6 +117,13 @@ class RequestProcessor(Processor[RequestTask]):
             self.last_dispatch_time = datetime.now()
         return success
 
+    def _update_position(self, position: int):
+        """
+        Update the position of a task. Overrides the base class to pass in the networking clients.
+        """
+        task = self.queue[position]
+        task.update_position(position).respond(self.sio, self.object_store)
+
     def _handle_failed_dispatch(self):
         """
         Handle a failed request with Ray-specific logic.
@@ -127,7 +136,7 @@ class RequestProcessor(Processor[RequestTask]):
         else:
             try: 
                 # Try to inform the user that the request has failed
-                self.dispatched_task.respond()
+                self.dispatched_task.respond(self.sio, self.object_store)
             except Exception as e:
                 # Give up
                 self._log_error(f"Error handling failed request {self.dispatched_task.id}: {e}")

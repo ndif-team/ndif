@@ -179,6 +179,13 @@ class Processor(ABC, Generic[T]):
             
             self.dispatched_task = None
 
+    def _update_position(self, position: int):
+        """
+        Update the position of a task.
+        """
+        task = self.queue[position]
+        task.update_position(position).respond()
+
     def update_positions(self, indices: Optional[List[int]] = None):
         """
         Update the positions of tasks in the queue.
@@ -189,8 +196,9 @@ class Processor(ABC, Generic[T]):
         indices = indices or range(len(self.queue))
         for i in indices:
             if i < len(self.queue):
-                self.queue[i].update_position(i).respond()
+                self._update_position(i)
         self._needs_update = False
+
     # Abstract methods for status checking - subclasses can override these
     # to provide their own status logic
     

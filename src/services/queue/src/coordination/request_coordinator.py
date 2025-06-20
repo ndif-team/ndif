@@ -11,16 +11,19 @@ from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
 from ..processing.state import ProcessorState
 from .base import Coordinator
+from .mixins import NetworkingMixin
 
 logger = load_logger(service_name="Queue", logger_name="RequestCoordinator")
 
-class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
+class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], NetworkingMixin):
     """
     Coordinates requests between the queue and the model deployments using Ray backend.
     """
 
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None):
-        super().__init__(tick_interval, max_retries)
+    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, 
+                 sio=None, object_store=None):
+        Coordinator.__init__(self, tick_interval, max_retries)
+        NetworkingMixin.__init__(self, sio, object_store)
         self.ray_url = ray_url
         self.ray_connected = False
         self.ray_watchdog = threading.Thread(target=self.connect_to_ray, daemon=True)
@@ -114,7 +117,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
-        return RequestProcessor(processor_key, self.max_retries)
+        return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
 
     def get_processor_status(self, model_key: str) -> Optional[Dict]:
         """Get the status of a specific processor."""
@@ -176,8 +179,9 @@ class DevRequestCoordinator(RequestCoordinator):
     A development coordinator that stores the T previous states of the coordinator.
     """
 
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, num_previous_states: int = 30):
-        super().__init__(tick_interval, max_retries, ray_url)
+    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, 
+                 num_previous_states: int = 30, sio=None, object_store=None):
+        super().__init__(tick_interval, max_retries, ray_url, sio, object_store)
         self.previous_states = []
         self.num_previous_states = num_previous_states
 

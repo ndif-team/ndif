@@ -44,7 +44,7 @@ connection_event = asyncio.Event()
 connection_task = None
 
 ray_url = os.environ.get("RAY_ADDRESS")
-coordinator = RequestCoordinator(ray_url=ray_url)
+coordinator = RequestCoordinator(ray_url=ray_url, sio=sio, object_store=object_store)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
 
