@@ -87,6 +87,19 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             self._log_error(f"Error routing request {request.id if request else 'unknown'}: {e}")
             return False
 
+    def _should_update_processor(self, processor: RequestProcessor) -> bool:
+        """Determine if a processor should be updated."""
+        try:
+            if processor._needs_update:
+                logger.debug(f"Processor {processor.model_key} needs update")
+                processor.update_positions()
+                return True
+            else:
+                return False
+        except Exception as e:
+            self._log_error(f"Error checking if processor should be updated: {e}")
+            return False
+
     def _should_deactivate_processor(self, processor: RequestProcessor) -> bool:
         """Determine if a processor should be deactivated."""
         try:

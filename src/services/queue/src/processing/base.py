@@ -18,6 +18,7 @@ class Processor(ABC, Generic[T]):
         self.max_retries = max_retries
         self.last_dispatch_time: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
+        self._needs_update = False
 
     @property
     @abstractmethod
@@ -71,8 +72,8 @@ class Processor(ABC, Generic[T]):
         
         task = self.queue.pop(0)
         task.update_position(None)
+        self._needs_update = True
         self._log_debug(f"Dequeued task {getattr(task, 'id', 'unknown')}")
-        self.update_positions()
         return task
 
     def state(self) -> Dict[str, Any]:
@@ -189,7 +190,7 @@ class Processor(ABC, Generic[T]):
         for i in indices:
             if i < len(self.queue):
                 self.queue[i].update_position(i).respond()
-
+        self._needs_update = False
     # Abstract methods for status checking - subclasses can override these
     # to provide their own status logic
     

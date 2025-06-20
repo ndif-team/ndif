@@ -121,6 +121,13 @@ class Coordinator(ABC, Generic[T, P]):
         pass
 
     @abstractmethod
+    def _should_update_processor(self, processor: P) -> bool:
+        """
+        Abstract method to determine if a processor should be updated.
+        """
+        pass
+
+    @abstractmethod
     def _create_processor(self, processor_key: str) -> P:
         """
         Abstract method to create a new processor.
@@ -138,6 +145,7 @@ class Coordinator(ABC, Generic[T, P]):
         Advance the lifecycle of all active processors.
         """
         processors_to_deactivate = []
+        processors_to_update = []
         
         for processor_key, processor in self.active_processors.items():
             try:
@@ -146,6 +154,9 @@ class Coordinator(ABC, Generic[T, P]):
                 # Check if processor should be deactivated
                 if self._should_deactivate_processor(processor):
                     processors_to_deactivate.append(processor_key)
+
+                elif self._should_update_processor(processor):
+                    processors_to_update.append(processor_key)
                     
             except Exception as e:
                 self._log_error(f"Error advancing lifecycle for processor {processor_key}: {e}")
