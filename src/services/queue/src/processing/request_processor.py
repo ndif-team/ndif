@@ -114,7 +114,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         """
         success = self.dispatched_task.run(self.app_handle)
         if success:
-            self.last_dispatch_time = datetime.now()
+            self.last_dispatched = datetime.now()
         return success
 
     def _update_position(self, position: int):

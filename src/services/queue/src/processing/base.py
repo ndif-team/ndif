@@ -17,7 +17,7 @@ class Processor(ABC, Generic[T]):
     
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
-        self.last_dispatch_time: Optional[datetime] = None
+        self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
         self._needs_update = False
 
@@ -88,6 +88,7 @@ class Processor(ABC, Generic[T]):
             "status": self.status,
             "dispatched_task": self.dispatched_task.state() if self.dispatched_task else None,
             "queue": [task.state() for task in self.queue],
+            "last_dispatched": self.last_dispatched,
         }
 
     def advance_lifecycle(self) -> bool:
