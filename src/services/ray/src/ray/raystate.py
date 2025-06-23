@@ -30,8 +30,6 @@ class ServiceConfigurationSchema(BaseModel):
         num_replicas: int
 
     default_model_import_path: str
-    request_import_path: str
-    request_num_replicas: int
 
     models: List[ModelConfigurationSchema]
 
@@ -74,8 +72,6 @@ class RayState:
 
         self.load_from_disk()
 
-        self.add_request_app()
-
         for model_config in self.service_config.models:
             self.add_model_app(model_config)
 
@@ -91,30 +87,6 @@ class RayState:
 
         self.ray_config.applications.append(application)
         self.name_to_application[application.name] = application
-
-    def add_request_app(self) -> None:
-        application = ServeApplicationSchema(
-            name="Request",
-            import_path=self.service_config.request_import_path,
-            route_prefix="/request",
-            deployments=[
-                DeploymentSchema(
-                    name="RequestDeployment",
-                    num_replicas=self.service_config.request_num_replicas,
-                    ray_actor_options=RayActorOptionsSchema(
-                        num_cpus=1, resources={"head": 1}
-                    ),
-                )
-            ],
-            args=BaseDeploymentArgs(
-                api_url=self.api_url,
-                object_store_url=self.object_store_url,
-                object_store_access_key=self.object_store_access_key,
-                object_store_secret_key=self.object_store_secret_key,
-            ).model_dump(),
-        )
-
-        self.add(application)
 
     def add_model_app(
         self, model_config: ServiceConfigurationSchema.ModelConfigurationSchema
