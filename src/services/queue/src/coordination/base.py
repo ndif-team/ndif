@@ -19,12 +19,21 @@ class Coordinator(ABC, Generic[T, P]):
     def __init__(self, tick_interval: float = 1.0, max_retries: int = 3):
         self.active_processors: Dict[str, P] = {}
         self.inactive_processors: Dict[str, P] = {}
-        self.running = False
         self._async_task = None
         self.max_retries = max_retries
         self.tick_interval = tick_interval
         self._error_count = 0
         self._max_consecutive_errors = 5
+
+    @property
+    def running(self):
+        """
+        Check if the coordinator asyncio event loop is running.
+        """
+        if self._async_task:
+            if not self._async_task.done():
+                return True
+        return False
 
     @property
     def status(self):
@@ -60,12 +69,11 @@ class Coordinator(ABC, Generic[T, P]):
             return
         
         try:
-            self.running = True
             self._error_count = 0
             self._async_task = asyncio.create_task(self._monitor_processors())
             self._log_info("Coordinator started successfully")
         except Exception as e:
-            self.running = False
+            self._async_task = None
             self._log_error(f"Failed to start coordinator: {e}")
             raise
 
@@ -76,14 +84,13 @@ class Coordinator(ABC, Generic[T, P]):
             return
         
         try:
-            self.running = False
-            
             # Cancel monitoring task
             if self._async_task:
                 self._async_task.cancel()
                 try:
                     await self._async_task
                 except asyncio.CancelledError:
+                    # Expected outcome of calling `.cancel()`
                     pass
             
             # Clean up all processors
@@ -213,7 +220,7 @@ class Coordinator(ABC, Generic[T, P]):
                 
                 if self._error_count >= self._max_consecutive_errors:
                     self._log_error(f"Too many consecutive errors ({self._error_count}), stopping coordinator")
-                    self.running = False
+                    self.stop()
                     break
 
     def get_processor_status(self, processor_key: str) -> Optional[Dict[str, Any]]:
