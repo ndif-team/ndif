@@ -15,6 +15,10 @@ from .mixins import NetworkingMixin
 
 logger = load_logger(service_name="Queue", logger_name="RequestCoordinator")
 
+def slugify_model_key(model_key: str) -> str:
+    """Slugify a model key."""
+    return f"Model:{slugify(model_key)}"
+
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], NetworkingMixin):
     """
     Coordinates requests between the queue and the model deployments using Ray backend.
@@ -36,14 +40,18 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         return base_state
 
     async def route_request(self, request: BackendRequestModel) -> bool:
-        """Route request to appropriate processor."""
+        """Route request to appropriate processor. 
+        
+        Returns:
+            True if request was routed successfully, False otherwise.
+        """
         try:
             # Validate request
             if not request or not request.model_key:
                 self._log_error("Invalid request: missing model_key")
                 return False
             
-            model_key = f"Model:{slugify(request.model_key)}"
+            model_key = slugify_model_key(request.model_key)
             
             # Try to route to existing active processor
             if model_key in self.active_processors:
@@ -122,7 +130,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     def get_processor_status(self, model_key: str) -> Optional[Dict]:
         """Get the status of a specific processor."""
         try:
-            slugified_key = f"Model:{slugify(model_key)}"
+            slugified_key = slugify_model_key(model_key)
             return super().get_processor_status(slugified_key)
         except Exception as e:
             self._log_error(f"Error getting processor status for {model_key}: {e}")
