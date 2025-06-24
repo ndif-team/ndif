@@ -4,7 +4,7 @@ import os
 import traceback
 import socketio
 from typing import Optional
-from fastapi import FastAPI, Request, HTTPException, Security
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -103,6 +103,23 @@ async def ensure_socket_connection(request: Request, call_next):
     response = await call_next(request)
     return response
 
+# This is a hacky fix, ideally the queue should be able to fix itself if it gets in a stuck state
+def check_coordinator_ready():
+    """Checks whether Ray backend connection has been made. It fixes a bug where requests sent before the ray backend connection hang and essentially blocks the queue service indefinitely"""
+    
+    # Conservative upperbound for time needed for coordinator to connect to ray
+    startup_time = int(60 / coordinator.tick_interval)
+    
+    # We only want this error to raise when the service starts up
+    if not coordinator.ray_connected and coordinator.tick_count < startup_time:
+        logger.error("Coordinator not ready!")
+        raise HTTPException(
+            status_code=503,
+            detail="Service not ready - Awaiting connection to ray backend"
+        )
+    return coordinator
+
+
 app.middleware("http")(ensure_socket_connection)
 
 @app.get("/queue")
@@ -114,7 +131,7 @@ async def get_queue_state(return_batch: bool = False):
         return coordinator.state()
 
 @app.post("/queue")
-async def queue(request: Request):
+async def queue(request: Request, coordinator: RequestCoordinator = Depends(check_coordinator_ready)):
     """Endpoint to add a request to the queue."""
     
     try:

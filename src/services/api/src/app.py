@@ -104,7 +104,6 @@ async def request(
 
     # process the request
     try:
-
         TransportLatencyMetric.update(request)
 
         response = request.create_response(
@@ -121,28 +120,36 @@ async def request(
             headers = dict(raw_request.headers)
             headers["request_id"] = request.id
             headers["api_key"] = request.api_key
-            
+
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(
                 f"http://{os.environ.get('QUEUE_URL')}/queue",
                 data=body,
                 headers=headers,
             )
-            
-            #if not queue_response.ok:
-            #    raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
-                
+
+            queue_response.raise_for_status()
             logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
         except Exception as e:
-            description = f"Failed to send request to queue: {e}"
-            logger.error(description)
+            # Check if it's an HTTPError and if it's a 503
+            error_message = str(e)
+            status_code = None
+            if hasattr(e, "response") and e.response is not None:
+                status_code = getattr(e.response, "status_code", None)
+            if status_code == 503:
+                description = (
+                    "Queue service is not ready yet (waiting to connect to the ray backend). "
+                    "Please try again in a bit."
+                )
+            else:
+                description = "Failed to submit request to queue endpoint."
+            logger.error(f"{description} Exception: {error_message}")
             response = request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=description,
                 logger=logger,
             )
     except Exception as exception:
-
         description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
