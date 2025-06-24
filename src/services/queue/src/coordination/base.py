@@ -1,6 +1,7 @@
-from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Generic, TypeVar
 import asyncio
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Generic, TypeVar
 from .state import CoordinatorState
 
 # Generic types for coordinators
@@ -16,14 +17,15 @@ class Coordinator(ABC, Generic[T, P]):
     or implementation. Subclasses can implement specific backend integrations.
     """
     
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3):
+    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, max_consecutive_errors: int = 5):
         self.active_processors: Dict[str, P] = {}
         self.inactive_processors: Dict[str, P] = {}
         self._async_task = None
         self.max_retries = max_retries
         self.tick_interval = tick_interval
+        self.tick_count = 0
         self._error_count = 0
-        self._max_consecutive_errors = 5
+        self._max_consecutive_errors = max_consecutive_errors
 
     @property
     def running(self):
@@ -60,6 +62,8 @@ class Coordinator(ABC, Generic[T, P]):
             "inactive_processors": [processor.state() for processor in self.inactive_processors.values()],
             "error_count": self._error_count,
             "total_processors": len(self.active_processors) + len(self.inactive_processors),
+            "tick_count": self.tick_count,
+            "datetime": datetime.now()
         }
 
     async def start(self):
@@ -210,6 +214,7 @@ class Coordinator(ABC, Generic[T, P]):
             try:
                 await asyncio.sleep(self.tick_interval)
                 self._advance_processor_lifecycles()
+                self.tick_count += 1
                 self._error_count = 0  # Reset error count on successful iteration
             except asyncio.CancelledError:
                 self._log_info("Processor monitoring cancelled")
