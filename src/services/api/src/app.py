@@ -1,7 +1,6 @@
 import os
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any, Dict
 import uuid
 import base64
@@ -9,27 +8,27 @@ import base64
 import socketio
 import uvicorn
 import boto3
-from fastapi import FastAPI, Request, Security
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.security.api_key import APIKeyHeader
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
+from slugify import slugify
+import requests
 from slugify import slugify
 import requests
 
 from nnsight.schema.response import ResponseModel
 
-from .logging import load_logger
+from .logging import set_logger
 
-logger = load_logger(service_name="API", logger_name="API")
+logger = set_logger("API")
 
 from .api_key import api_key_auth
-from .metrics import TransportLatencyMetric
+from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 @asynccontextmanager
@@ -77,12 +76,16 @@ object_store = boto3.client(
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
+from nnsight import __version__
+import re
+
+# Extract just the base version number (e.g. 0.4.7 from 0.4.7.dev10+gbcb756d)
+SERVER_NNSIGHT_VERSION = re.match(r'^(\d+\.\d+\.\d+)', __version__).group(1)
 
 
 @app.post("/request")
 async def request(
-    raw_request: Request, api_key: str = Security(api_key_header)
+    raw_request: Request
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -96,24 +99,34 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    # extract the request data
-    
-    request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request, api_key
-    )
-
     # process the request
     try:
-        TransportLatencyMetric.update(request)
+        
+        request: BackendRequestModel = BackendRequestModel.from_request(
+            raw_request
+        )
+        
+        user_nnsight_version = raw_request.headers.get("nnsight-version", '')
+        # Extract just the base version number from user version
+        user_base_version = re.match(r'^(\d+\.\d+\.\d+)', user_nnsight_version).group(1)
+        
+        if user_base_version != SERVER_NNSIGHT_VERSION:
+            raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
+        # extract the request data
+        
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting approval.",
             logger=logger,
         )
+        
+        TransportLatencyMetric.update(request)
+        
+        NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key
-        api_key_auth(raw_request, request)
+        api_key_auth(request)
         
         try:
             body = await raw_request.body()
@@ -250,49 +263,18 @@ async def result(id: str) -> BackendResultModel:
 @app.get("/ping", status_code=200)
 async def ping():
     """Endpoint to check if the server is online.
-
-    Returns:
-        _type_: _description_
     """
     return "pong"
 
 
-@app.get("/stats", status_code=200)
-@cache(expire=600)
+@app.get("/status", status_code=200)
+@cache(expire=60)
 async def status():
+    return requests.get(
+        f"http://{os.environ.get('QUEUE_URL')}/status",
+    ).json()
 
-    response = {}
-
-    status = serve.status()
-
-    model_configurations = await serve.get_app_handle(
-        "Controller"
-    ).get_model_configurations.remote()
-
-    for application_name, application in status.applications.items():
-
-        if application_name.startswith("Model"):
-
-            deployment = application.deployments["ModelDeployment"]
-
-            num_running_replicas = 0
-
-            for replica_status in deployment.replica_states:
-
-                if replica_status == "RUNNING":
-
-                    num_running_replicas += 1
-
-            if num_running_replicas > 0:
-
-                config = model_configurations[application_name]
-
-                response[application_name] = {
-                    "num_running_replicas": num_running_replicas,
-                    **config,
-                }
-
-    return response
+    
 
 
 if __name__ == "__main__":

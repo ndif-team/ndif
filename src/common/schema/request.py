@@ -43,16 +43,16 @@ class BackendRequestModel(ObjectStorageMixin):
 
     graph: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
-    model_key: str
+    model_key: Optional[str] = None
     session_id: Optional[str] = None
     format: str
-    zlib: bool
+    zlib: Optional[bool] = True
+    api_key: Optional[str] = ''
 
     id: str
         
     sent: Optional[float] = None
 
-    api_key: Optional[str] = ''
 
     def deserialize(self, model: NNsight) -> Graph:
 
@@ -66,20 +66,25 @@ class BackendRequestModel(ObjectStorageMixin):
 
     @classmethod
     def from_request(
-        cls, request: Request, api_key: str
+        cls, request: Request
     ) -> Self:
 
         headers = request.headers
+        
+        sent = headers.get("sent-timestamp", None)
+        
+        if sent is not None:
+            sent = float(sent)
 
         return BackendRequestModel(
+            id=request.headers.get("ndif-request_id", str(uuid.uuid4())),
             graph=request.body(),
-            model_key=headers["model_key"],
+            model_key=headers.get("model_key", None),
             session_id=headers.get("session_id", None),
-            format=headers["format"],
-            zlib=headers["zlib"],
-            id=str(uuid.uuid4()),
-            sent=float(headers.get("sent-timestamp", None)),
-            api_key=api_key,
+            format=headers.get("format", "json"),
+            zlib=headers.get("zlib", True),
+            sent=sent,
+            api_key=headers.get("ndif-api-key", ''),
         )
 
     def create_response(

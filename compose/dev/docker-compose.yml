@@ -15,10 +15,11 @@ services:
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - ./service_config.yml:/src/ray/config/service_config.yml
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ../../src/services/ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
+      # - /share/u/jadenfk/wd/nnsight/src/nnsight:/opt/conda/envs/service/lib/python3.10/site-packages/nnsight
+
     ports:
       - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
       - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
@@ -40,6 +41,10 @@ services:
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
+
+      - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
+      - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
+
     env_file:
       - .env
 
@@ -77,6 +82,7 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
+
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}

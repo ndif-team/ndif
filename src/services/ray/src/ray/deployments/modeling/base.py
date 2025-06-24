@@ -1,5 +1,4 @@
 import gc
-import json
 import os
 import sys
 import time
@@ -7,16 +6,19 @@ import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from functools import wraps
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
+import boto3
 import ray
 import socketio
 import torch
-import boto3
+from accelerate import dispatch_model, infer_auto_device_map
+from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 
 from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
@@ -25,22 +27,18 @@ from nnsight.tracing.backends import Backend
 from nnsight.tracing.graph import Graph
 from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
-
-from ...logging import load_logger
-from ...metrics import GPUMemMetric, ExecutionTimeMetric, RequestResponseSizeMetric
-from ...schema import (
-    RESULT,
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
-from ..util import set_cuda_env_var
+from nnsight.schema.request import RequestModel
 from . import protocols
 
-
+from ....logging import set_logger
+from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
+                         RequestResponseSizeMetric)
+from ....schema import (BackendRequestModel, BackendResponseModel,
+                        BackendResultModel)
+from .util import load_with_cache_deletion_retry
 class ExtractionBackend(Backend):
 
-    def __call__(self, graph: Graph) -> RESULT:
+    def __call__(self, graph: Graph):
 
         try:
 
@@ -58,78 +56,18 @@ class ExtractionBackend(Backend):
             graph.stack.clear()
 
         return result
-
-
-class BaseDeployment:
-
-    def __init__(
-        self,
-        api_url: str,
-        object_store_url: str,
-        object_store_access_key: str,
-        object_store_secret_key: str,
-    ) -> None:
-
-        super().__init__()
-
-        self.api_url = api_url
-        self.object_store_url = object_store_url
-        self.object_store_access_key = object_store_access_key
-        self.object_store_secret_key = object_store_secret_key
-
-        # Initialize S3 client (either AWS S3 or compatible service like MinIO)
-        self.object_store = boto3.client(
-            's3',
-            endpoint_url=f"http://{self.object_store_url}",
-            aws_access_key_id=self.object_store_access_key,
-            aws_secret_access_key=self.object_store_secret_key,
-            # Skip verification for local or custom S3 implementations
-            verify=False,
-            # Set to path style for compatibility with non-AWS S3 implementations
-            config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-        )
-
-        self.sio = socketio.SimpleClient(reconnection_attempts=10)
-
-        self.logger = load_logger(
-            service_name=str(self.__class__), logger_name="ray.serve"
-        )
-        
-        try:
-            self.replica_context = serve.get_replica_context()
-        except:
-            self.replica_context = None
-
-
-class BaseDeploymentArgs(BaseModel):
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    api_url: str
-    object_store_url: str
-    object_store_access_key: str
-    object_store_secret_key: str
-
-
-def threaded(method, size: int = 1):
-
-    group = ThreadPoolExecutor(size)
-
-    @wraps(method)
-    def inner(*args, **kwargs):
-
-        return group.submit(method, *args, **kwargs)
-
-    return inner
-
-
-class BaseModelDeployment(BaseDeployment):
+class BaseModelDeployment:
 
     def __init__(
         self,
         model_key: str,
+        cuda_devices:str,
+        app: str,
+        api_url: str,
+        object_store_url: str,
+        object_store_access_key: str,
+        object_store_secret_key: str,
         execution_timeout: float | None,
-        device_map: str | None,
         dispatch: bool,
         dtype: str | torch.dtype,
         *args,
@@ -137,13 +75,41 @@ class BaseModelDeployment(BaseDeployment):
         **kwargs,
     ) -> None:
 
-        super().__init__(*args, **kwargs)
+        super().__init__()
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
-        if os.environ.get("CUDA_VISIBLE_DEVICES", "") == "":
-            set_cuda_env_var()
-
+        self.api_url = api_url
+        self.object_store_url = object_store_url
+        self.object_store_access_key = object_store_access_key
+        self.object_store_secret_key = object_store_secret_key
+        
+        self.app = app
         self.model_key = model_key
         self.execution_timeout = execution_timeout
+        self.dispatch = dispatch
+        self.dtype = dtype
+        self.extra_kwargs = extra_kwargs
+
+        # Initialize S3 client (either AWS S3 or compatible service like MinIO)
+        self.object_store = boto3.client(
+            "s3",
+            endpoint_url=f"http://{self.object_store_url}",
+            aws_access_key_id=self.object_store_access_key,
+            aws_secret_access_key=self.object_store_secret_key,
+            # Skip verification for local or custom S3 implementations
+            verify=False,
+            # Set to path style for compatibility with non-AWS S3 implementations
+            config=boto3.session.Config(
+                signature_version="s3v4", s3={"addressing_style": "path"}
+            ),
+        )
+
+        self.sio = socketio.SimpleClient(reconnection_attempts=10)
+
+        self.logger = set_logger(app)
+
+        self.runtime_context = ray.get_runtime_context()
 
         if isinstance(dtype, str):
 
@@ -151,24 +117,72 @@ class BaseModelDeployment(BaseDeployment):
 
         torch.set_default_dtype(torch.bfloat16)
 
-        self.model = RemoteableMixin.from_model_key(
-            self.model_key,
-            device_map=device_map,
-            dispatch=dispatch,
-            torch_dtype=dtype,
-            **extra_kwargs,
-        )
+        # if self.cache_evictions is not None:
+        #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
+        #     ray_free(object_refs, local_only=True)
+
+
+        self.model = self.load_from_disk()
 
         if dispatch:
-            self.model._model.requires_grad_(False)
+            self.model._module.requires_grad_(False)
 
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
-
+        
+        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+        
         protocols.LogProtocol.set(lambda *args: self.log(*args))
 
         RemoteContext.set(self.stream_send, self.stream_receive)
+
+    def load_from_disk(self):
+        
+        start = time.time()
+
+        self.logger.info(f"Loading model from disk for model key {self.model_key}...")
+        
+        model = load_with_cache_deletion_retry(
+            lambda: RemoteableMixin.from_model_key(
+                self.model_key,
+                device_map="auto",
+                dispatch=self.dispatch,
+                torch_dtype=self.dtype,
+                **self.extra_kwargs,
+            )
+        )
+
+        
+        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}")
+        
+        return model
+    
+    def to_cache(self):
+        
+        self.model.cpu()
+
+    def from_cache(self, cuda_devices:str, app:str):
+        
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+        
+        self.app = app
+        
+        start = time.time()
+        
+        self.logger.info(f"Loading model from cache for model key {self.model_key}...")
+        
+        # Automatically compute balanced memory allocation
+        max_memory = get_balanced_memory(self.model._module)
+
+        # Infer an optimal device map based on the computed memory allocation
+        device_map = infer_auto_device_map(self.model._module, max_memory=max_memory)
+
+        # Dispatch the model according to the inferred device map
+        self.model._module = dispatch_model(self.model._module, device_map=device_map)
+        
+        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}")
+
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -190,12 +204,11 @@ class BaseModelDeployment(BaseDeployment):
 
             inputs = self.pre()
 
-            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+            #TODO abstract out for distributed execution
+            result = self.thread_pool.submit(self.execute, inputs)
 
-                result = self.execute(inputs)
-
-                if isinstance(result, Future):
-                    result = result.result(timeout=self.execution_timeout)
+            if isinstance(result, Future):
+                result = result.result(timeout=self.execution_timeout)
 
             self.post(result)
 
@@ -224,7 +237,7 @@ class BaseModelDeployment(BaseDeployment):
 
     ### ABSTRACT METHODS #################################
 
-    def pre(self) -> Graph:
+    def pre(self) -> RequestModel:
         """Logic to execute before execution."""
         graph = self.request.deserialize(self.model)
 
@@ -244,24 +257,26 @@ class BaseModelDeployment(BaseDeployment):
         Returns:
             Any: Result.
         """
+        
+        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-        # For tracking peak GPU usage
-        if torch.cuda.is_available():
-            reset_peak_memory_stats()
-            model_memory = memory_allocated()
+            # For tracking peak GPU usage
+            if torch.cuda.is_available():
+                reset_peak_memory_stats()
+                model_memory = memory_allocated()
 
-        execution_time = time.time()
+            execution_time = time.time()
 
-        # Execute object.
-        result = ExtractionBackend()(graph)
+            # Execute object.
+            result = ExtractionBackend()(graph)
 
-        execution_time = time.time() - execution_time
+            execution_time = time.time() - execution_time
 
-        # Compute GPU memory usage
-        if torch.cuda.is_available():
-            gpu_mem = max_memory_allocated() - model_memory
-        else:
-            gpu_mem = 0
+            # Compute GPU memory usage
+            if torch.cuda.is_available():
+                gpu_mem = max_memory_allocated() - model_memory
+            else:
+                gpu_mem = 0
 
         return result, gpu_mem, execution_time
 
@@ -293,11 +308,11 @@ class BaseModelDeployment(BaseDeployment):
 
     def exception(self, exception: Exception) -> None:
         """Handles exceptions that occur during model execution.
-        
+
         This method processes different types of exceptions and sends appropriate error responses
         back to the client. For NNsight-specific errors, it includes detailed traceback information.
         For other errors, it includes the full exception traceback and message.
-        
+
         Args:
             exception (Exception): The exception that was raised during __call__.
         """
@@ -327,22 +342,21 @@ class BaseModelDeployment(BaseDeployment):
 
     def restart(self):
         """Restarts the Ray serve deployment in response to critical errors.
-        
+
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        app_name = serve.get_replica_context().app_name
-        serve.get_app_handle("Controller").restart.remote(app_name)
+        serve.get_app_handle(self.app).restart.remote()
 
     def cleanup(self):
         """Performs cleanup operations after request processing.
-        
+
         This method:
         1. Disconnects from socketio if connected
         2. Zeros out model gradients
         3. Forces garbage collection
         4. Clears CUDA cache
-        
+
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
         """
@@ -355,11 +369,11 @@ class BaseModelDeployment(BaseDeployment):
 
     def log(self, *data):
         """Logs data during model execution.
-        
+
         This method is used to send log messages back to the client through
         the websocket connection. It joins all provided data into a single string
         and sends it as a LOG status response.
-        
+
         Args:
             *data: Variable number of arguments to be converted to strings and logged.
         """
@@ -368,10 +382,10 @@ class BaseModelDeployment(BaseDeployment):
 
     def stream_send(self, data: Any):
         """Sends streaming data back to the client.
-        
+
         This method is used to send intermediate results or progress updates
         during model execution. It wraps the data in a STREAM status response.
-        
+
         Args:
             data (Any): The data to stream back to the client.
         """
@@ -379,10 +393,10 @@ class BaseModelDeployment(BaseDeployment):
 
     def stream_receive(self, *args):
         """Receives streaming data from the client.
-        
+
         This method establishes a websocket connection if needed and waits
         for data from the client. It has a 5-second timeout for receiving data.
-        
+
         Returns:
             The deserialized data received from the client.
         """
@@ -391,42 +405,47 @@ class BaseModelDeployment(BaseDeployment):
 
     def stream_connect(self):
         """Establishes a websocket connection if one doesn't exist.
-        
+
         This method ensures that there is an active websocket connection
         before attempting to send or receive data. It:
         1. Checks if a connection exists
         2. If not, creates a new connection with appropriate parameters
         3. Adds a small delay to ensure the connection is fully established
-        
+
         The connection is established with:
         - WebSocket transport only (no polling fallback)
         - 10-second timeout for connection establishment
         - Job ID included in the connection URL for proper routing of receiving stream data from the user.
         """
         if self.sio.client is None or not self.sio.connected:
-            self.sio.connected = False
-            self.sio.connect(
-                f"{self.api_url}?job_id={self.request.id}",
-                socketio_path="/ws/socket.io",
-                transports=["websocket"],
-                wait_timeout=10,
-            )
-            # Wait for connection to be fully established
-            time.sleep(0.1)  # Small delay to ensure connection is ready
+            try:
+                self.sio.connected = False
+                self.sio.connect(
+                    f"{self.api_url}?job_id={self.request.id}",
+                    socketio_path="/ws/socket.io",
+                    transports=["websocket"],
+                    wait_timeout=10,
+                )
+                # Wait for connection to be fully established
+                time.sleep(0.1)  # Small delay to ensure connection is ready
+            except Exception as e:
+                print(f"Error connecting to socketio: {e}")
+                time.sleep(1)
+                self.stream_connect()
 
     def respond(self, **kwargs) -> None:
         """Sends a response back to the client.
-        
+
         This method handles sending responses through either websocket
         or object store, depending on whether a session_id exists.
-        
+
         If session_id exists:
         1. Establishes websocket connection if needed
         2. Sends response through websocket
-        
+
         If no session_id:
         1. Saves response to object store
-        
+
         Args:
             **kwargs: Arguments to be passed to create_response, including:
                 - status: The job status
@@ -441,10 +460,21 @@ class BaseModelDeployment(BaseDeployment):
         )
 
 
-class BaseModelDeploymentArgs(BaseDeploymentArgs):
+class BaseModelDeploymentArgs(BaseModel):
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: str
+    node_name: str
+
+    api_url: str
+    object_store_url: str
+    object_store_access_key: str
+    object_store_secret_key: str
+
+    cached: bool = False
+
     execution_timeout: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
-    dtype: str | torch.dtype = torch.bfloat16
+    dtype: str | torch.dtype = "bfloat16"

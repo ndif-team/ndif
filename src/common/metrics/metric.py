@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 from influxdb_client import InfluxDBClient, WriteApi
 from influxdb_client.client.write_api import SYNCHRONOUS
 from influxdb_client import Point
-from ..logging.logger import load_logger
 
-logger = load_logger()
+import logging
+logger = logging.getLogger("ndif")
+
 
 class Metric:
 

@@ -12,8 +12,6 @@ from functools import wraps
 LOKI_URL = os.environ.get('LOKI_URL')
 LOKI_RETRY_COUNT = int(os.environ.get('LOKI_RETRY_COUNT', '3'))  # Number of retry attempts for failed log sends
 
-# Global logger instance
-LOGGER: Optional[logging.Logger] = None
 
 class CustomJSONFormatter(logging.Formatter):
     """
@@ -93,27 +91,14 @@ class RetryingLokiHandler(logging_loki.LokiHandler):
                 else:
                     time.sleep(0.5 * (attempt + 1))  # Exponential backoff
 
-def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
-    """
-    Configure and return a logger with console and optional Loki handlers.
-    
-    Sets up a logger with structured JSON formatting for Loki and simpler
-    formatting for console output. Uses a singleton pattern to avoid
-    creating multiple loggers.
-    
-    Args:
-        service_name: Name of the service using the logger
-        logger_name: Name for the logger instance
-        
-    Returns:
-        Configured logging.Logger instance
-    """
-    global LOGGER
-    
-    if LOGGER is not None:
-        return LOGGER
+def set_logger(service_name) -> logging.Logger:
 
-    logger = logging.getLogger(logger_name)
+    logger = logging.getLogger("ndif")
+
+    if service_name is None:
+        raise ValueError("Service name is required")
+    
+    logger = logging.getLogger(service_name)
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
@@ -138,9 +123,8 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
         "message": "%(message)s",
     }'''
     
-    # Simpler format for console output
-    console_format = '%(asctime)s [%(levelname)s] %(name)s - %(message)s'
-    
+    # Simpler format for console output with filename
+    console_format = '%(asctime)s [%(levelname)s] %(name)s:%(filename)s - %(message)s'
     # Create formatters for different outputs
     json_formatter = CustomJSONFormatter(
         fmt=json_format,
@@ -154,7 +138,7 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
     )
     
     # Set up console handler for local debugging
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(stream=sys.stdout)
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(logging.DEBUG)
     logger.addHandler(console_handler)
@@ -177,5 +161,4 @@ def load_logger(service_name: str="", logger_name: str="") -> logging.Logger:
         logger.addHandler(loki_handler)
 
 
-    LOGGER = logger
     return logger
