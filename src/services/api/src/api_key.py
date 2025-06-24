@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 
-from .logging import load_logger
+import logging
 from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from .schema import BackendRequestModel
 
-logger = load_logger(service_name="api", logger_name="gunicorn.error")
+logger = logging.getLogger("ndif")
 
 # TODO: Make this be derived from a base class
 

@@ -19,9 +19,9 @@ import requests
 
 from nnsight.schema.response import ResponseModel
 
-from .logging import load_logger
+from .logging import set_logger
 
-logger = load_logger(service_name="API", logger_name="API")
+logger = set_logger("API")
 
 from .api_key import api_key_auth
 from .metrics import NetworkStatusMetric, TransportLatencyMetric

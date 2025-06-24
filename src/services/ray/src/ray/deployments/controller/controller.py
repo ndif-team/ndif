@@ -16,13 +16,12 @@ from ray.serve.schema import (
 )
 from slugify import slugify
 
-from ....logging.logger import load_logger
-from .. import MODEL_KEY
+from ....logging.logger import set_logger
 from ..modeling.base import BaseModelDeploymentArgs
 from .cluster import Cluster, Deployment, DeploymentLevel
 from ..modeling.util import get_downloaded_models
 
-LOGGER = load_logger("Controller")
+
 
 
 class _ControllerDeployment:
@@ -55,6 +54,8 @@ class _ControllerDeployment:
         self.ray_dashboard_url = (
             f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
         )
+        
+        self.logger = set_logger("Controller")
 
         self.client = ServeSubmissionClient(self.ray_dashboard_url)
 
@@ -87,7 +88,7 @@ class _ControllerDeployment:
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 
-        LOGGER.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
+        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
 
@@ -150,7 +151,7 @@ class _ControllerDeployment:
 
     def apply(self):
 
-        LOGGER.info(f"Applying state: {self.state}")
+        self.logger.info(f"Applying state: {self.state}")
 
         self.build()
 

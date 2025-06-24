@@ -30,7 +30,7 @@ from nnsight.util import NNsightError
 from nnsight.schema.request import RequestModel
 from . import protocols
 
-from ....logging import load_logger
+from ....logging import set_logger
 from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
                          RequestResponseSizeMetric)
 from ....schema import (BackendRequestModel, BackendResponseModel,
@@ -107,9 +107,7 @@ class BaseModelDeployment:
 
         self.sio = socketio.SimpleClient(reconnection_attempts=10)
 
-        self.logger = load_logger(
-            service_name=str(self.__class__), logger_name="ray.serve"
-        )
+        self.logger = set_logger(app)
 
         self.runtime_context = ray.get_runtime_context()
 
