@@ -103,13 +103,8 @@ class Processor(ABC, Generic[T]):
         """
         # Get current status (this may trigger state updates in subclasses)
         current_status = self.status
-        
-        # Handle inactive state
-        if self._is_inactive(current_status):
-            return False
 
-        # Handle disconnected state
-        if self._is_disconnected(current_status):
+        if self._is_invariant_state(current_status):
             return False
 
         # If no task is currently dispatched, try to dequeue one
@@ -201,32 +196,10 @@ class Processor(ABC, Generic[T]):
                 self._update_position(i)
         self._needs_update = False
 
-    # Abstract methods for status checking - subclasses can override these
-    # to provide their own status logic
-    
-    def _is_inactive(self, status) -> bool:
-        """
-        Check if the processor is inactive.
-        
-        Args:
-            status: The current status
-            
-        Returns:
-            True if inactive, False otherwise
-        """
-        return False  # Default implementation, subclasses can override
-
-    def _is_disconnected(self, status) -> bool:
-        """
-        Check if the processor is disconnected.
-        
-        Args:
-            status: The current status
-            
-        Returns:
-            True if disconnected, False otherwise
-        """
-        return False  # Default implementation, subclasses can override
+    @abstractmethod
+    def _is_invariant_state(self) -> bool:
+        """Return True if self.status is in a state invariant with respect to the current lifecycle"""
+        pass
 
     # Abstract methods for task states - subclasses should implement these
     # to provide their own state constants

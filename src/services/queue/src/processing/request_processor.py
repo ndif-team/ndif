@@ -1,16 +1,21 @@
 from multiprocessing import Manager
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 from datetime import datetime
 from ray import serve
+from slugify import slugify
 from ..schema import BackendRequestModel
-from ..logging import load_logger
+from ..logging import set_logger
 from .base import Processor
 from .state import ProcessorState
 from ..tasks.request_task import RequestTask
 from ..tasks.state import TaskState
 from ..coordination.mixins import NetworkingMixin
 
-logger = load_logger(service_name="QUEUE", logger_name="REQUEST_PROCESSOR")
+logger = set_logger("Queue")
+
+def slugify_model_key(model_key: str) -> str:
+    """Slugify a model key."""
+    return f"Model:{slugify(model_key)}"
 
 class RequestProcessor(Processor[RequestTask], NetworkingMixin):
     """
@@ -21,16 +26,29 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         NetworkingMixin.__init__(self, sio, object_store)
         self.model_key = model_key
         self._queue = Manager().list()
+        self._scheduled = None
+        self._app_handle = None
+
+    @property
+    def scheduled(self) -> Union[bool, None]:
+        """If an attempt to schedule the model has been made, returns True if it was accepted and False if rejected. Returns None if the model has yet to be submitted for scheduling."""
+        return self._scheduled
+
+    @scheduled.setter
+    def scheduled(self, update : bool):
+        self._scheduled = update
 
     @property    
     def app_handle(self):
         """
         Get the app handle for the model.
         """
-        if not hasattr(self, '_app_handle'):
+        if not self._app_handle:
             try:
-                self._app_handle = serve.get_app_handle(self.model_key)
+                ray_model_key = slugify_model_key(self.model_key)
+                self._app_handle = serve.get_app_handle(ray_model_key)
             except Exception as e:
+                self._log_error(f"Failed to create app handle: {e}")
                 self._app_handle = None
         return self._app_handle
 
@@ -46,16 +64,25 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         """
         The status of the queue.
         """
-        
-        # App handle fails to be created (meaning either the model is not deployed or there is an error trying to connect)
-        if self.app_handle is None:
-            return ProcessorState.DISCONNECTED
 
-        # Queue is inactive if there are no requests and no dispatched request
-        if not self.dispatched_task and len(self._queue) == 0:
-            return ProcessorState.INACTIVE
+        # No attempt has been made to submit a request for this model to the controller.
+        if self.scheduled is None:
+            return ProcessorState.UNINITIALIZED
 
-        return ProcessorState.ACTIVE
+        elif self.scheduled:
+            # The model has not finished deploying
+            if self.app_handle is None:
+                return ProcessorState.PROVISIONING
+            if not self.dispatched_task and len(self._queue) == 0:
+                return ProcessorState.INACTIVE
+            return ProcessorState.ACTIVE
+
+        # The controller was unable to schedule the model
+        else:
+            return ProcessorState.UNAVAILABLE
+
+        # TODO: Handle logic for when deployment is terminated by scheduler
+
 
     def enqueue(self, request: BackendRequestModel) -> bool:
         """
@@ -76,18 +103,19 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         base_state["model_key"] = self.model_key
         return base_state
 
-    def _is_inactive(self, status) -> bool:
-        """
-        Check if the processor is inactive.
-        """
-        return status == ProcessorState.INACTIVE
+    def _is_invariant_state(self, current_state : ProcessorState) -> bool:
 
-    def _is_disconnected(self, status) -> bool:
-        """
-        Check if the processor is disconnected.
-        """
-        return status == ProcessorState.DISCONNECTED
+        # States which have nothing to do with tasks.
+        invariant_states = [
+            ProcessorState.UNINITIALIZED, 
+            ProcessorState.INACTIVE,
+            ProcessorState.PROVISIONING,
+            ProcessorState.UNAVAILABLE,
+            
+        ]
 
+        return any(current_state == state for state in invariant_states)
+        
     def _get_queued_state(self):
         """Return the queued state constant."""
         return TaskState.QUEUED

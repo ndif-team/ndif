@@ -6,9 +6,9 @@ from .state import TaskState
 from .base import Task
 from ..schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
-from ..logging import load_logger
+from ..logging import set_logger
 
-logger = load_logger(service_name="QUEUE", logger_name="REQUEST_TASK")
+logger = set_logger("Queue")
 
 class RequestTask(Task):
     """

@@ -5,19 +5,15 @@ import ray
 from ray import serve
 import threading
 from typing import Dict, Optional, List, Any
-from slugify import slugify
-from ..logging import load_logger
+from ..logging import set_logger
 from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
 from ..processing.state import ProcessorState
 from .base import Coordinator
 from .mixins import NetworkingMixin
 
-logger = load_logger(service_name="Queue", logger_name="RequestCoordinator")
+logger = set_logger("Queue")
 
-def slugify_model_key(model_key: str) -> str:
-    """Slugify a model key."""
-    return f"Model:{slugify(model_key)}"
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], NetworkingMixin):
     """
@@ -32,6 +28,14 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         self.ray_connected = False
         self.ray_watchdog = threading.Thread(target=self.connect_to_ray, daemon=True)
         self.ray_watchdog.start()
+        self._controller = None
+
+    @property
+    def controller(self):
+        """Creates a Controller handle used to submit requests for models to deploy"""
+        if self._controller is None:
+            self._controller = serve.get_app_handle("Controller")
+        return self._controller
 
     def state(self) -> Dict[str, Any]:
         """Get the state of the coordinator. Adds ray_connected to the base state."""
@@ -51,7 +55,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 self._log_error("Invalid request: missing model_key")
                 return False
             
-            model_key = slugify_model_key(request.model_key)
+            model_key = request.model_key
             
             # Try to route to existing active processor
             if model_key in self.active_processors:
@@ -123,6 +127,29 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             self._log_error(f"Error checking if processor should be deactivated: {e}")
             return True  # Deactivate on error
 
+    def _should_deploy_processor(self, processor: RequestProcessor) -> bool:
+        """Determine if a processor should be deployed."""
+        try:
+            if processor.status == ProcessorState.UNINITIALIZED and self.ray_connected:
+                logger.debug(f"Processor {processor.model_key} needs a deployment")
+                return True
+            else:
+                return False
+        except Exception as e:
+            self._log_error(f"Error checking if processor should be deployed: {e}")
+            return False
+
+    def _deploy(self, processors: List[RequestProcessor]):
+
+        if not processors:
+            return
+
+        results = self.controller.deploy.remote([p.model_key for p in processors])
+
+        # TODO: Figure out how to check whether the results succeeded or failed
+        for processor in processors:
+            processor.scheduled = True
+
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
@@ -130,8 +157,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     def get_processor_status(self, model_key: str) -> Optional[Dict]:
         """Get the status of a specific processor."""
         try:
-            slugified_key = slugify_model_key(model_key)
-            return super().get_processor_status(slugified_key)
+            return super().get_processor_status(model_key)
         except Exception as e:
             self._log_error(f"Error getting processor status for {model_key}: {e}")
             return None

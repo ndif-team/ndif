@@ -11,10 +11,10 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
-from .logging import load_logger
+from .logging import set_logger
 from .coordination.request_coordinator import RequestCoordinator
 
-logger = load_logger(service_name="QUEUE", logger_name="QUEUE")
+logger = set_logger("Queue")
 
 app = FastAPI()
 
@@ -137,9 +137,8 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
     try:
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
-            request, request.headers.get("api_key")
+            request
         )
-        backend_request.id = request.headers.get("request_id")
 
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
