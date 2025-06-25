@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from .state import TaskState
 from .base import Task
 from ..schema import BackendRequestModel
@@ -59,32 +59,41 @@ class RequestTask(Task):
             self._log_error(f"Error running request {self.id}: {e}")
             return False
 
-    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client"):
-        """
-        Override the base respond method to provide Ray-specific response logic.
-        """
 
-        if self.status == TaskState.FAILED:        
-            # TODO: More informative description.
-            job_status = ResponseModel.JobStatus.ERROR
-            description = f"{self.id} - Dispatch failed!"
-        
-        else:
-            job_status = ResponseModel.JobStatus.APPROVED
-            if self.position is not None:
-                description = f"{self.id} - Moved to position {self.position + 1}"
-            else:
-                description = f"{self.id} - Status updated to {self.status}"
-        
-        logger.debug(description)
-        
-        # Create and send response if networking clients are available
+    def respond_position_update(self, sio: "socketio.SimpleClient", object_store: "boto3.client"):
+        """
+        Respond to the user with a position update or status update.
+        """
+        description = self.respond()
+
         response = self.data.create_response(
-            status=job_status,
+            status=ResponseModel.JobStatus.APPROVED,
             description=description,
             logger=logger,
         )
-        response.respond(sio, object_store)
+        try:
+            response.respond(sio, object_store)
+        except Exception as e:
+            self._log_error(f"Failed to respond back to user: {e}")
+
+    def respond_failure(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description: Optional[str] = None):
+        """
+        Respond to the user with a failure message.
+        """
+        if description is None:
+            description = f"{self.id} - Dispatch failed!"
+
+        response = self.data.create_response(
+            status=ResponseModel.JobStatus.ERROR,
+            description=description,
+            logger=logger,
+        )
+        try:
+            response.respond(sio, object_store)
+        except Exception as e:
+            self._log_error(f"Failed to respond back to user: {e}")
+            raise Exception(description)
+
 
     # Override logging methods to use the service logger
     def _log_debug(self, message: str):

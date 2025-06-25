@@ -139,6 +139,55 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             self._log_error(f"Error checking if processor should be deployed: {e}")
             return False
 
+    def _processor_failed(self, processor: RequestProcessor) -> bool:
+        """Determine whether processor has failed"""
+        if processor.status in [ProcessorState.TERMINATED, ProcessorState.UNAVAILABLE]:
+            return True
+        return False
+
+    def handle_processor_failure(self, processor: RequestProcessor):
+        """
+        Handle a failed processor by notifying users, clearing its queue,
+        and moving it from active to inactive processors.
+        """
+        processor_state = processor.status
+
+        if processor_state == ProcessorState.TERMINATED:
+            description = (
+                f"Deployment for {processor.model_key} has been terminated by the scheduler. "
+                "You can request it to be rescheduled by re-running your nnsight script."
+            )
+        elif processor_state == ProcessorState.UNAVAILABLE:
+            reason = processor.deployment_state
+            if reason in (DeploymentState.FULL, DeploymentState.CACHED_AND_FULL):
+                description = (
+                    f"Cannot accommodate deployment for {processor.model_key}: Inadequate resources. "
+                    "Please request a smaller model or try again later. "
+                    "You can also check https://nnsight.net/status/ to see which models are currently in use."
+                )
+            elif reason == DeploymentState.CANT_ACCOMMODATE:
+                description = (
+                    f"Cannot accommodate deployment for {processor.model_key}. "
+                    "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
+                    "If you believe this model should be supported, feel free to make a post on https://discuss.ndif.us/ "
+                    "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
+                )
+            else:
+                description = "Deployment failed."
+        else:
+            self._log_error(f"Unknown processor failure: {processor_state}")
+            description = "Deployment failed."
+
+        # Notify all queued requests of the failure
+        for request in processor._queue:
+            request.respond_failure(self.sio, self.object_store, description=description)
+        processor._queue[:] = [] # ListProxy, so cannot use .clear()
+
+        # Remove processor from aueue
+        self.active_processors.pop(processor.model_key, None)
+        self.inactive_processors.pop(processor.model_key, None)
+            
+
     def _deploy(self, processors: List[RequestProcessor]):
         """
         Attempts to deploy a list of RequestProcessors by invoking the controller's deploy method.

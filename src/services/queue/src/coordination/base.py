@@ -145,6 +145,20 @@ class Coordinator(ABC, Generic[T, P]):
         """
         pass
 
+    @abstractmethod
+    def _processor_failed(self, processor: P) -> bool:
+        """
+        Abstract method to determine if a processor has failed and needs resolving.
+        """
+        pass
+
+    @abstractmethod
+    def handle_processor_failure(self, processor: P):
+        """
+        Abstract method to help determine what to do with a failed procesor.
+        """
+        pass
+
 
     @abstractmethod
     def _create_processor(self, processor_key: str) -> P:
@@ -170,6 +184,7 @@ class Coordinator(ABC, Generic[T, P]):
         processors_to_deactivate = []
         processors_to_update = []
         processors_to_deploy = []
+        failed_processors = []
         
         
         for processor_key, processor in self.active_processors.items():
@@ -185,6 +200,9 @@ class Coordinator(ABC, Generic[T, P]):
 
                 elif self._should_update_processor(processor):
                     processors_to_update.append(processor_key)
+
+                elif self._processor_failed(processor):
+                    failed_processors.append(processor)
                     
             except Exception as e:
                 self._log_error(f"Error advancing lifecycle for processor {processor_key}: {e}")
@@ -196,6 +214,10 @@ class Coordinator(ABC, Generic[T, P]):
         # Move processors to inactive state
         for processor_key in processors_to_deactivate:
             self._deactivate_processor(processor_key)
+
+        # Clean up failed processors
+        for processor in failed_processors:
+            self.handle_processor_failure(processor)
 
     def _deactivate_processor(self, processor_key: str):
         """

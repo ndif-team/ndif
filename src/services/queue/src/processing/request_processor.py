@@ -152,7 +152,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         Update the position of a task. Overrides the base class to pass in the networking clients.
         """
         task = self.queue[position]
-        task.update_position(position).respond(self.sio, self.object_store)
+        task.update_position(position).respond_position_update(self.sio, self.object_store)
 
     def _handle_failed_dispatch(self):
         """

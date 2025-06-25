@@ -71,7 +71,7 @@ class Task(ABC):
         """
         pass
 
-    def respond(self):
+    def respond(self) -> str:
         """
         Default implementation for responding to task updates.
         
@@ -84,7 +84,8 @@ class Task(ABC):
             description = f"{self.id} - Status updated to {self.status}"
         
         self._log_debug(description)
-        # TODO: Subclasses can implement specific response logic here
+
+        return description
 
     def increment_retries(self) -> int:
         """
