@@ -1,12 +1,12 @@
 from multiprocessing import Manager
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List
 from datetime import datetime
 from ray import serve
 from slugify import slugify
 from ..schema import BackendRequestModel
 from ..logging import set_logger
 from .base import Processor
-from .state import ProcessorState
+from .state import ProcessorState, DeploymentState
 from ..tasks.request_task import RequestTask
 from ..tasks.state import TaskState
 from ..coordination.mixins import NetworkingMixin
@@ -26,17 +26,9 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         NetworkingMixin.__init__(self, sio, object_store)
         self.model_key = model_key
         self._queue = Manager().list()
-        self._scheduled = None
         self._app_handle = None
-
-    @property
-    def scheduled(self) -> Union[bool, None]:
-        """If an attempt to schedule the model has been made, returns True if it was accepted and False if rejected. Returns None if the model has yet to be submitted for scheduling."""
-        return self._scheduled
-
-    @scheduled.setter
-    def scheduled(self, update : bool):
-        self._scheduled = update
+        self.deployment_state = DeploymentState.UNINITIALIZED
+        self._has_been_terminated = False
 
     @property    
     def app_handle(self):
@@ -47,8 +39,8 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             try:
                 ray_model_key = slugify_model_key(self.model_key)
                 self._app_handle = serve.get_app_handle(ray_model_key)
+                self._log_debug(f"Successfully fetched app handle for {ray_model_key}")
             except Exception as e:
-                self._log_error(f"Failed to create app handle: {e}")
                 self._app_handle = None
         return self._app_handle
 
@@ -65,23 +57,33 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         The status of the queue.
         """
 
+        scheduled_states = [DeploymentState.CACHED_AND_FULL, DeploymentState.FREE]
+
         # No attempt has been made to submit a request for this model to the controller.
-        if self.scheduled is None:
+        if self.deployment_state == DeploymentState.UNINITIALIZED:
             return ProcessorState.UNINITIALIZED
 
-        elif self.scheduled:
-            # The model has not finished deploying
-            if self.app_handle is None:
-                return ProcessorState.PROVISIONING
+        elif self.deployment_state == DeploymentState.DEPLOYED:
+            if self._has_been_terminated:
+                return ProcessorState.TERMINATED
             if not self.dispatched_task and len(self._queue) == 0:
                 return ProcessorState.INACTIVE
             return ProcessorState.ACTIVE
+            
+        # The deployment has been scheduled, but might not be finished
+        elif self.deployment_state in scheduled_states:
+            # Still waiting
+            if self.app_handle is None:
+                return ProcessorState.PROVISIONING
 
+            # The deployment completed - update deployment state
+            else:
+                self.deployment_state = DeploymentState.DEPLOYED
+                return ProcessorState.ACTIVE
+            
         # The controller was unable to schedule the model
         else:
             return ProcessorState.UNAVAILABLE
-
-        # TODO: Handle logic for when deployment is terminated by scheduler
 
 
     def enqueue(self, request: BackendRequestModel) -> bool:

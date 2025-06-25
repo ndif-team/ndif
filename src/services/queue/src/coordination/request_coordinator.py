@@ -8,7 +8,7 @@ from typing import Dict, Optional, List, Any
 from ..logging import set_logger
 from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
-from ..processing.state import ProcessorState
+from ..processing.state import ProcessorState, DeploymentState
 from .base import Coordinator
 from .mixins import NetworkingMixin
 
@@ -140,15 +140,44 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             return False
 
     def _deploy(self, processors: List[RequestProcessor]):
+        """
+        Attempts to deploy a list of RequestProcessors by invoking the controller's deploy method.
+        Updates each processor's deployment state based on the controller's response.
 
+        Args:
+            processors (List[RequestProcessor]): The processors to deploy.
+        """
         if not processors:
             return
 
-        results = self.controller.deploy.remote([p.model_key for p in processors])
+        try:
+            # Prepare model keys for deployment
+            model_keys = [processor.model_key for processor in processors]
 
-        # TODO: Figure out how to check whether the results succeeded or failed
-        for processor in processors:
-            processor.scheduled = True
+            # Initiate deployment via Ray controller (Ray 2.47.0)
+            deployment_future = self.controller.deploy.remote(model_keys)
+
+            # Synchronously fetch deployment results (blocking)
+            deployment_results = deployment_future._fetch_future_result_sync()
+            # The .get(3.14) is a hack to retrieve the result with a timeout
+            deployment_statuses = deployment_results.get(3.14)
+
+            logger.debug(f"Deployment results from controller: {deployment_statuses}")
+
+            for processor in processors:
+                # Retrieve and normalize the deployment status for this processor
+                status_str = str(deployment_statuses[processor.model_key]).lower()
+                try:
+                    deployment_state = DeploymentState(status_str)
+                except ValueError:
+                    self._log_error(f"Unknown processor state '{status_str}' for model_key '{processor.model_key}'")
+                    deployment_state = DeploymentState.CANT_ACCOMMODATE
+
+                # Store the processor's deployment state in a clear attribute
+                processor.deployment_state = deployment_state
+
+        except Exception as e:
+            self._log_error(f"Error during processor deployment: {e}")
 
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""

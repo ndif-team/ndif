@@ -1,6 +1,6 @@
-import enum
+from enum import Enum
 
-class ProcessorState(enum.Enum):
+class ProcessorState(Enum):
     """
     State of a processor.
     """
@@ -9,4 +9,16 @@ class ProcessorState(enum.Enum):
     UNAVAILABLE = "unavailable"
     PROVISIONING = "provisioning"
     ACTIVE = "active"
-    #TERMINATED = "terminated"
+    TERMINATED = "terminated"
+
+class DeploymentState(Enum):
+    """
+    State of deployment returned from controller (CandidateLevel).
+    """
+    UNINITIALIZED = "uninitialized"
+    DEPLOYED = "deployed"
+    CACHED_AND_FREE = "cached_and_free"
+    FREE = "free"
+    CACHED_AND_FULL = "cached_and_full"
+    FULL = "full"
+    CANT_ACCOMMODATE = "cant_accommodate"

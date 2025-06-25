@@ -1,6 +1,3 @@
-import ray
-import asyncio
-import concurrent.futures
 from typing import Dict, Any
 from .state import TaskState
 from .base import Task
@@ -33,7 +30,7 @@ class RequestTask(Task):
 
         # Request has been dispatched, check if it has completed
         try:
-            # ray 2.45.0
+            # ray 2.47.0
             ready = self._future._fetch_future_result_sync(_timeout_s=0)
             if ready:
                 return TaskState.COMPLETED
@@ -66,16 +63,24 @@ class RequestTask(Task):
         """
         Override the base respond method to provide Ray-specific response logic.
         """
-        if self.position is not None:
-            description = f"{self.id} - Moved to position {self.position + 1}"
+
+        if self.status == TaskState.FAILED:        
+            # TODO: More informative description.
+            job_status = ResponseModel.JobStatus.ERROR
+            description = f"{self.id} - Dispatch failed!"
+        
         else:
-            description = f"{self.id} - Status updated to {self.status}"
+            job_status = ResponseModel.JobStatus.APPROVED
+            if self.position is not None:
+                description = f"{self.id} - Moved to position {self.position + 1}"
+            else:
+                description = f"{self.id} - Status updated to {self.status}"
         
         logger.debug(description)
         
         # Create and send response if networking clients are available
         response = self.data.create_response(
-            status=ResponseModel.JobStatus.APPROVED,
+            status=job_status,
             description=description,
             logger=logger,
         )
