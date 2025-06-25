@@ -5,7 +5,7 @@ from slugify import slugify
 
 from ..controller import ControllerDeploymentArgs, _ControllerDeployment
 from .scheduler import SchedulingActor
-
+from ..cluster.deployment import DeploymentLevel
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class SchedulingControllerDeployment(_ControllerDeployment):
@@ -51,16 +51,21 @@ class SchedulingControllerDeployment(_ControllerDeployment):
             else:
 
                 self.cluster.evaluator(model_key)
+                
+                repo_id = self.cluster.evaluator.cache[
+                        model_key
+                    ].config._name_or_path
+                
+                if repo_id in status["deployments"]:
+                    del status["deployments"][repo_id]
 
                 status["deployments"][application_name] = {
-                    "deployment_level": "SCHEDULED",
+                    "deployment_level": DeploymentLevel.COLD.name,
                     "model_key": model_key,
-                    "repo_id": self.cluster.evaluator.config_cache[
+                    "repo_id": repo_id,
+                    "config": self.cluster.evaluator.cache[
                         model_key
-                    ]._name_or_path,
-                    "config": self.cluster.evaluator.config_cache[
-                        model_key
-                    ].to_json_string(),
+                    ].config.to_json_string(),
                     "schedule": schedule,
                 }
 

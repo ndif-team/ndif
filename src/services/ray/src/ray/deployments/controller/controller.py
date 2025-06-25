@@ -16,13 +16,12 @@ from ray.serve.schema import (
 )
 from slugify import slugify
 
-from ....logging.logger import load_logger
-from .. import MODEL_KEY
+from ....logging.logger import set_logger
 from ..modeling.base import BaseModelDeploymentArgs
 from .cluster import Cluster, Deployment, DeploymentLevel
 from ..modeling.util import get_downloaded_models
 
-LOGGER = load_logger("Controller")
+
 
 
 class _ControllerDeployment:
@@ -55,6 +54,8 @@ class _ControllerDeployment:
         self.ray_dashboard_url = (
             f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
         )
+        
+        self.logger = set_logger("Controller")
 
         self.client = ServeSubmissionClient(self.ray_dashboard_url)
 
@@ -65,7 +66,6 @@ class _ControllerDeployment:
         for application_details in serve_details.applications.values():
 
             application_schema = application_details.deployed_app_config
-            # application_schema.deployments = [deployment.deployment_config for deployment in application_details.deployments.values()]
 
             applications.append(application_schema)
 
@@ -88,7 +88,7 @@ class _ControllerDeployment:
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 
-        LOGGER.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
+        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
 
@@ -151,7 +151,7 @@ class _ControllerDeployment:
 
     def apply(self):
 
-        LOGGER.info(f"Applying state: {self.state}")
+        self.logger.info(f"Applying state: {self.state}")
 
         self.build()
 
@@ -182,28 +182,25 @@ class _ControllerDeployment:
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
+                    "dedicated": deployment.dedicated,
                     "model_key": deployment.model_key,
-                    "repo_id": self.cluster.evaluator.config_cache[
+                    "repo_id": self.cluster.evaluator.cache[
                         deployment.model_key
-                    ]._name_or_path,
-                    "config": self.cluster.evaluator.config_cache[
+                    ].config._name_or_path,
+                    "config": self.cluster.evaluator.cache[
                         deployment.model_key
-                    ].to_json_string(),
-                    "minutesleft": (
-                        (
-                            self.minimum_deployment_time_seconds
-                            - (time.time() - deployment.deployed)
-                        )
-                        // 60
-                        if self.minimum_deployment_time_seconds is not None
-                        else None
-                    ),
+                    ].config.to_json_string(),
                 }
+                
+                if self.minimum_deployment_time_seconds is not None:
+                    status[application_name]["schedule"] = {
+                        "end_time": deployment.end_time(self.minimum_deployment_time_seconds),
+                    }
 
                 existing_repo_ids.add(
-                    self.cluster.evaluator.config_cache[
+                    self.cluster.evaluator.cache[
                         deployment.model_key
-                    ]._name_or_path
+                    ].config._name_or_path
                 )
 
             for cached_model_key in node.cache.keys():
@@ -215,18 +212,18 @@ class _ControllerDeployment:
                     status[application_name] = {
                         "deployment_level": DeploymentLevel.WARM.name,
                         "model_key": cached_model_key,
-                        "repo_id": self.cluster.evaluator.config_cache[
+                        "repo_id": self.cluster.evaluator.cache[
                             cached_model_key
-                        ]._name_or_path,
-                        "config": self.cluster.evaluator.config_cache[
+                        ].config._name_or_path,
+                        "config": self.cluster.evaluator.cache[
                             cached_model_key
-                        ].to_json_string(),
+                        ].config.to_json_string(),
                     }
 
                     existing_repo_ids.add(
-                        self.cluster.evaluator.config_cache[
+                        self.cluster.evaluator.cache[
                             cached_model_key
-                        ]._name_or_path
+                        ].config._name_or_path
                     )
 
         downloaded_models = get_downloaded_models()

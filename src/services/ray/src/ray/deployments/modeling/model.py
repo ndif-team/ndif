@@ -7,7 +7,6 @@ from nnsight.schema.request import RequestModel
 
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
-
 @ray.remote(num_cpus=0, num_gpus=0)
 class ModelActor(BaseModelDeployment):
 

@@ -19,9 +19,9 @@ import requests
 
 from nnsight.schema.response import ResponseModel
 
-from .logging import load_logger
+from .logging import set_logger
 
-logger = load_logger(service_name="API", logger_name="API")
+logger = set_logger("API")
 
 from .api_key import api_key_auth
 from .metrics import NetworkStatusMetric, TransportLatencyMetric
@@ -125,7 +125,7 @@ async def request(
         api_key_auth(request)
         
         try:
-            body = await raw_request.body()
+            body = await request.request.body()
             headers = dict(raw_request.headers)
             headers["ndif-request_id"] = request.id
             

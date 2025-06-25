@@ -1,11 +1,9 @@
 import gc
 import os
-import sys
 import time
 import traceback
 import weakref
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
-from functools import wraps
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -23,7 +21,7 @@ from torch.cuda import (max_memory_allocated, memory_allocated,
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 
-from ....logging import load_logger
+from ....logging import set_logger
 from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
                          RequestResponseSizeMetric)
 from ....schema import (BackendRequestModel, BackendResponseModel,
@@ -32,12 +30,13 @@ from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from .util import load_with_cache_deletion_retry
 
+
 class BaseModelDeployment:
 
     def __init__(
         self,
         model_key: str,
-        cuda_devices:str,
+        cuda_devices: str,
         app: str,
         api_url: str,
         object_store_url: str,
@@ -52,14 +51,14 @@ class BaseModelDeployment:
     ) -> None:
 
         super().__init__()
-        
+
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         self.api_url = api_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
-        
+
         self.app = app
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -83,9 +82,7 @@ class BaseModelDeployment:
 
         self.sio = socketio.SimpleClient(reconnection_attempts=10)
 
-        self.logger = load_logger(
-            service_name=str(self.__class__), logger_name="ray.serve"
-        )
+        self.logger = set_logger(app)
 
         self.runtime_context = ray.get_runtime_context()
 
@@ -99,7 +96,6 @@ class BaseModelDeployment:
         #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
         #     ray_free(object_refs, local_only=True)
 
-
         self.model = self.load_from_disk()
 
         if dispatch:
@@ -108,15 +104,15 @@ class BaseModelDeployment:
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
-        
+
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
 
     def load_from_disk(self):
-        
+
         start = time.time()
 
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
-        
+
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
@@ -127,25 +123,53 @@ class BaseModelDeployment:
             )
         )
 
-        
-        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}")
-        
+        self.logger.info(
+            f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}"
+        )
+
         return model
-    
+
     def to_cache(self):
-        
+
         self.model.cpu()
 
-    def from_cache(self, cuda_devices:str, app:str):
-        
+    def from_cache(self, cuda_devices: str, app: str):
+
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
-        
+
         self.app = app
-        
+
         start = time.time()
-        
+        model = load_with_cache_deletion_retry(
+            lambda: RemoteableMixin.from_model_key(
+                self.model_key,
+                device_map="auto",
+                dispatch=self.dispatch,
+                torch_dtype=self.dtype,
+                **self.extra_kwargs,
+            )
+        )
+
+        self.logger.info(
+            f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}"
+        )
+
+        return model
+
+    def to_cache(self):
+
+        self.model.cpu()
+
+    def from_cache(self, cuda_devices: str, app: str):
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+
+        self.app = app
+
+        start = time.time()
+
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
-        
+
         # Automatically compute balanced memory allocation
         max_memory = get_balanced_memory(self.model._module)
 
@@ -153,10 +177,12 @@ class BaseModelDeployment:
         device_map = infer_auto_device_map(self.model._module, max_memory=max_memory)
 
         # Dispatch the model according to the inferred device map
-        self.model._module = dispatch_model(self.model._module, device_map=device_map)
-        
-        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}")
 
+        self.model._module = dispatch_model(self.model._module, device_map=device_map)
+
+        self.logger.info(
+            f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}"
+        )
 
     def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -178,7 +204,7 @@ class BaseModelDeployment:
 
             inputs = self.pre()
 
-            #TODO abstract out for distributed execution
+            # TODO abstract out for distributed execution
             result = self.thread_pool.submit(self.execute, inputs)
 
             if isinstance(result, Future):
@@ -231,10 +257,9 @@ class BaseModelDeployment:
         Returns:
             Any: Result.
         """
-        
+
         with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
-            # For tracking peak GPU usage
             if torch.cuda.is_available():
                 reset_peak_memory_stats()
                 model_memory = memory_allocated()

@@ -83,8 +83,6 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
 
-    # volumes:
-    #   - /share/u/jadenfk/wd/nnsight/src/nnsight:/opt/conda/envs/service/lib/python3.10/site-packages/nnsight
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
