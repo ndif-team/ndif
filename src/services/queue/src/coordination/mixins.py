@@ -19,11 +19,6 @@ class NetworkingMixin:
         """Get the object store client."""
         return self._object_store
     
-    def set_networking_clients(self, sio: SimpleClient, object_store: boto3.client):
-        """Set the networking clients."""
-        self._sio = sio
-        self._object_store = object_store
-    
     def has_networking_clients(self) -> bool:
         """Check if networking clients are available."""
         return self._sio is not None and self._object_store is not None

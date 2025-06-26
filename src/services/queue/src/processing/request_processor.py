@@ -93,6 +93,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         try:
             queue_item = RequestTask(request.id, request, len(self._queue))
             return super().enqueue(queue_item)
+
         except Exception as e:
             self._log_error(f"Error enqueuing request {request.id}: {e}")
             return False
@@ -113,7 +114,6 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             ProcessorState.INACTIVE,
             ProcessorState.PROVISIONING,
             ProcessorState.UNAVAILABLE,
-            
         ]
 
         return any(current_state == state for state in invariant_states)
@@ -154,6 +154,18 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         task = self.queue[position]
         task.update_position(position).respond_position_update(self.sio, self.object_store)
 
+    def notify_pending_task(self):
+
+        description = f"{self.model_key} is being scheduled... stand by"
+
+        for pending_task in self._queue:
+
+            pending_task.respond(
+                self.sio, 
+                self.object_store,
+                description
+            )
+
     def _handle_failed_dispatch(self):
         """
         Handle a failed request with Ray-specific logic.
@@ -166,7 +178,8 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         else:
             try: 
                 # Try to inform the user that the request has failed
-                self.dispatched_task.respond(self.sio, self.object_store)
+                description = f"Unable to reach {self.model_key}. This likely means that the deployment has been evicted."
+                self.dispatched_task.respond_failure(self.sio, self.object_store, description=description)
             except Exception as e:
                 # Give up
                 self._log_error(f"Error handling failed request {self.dispatched_task.id}: {e}")

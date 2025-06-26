@@ -1,8 +1,10 @@
 import asyncio
+import os
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from .state import CoordinatorState
+from ..processing.state import ProcessorState
 
 # Generic types for coordinators
 T = TypeVar('T')  # Task type
@@ -119,40 +121,6 @@ class Coordinator(ABC, Generic[T, P]):
         pass
 
     @abstractmethod
-    def _should_deactivate_processor(self, processor: P) -> bool:
-        """
-        Abstract method to determine if a processor should be deactivated.
-        
-        Args:
-            processor: The processor to check
-            
-        Returns:
-            True if the processor should be deactivated, False otherwise
-        """
-        pass
-
-    @abstractmethod
-    def _should_update_processor(self, processor: P) -> bool:
-        """
-        Abstract method to determine if a processor should be updated.
-        """
-        pass
-
-    @abstractmethod
-    def _should_deploy_processor(self, processor: P) -> bool:
-        """
-        Abstract method to determine if a processor should be deployed.
-        """
-        pass
-
-    @abstractmethod
-    def _processor_failed(self, processor: P) -> bool:
-        """
-        Abstract method to determine if a processor has failed and needs resolving.
-        """
-        pass
-
-    @abstractmethod
     def handle_processor_failure(self, processor: P):
         """
         Abstract method to help determine what to do with a failed procesor.
@@ -182,7 +150,6 @@ class Coordinator(ABC, Generic[T, P]):
         Advance the lifecycle of all active processors.
         """
         processors_to_deactivate = []
-        processors_to_update = []
         processors_to_deploy = []
         failed_processors = []
         
@@ -191,18 +158,23 @@ class Coordinator(ABC, Generic[T, P]):
             try:
                 # Modify state (except for actions which need to be done in batch and background tasks)
                 processor.advance_lifecycle()
-                
-                if self._should_deploy_processor(processor):
-                    processors_to_deploy.append(processor)
+                processor_state = processor.status
 
-                elif self._should_deactivate_processor(processor):
+                if processor_state == ProcessorState.UNINITIALIZED: 
+                    processors_to_deploy.append(processor)
+                
+                elif processor_state == ProcessorState.INACTIVE: 
                     processors_to_deactivate.append(processor_key)
 
-                elif self._should_update_processor(processor):
-                    processors_to_update.append(processor_key)
-
-                elif self._processor_failed(processor):
+                elif processor_state in [ProcessorState.TERMINATED, ProcessorState.UNAVAILABLE]:
                     failed_processors.append(processor)
+
+                elif processor_state == ProcessorState.PROVISIONING:
+                    
+                    update_wait = float(os.environ.get("_COORDINATOR_UPDATE_INTERVAL", 10))
+                    ticks_per_update = max(1, int(update_wait // self.tick_interval))
+                    if self.tick_count % ticks_per_update == 0:
+                        processor.notify_pending_task()
                     
             except Exception as e:
                 self._log_error(f"Error advancing lifecycle for processor {processor_key}: {e}")

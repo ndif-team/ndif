@@ -14,12 +14,18 @@ class RequestTask(Task):
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
         Task.__init__(self, request_id, request, position)
         self._future = None
+        self._evicted = False
 
     @property
     def status(self) -> TaskState:
         """
         The status of the request in the queue lifecycle.
         """
+        
+        # This happens when calling .remote() fails
+        if self._evicted:
+            return TaskState.FAILED
+
         # Request must still be in the queue
         if self._future is None and self.position is not None:
             return TaskState.QUEUED
@@ -52,19 +58,19 @@ class RequestTask(Task):
             True if the request was successfully started, False otherwise
         """
         try:
-            self._future = app_handle.remote(self.data)
             self.position = None
+            self._future = app_handle.remote(self.data)
             return True
         except Exception as e:
             self._log_error(f"Error running request {self.id}: {e}")
+            
+            # This Naively assumes that the controller evicted the deployment
+            self._evicted = True
             return False
 
+    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description : Optional[str] = None):
 
-    def respond_position_update(self, sio: "socketio.SimpleClient", object_store: "boto3.client"):
-        """
-        Respond to the user with a position update or status update.
-        """
-        description = self.respond()
+        description = super().respond(description)
 
         response = self.data.create_response(
             status=ResponseModel.JobStatus.APPROVED,

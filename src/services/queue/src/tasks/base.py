@@ -71,14 +71,17 @@ class Task(ABC):
         """
         pass
 
-    def respond(self) -> str:
+    def respond(self, description : Optional[str] = None) -> str:
         """
         Default implementation for responding to task updates.
         
         Subclasses can override this to provide specific response logic
         (e.g., sending updates to clients, logging, etc.).
         """
-        if self.position is not None:
+
+        if description:
+            pass
+        elif self.position is not None:
             description = f"{self.id} - Moved to position {self.position + 1}"
         else:
             description = f"{self.id} - Status updated to {self.status}"
