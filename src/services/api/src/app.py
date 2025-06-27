@@ -125,7 +125,7 @@ async def request(
         api_key_auth(request)
         
         try:
-            body = await request.request.body()
+            body = await request.request
             headers = dict(raw_request.headers)
             headers["ndif-request_id"] = request.id
             
