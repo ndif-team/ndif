@@ -1,8 +1,8 @@
 from enum import Enum
 
-class CoordinatorState(Enum):
+class CoordinatorStatus(Enum):
     """
-    Base coordinator states.
+    Base coordinator statuses.
     """
     RUNNING = "running"
     STOPPED = "stopped"

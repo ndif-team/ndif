@@ -8,7 +8,7 @@ from typing import Dict, Optional, List, Any
 from ..logging import set_logger
 from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
-from ..processing.state import ProcessorState, DeploymentState
+from ..processing.status import ProcessorStatus, DeploymentStatus
 from .base import Coordinator
 from .mixins import NetworkingMixin
 
@@ -71,7 +71,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             # Try to route to inactive processor
             elif model_key in self.inactive_processors:
                 processor = self.inactive_processors[model_key]
-                processor.deployment_state = DeploymentState.UNINITIALIZED
+                processor.deployment_status = DeploymentStatus.UNINITIALIZED
                 success = processor.enqueue(request)
                 if success:
                     # Move processor to active state
@@ -120,7 +120,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         """Determine if a processor should be deactivated."""
         try:
             # Deactivate if processor is inactive
-            if processor.status == ProcessorState.INACTIVE:
+            if processor.status == ProcessorStatus.INACTIVE:
                 return True
             
             return False
@@ -131,7 +131,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     def _should_deploy_processor(self, processor: RequestProcessor) -> bool:
         """Determine if a processor should be deployed."""
         try:
-            if processor.status == ProcessorState.UNINITIALIZED and self.ray_connected:
+            if processor.status == ProcessorStatus.UNINITIALIZED and self.ray_connected:
                 self._log_debug(f"Processor {processor.model_key} needs a deployment")
                 return True
             else:
@@ -142,7 +142,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
 
     def _processor_failed(self, processor: RequestProcessor) -> bool:
         """Determine whether processor has failed"""
-        if processor.status in [ProcessorState.TERMINATED, ProcessorState.UNAVAILABLE]:
+        if processor.status in [ProcessorStatus.TERMINATED, ProcessorStatus.UNAVAILABLE]:
             return True
         return False
 
@@ -151,16 +151,16 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         Handle a failed processor by notifying users, clearing its queue,
         and moving it from active to inactive processors.
         """
-        processor_state = processor.status
+        processor_status = processor.status
 
-        if processor_state == ProcessorState.TERMINATED:
+        if processor_status == ProcessorStatus.TERMINATED:
             description = (
                 f"Deployment for {processor.model_key} has been terminated by the scheduler. "
                 "You can request it to be rescheduled by re-running your nnsight script."
             )
-        elif processor_state == ProcessorState.UNAVAILABLE:
-            reason = processor.deployment_state
-            if reason == DeploymentState.CANT_ACCOMMODATE:
+        elif processor_status == ProcessorStatus.UNAVAILABLE:
+            reason = processor.deployment_status
+            if reason == DeploymentStatus.CANT_ACCOMMODATE:
                 description = (
                     f"Cannot accommodate deployment for {processor.model_key}. "
                     "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
@@ -168,10 +168,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
-                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment state is: {reason}. This is unexpected.")
+                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {reason}. This is unexpected.")
                 description = "Deployment failed."
         else:
-            self._log_error(f"Unknown processor failure: {processor_state}")
+            self._log_error(f"Unknown processor failure: {processor_status}")
             description = "Deployment failed."
 
         # Notify all queued requests of the failure
@@ -193,7 +193,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     def _deploy(self, processors: List[RequestProcessor]):
         """
         Attempts to deploy a list of RequestProcessors by invoking the controller's deploy method.
-        Updates each processor's deployment state based on the controller's response.
+        Updates each processor's deployment status based on the controller's response.
 
         Args:
             processors (List[RequestProcessor]): The processors to deploy.
@@ -219,13 +219,13 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 # Retrieve and normalize the deployment status for this processor
                 status_str = str(deployment_statuses[processor.model_key]).lower()
                 try:
-                    deployment_state = DeploymentState(status_str)
+                    deployment_status = DeploymentStatus(status_str)
                 except ValueError:
-                    self._log_error(f"Unknown processor state '{status_str}' for model_key '{processor.model_key}'")
-                    deployment_state = DeploymentState.CANT_ACCOMMODATE
+                    self._log_error(f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'")
+                    deployment_status = DeploymentStatus.CANT_ACCOMMODATE
 
-                # Store the processor's deployment state in a clear attribute
-                processor.deployment_state = deployment_state
+                # Store the processor's deployment status in a clear attribute
+                processor.deployment_status = deployment_status
 
         except Exception as e:
             self._log_error(f"Error during processor deployment: {e}")

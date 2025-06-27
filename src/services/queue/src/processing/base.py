@@ -93,7 +93,7 @@ class Processor(ABC, Generic[T]):
 
     def advance_lifecycle(self) -> bool:
         """
-        Check whether the processor state needs to be updated.
+        Check whether the processor "state" needs to be updated.
         
         This method implements the core lifecycle logic that should work
         for any task processor implementation.
@@ -101,10 +101,10 @@ class Processor(ABC, Generic[T]):
         Returns:
             True if the state was updated, False otherwise
         """
-        # Get current status (this may trigger state updates in subclasses)
+        # Get current status (this may trigger status updates in subclasses)
         current_status = self.status
 
-        if self._is_invariant_state(current_status):
+        if self._is_invariant_status(current_status):
             return False
 
         # If no task is currently dispatched, try to dequeue one
@@ -113,31 +113,31 @@ class Processor(ABC, Generic[T]):
             if not self.dispatched_task:
                 return False
 
-        # Handle different task states
+        # Handle different task statuses
         task_status = self.dispatched_task.status
         
-        if task_status == self._get_queued_state():
-            self._log_error(f"Dispatched task is in queued state, this should not happen")
+        if task_status == self._get_queued_status():
+            self._log_error(f"Dispatched task is in queued status, this should not happen")
             self._dispatch()
             return True
 
-        if task_status == self._get_pending_state():
+        if task_status == self._get_pending_status():
             self._dispatch()
             return True
 
-        if task_status == self._get_dispatched_state():
+        if task_status == self._get_dispatched_status():
             # Task is already dispatched, no action needed
             return False
 
-        if task_status == self._get_completed_state():
+        if task_status == self._get_completed_status():
             self._handle_completed_dispatch()
             return True
 
-        if task_status == self._get_failed_state():
+        if task_status == self._get_failed_status():
             self._handle_failed_dispatch()
             return True
 
-        self._log_warning(f"Processor is in an unexpected state: {current_status}")
+        self._log_warning(f"Processor is in an unexpected status: {current_status}")
         return False
 
     @abstractmethod
@@ -197,36 +197,36 @@ class Processor(ABC, Generic[T]):
         self._needs_update = False
 
     @abstractmethod
-    def _is_invariant_state(self) -> bool:
-        """Return True if self.status is in a state invariant with respect to the current lifecycle"""
+    def _is_invariant_status(self) -> bool:
+        """Return True if self.status is in a status invariant with respect to the current lifecycle"""
         pass
 
-    # Abstract methods for task states - subclasses should implement these
-    # to provide their own state constants
+    # Abstract methods for task statuses - subclasses should implement these
+    # to provide their own status constants
     
     @abstractmethod
-    def _get_queued_state(self):
-        """Return the queued state constant."""
+    def _get_queued_status(self):
+        """Return the queued status constant."""
         pass
 
     @abstractmethod
-    def _get_pending_state(self):
-        """Return the pending state constant."""
+    def _get_pending_status(self):
+        """Return the pending status constant."""
         pass
 
     @abstractmethod
-    def _get_dispatched_state(self):
-        """Return the dispatched state constant."""
+    def _get_dispatched_status(self):
+        """Return the dispatched status constant."""
         pass
 
     @abstractmethod
-    def _get_completed_state(self):
-        """Return the completed state constant."""
+    def _get_completed_status(self):
+        """Return the completed status constant."""
         pass
 
     @abstractmethod
-    def _get_failed_state(self):
-        """Return the failed state constant."""
+    def _get_failed_status(self):
+        """Return the failed status constant."""
         pass
 
     # Logging methods - subclasses can override these to use their own logging

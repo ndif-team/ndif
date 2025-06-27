@@ -6,9 +6,9 @@ from slugify import slugify
 from ..schema import BackendRequestModel
 from ..logging import set_logger
 from .base import Processor
-from .state import ProcessorState, DeploymentState
+from .status import ProcessorStatus, DeploymentStatus
 from ..tasks.request_task import RequestTask
-from ..tasks.state import TaskState
+from ..tasks.status import TaskStatus
 from ..coordination.mixins import NetworkingMixin
 
 logger = set_logger("Queue")
@@ -27,7 +27,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         self.model_key = model_key
         self._queue = Manager().list()
         self._app_handle = None
-        self.deployment_state = DeploymentState.UNINITIALIZED
+        self.deployment_status = DeploymentStatus.UNINITIALIZED
         self._has_been_terminated = False
 
     @property    
@@ -40,7 +40,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
                 ray_model_key = slugify_model_key(self.model_key)
                 self._app_handle = serve.get_app_handle(ray_model_key)
                 self._log_debug(f"Successfully fetched app handle for {ray_model_key}")
-                self.deployment_state = DeploymentState.DEPLOYED
+                self.deployment_status = DeploymentStatus.DEPLOYED
             except Exception as e:
                 self._log_debug(f"Failed to get app handle for {self.model_key}..")
                 self._app_handle = None
@@ -59,33 +59,33 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         The status of the queue.
         """
 
-        scheduled_states = [DeploymentState.FREE, DeploymentState.FULL, DeploymentState.CACHED_AND_FREE, DeploymentState.CACHED_AND_FULL]
+        scheduled_status = [DeploymentStatus.FREE, DeploymentStatus.FULL, DeploymentStatus.CACHED_AND_FREE, DeploymentStatus.CACHED_AND_FULL]
 
         # No attempt has been made to submit a request for this model to the controller.
-        if self.deployment_state == DeploymentState.UNINITIALIZED:
-            return ProcessorState.UNINITIALIZED
+        if self.deployment_status == DeploymentStatus.UNINITIALIZED:
+            return ProcessorStatus.UNINITIALIZED
 
-        elif self.deployment_state == DeploymentState.DEPLOYED:
+        elif self.deployment_status == DeploymentStatus.DEPLOYED:
             if self._has_been_terminated:
-                return ProcessorState.TERMINATED
+                return ProcessorStatus.TERMINATED
             if not self.dispatched_task and len(self._queue) == 0:
-                return ProcessorState.INACTIVE
-            return ProcessorState.ACTIVE
+                return ProcessorStatus.INACTIVE
+            return ProcessorStatus.ACTIVE
             
         # The deployment has been scheduled, but might not be finished
-        elif self.deployment_state in scheduled_states:
+        elif self.deployment_status in scheduled_status:
             # Still waiting
             if self.app_handle is None:
-                return ProcessorState.PROVISIONING
+                return ProcessorStatus.PROVISIONING
 
-            # The deployment completed - update deployment state
+            # The deployment completed - update deployment status
             else:
-                self.deployment_state = DeploymentState.DEPLOYED
-                return ProcessorState.ACTIVE
+                self.deployment_status = DeploymentStatus.DEPLOYED
+                return ProcessorStatus.ACTIVE
             
         # The controller was unable to schedule the model
         else:
-            return ProcessorState.UNAVAILABLE
+            return ProcessorStatus.UNAVAILABLE
 
 
     def enqueue(self, request: BackendRequestModel) -> bool:
@@ -116,37 +116,37 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         base_state["model_key"] = self.model_key
         return base_state
 
-    def _is_invariant_state(self, current_state : ProcessorState) -> bool:
+    def _is_invariant_status(self, current_status : ProcessorStatus) -> bool:
 
-        # States which have nothing to do with tasks.
-        invariant_states = [
-            ProcessorState.UNINITIALIZED, 
-            ProcessorState.INACTIVE,
-            ProcessorState.PROVISIONING,
-            ProcessorState.UNAVAILABLE,
+        # Statuses which have nothing to do with tasks.
+        invariant_statuses = [
+            ProcessorStatus.UNINITIALIZED, 
+            ProcessorStatus.INACTIVE,
+            ProcessorStatus.PROVISIONING,
+            ProcessorStatus.UNAVAILABLE,
         ]
 
-        return any(current_state == state for state in invariant_states)
+        return any(current_status == status for status in invariant_statuses)
         
-    def _get_queued_state(self):
-        """Return the queued state constant."""
-        return TaskState.QUEUED
+    def _get_queued_status(self):
+        """Return the queued status constant."""
+        return TaskStatus.QUEUED
 
-    def _get_pending_state(self):
-        """Return the pending state constant."""
-        return TaskState.PENDING
+    def _get_pending_status(self):
+        """Return the pending status constant."""
+        return TaskStatus.PENDING
 
-    def _get_dispatched_state(self):
-        """Return the dispatched state constant."""
-        return TaskState.DISPATCHED
+    def _get_dispatched_status(self):
+        """Return the dispatched status constant."""
+        return TaskStatus.DISPATCHED
 
-    def _get_completed_state(self):
-        """Return the completed state constant."""
-        return TaskState.COMPLETED
+    def _get_completed_status(self):
+        """Return the completed status constant."""
+        return TaskStatus.COMPLETED
 
-    def _get_failed_state(self):
-        """Return the failed state constant."""
-        return TaskState.FAILED
+    def _get_failed_status(self):
+        """Return the failed status constant."""
+        return TaskStatus.FAILED
 
     def _dispatch(self) -> bool:
         """

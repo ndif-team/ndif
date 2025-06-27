@@ -3,8 +3,8 @@ import os
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Generic, TypeVar
-from .state import CoordinatorState
-from ..processing.state import ProcessorState
+from .status import CoordinatorStatus
+from ..processing.status import ProcessorStatus
 
 # Generic types for coordinators
 T = TypeVar('T')  # Task type
@@ -45,11 +45,11 @@ class Coordinator(ABC, Generic[T, P]):
         The status of the coordinator.
         """
         if not self.running:
-            return CoordinatorState.STOPPED
+            return CoordinatorStatus.STOPPED
         elif self._error_count >= self._max_consecutive_errors:
-            return CoordinatorState.ERROR
+            return CoordinatorStatus.ERROR
         else:
-            return CoordinatorState.RUNNING
+            return CoordinatorStatus.RUNNING
 
     def state(self) -> Dict[str, Any]:
         """
@@ -158,19 +158,19 @@ class Coordinator(ABC, Generic[T, P]):
             try:
                 # Modify state (except for actions which need to be done in batch and background tasks)
                 processor.advance_lifecycle()
-                processor_state = processor.status
+                processor_status = processor.status
 
-                if processor_state == ProcessorState.UNINITIALIZED: 
+                if processor_status == ProcessorStatus.UNINITIALIZED: 
                     processors_to_deploy.append(processor)
                 
-                elif processor_state == ProcessorState.INACTIVE: 
+                elif processor_status == ProcessorStatus.INACTIVE: 
                     processor._app_handle = None
                     processors_to_deactivate.append(processor_key)
 
-                elif processor_state in [ProcessorState.TERMINATED, ProcessorState.UNAVAILABLE]:
+                elif processor_status in [ProcessorStatus.TERMINATED, ProcessorStatus.UNAVAILABLE]:
                     failed_processors.append(processor)
 
-                elif processor_state == ProcessorState.PROVISIONING:
+                elif processor_status == ProcessorStatus.PROVISIONING:
                     
                     update_wait = float(os.environ.get("_COORDINATOR_UPDATE_INTERVAL", 1))
                     ticks_per_update = max(1, int(update_wait // self.tick_interval))
@@ -187,7 +187,7 @@ class Coordinator(ABC, Generic[T, P]):
         # Deploy processors        
         self._deploy(processors_to_deploy)
 
-        # Move processors to inactive state
+        # Move processors to inactive status
         for processor_key in processors_to_deactivate:
             self._deactivate_processor(processor_key)
 

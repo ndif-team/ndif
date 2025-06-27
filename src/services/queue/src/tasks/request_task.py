@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional
-from .state import TaskState
+from .status import TaskStatus
 from .base import Task
 from ..schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
@@ -17,35 +17,35 @@ class RequestTask(Task):
         self._evicted = False
 
     @property
-    def status(self) -> TaskState:
+    def status(self) -> TaskStatus:
         """
         The status of the request in the queue lifecycle.
         """
         
         # This happens when calling .remote() fails
         if self._evicted:
-            return TaskState.FAILED
+            return TaskStatus.FAILED
 
         # Request must still be in the queue
         if self._future is None and self.position is not None:
-            return TaskState.QUEUED
+            return TaskStatus.QUEUED
 
         # Request has been popped from the queue, but not yet dispatched
         elif self._future is None and self.position is None:
-            return TaskState.PENDING
+            return TaskStatus.PENDING
 
         # Request has been dispatched, check if it has completed
         try:
             # ray 2.47.0
             ready = self._future._fetch_future_result_sync(_timeout_s=0)
             if ready:
-                return TaskState.COMPLETED
+                return TaskStatus.COMPLETED
             
         except TimeoutError:
-            return TaskState.DISPATCHED
+            return TaskStatus.DISPATCHED
         except Exception as e:
             self._log_error(f"Error checking request {self.id} status: {e}")
-            return TaskState.FAILED
+            return TaskStatus.FAILED
 
     def run(self, app_handle) -> bool:
         """

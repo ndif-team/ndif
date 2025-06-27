@@ -1,8 +1,8 @@
 from enum import Enum
 
-class ProcessorState(Enum):
+class ProcessorStatus(Enum):
     """
-    State of a processor.
+    Status of a processor.
     """
     UNINITIALIZED = "uninitialized"
     INACTIVE = "inactive"
@@ -11,9 +11,9 @@ class ProcessorState(Enum):
     ACTIVE = "active"
     TERMINATED = "terminated"
 
-class DeploymentState(Enum):
+class DeploymentStatus(Enum):
     """
-    State of deployment returned from controller (CandidateLevel).
+    Status of deployment returned from controller (CandidateLevel).
     """
     UNINITIALIZED = "uninitialized"
     DEPLOYED = "deployed"

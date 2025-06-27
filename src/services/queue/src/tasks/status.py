@@ -1,8 +1,8 @@
 import enum
 
-class TaskState(enum.Enum):
+class TaskStatus(enum.Enum):
     """
-    State of a task.
+    Status of a task.
     """
     QUEUED = "queued"
     PENDING = "pending"
