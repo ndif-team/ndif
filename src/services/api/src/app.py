@@ -106,8 +106,8 @@ async def request(
         # Extract just the base version number from user version
         user_base_version = re.match(r'^(\d+\.\d+\.\d+)', user_nnsight_version).group(1)
         
-        if user_base_version != SERVER_NNSIGHT_VERSION:
-            raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
+        # if user_base_version != SERVER_NNSIGHT_VERSION:
+        #     raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
         # extract the request data
         
 

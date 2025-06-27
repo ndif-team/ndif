@@ -41,7 +41,7 @@ class ObjectStorageMixin(BaseModel):
             Deletes the object from S3 storage.
     """
     id: str
-    size: int = None
+    size: int | None = None
     
     _bucket_name: ClassVar[str] = "default"
     _file_extension: ClassVar[str] = "json"
