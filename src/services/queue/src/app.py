@@ -140,20 +140,23 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
         backend_request = BackendRequestModel.from_request(
             request
         )
-
+        try: 
+            logger.debug(f"Creating response for request: {backend_request.id}")
+            response = backend_request.create_response(
+                status=ResponseModel.JobStatus.APPROVED,
+                description="Your job was approved and is waiting to be run.",
+                logger=logger,
+            )
+            response.respond(sio, object_store)
+            logger.debug(f"Responded to request: {backend_request.id}")
+        except Exception as e:
+            logger.error(f"Failed to respond APPROVED message for request {backend_request.id}")
+ 
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
         await coordinator.route_request(backend_request)
         logger.debug(f"Enqueued request: {backend_request.id}")
 
-        logger.debug(f"Creating response for request: {backend_request.id}")
-        response = backend_request.create_response(
-            status=ResponseModel.JobStatus.APPROVED,
-            description="Your job was approved and is waiting to be run.",
-            logger=logger,
-        )
-        response.respond(sio, object_store)
-        logger.debug(f"Responded to request: {backend_request.id}")
         return response
         
     except Exception as e:

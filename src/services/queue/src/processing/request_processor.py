@@ -93,12 +93,20 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         Enqueue a request.
         """
         try:
-            queue_item = RequestTask(request.id, request, len(self._queue))
-            return super().enqueue(queue_item)
+            position = len(self._queue)
+            queue_item = RequestTask(request.id, request, position)
+            result = super().enqueue(queue_item)
 
         except Exception as e:
-            self._log_error(f"Error enqueuing request {request.id}: {e}")
+            self._log_error(f"{request.id} - Error enqueuing request: {e}")
             return False
+
+        try:
+            queue_item.respond(self.sio, self.object_store, description=f"Your job has been added to the queue. Currently at position {position + 1}")
+        except Exception as e:
+            self._log_error(f"{request.id} - Error responding to user at queued stage: {e}")
+
+        return result
 
     def state(self) -> Dict[str, Any]:
         """
@@ -146,6 +154,10 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         """
 
         self._log_debug(f"Attempting to dispatch on {self.model_key}")
+        try:
+            self.dispatched_task.respond(self.sio, self.object_store, description="Dispatching request..." )
+        except Exception as e:
+            self._log_error(f"Failed to respond to user about task being dispatched: {e}")
         success = self.dispatched_task.run(self.app_handle)
         if success:
             self._log_debug(f"Succesfully dispatched on {self.model_key}")
