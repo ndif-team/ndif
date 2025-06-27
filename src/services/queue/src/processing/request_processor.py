@@ -40,7 +40,9 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
                 ray_model_key = slugify_model_key(self.model_key)
                 self._app_handle = serve.get_app_handle(ray_model_key)
                 self._log_debug(f"Successfully fetched app handle for {ray_model_key}")
+                self.deployment_state = DeploymentState.DEPLOYED
             except Exception as e:
+                self._log_debug(f"Failed to get app handle for {self.model_key}..")
                 self._app_handle = None
         return self._app_handle
 
@@ -57,7 +59,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         The status of the queue.
         """
 
-        scheduled_states = [DeploymentState.CACHED_AND_FULL, DeploymentState.FREE]
+        scheduled_states = [DeploymentState.FREE, DeploymentState.FULL, DeploymentState.CACHED_AND_FREE, DeploymentState.CACHED_AND_FULL]
 
         # No attempt has been made to submit a request for this model to the controller.
         if self.deployment_state == DeploymentState.UNINITIALIZED:
@@ -142,8 +144,11 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         """
         Dispatch a request using Ray backend.
         """
+
+        self._log_debug(f"Attempting to dispatch on {self.model_key}")
         success = self.dispatched_task.run(self.app_handle)
         if success:
+            self._log_debug(f"Succesfully dispatched on {self.model_key}")
             self.last_dispatched = datetime.now()
         return success
 

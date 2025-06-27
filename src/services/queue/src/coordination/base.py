@@ -164,6 +164,7 @@ class Coordinator(ABC, Generic[T, P]):
                     processors_to_deploy.append(processor)
                 
                 elif processor_state == ProcessorState.INACTIVE: 
+                    processor._app_handle = None
                     processors_to_deactivate.append(processor_key)
 
                 elif processor_state in [ProcessorState.TERMINATED, ProcessorState.UNAVAILABLE]:
@@ -171,10 +172,13 @@ class Coordinator(ABC, Generic[T, P]):
 
                 elif processor_state == ProcessorState.PROVISIONING:
                     
-                    update_wait = float(os.environ.get("_COORDINATOR_UPDATE_INTERVAL", 10))
+                    update_wait = float(os.environ.get("_COORDINATOR_UPDATE_INTERVAL", 1))
                     ticks_per_update = max(1, int(update_wait // self.tick_interval))
                     if self.tick_count % ticks_per_update == 0:
-                        processor.notify_pending_task()
+                        try:
+                            processor.notify_pending_task()
+                        except Exception as e:
+                            self._log_error(f"Failed to notify_pending_tasks")
                     
             except Exception as e:
                 self._log_error(f"Error advancing lifecycle for processor {processor_key}: {e}")

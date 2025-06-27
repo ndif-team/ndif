@@ -71,6 +71,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             # Try to route to inactive processor
             elif model_key in self.inactive_processors:
                 processor = self.inactive_processors[model_key]
+                processor.deployment_state = DeploymentState.UNINITIALIZED
                 success = processor.enqueue(request)
                 if success:
                     # Move processor to active state
@@ -131,7 +132,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         """Determine if a processor should be deployed."""
         try:
             if processor.status == ProcessorState.UNINITIALIZED and self.ray_connected:
-                logger.debug(f"Processor {processor.model_key} needs a deployment")
+                self._log_debug(f"Processor {processor.model_key} needs a deployment")
                 return True
             else:
                 return False
@@ -159,13 +160,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             )
         elif processor_state == ProcessorState.UNAVAILABLE:
             reason = processor.deployment_state
-            if reason in (DeploymentState.FULL, DeploymentState.CACHED_AND_FULL):
-                description = (
-                    f"Cannot accommodate deployment for {processor.model_key}: Inadequate resources. "
-                    "Please request a smaller model or try again later. "
-                    "You can also check https://nnsight.net/status/ to see which models are currently in use."
-                )
-            elif reason == DeploymentState.CANT_ACCOMMODATE:
+            if reason == DeploymentState.CANT_ACCOMMODATE:
                 description = (
                     f"Cannot accommodate deployment for {processor.model_key}. "
                     "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
@@ -173,6 +168,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
+                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment state is: {reason}. This is unexpected.")
                 description = "Deployment failed."
         else:
             self._log_error(f"Unknown processor failure: {processor_state}")
@@ -180,10 +176,16 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
 
         # Notify all queued requests of the failure
         for request in processor._queue:
-            request.respond_failure(self.sio, self.object_store, description=description)
+            self._log_debug(f"Failure notification for {request.id}")
+            try:
+                request.respond_failure(self.sio, self.object_store, description=description)
+            except Exception as e:
+                self._log_debug(f"Failed to respond failure: {e}")
+        
+        self._log_debug(f"Clearing queue for {processor.model_key}")
         processor._queue[:] = [] # ListProxy, so cannot use .clear()
 
-        # Remove processor from aueue
+        # Remove processor from queue
         self.active_processors.pop(processor.model_key, None)
         self.inactive_processors.pop(processor.model_key, None)
             

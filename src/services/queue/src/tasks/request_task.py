@@ -59,7 +59,9 @@ class RequestTask(Task):
         """
         try:
             self.position = None
+            self._log_debug(f"{self.data.id} Attempting to make remote() call with app handle")
             self._future = app_handle.remote(self.data)
+            self._log_debug(f"{self.data.id} Succesfully made remote() call with app handle")
             return True
         except Exception as e:
             self._log_error(f"Error running request {self.id}: {e}")
@@ -98,7 +100,6 @@ class RequestTask(Task):
             response.respond(sio, object_store)
         except Exception as e:
             self._log_error(f"Failed to respond back to user: {e}")
-            raise Exception(description)
 
 
     # Override logging methods to use the service logger

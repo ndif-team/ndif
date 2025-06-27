@@ -44,6 +44,7 @@ connection_event = asyncio.Event()
 connection_task = None
 
 ray_url = os.environ.get("RAY_ADDRESS")
+max_consecutive_failures = os.environ.get("MAX_CONSECUTIVE_FAILURES", 5)
 coordinator = RequestCoordinator(ray_url=ray_url, sio=sio, object_store=object_store)
 
 api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
@@ -157,12 +158,16 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
         
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
+        description = f"{traceback.format_exc()}\n{str(e)}"
         response = backend_request.create_response(
             status=ResponseModel.JobStatus.ERROR,
-            description=f"{traceback.format_exc()}\n{str(e)}",
+            description=description,
             logger=logger,
         )
-        response.respond(sio, object_store)
+        try:
+            response.respond(sio, object_store)
+        except:
+            logger.error(f"Failed responding ERROR to user: {description}")
         return response
 
 @app.delete("/queue/{request_id}")

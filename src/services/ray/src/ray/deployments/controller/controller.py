@@ -34,8 +34,8 @@ class _ControllerDeployment:
         object_store_secret_key: str,
         api_url: str,
         execution_timeout_seconds: float,
-        minimum_deployment_time_seconds: float,
         model_cache_percentage: float,
+        minimum_deployment_time_seconds: float = 60,
     ):
 
         super().__init__()
