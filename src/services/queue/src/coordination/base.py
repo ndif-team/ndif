@@ -19,6 +19,7 @@ class Coordinator(ABC, Generic[T, P]):
     or implementation. Subclasses can implement specific backend integrations.
     """
     
+
     def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, max_consecutive_errors: int = 5):
         self.active_processors: Dict[str, P] = {}
         self.inactive_processors: Dict[str, P] = {}
@@ -29,6 +30,7 @@ class Coordinator(ABC, Generic[T, P]):
         self._error_count = 0
         self._max_consecutive_errors = max_consecutive_errors
 
+
     @property
     def running(self):
         """
@@ -38,6 +40,7 @@ class Coordinator(ABC, Generic[T, P]):
             if not self._async_task.done():
                 return True
         return False
+
 
     @property
     def status(self):
@@ -50,6 +53,7 @@ class Coordinator(ABC, Generic[T, P]):
             return CoordinatorStatus.ERROR
         else:
             return CoordinatorStatus.RUNNING
+
 
     def state(self) -> Dict[str, Any]:
         """
@@ -68,6 +72,7 @@ class Coordinator(ABC, Generic[T, P]):
             "datetime": datetime.now()
         }
 
+
     async def start(self):
         """Start the coordinator."""
         if self.running:
@@ -82,6 +87,7 @@ class Coordinator(ABC, Generic[T, P]):
             self._async_task = None
             self._log_error(f"Failed to start coordinator: {e}")
             raise
+
 
     async def stop(self):
         """Stop the coordinator."""
@@ -107,43 +113,26 @@ class Coordinator(ABC, Generic[T, P]):
             self._log_error(f"Error stopping coordinator: {e}")
             raise
 
-    @abstractmethod
-    async def route_request(self, request: T) -> bool:
-        """
-        Abstract method to route a request to the appropriate processor.
+
+    def evict(self, processor_key : str, *args, **kwargs) -> bool:
+        """Evict the procesor for a given key. Returns True if the processor no longer exists in an active state after the operation."""
         
-        Args:
-            request: The request to route
-            
-        Returns:
-            True if routing was successful, False otherwise
-        """
-        pass
+        if processor_key in self.active_processors:
+            processor = self.active_processors[processor_key]
+            evicted = self._evict(processor, *args, **kwargs)
+            self.active_processors.pop(processor_key)
+            self.inactive_processors[processor_key] = processor
 
-    @abstractmethod
-    def handle_processor_failure(self, processor: P):
-        """
-        Abstract method to help determine what to do with a failed procesor.
-        """
-        pass
+        elif processor_key in self.inactive_processors:
+            processor = self.active_processors[processor_key]
+            evicted = self._evict(processor, *args, **kwargs)
 
+        else:
+            self._log_warning(f"Warning: An eviction attempt was made for a processor which does not exist: {processor_key}")
+            evicted = True
 
-    @abstractmethod
-    def _create_processor(self, processor_key: str) -> P:
-        """
-        Abstract method to create a new processor.
-        
-        Args:
-            processor_key: The key for the processor
-            
-        Returns:
-            The created processor
-        """
-        pass
+        return evicted
 
-    @abstractmethod
-    def _deploy(processor_keys : List[str]) -> Any:
-        pass
 
     def _advance_processor_lifecycles(self):
         """
@@ -195,6 +184,7 @@ class Coordinator(ABC, Generic[T, P]):
         for processor in failed_processors:
             self.handle_processor_failure(processor)
 
+
     def _deactivate_processor(self, processor_key: str):
         """
         Move a processor from active to inactive state.
@@ -212,6 +202,7 @@ class Coordinator(ABC, Generic[T, P]):
         except Exception as e:
             self._log_error(f"Error deactivating processor {processor_key}: {e}")
 
+
     async def _cleanup_all_processors(self):
         """
         Clean up all processors during shutdown.
@@ -223,6 +214,7 @@ class Coordinator(ABC, Generic[T, P]):
             self._log_info("Cleaned up all processors")
         except Exception as e:
             self._log_error(f"Error during final cleanup: {e}")
+
 
     async def _monitor_processors(self):
         """
@@ -245,30 +237,76 @@ class Coordinator(ABC, Generic[T, P]):
                     self._log_error(f"Too many consecutive errors ({self._error_count}), stopping coordinator")
                     await self.stop()
                     break
+    
+
+    @abstractmethod
+    async def route_request(self, request: T) -> bool:
+        """
+        Abstract method to route a request to the appropriate processor.
+        
+        Args:
+            request: The request to route
+            
+        Returns:
+            True if routing was successful, False otherwise
+        """
+        pass
+
+
+    @abstractmethod
+    def handle_processor_failure(self, processor: P):
+        """
+        Abstract method to help determine what to do with a failed procesor.
+        """
+        pass
+
+
+    @abstractmethod
+    def _create_processor(self, processor_key: str) -> P:
+        """
+        Abstract method to create a new processor.
+        
+        Args:
+            processor_key: The key for the processor
+            
+        Returns:
+            The created processor
+        """
+        pass
+
+
+    @abstractmethod
+    def _deploy(processor_keys : List[str]) -> Any:
+        pass
+
 
     @abstractmethod
     def _evict(self, processor : P, *args, **kwargs) -> bool:
         """Abstract method which defines the operations which take place to evict a processor."""
         pass
 
-    def evict(self, processor_key : str, *args, **kwargs) -> bool:
-        """Evict the procesor for a given key. Returns True if the processor no longer exists in an active state after the operation."""
-        
-        if processor_key in self.active_processors:
-            processor = self.active_processors[processor_key]
-            evicted = self._evict(processor, *args, **kwargs)
-            self.active_processors.pop(processor_key)
-            self.inactive_processors[processor_key] = processor
+    
+    # Logging methods - subclasses can override these to use their own logging
+    def _log_debug(self, message: str):
+        """Log a debug message."""
+        print(f"[DEBUG] Coordinator: {message}")
 
-        elif processor_key in self.inactive_processors:
-            processor = self.active_processors[processor_key]
-            evicted = self._evict(processor, *args, **kwargs)
 
-        else:
-            self._log_warning(f"Warning: An eviction attempt was made for a processor which does not exist: {processor_key}")
-            evicted = True
+    def _log_info(self, message: str):
+        """Log an info message."""
+        print(f"[INFO] Coordinator: {message}")
 
-        return evicted
+
+    def _log_warning(self, message: str):
+        """Log a warning message."""
+        print(f"[WARNING] Coordinator: {message}")
+
+
+    def _log_error(self, message: str):
+        """Log an error message."""
+        print(f"[ERROR] Coordinator: {message}")
+
+    # These are not being used currently
 
     def get_processor_status(self, processor_key: str) -> Optional[Dict[str, Any]]:
         """
@@ -328,6 +366,7 @@ class Coordinator(ABC, Generic[T, P]):
             self._log_error(f"Error getting all processors: {e}")
             return []
 
+
     def get_active_processor_count(self) -> int:
         """
         Get the number of active processors.
@@ -336,6 +375,7 @@ class Coordinator(ABC, Generic[T, P]):
             Number of active processors
         """
         return len(self.active_processors)
+
 
     def get_inactive_processor_count(self) -> int:
         """
@@ -346,6 +386,7 @@ class Coordinator(ABC, Generic[T, P]):
         """
         return len(self.inactive_processors)
 
+
     def get_total_processor_count(self) -> int:
         """
         Get the total number of processors.
@@ -354,6 +395,7 @@ class Coordinator(ABC, Generic[T, P]):
             Total number of processors
         """
         return len(self.active_processors) + len(self.inactive_processors)
+
 
     def is_processor_active(self, processor_key: str) -> bool:
         """
@@ -367,6 +409,7 @@ class Coordinator(ABC, Generic[T, P]):
         """
         return processor_key in self.active_processors
 
+
     def is_processor_inactive(self, processor_key: str) -> bool:
         """
         Check if a processor is inactive.
@@ -379,6 +422,7 @@ class Coordinator(ABC, Generic[T, P]):
         """
         return processor_key in self.inactive_processors
 
+
     def has_processor(self, processor_key: str) -> bool:
         """
         Check if a processor exists (active or inactive).
@@ -390,21 +434,3 @@ class Coordinator(ABC, Generic[T, P]):
             True if the processor exists, False otherwise
         """
         return processor_key in self.active_processors or processor_key in self.inactive_processors
-
-    # Logging methods - subclasses can override these to use their own logging
-    
-    def _log_debug(self, message: str):
-        """Log a debug message."""
-        print(f"[DEBUG] Coordinator: {message}")
-
-    def _log_info(self, message: str):
-        """Log an info message."""
-        print(f"[INFO] Coordinator: {message}")
-
-    def _log_warning(self, message: str):
-        """Log a warning message."""
-        print(f"[WARNING] Coordinator: {message}")
-
-    def _log_error(self, message: str):
-        """Log an error message."""
-        print(f"[ERROR] Coordinator: {message}")

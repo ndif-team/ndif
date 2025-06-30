@@ -14,13 +14,16 @@ from ..coordination.mixins import NetworkingMixin
 logger = set_logger("Queue")
 
 def slugify_model_key(model_key: str) -> str:
-    """Slugify a model key."""
+    """Slugify a model key. This places it in a format suitable to fetch from ray."""
     return f"Model:{slugify(model_key)}"
+
 
 class RequestProcessor(Processor[RequestTask], NetworkingMixin):
     """
     Queue for making requests to model deployments using Ray backend.
     """
+
+
     def __init__(self, model_key: str, max_retries: int = 3, sio=None, object_store=None):
         Processor.__init__(self, max_retries)
         NetworkingMixin.__init__(self, sio, object_store)
@@ -29,6 +32,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         self._app_handle = None
         self.deployment_status = DeploymentStatus.UNINITIALIZED
         self._has_been_terminated = False
+
 
     @property    
     def app_handle(self):
@@ -46,12 +50,14 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
                 self._app_handle = None
         return self._app_handle
 
+
     @property
     def queue(self) -> List[RequestTask]:
         """
         Get the queue of requests.
         """
         return self._queue
+
 
     @property
     def status(self):
@@ -88,6 +94,15 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             return ProcessorStatus.UNAVAILABLE
 
 
+    def state(self) -> Dict[str, Any]:
+        """
+        Get the state of the queue.
+        """
+        base_state = super().state()
+        base_state["model_key"] = self.model_key
+        return base_state
+
+
     def enqueue(self, request: BackendRequestModel) -> bool:
         """
         Enqueue a request.
@@ -107,15 +122,40 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             self._log_error(f"{request.id} - Error responding to user at queued stage: {e}")
 
         return result
+    
 
-    def state(self) -> Dict[str, Any]:
-        """
-        Get the state of the queue.
-        """
-        base_state = super().state()
-        base_state["model_key"] = self.model_key
-        return base_state
+    # TODO: This seems like it will double notify.
+    def notify_pending_task(self):
 
+        description = f"{self.model_key} is being scheduled... stand by"
+
+        for pending_task in self._queue:
+
+            pending_task.respond(
+                self.sio, 
+                self.object_store,
+                description
+            )
+
+
+    def _dispatch(self) -> bool:
+        """
+        Dispatch a request using Ray backend.
+        """
+
+        self._log_debug(f"Attempting to dispatch on {self.model_key}")
+        try:
+            self.dispatched_task.respond(self.sio, self.object_store, description="Dispatching request..." )
+        except Exception as e:
+            self._log_error(f"Failed to respond to user about task being dispatched: {e}")
+        success = self.dispatched_task.run(self.app_handle)
+        if success:
+            self._log_debug(f"Succesfully dispatched on {self.model_key}")
+            self.last_dispatched = datetime.now()
+        return success
+
+
+    # TODO: Come up with better name
     def _is_invariant_status(self, current_status : ProcessorStatus) -> bool:
 
         # Statuses which have nothing to do with tasks.
@@ -148,22 +188,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         """Return the failed status constant."""
         return TaskStatus.FAILED
 
-    def _dispatch(self) -> bool:
-        """
-        Dispatch a request using Ray backend.
-        """
-
-        self._log_debug(f"Attempting to dispatch on {self.model_key}")
-        try:
-            self.dispatched_task.respond(self.sio, self.object_store, description="Dispatching request..." )
-        except Exception as e:
-            self._log_error(f"Failed to respond to user about task being dispatched: {e}")
-        success = self.dispatched_task.run(self.app_handle)
-        if success:
-            self._log_debug(f"Succesfully dispatched on {self.model_key}")
-            self.last_dispatched = datetime.now()
-        return success
-
+    
     def _update_position(self, position: int):
         """
         Update the position of a task. Overrides the base class to pass in the networking clients.
@@ -171,18 +196,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         task = self.queue[position]
         task.update_position(position).respond_position_update(self.sio, self.object_store)
 
-    def notify_pending_task(self):
-
-        description = f"{self.model_key} is being scheduled... stand by"
-
-        for pending_task in self._queue:
-
-            pending_task.respond(
-                self.sio, 
-                self.object_store,
-                description
-            )
-
+    
     def _handle_failed_dispatch(self):
         """
         Handle a failed request with Ray-specific logic.

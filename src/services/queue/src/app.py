@@ -136,6 +136,8 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
     """Endpoint to add a request to the queue."""
     
     try:
+        headers = request.headers
+        logger.info(f"Request headers : {headers}")
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
             request

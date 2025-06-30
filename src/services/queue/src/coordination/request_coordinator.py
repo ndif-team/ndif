@@ -1,4 +1,3 @@
-import asyncio
 import os
 import time
 import ray
@@ -20,6 +19,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     Coordinates requests between the queue and the model deployments using Ray backend.
     """
 
+
     def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, 
                  sio=None, object_store=None):
         Coordinator.__init__(self, tick_interval, max_retries)
@@ -30,6 +30,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         self.ray_watchdog.start()
         self._controller = None
 
+
     @property
     def controller(self):
         """Creates a Controller handle used to submit requests for models to deploy"""
@@ -37,11 +38,31 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             self._controller = serve.get_app_handle("Controller")
         return self._controller
 
+
     def state(self) -> Dict[str, Any]:
         """Get the state of the coordinator. Adds ray_connected to the base state."""
         base_state = super().state()
         base_state["ray_connected"] = self.ray_connected
         return base_state
+
+
+    def connect_to_ray(self):
+        """Connect to Ray cluster."""
+        retry_interval = int(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
+        while True:
+            try:
+                if not ray.is_initialized():
+                    ray.shutdown()
+                    serve.context._set_global_client(None)
+                    ray.init(logging_level="error", address = self.ray_url)
+                    time.sleep(3)
+                    logger.info("Connected to Ray cluster.")
+                    self.ray_connected = True
+                    return
+            except Exception as e:
+                logger.error(f"Failed to connect to Ray cluster: {e}")
+            time.sleep(retry_interval)
+
 
     async def route_request(self, request: BackendRequestModel) -> bool:
         """Route request to appropriate processor. 
@@ -104,6 +125,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         except Exception as e:
             self._log_error(f"Error routing request {request.id if request else 'unknown'}: {e}")
             return False
+
 
     def handle_processor_failure(self, processor: RequestProcessor):
         """
@@ -184,9 +206,11 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         except Exception as e:
             self._log_error(f"Error during processor deployment: {e}")
 
+
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
+
 
     def _evict(self, processor: RequestProcessor, reason : str) -> bool:
         """Concrete implementation of eviction process performed on a RequestProcessor."""
@@ -209,40 +233,6 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         processor._queue[:] = [] # ListProxy, so cannot use .clear()
         return True
 
-
-    def get_processor_status(self, model_key: str) -> Optional[Dict]:
-        """Get the status of a specific processor."""
-        try:
-            return super().get_processor_status(model_key)
-        except Exception as e:
-            self._log_error(f"Error getting processor status for {model_key}: {e}")
-            return None
-
-    def get_all_processors(self) -> List[Dict]:
-        """Get status of all processors."""
-        try:
-            return super().get_all_processors()
-        except Exception as e:
-            self._log_error(f"Error getting all processors: {e}")
-            return []
-
-    def connect_to_ray(self):
-        """Connect to Ray cluster."""
-        retry_interval = int(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
-        while True:
-            try:
-                if not ray.is_initialized():
-                    ray.shutdown()
-                    serve.context._set_global_client(None)
-                    ray.init(logging_level="error", address = self.ray_url)
-                    time.sleep(3)
-                    logger.info("Connected to Ray cluster.")
-                    self.ray_connected = True
-                    return
-            except Exception as e:
-                logger.error(f"Failed to connect to Ray cluster: {e}")
-            time.sleep(retry_interval)
-
     # Override logging methods to use the service logger
     def _log_debug(self, message: str):
         """Log a debug message using the service logger."""
@@ -260,6 +250,24 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         """Log an error message using the service logger."""
         logger.error(message)
 
+    
+    # These aren't currently being used at all
+    def get_processor_status(self, model_key: str) -> Optional[Dict]:
+        """Get the status of a specific processor."""
+        try:
+            return super().get_processor_status(model_key)
+        except Exception as e:
+            self._log_error(f"Error getting processor status for {model_key}: {e}")
+            return None
+
+
+    def get_all_processors(self) -> List[Dict]:
+        """Get status of all processors."""
+        try:
+            return super().get_all_processors()
+        except Exception as e:
+            self._log_error(f"Error getting all processors: {e}")
+            return []
 
 # TODO: Introduce the concept of time-based states, and canonical ordering of states
 # Then, can just need to return the T previous states which changed

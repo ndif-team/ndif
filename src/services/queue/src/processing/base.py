@@ -15,11 +15,13 @@ class Processor(ABC, Generic[T]):
     Subclasses can implement specific backend integrations (e.g., Ray, local processing).
     """
     
+
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
         self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
         self._needs_update = False
+
 
     @property
     @abstractmethod
@@ -33,6 +35,7 @@ class Processor(ABC, Generic[T]):
         """
         pass
 
+
     @property
     @abstractmethod
     def status(self):
@@ -43,6 +46,22 @@ class Processor(ABC, Generic[T]):
         requirements (e.g., connected/disconnected for remote backends).
         """
         pass
+
+
+    def state(self) -> Dict[str, Any]:
+        """
+        Get the state of the processor.
+        
+        Returns:
+            Dictionary containing processor state information
+        """
+        return {
+            "status": self.status,
+            "dispatched_task": self.dispatched_task.state() if self.dispatched_task else None,
+            "queue": [task.state() for task in self.queue],
+            "last_dispatched": self.last_dispatched,
+        }
+
 
     def enqueue(self, task: T) -> bool:
         """
@@ -61,6 +80,7 @@ class Processor(ABC, Generic[T]):
             self._log_error(f"Error enqueuing task: {e}")
             return False
 
+
     def dequeue(self) -> Optional[T]:
         """
         Dequeue a task.
@@ -77,20 +97,7 @@ class Processor(ABC, Generic[T]):
         self._log_debug(f"Dequeued task {getattr(task, 'id', 'unknown')}")
         return task
 
-    def state(self) -> Dict[str, Any]:
-        """
-        Get the state of the processor.
-        
-        Returns:
-            Dictionary containing processor state information
-        """
-        return {
-            "status": self.status,
-            "dispatched_task": self.dispatched_task.state() if self.dispatched_task else None,
-            "queue": [task.state() for task in self.queue],
-            "last_dispatched": self.last_dispatched,
-        }
-
+    
     def advance_lifecycle(self) -> bool:
         """
         Check whether the processor "state" needs to be updated.
@@ -140,6 +147,21 @@ class Processor(ABC, Generic[T]):
         self._log_warning(f"Processor is in an unexpected status: {current_status}")
         return False
 
+
+    def update_positions(self, indices: Optional[List[int]] = None):
+        """
+        Update the positions of tasks in the queue.
+        
+        Args:
+            indices: Optional list of indices to update. If None, updates all.
+        """
+        indices = indices or range(len(self.queue))
+        for i in indices:
+            if i < len(self.queue):
+                self._update_position(i)
+        self._needs_update = False
+
+
     @abstractmethod
     def _dispatch(self) -> bool:
         """
@@ -152,11 +174,13 @@ class Processor(ABC, Generic[T]):
         """
         pass
 
+
     def _handle_completed_dispatch(self):
         """
         Handle a completed task.
         """
         self.dispatched_task = None
+
 
     def _handle_failed_dispatch(self):
         """
@@ -176,6 +200,7 @@ class Processor(ABC, Generic[T]):
             
             self.dispatched_task = None
 
+
     def _update_position(self, position: int):
         """
         Update the position of a task.
@@ -183,18 +208,6 @@ class Processor(ABC, Generic[T]):
         task = self.queue[position]
         task.update_position(position).respond()
 
-    def update_positions(self, indices: Optional[List[int]] = None):
-        """
-        Update the positions of tasks in the queue.
-        
-        Args:
-            indices: Optional list of indices to update. If None, updates all.
-        """
-        indices = indices or range(len(self.queue))
-        for i in indices:
-            if i < len(self.queue):
-                self._update_position(i)
-        self._needs_update = False
 
     @abstractmethod
     def _is_invariant_status(self) -> bool:
@@ -209,20 +222,24 @@ class Processor(ABC, Generic[T]):
         """Return the queued status constant."""
         pass
 
+
     @abstractmethod
     def _get_pending_status(self):
         """Return the pending status constant."""
         pass
+
 
     @abstractmethod
     def _get_dispatched_status(self):
         """Return the dispatched status constant."""
         pass
 
+
     @abstractmethod
     def _get_completed_status(self):
         """Return the completed status constant."""
         pass
+
 
     @abstractmethod
     def _get_failed_status(self):
@@ -235,13 +252,16 @@ class Processor(ABC, Generic[T]):
         """Log a debug message."""
         print(f"[DEBUG] {message}")
 
+
     def _log_error(self, message: str):
         """Log an error message."""
         print(f"[ERROR] {message}")
 
+
     def _log_warning(self, message: str):
         """Log a warning message."""
         print(f"[WARNING] {message}")
+
 
     def _log_info(self, message: str):
         """Log an info message."""

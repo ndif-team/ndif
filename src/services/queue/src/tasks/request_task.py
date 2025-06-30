@@ -11,10 +11,13 @@ class RequestTask(Task):
     """
     Request for a model deployment using Ray backend.
     """
+
+
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
         Task.__init__(self, request_id, request, position)
         self._future = None
         self._evicted = False
+
 
     @property
     def status(self) -> TaskStatus:
@@ -47,6 +50,7 @@ class RequestTask(Task):
             self._log_error(f"Error checking request {self.id} status: {e}")
             return TaskStatus.FAILED
 
+
     def run(self, app_handle) -> bool:
         """
         Run the request using Ray backend in a separate thread.
@@ -70,8 +74,11 @@ class RequestTask(Task):
             self._evicted = True
             return False
 
-    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description : Optional[str] = None):
 
+    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description : Optional[str] = None):
+        """Creates a response for the task and handles routing to the appropriate locations."""
+
+        # Handle creating a default response (regarding queue position) if description is None
         description = super().respond(description)
 
         response = self.data.create_response(
@@ -79,10 +86,13 @@ class RequestTask(Task):
             description=description,
             logger=logger,
         )
+
         try:
             response.respond(sio, object_store)
+
         except Exception as e:
             self._log_error(f"Failed to respond back to user: {e}")
+
 
     def respond_failure(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description: Optional[str] = None):
         """
@@ -107,13 +117,16 @@ class RequestTask(Task):
         """Log a debug message using the service logger."""
         logger.debug(message)
 
+
     def _log_error(self, message: str):
         """Log an error message using the service logger."""
         logger.error(message)
 
+
     def _log_warning(self, message: str):
         """Log a warning message using the service logger."""
         logger.warning(message)
+
 
     def _log_info(self, message: str):
         """Log an info message using the service logger."""

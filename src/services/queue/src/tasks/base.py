@@ -11,12 +11,14 @@ class Task(ABC):
     Subclasses can implement specific backend integrations (e.g., Ray, local processing).
     """
     
+
     def __init__(self, task_id: str, data: Any, position: Optional[int] = None):
         self.id = task_id
         self.data = data
         self.position = position
         self.retries = 0
         self.created_at = datetime.now()
+
 
     @property
     @abstractmethod
@@ -28,6 +30,7 @@ class Task(ABC):
         requirements and backend integration.
         """
         pass
+
 
     def state(self) -> Dict[str, Any]:
         """
@@ -44,6 +47,7 @@ class Task(ABC):
             "created_at": self.created_at.isoformat(),
         }
 
+
     def update_position(self, position: int):
         """
         Update the position of the task in the queue.
@@ -56,6 +60,7 @@ class Task(ABC):
         """
         self.position = position
         return self
+
 
     @abstractmethod
     def run(self, backend_handle) -> bool:
@@ -70,6 +75,7 @@ class Task(ABC):
             True if the task was successfully started, False otherwise
         """
         pass
+
 
     def respond(self, description : Optional[str] = None) -> str:
         """
@@ -90,6 +96,9 @@ class Task(ABC):
 
         return description
 
+
+    # Methods for dealing with task failure
+
     def increment_retries(self) -> int:
         """
         Increment the retry counter and return the new count.
@@ -100,6 +109,7 @@ class Task(ABC):
         self.retries += 1
         return self.retries
 
+
     def reset_retries(self) -> int:
         """
         Reset the retry counter to 0.
@@ -109,6 +119,7 @@ class Task(ABC):
         """
         self.retries = 0
         return self.retries
+
 
     def is_retryable(self, max_retries: int) -> bool:
         """
@@ -128,13 +139,16 @@ class Task(ABC):
         """Log a debug message."""
         print(f"[DEBUG] Task {self.id}: {message}")
 
+
     def _log_error(self, message: str):
         """Log an error message."""
         print(f"[ERROR] Task {self.id}: {message}")
 
+
     def _log_warning(self, message: str):
         """Log a warning message."""
         print(f"[WARNING] Task {self.id}: {message}")
+
 
     def _log_info(self, message: str):
         """Log an info message."""
