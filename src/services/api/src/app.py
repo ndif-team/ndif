@@ -108,7 +108,7 @@ async def request(
         
         # if user_base_version != SERVER_NNSIGHT_VERSION:
         #     raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
-        # extract the request data
+        # # extract the request data
         
 
         response = request.create_response(

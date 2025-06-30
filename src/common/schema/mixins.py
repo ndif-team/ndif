@@ -7,7 +7,7 @@ from typing import ClassVar, TYPE_CHECKING, Union, Any
 import torch
 import boto3
 from botocore.response import StreamingBody
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 from typing_extensions import Self
 
 if TYPE_CHECKING:
@@ -41,10 +41,10 @@ class ObjectStorageMixin(BaseModel):
             Deletes the object from S3 storage.
     """
     id: str
-    size: int | None = None
     
     _bucket_name: ClassVar[str] = "default"
     _file_extension: ClassVar[str] = "json"
+    _size: int = PrivateAttr(default=0)
     
 
     @classmethod
@@ -97,7 +97,7 @@ class ObjectStorageMixin(BaseModel):
             torch.save(self.model_dump(), data)
             content_type = "application/octet-stream"
             
-        self.size = data.getbuffer().nbytes
+        self._size = data.getbuffer().nbytes
 
         self._save(client, data, content_type)
         
