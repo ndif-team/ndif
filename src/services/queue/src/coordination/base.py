@@ -246,6 +246,30 @@ class Coordinator(ABC, Generic[T, P]):
                     await self.stop()
                     break
 
+    @abstractmethod
+    def _evict(self, processor : P, *args, **kwargs) -> bool:
+        """Abstract method which defines the operations which take place to evict a processor."""
+        pass
+
+    def evict(self, processor_key : str, *args, **kwargs) -> bool:
+        """Evict the procesor for a given key. Returns True if the processor no longer exists in an active state after the operation."""
+        
+        if processor_key in self.active_processors:
+            processor = self.active_processors[processor_key]
+            evicted = self._evict(processor, *args, **kwargs)
+            self.active_processors.pop(processor_key)
+            self.inactive_processors[processor_key] = processor
+
+        elif processor_key in self.inactive_processors:
+            processor = self.active_processors[processor_key]
+            evicted = self._evict(processor, *args, **kwargs)
+
+        else:
+            self._log_warning(f"Warning: An eviction attempt was made for a processor which does not exist: {processor_key}")
+            evicted = True
+
+        return evicted
+
     def get_processor_status(self, processor_key: str) -> Optional[Dict[str, Any]]:
         """
         Get the status of a specific processor.

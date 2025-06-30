@@ -71,6 +71,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             # Try to route to inactive processor
             elif model_key in self.inactive_processors:
                 processor = self.inactive_processors[model_key]
+                
+                # TODO: Verify whether this is necessary. I had it prior to the controller returning evicted deployments from controller.deploy()
                 processor.deployment_status = DeploymentStatus.UNINITIALIZED
                 success = processor.enqueue(request)
                 if success:
@@ -103,49 +105,6 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             self._log_error(f"Error routing request {request.id if request else 'unknown'}: {e}")
             return False
 
-    def _should_update_processor(self, processor: RequestProcessor) -> bool:
-        """Determine if a processor should be updated."""
-        try:
-            if processor._needs_update:
-                logger.debug(f"Processor {processor.model_key} needs update")
-                processor.update_positions()
-                return True
-            else:
-                return False
-        except Exception as e:
-            self._log_error(f"Error checking if processor should be updated: {e}")
-            return False
-
-    def _should_deactivate_processor(self, processor: RequestProcessor) -> bool:
-        """Determine if a processor should be deactivated."""
-        try:
-            # Deactivate if processor is inactive
-            if processor.status == ProcessorStatus.INACTIVE:
-                return True
-            
-            return False
-        except Exception as e:
-            self._log_error(f"Error checking if processor should be deactivated: {e}")
-            return True  # Deactivate on error
-
-    def _should_deploy_processor(self, processor: RequestProcessor) -> bool:
-        """Determine if a processor should be deployed."""
-        try:
-            if processor.status == ProcessorStatus.UNINITIALIZED and self.ray_connected:
-                self._log_debug(f"Processor {processor.model_key} needs a deployment")
-                return True
-            else:
-                return False
-        except Exception as e:
-            self._log_error(f"Error checking if processor should be deployed: {e}")
-            return False
-
-    def _processor_failed(self, processor: RequestProcessor) -> bool:
-        """Determine whether processor has failed"""
-        if processor.status in [ProcessorStatus.TERMINATED, ProcessorStatus.UNAVAILABLE]:
-            return True
-        return False
-
     def handle_processor_failure(self, processor: RequestProcessor):
         """
         Handle a failed processor by notifying users, clearing its queue,
@@ -159,8 +118,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 "You can request it to be rescheduled by re-running your nnsight script."
             )
         elif processor_status == ProcessorStatus.UNAVAILABLE:
-            reason = processor.deployment_status
-            if reason == DeploymentStatus.CANT_ACCOMMODATE:
+            task_status = processor.deployment_status
+            if task_status == DeploymentStatus.CANT_ACCOMMODATE:
                 description = (
                     f"Cannot accommodate deployment for {processor.model_key}. "
                     "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
@@ -168,27 +127,15 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
-                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {reason}. This is unexpected.")
+                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected.")
                 description = "Deployment failed."
         else:
             self._log_error(f"Unknown processor failure: {processor_status}")
             description = "Deployment failed."
 
         # Notify all queued requests of the failure
-        for request in processor._queue:
-            self._log_debug(f"Failure notification for {request.id}")
-            try:
-                request.respond_failure(self.sio, self.object_store, description=description)
-            except Exception as e:
-                self._log_debug(f"Failed to respond failure: {e}")
-        
-        self._log_debug(f"Clearing queue for {processor.model_key}")
-        processor._queue[:] = [] # ListProxy, so cannot use .clear()
-
-        # Remove processor from queue
-        self.active_processors.pop(processor.model_key, None)
-        self.inactive_processors.pop(processor.model_key, None)
-            
+        self.evict(processor.model_key, reason = description)
+           
 
     def _deploy(self, processors: List[RequestProcessor]):
         """
@@ -211,7 +158,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             # Synchronously fetch deployment results (blocking)
             deployment_results = deployment_future._fetch_future_result_sync()
             # The .get(3.14) is a hack to retrieve the result with a timeout
-            deployment_statuses = deployment_results.get(3.14)
+            deployment_statuses, evictions = deployment_results.get(3.14).values()
 
             logger.debug(f"Deployment results from controller: {deployment_statuses}")
 
@@ -226,6 +173,13 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
 
                 # Store the processor's deployment status in a clear attribute
                 processor.deployment_status = deployment_status
+            
+            for model_key in evictions:
+                try:
+                    self.evict(model_key)
+                    self._log_debug(f"Evicted {model_key}")
+                except Exception as e:
+                    self._log_error(f"Failed to evict {model_key}: {e}")
 
         except Exception as e:
             self._log_error(f"Error during processor deployment: {e}")
@@ -233,6 +187,28 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
+
+    def _evict(self, processor: RequestProcessor, reason : str) -> bool:
+        """Concrete implementation of eviction process performed on a RequestProcessor."""
+        processor._has_been_terminated = True
+        processor._app_handle = None
+        processor.deployment_status = ProcessorStatus.UNINITIALIZED
+
+        # If an unfortunate user has job running on eviction, inform them
+        if processor.dispatched_task:
+            description = f"Deployment which job was executing on was evicted, and could not complete: {processor.model_key}"
+            processor.dispatched_task.respond_failure(self.sio, self.object_store, description)
+            processor.dispatched_task = None
+
+        # Fail the queued tasks too. In theory this could have just trigged a deployment attempt
+        # However it's probably better to just keep controller.deploy() calls to a single point in the event loop (e.g. to avoid hard to diagnose bugs)
+        for task in processor._queue:
+            description = f"Deployment was evicted while request waiting in queue, and could not complete: {processor.model_key}"
+            task.respond_failure(self.sio, self.object_store, description=reason)
+        
+        processor._queue[:] = [] # ListProxy, so cannot use .clear()
+        return True
+
 
     def get_processor_status(self, model_key: str) -> Optional[Dict]:
         """Get the status of a specific processor."""
