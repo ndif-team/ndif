@@ -52,6 +52,9 @@ class ModelDeployment:
     def __call__(self, request: BackendRequestModel):
         return self.model_actor.__call__.remote(request)
     
+    def cancel(self):
+        self.model_actor.cancel.remote()
+    
     def restart(self):
         ray.kill(self.model_actor)
         self.create_model_actor()

@@ -1,6 +1,8 @@
+import asyncio
 import gc
 import os
 import sys
+import threading
 import time
 import traceback
 import weakref
@@ -17,25 +19,23 @@ from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
 from nnsight.intervention.contexts import RemoteContext
 from nnsight.modeling.mixins import RemoteableMixin
-from nnsight.schema.request import StreamValueModel
+from nnsight.schema.request import RequestModel, StreamValueModel
 from nnsight.tracing.backends import Backend
 from nnsight.tracing.graph import Graph
 from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
-from nnsight.schema.request import RequestModel
-from . import protocols
 
 from ....logging import set_logger
-from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
-                         RequestResponseSizeMetric)
-from ....schema import (BackendRequestModel, BackendResponseModel,
-                        BackendResultModel)
-from .util import load_with_cache_deletion_retry
+from ....metrics import ExecutionTimeMetric, GPUMemMetric, RequestResponseSizeMetric
+from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from . import protocols
+from .util import kill_thread, load_with_cache_deletion_retry
+
+
 class ExtractionBackend(Backend):
 
     def __call__(self, graph: Graph):
@@ -56,12 +56,14 @@ class ExtractionBackend(Backend):
             graph.stack.clear()
 
         return result
+
+
 class BaseModelDeployment:
 
     def __init__(
         self,
         model_key: str,
-        cuda_devices:str,
+        cuda_devices: str,
         app: str,
         api_url: str,
         object_store_url: str,
@@ -76,14 +78,14 @@ class BaseModelDeployment:
     ) -> None:
 
         super().__init__()
-        
+
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         self.api_url = api_url
         self.object_store_url = object_store_url
         self.object_store_access_key = object_store_access_key
         self.object_store_secret_key = object_store_secret_key
-        
+
         self.app = app
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -121,7 +123,6 @@ class BaseModelDeployment:
         #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
         #     ray_free(object_refs, local_only=True)
 
-
         self.model = self.load_from_disk()
 
         if dispatch:
@@ -130,19 +131,20 @@ class BaseModelDeployment:
         torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
-        
-        self.thread_pool = ThreadPoolExecutor(max_workers=1)
-        
+
         protocols.LogProtocol.set(lambda *args: self.log(*args))
 
         RemoteContext.set(self.stream_send, self.stream_receive)
 
+        self.kill_switch = asyncio.Event()
+        self.execution_ident = None
+
     def load_from_disk(self):
-        
+
         start = time.time()
 
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
-        
+
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
@@ -153,25 +155,28 @@ class BaseModelDeployment:
             )
         )
 
-        
-        self.logger.info(f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}")
-        
+        self.logger.info(
+            f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}"
+        )
+
         return model
-    
-    def to_cache(self):
+
+    async def to_cache(self):
         
+        await self.cancel()
+
         self.model.cpu()
 
-    def from_cache(self, cuda_devices:str, app:str):
-        
+    def from_cache(self, cuda_devices: str, app: str):
+
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
-        
+
         self.app = app
-        
+
         start = time.time()
-        
+
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
-        
+
         # Automatically compute balanced memory allocation
         max_memory = get_balanced_memory(self.model._module)
 
@@ -180,11 +185,12 @@ class BaseModelDeployment:
 
         # Dispatch the model according to the inferred device map
         self.model._module = dispatch_model(self.model._module, device_map=device_map)
-        
-        self.logger.info(f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}")
 
+        self.logger.info(
+            f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}"
+        )
 
-    def __call__(self, request: BackendRequestModel) -> None:
+    async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
 
         1.) Pre-processing
@@ -204,21 +210,30 @@ class BaseModelDeployment:
 
             inputs = self.pre()
 
-            #TODO abstract out for distributed execution
-            result = self.thread_pool.submit(self.execute, inputs)
+            job_task = asyncio.create_task(asyncio.to_thread(self.execute, inputs))
+            kill_task = asyncio.create_task(self.kill_switch.wait())
 
-            if isinstance(result, Future):
-                result = result.result(timeout=self.execution_timeout)
-
-            self.post(result)
-
-        except TimeoutError as e:
-
-            exception = Exception(
-                f"Job took longer than timeout: {self.execution_timeout} seconds"
+            done, pending = await asyncio.wait(
+                [job_task, kill_task],
+                timeout=self.execution_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
             )
 
-            self.exception(exception)
+            for task in pending:
+                task.cancel()
+
+            if job_task in done:
+                result = await job_task
+            elif kill_task in done:
+                kill_thread(self.execution_ident)
+                raise Exception("Your job was cancelled or preempted by the server.")
+            else:
+                kill_thread(self.execution_ident)
+                raise Exception(
+                    f"Job took longer than timeout: {self.execution_timeout} seconds"
+                )
+
+            self.post(result)
 
         except Exception as e:
 
@@ -230,6 +245,10 @@ class BaseModelDeployment:
             del result
 
             self.cleanup()
+
+    async def cancel(self):
+        if self.execution_ident is not None:
+            self.kill_switch.set()
 
     # Ray checks this method and restarts replica if it raises an exception
     def check_health(self):
@@ -257,7 +276,9 @@ class BaseModelDeployment:
         Returns:
             Any: Result.
         """
-        
+
+        self.execution_ident = threading.current_thread().ident
+
         with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
 
             # For tracking peak GPU usage
@@ -302,7 +323,7 @@ class BaseModelDeployment:
             description="Your job has been completed.",
         )
 
-        RequestResponseSizeMetric.update(self.request, result.size)
+        RequestResponseSizeMetric.update(self.request, result._size)
         GPUMemMetric.update(self.request, gpu_mem)
         ExecutionTimeMetric.update(self.request, execution_time_s)
 
@@ -360,6 +381,9 @@ class BaseModelDeployment:
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
         """
+        self.kill_switch.clear()
+        self.execution_ident = None
+
         if self.sio.connected:
             self.sio.disconnect()
 
