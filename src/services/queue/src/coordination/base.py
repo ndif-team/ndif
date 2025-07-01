@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -26,6 +27,7 @@ class Coordinator(ABC, Generic[T, P]):
         self.max_retries = max_retries
         self.tick_interval = tick_interval
         self.tick_count = 0
+        self._in_tick = multiprocessing.Manager().Value('b', False)
         self._error_count = 0
         self._max_consecutive_errors = max_consecutive_errors
 
@@ -40,6 +42,16 @@ class Coordinator(ABC, Generic[T, P]):
                 return True
         return False
 
+
+    @property
+    def in_tick(self) -> bool:
+        return self._in_tick.value
+
+
+    @in_tick.setter
+    def in_tick(self, new_value : bool):
+        self._in_tick.value = new_value
+        
 
     @property
     def status(self):
@@ -222,6 +234,7 @@ class Coordinator(ABC, Generic[T, P]):
         while self.running:
             try:
                 await asyncio.sleep(self.tick_interval)
+                self.in_tick = True
                 self._process_lifecycle_tick()
                 self.tick_count += 1
                 self._error_count = 0  # Reset error count on successful iteration
@@ -236,7 +249,8 @@ class Coordinator(ABC, Generic[T, P]):
                     self._log_error(f"Too many consecutive errors ({self._error_count}), stopping coordinator")
                     await self.stop()
                     break
-    
+            finally:
+                self.in_tick = False
 
     @abstractmethod
     async def route_request(self, request: T) -> bool:

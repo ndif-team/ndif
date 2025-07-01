@@ -156,6 +156,10 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
  
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
+        
+        # Wait for tick lifecycle to finish before submitting tasks
+        while coordinator.in_tick:
+            await asyncio.sleep(0.01)
         await coordinator.route_request(backend_request)
         logger.debug(f"Enqueued request: {backend_request.id}")
 
@@ -178,8 +182,11 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
 @app.delete("/queue/{request_id}")
 async def remove_request(request_id: str):
     """Remove a request from the queue."""
-    # TODO: Support for removing requests from the queue
-    pass
+    try:
+        await coordinator.remove_request(request_id)
+    except Exception as e:
+        logger.error(f"Error removing request {request_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error removing request {request_id}: {e}")
 
 @app.get("/ping", status_code=200)
 async def ping():
