@@ -47,8 +47,6 @@ ray_url = os.environ.get("RAY_ADDRESS")
 max_consecutive_failures = os.environ.get("MAX_CONSECUTIVE_FAILURES", 5)
 coordinator = RequestCoordinator(ray_url=ray_url, sio=sio, object_store=object_store)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
-
 Instrumentator().instrument(app).expose(app)
 
 dev_mode = os.environ.get("DEV_MODE", True) # TODO: default to false
@@ -157,7 +155,6 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
         
-        # Wait for tick lifecycle to finish before submitting tasks
         while coordinator.in_tick:
             await asyncio.sleep(0.01)
         await coordinator.route_request(backend_request)

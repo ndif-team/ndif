@@ -135,14 +135,14 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         processor_status = processor.status
 
         if processor_status == ProcessorStatus.TERMINATED:
-            description = (
+            reason = (
                 f"Deployment for {processor.model_key} has been terminated by the scheduler. "
                 "You can request it to be rescheduled by re-running your nnsight script."
             )
         elif processor_status == ProcessorStatus.UNAVAILABLE:
             task_status = processor.deployment_status
             if task_status == DeploymentStatus.CANT_ACCOMMODATE:
-                description = (
+                reason = (
                     f"Cannot accommodate deployment for {processor.model_key}. "
                     "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
                     "If you believe this model should be supported, feel free to make a post on https://discuss.ndif.us/ "
@@ -150,13 +150,13 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 )
             else:
                 self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected.")
-                description = "Deployment failed."
+                reason = "Processor unavailable for unknown reason."
         else:
             self._log_error(f"Unknown processor failure: {processor_status}")
-            description = "Deployment failed."
+            reason = "Processor failed in unknown state."
 
         # Notify all queued requests of the failure
-        self.evict_processor(processor, reason = description)
+        self.evict_processor(processor, reason=reason)
            
 
     def _deploy(self, processors: List[RequestProcessor]):
@@ -196,9 +196,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 # Store the processor's deployment status in a clear attribute
                 processor.deployment_status = deployment_status
             
+            reason =  "Controller evicted deployment in order to a schedule different model."
             for model_key in evictions:
                 try:
-                    self.evict_processor(model_key)
+                    self.evict_processor(model_key, reason=reason)
                     self._log_debug(f"Evicted {model_key}")
                 except Exception as e:
                     self._log_error(f"Failed to evict {model_key}: {e}")
@@ -212,25 +213,30 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
 
 
-    def _evict(self, processor: RequestProcessor, reason : str) -> bool:
+    def _evict(self, processor: RequestProcessor, reason: str) -> bool:
         """Concrete implementation of eviction process performed on a RequestProcessor."""
         processor._has_been_terminated = True
         processor._app_handle = None
         processor.deployment_status = ProcessorStatus.UNINITIALIZED
 
-        # If an unfortunate user has job running on eviction, inform them
+        # If a user has a job running on this processor at eviction, inform them with a detailed reason
         if processor.dispatched_task:
-            description = f"Deployment which job was executing on was evicted, and could not complete: {processor.model_key}"
+            description = (
+                f"Request could not complete because the deployment it was running on was evicted. "
+                f"Model key: {processor.model_key}. Reason: {reason}"
+            )
             processor.dispatched_task.respond_failure(self.sio, self.object_store, description)
             processor.dispatched_task = None
 
-        # Fail the queued tasks too. In theory this could have just trigged a deployment attempt
-        # However it's probably better to just keep controller.deploy() calls to a single point in the event loop (e.g. to avoid hard to diagnose bugs)
+        # Inform all queued tasks that their requests could not be processed due to eviction
         for task in processor._queue:
-            description = f"Deployment was evicted while request waiting in queue, and could not complete: {processor.model_key}"
-            task.respond_failure(self.sio, self.object_store, description=reason)
-        
-        processor._queue[:] = [] # ListProxy, so cannot use .clear()
+            description = (
+                f"Request was still in the queue when its deployment was evicted and could not be processed. "
+                f"Model key: {processor.model_key}. Reason: {reason}"
+            )
+            task.respond_failure(self.sio, self.object_store, description=description)
+
+        processor._queue[:] = []  # ListProxy, so cannot use .clear()
         return True
 
     # Override logging methods to use the service logger
