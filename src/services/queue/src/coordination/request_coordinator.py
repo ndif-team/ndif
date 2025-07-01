@@ -9,7 +9,7 @@ from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
 from ..processing.status import ProcessorStatus, DeploymentStatus
 from .base import Coordinator
-from .mixins import NetworkingMixin
+from ..mixins import NetworkingMixin
 
 logger = set_logger("Queue")
 
@@ -127,7 +127,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             return False
 
 
-    def handle_processor_failure(self, processor: RequestProcessor):
+    def _handle_processor_failure(self, processor: RequestProcessor):
         """
         Handle a failed processor by notifying users, clearing its queue,
         and moving it from active to inactive processors.

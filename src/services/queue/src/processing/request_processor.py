@@ -9,7 +9,7 @@ from .base import Processor
 from .status import ProcessorStatus, DeploymentStatus
 from ..tasks.request_task import RequestTask
 from ..tasks.status import TaskStatus
-from ..coordination.mixins import NetworkingMixin
+from ..mixins import NetworkingMixin
 
 logger = set_logger("Queue")
 
