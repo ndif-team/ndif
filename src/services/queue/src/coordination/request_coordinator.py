@@ -39,9 +39,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         return self._controller
 
 
-    def state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]:
         """Get the state of the coordinator. Adds ray_connected to the base state."""
-        base_state = super().state()
+        base_state = super().get_state()
         base_state["ray_connected"] = self.ray_connected
         return base_state
 
@@ -156,7 +156,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             description = "Deployment failed."
 
         # Notify all queued requests of the failure
-        self.evict(processor.model_key, reason = description)
+        self.evict_processor(processor, reason = description)
            
 
     def _deploy(self, processors: List[RequestProcessor]):
@@ -198,7 +198,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             
             for model_key in evictions:
                 try:
-                    self.evict(model_key)
+                    self.evict_processor(model_key)
                     self._log_debug(f"Evicted {model_key}")
                 except Exception as e:
                     self._log_error(f"Failed to evict {model_key}: {e}")
@@ -291,10 +291,10 @@ class DevRequestCoordinator(RequestCoordinator):
         """Override to add state tracking."""
 
         # Call the parent method synchronously
-        super()._advance_processor_lifecycles()
+        super()._process_lifecycle_tick()
 
         # Add state tracking
-        self.previous_states.append(self.state())
+        self.previous_states.append(self.get_state())
         if len(self.previous_states) > self.num_previous_states:
             self.previous_states.pop(0)
 

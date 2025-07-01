@@ -48,7 +48,7 @@ class Processor(ABC, Generic[T]):
         pass
 
 
-    def state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]:
         """
         Get the state of the processor.
         
@@ -57,8 +57,8 @@ class Processor(ABC, Generic[T]):
         """
         return {
             "status": self.status,
-            "dispatched_task": self.dispatched_task.state() if self.dispatched_task else None,
-            "queue": [task.state() for task in self.queue],
+            "dispatched_task": self.dispatched_task.get_state() if self.dispatched_task else None,
+            "queue": [task.get_state() for task in self.queue],
             "last_dispatched": self.last_dispatched,
         }
 

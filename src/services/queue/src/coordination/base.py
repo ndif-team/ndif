@@ -55,7 +55,7 @@ class Coordinator(ABC, Generic[T, P]):
             return CoordinatorStatus.RUNNING
 
 
-    def state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]:
         """
         Get the state of the coordinator.
         
@@ -64,8 +64,8 @@ class Coordinator(ABC, Generic[T, P]):
         """
         return {
             "status": self.status,
-            "active_processors": [processor.state() for processor in self.active_processors.values()],
-            "inactive_processors": [processor.state() for processor in self.inactive_processors.values()],
+            "active_processors": [processor.get_state() for processor in self.active_processors.values()],
+            "inactive_processors": [processor.get_state() for processor in self.inactive_processors.values()],
             "error_count": self._error_count,
             "total_processors": len(self.active_processors) + len(self.inactive_processors),
             "tick_count": self.tick_count,
@@ -81,7 +81,7 @@ class Coordinator(ABC, Generic[T, P]):
         
         try:
             self._error_count = 0
-            self._async_task = asyncio.create_task(self._monitor_processors())
+            self._async_task = asyncio.create_task(self._run_event_loop())
             self._log_info("Coordinator started successfully")
         except Exception as e:
             self._async_task = None
@@ -114,7 +114,7 @@ class Coordinator(ABC, Generic[T, P]):
             raise
 
 
-    def evict(self, processor_key : str, *args, **kwargs) -> bool:
+    def evict_processor(self, processor_key : str, *args, **kwargs) -> bool:
         """Evict the procesor for a given key. Returns True if the processor no longer exists in an active state after the operation."""
         
         if processor_key in self.active_processors:
@@ -124,7 +124,7 @@ class Coordinator(ABC, Generic[T, P]):
             self.inactive_processors[processor_key] = processor
 
         elif processor_key in self.inactive_processors:
-            processor = self.active_processors[processor_key]
+            processor = self.inactive_processors[processor_key]
             evicted = self._evict(processor, *args, **kwargs)
 
         else:
@@ -134,7 +134,7 @@ class Coordinator(ABC, Generic[T, P]):
         return evicted
 
 
-    def _advance_processor_lifecycles(self):
+    def _process_lifecycle_tick(self):
         """
         Advance the lifecycle of all active processors.
         """
@@ -216,22 +216,22 @@ class Coordinator(ABC, Generic[T, P]):
             self._log_error(f"Error during final cleanup: {e}")
 
 
-    async def _monitor_processors(self):
+    async def _run_event_loop(self):
         """
-        Monitor and advance processor lifecycles.
+        Run the coordinator's event loop.
         """
         while self.running:
             try:
                 await asyncio.sleep(self.tick_interval)
-                self._advance_processor_lifecycles()
+                self._process_lifecycle_tick()
                 self.tick_count += 1
                 self._error_count = 0  # Reset error count on successful iteration
             except asyncio.CancelledError:
-                self._log_info("Processor monitoring cancelled")
+                self._log_info("Event loop cancelled")
                 break
             except Exception as e:
                 self._error_count += 1
-                self._log_error(f"Error in processor monitoring (attempt {self._error_count}): {e}")
+                self._log_error(f"Error in event loop (attempt {self._error_count}): {e}")
                 
                 if self._error_count >= self._max_consecutive_errors:
                     self._log_error(f"Too many consecutive errors ({self._error_count}), stopping coordinator")

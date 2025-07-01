@@ -94,11 +94,11 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             return ProcessorStatus.UNAVAILABLE
 
 
-    def state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]:
         """
         Get the state of the queue.
         """
-        base_state = super().state()
+        base_state = super().get_state()
         base_state["model_key"] = self.model_key
         return base_state
 

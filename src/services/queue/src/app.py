@@ -129,7 +129,7 @@ async def get_queue_state(return_batch: bool = False):
     if dev_mode and return_batch:
         return coordinator.get_previous_states()
     else:
-        return coordinator.state()
+        return coordinator.get_state()
 
 @app.post("/queue")
 async def queue(request: Request, coordinator: RequestCoordinator = Depends(check_coordinator_ready)):

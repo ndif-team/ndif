@@ -32,7 +32,7 @@ class Task(ABC):
         pass
 
 
-    def state(self) -> Dict[str, Any]:
+    def get_state(self) -> Dict[str, Any]:
         """
         Get the state of the task.
         
