@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
 from ..tasks.base import Task
+from ..tasks.status import TaskStatus
 
 # Generic type for tasks
 T = TypeVar('T', bound=Task)
@@ -123,24 +124,24 @@ class Processor(ABC, Generic[T]):
         # Handle different task statuses
         task_status = self.dispatched_task.status
         
-        if task_status == self._get_queued_status():
+        if task_status == TaskStatus.QUEUED:
             self._log_error(f"Dispatched task is in queued status, this should not happen")
             self._dispatch()
             return True
 
-        if task_status == self._get_pending_status():
+        if task_status == TaskStatus.PENDING:
             self._dispatch()
             return True
 
-        if task_status == self._get_dispatched_status():
+        if task_status == TaskStatus.DISPATCHED:
             # Task is already dispatched, no action needed
             return False
 
-        if task_status == self._get_completed_status():
+        if task_status == TaskStatus.COMPLETED:
             self._handle_completed_dispatch()
             return True
 
-        if task_status == self._get_failed_status():
+        if task_status == TaskStatus.FAILED:
             self._handle_failed_dispatch()
             return True
 
@@ -212,38 +213,6 @@ class Processor(ABC, Generic[T]):
     @abstractmethod
     def _is_invariant_status(self) -> bool:
         """Return True if self.status is in a status invariant with respect to the current lifecycle"""
-        pass
-
-    # Abstract methods for task statuses - subclasses should implement these
-    # to provide their own status constants
-    
-    @abstractmethod
-    def _get_queued_status(self):
-        """Return the queued status constant."""
-        pass
-
-
-    @abstractmethod
-    def _get_pending_status(self):
-        """Return the pending status constant."""
-        pass
-
-
-    @abstractmethod
-    def _get_dispatched_status(self):
-        """Return the dispatched status constant."""
-        pass
-
-
-    @abstractmethod
-    def _get_completed_status(self):
-        """Return the completed status constant."""
-        pass
-
-
-    @abstractmethod
-    def _get_failed_status(self):
-        """Return the failed status constant."""
         pass
 
     # Logging methods - subclasses can override these to use their own logging

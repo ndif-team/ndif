@@ -168,26 +168,6 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
 
         return any(current_status == status for status in invariant_statuses)
         
-    def _get_queued_status(self):
-        """Return the queued status constant."""
-        return TaskStatus.QUEUED
-
-    def _get_pending_status(self):
-        """Return the pending status constant."""
-        return TaskStatus.PENDING
-
-    def _get_dispatched_status(self):
-        """Return the dispatched status constant."""
-        return TaskStatus.DISPATCHED
-
-    def _get_completed_status(self):
-        """Return the completed status constant."""
-        return TaskStatus.COMPLETED
-
-    def _get_failed_status(self):
-        """Return the failed status constant."""
-        return TaskStatus.FAILED
-
     
     def _update_position(self, position: int):
         """
