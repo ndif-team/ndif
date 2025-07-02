@@ -2,49 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 from nnsight.intervention.envoy import Envoy
-from functools import wraps
+from copy import deepcopy
 
 PROTECTION = set()
-ALLOWED = set()
-class ProtectedMethod:
-    
-         
-    def __getattribute__(self, name: str):
-        
-        if name not in ["__call__"]:
-            raise ValueError(f"Attribute '{name}' is not allowed")
-        
-        return object.__getattribute__(self, name)
-    
-    def __setattr__(self, name: str, value: Any):
-   
-        raise ValueError(f"Attribute '{name}' is not allowed")
-        
+ALLOWED = set()  
         
 
 def allow(func):
 
-    # class InnerProtectedMethod(ProtectedMethod):
-        
-    #     def __get__(self, instance, owner):
-    #         if instance is None:
-    #             return self
-    #         # Return a bound method: we return a new callable that inserts self (the instance)
-    #         def bound_method(*args, **kwargs):
-    #             return func(instance, *args, **kwargs)
-    #         return bound_method
-    
-    
-    @wraps(func)
     def inner(self, *args, **kwargs):
         
         with UnprotectContext(id(self)):
+            __defer_capture__ = True
             return func(self, *args, **kwargs)
         
-    
-    del inner.__closure__
-    del inner.__wrapped__
-    del inner.__globals__
         
     PROTECTION.add(id(inner))
     ALLOWED.add(id(inner))
@@ -83,11 +54,13 @@ class UnprotectContext:
 
 class ProtectedObject:
     
-    __allowed_attr__ = None
+    __allowed_attr__ = ()
+    __allowed_setattr__ = ()
     
     def __init__(self, obj: Any):
         
         self.__dict__ = obj.__dict__.copy()
+        self.__obj__ = obj
         
         PROTECTION.add(id(self))
 
@@ -101,46 +74,87 @@ class ProtectedObject:
         
         value = object.__getattribute__(self, name)
        
-        if protected(self) and not allowed(value):
-            breakpoint()
+        if protected(self) and not (name in type(self).__allowed_attr__ or isinstance(value, ProtectedObject) or allowed(value)):
             raise ValueError(f"Attribute '{name}' is not allowed")
        
-        return value
-        
-    def __getattr__(self, name: str):
-        
-        
-        try:
-            value = object.__getattr__(self, name)
-        except AttributeError:
-
-            raise AttributeError(f"Attribute '{name}' is not allowed")
-       
-        if protected(self) and not allowed(value):
-            
-            raise ValueError(f"Attribute '{name}' is not allowed")
-            
         return value
     
     def __setattr__(self, name: str, value: Any):
    
-        if not protected(self):
+        if not protected(self) or name in type(self).__allowed_setattr__:
             object.__setattr__(self, name, value)
         else:
             raise AttributeError(f"Attribute '{name}' cannot be set after initialization")
         
 class ProtectedEnvoy(ProtectedObject, Envoy):
     
+    __allowed_attr__ = ("output", "inputs", "input", "device")
+    __allowed_setattr__ = ("output", "inputs", "input")
+    
     def __init__(self, envoy: Envoy):
         ProtectedObject.__init__(self, envoy)
         
+        with UnprotectContext(id(self)):
+            
+            for key, value in self.__dict__.items():
+                if isinstance(value, Envoy) and key != "__obj__":
+                    self.__dict__[key] = ProtectedEnvoy(value)
+        
+    def __getattr__(self, name: str):
+        with UnprotectContext(id(self)):    
+            return deepcopy(self.__obj__.__getattr__(name))
+
     @allow
-    def cpu(self):
-        return super().cpu()
+    def trace(self, *args, **kwargs):
+        __defer_capture__ = False
+        return self.__obj__.trace(*args, **kwargs)
+    
+    @property
+    @allow
+    def output(self):
+        return self.__obj__.output
+    
+    @output.setter
+    @allow
+    def output(self, value: Any):
+        self.__obj__.output = value
+    
+    @property
+    @allow
+    def inputs(self):
+        return self.__obj__.inputs
+    
+    @inputs.setter
+    @allow
+    def inputs(self, value: Any):
+        self.__obj__.inputs = value
+    
+    @property
+    @allow
+    def input(self):
+        return self.__obj__.input
+    
+    @input.setter
+    @allow
+    def input(self, value: Any):
+        self.__obj__.input = value
+    
+    @property
+    @allow
+    def device(self):
+        return self.__obj__.device
     
     @allow
-    def cuda(self):
-        return super().cuda()
+    def skip(self, *args, **kwargs):
+        return self.__obj__.skip(*args, **kwargs)
+    
+    @allow
+    def wait_for_input(self, *args, **kwargs):
+        return self.__obj__.wait_for_input(*args, **kwargs)
+    
+    @allow
+    def wait_for_output(self, *args, **kwargs):
+        return self.__obj__.wait_for_output(*args, **kwargs)
     
     @allow
     def __str__(self):
@@ -149,14 +163,13 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
     @allow
     def __repr__(self):
         return super().__repr__()
+
+        
     
         
-        
-from collections import OrderedDict
-
-import torch
-
 from nnsight import Envoy
+import torch
+from collections import OrderedDict
 
 input_size = 5
 hidden_dims = 10
@@ -179,5 +192,16 @@ net = Envoy(net).cuda()
 tiny_input =  torch.rand((1, input_size))
 
 net = ProtectedEnvoy(net)
-net.cpu()
-breakpoint()
+
+
+with net.trace(tiny_input):
+    output = net.layer1.inputs.shape.save()
+        
+print(output)
+    
+    
+    
+    
+    
+    
+    
