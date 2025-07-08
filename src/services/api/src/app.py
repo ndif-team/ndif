@@ -129,10 +129,9 @@ async def request(
         api_key_auth(request)
         
         try:
-            body = await raw_request.body()
+            body = await request.graph
             headers = dict(raw_request.headers)
             headers["ndif-request_id"] = request.id
-            headers["ndif_api_key"] = request.api_key
 
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(
