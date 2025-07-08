@@ -190,8 +190,6 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
                 task.position = i
                 task.respond_position_update(self.sio, self.object_store)
 
-        self._needs_update = False
-
 
     def _handle_failed_dispatch(self):
         """

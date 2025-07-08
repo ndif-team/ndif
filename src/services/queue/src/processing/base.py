@@ -25,7 +25,6 @@ class Processor(ABC, Generic[T]):
         self.max_tasks = max_tasks
         self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
-        self._needs_update = False
 
 
     @property
@@ -101,7 +100,7 @@ class Processor(ABC, Generic[T]):
         
         task = self.queue.pop(0)
         task.position = None
-        self._needs_update = True
+        self.update_positions()
         logger.debug(f"Dequeued task {getattr(task, 'id', 'unknown')}")
         return task
 
@@ -169,9 +168,6 @@ class Processor(ABC, Generic[T]):
                 task = self.queue[i]
                 task.position = i
                 task.respond()
-
-
-        self._needs_update = False
 
 
     @abstractmethod
