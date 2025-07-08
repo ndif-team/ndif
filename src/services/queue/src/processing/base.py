@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
@@ -6,6 +7,8 @@ from ..tasks.status import TaskStatus
 
 # Generic type for tasks
 T = TypeVar('T', bound=Task)
+
+logger = logging.getLogger("Queue")
 
 class Processor(ABC, Generic[T]):
     """
@@ -17,8 +20,9 @@ class Processor(ABC, Generic[T]):
     """
     
 
-    def __init__(self, max_retries: int = 3):
+    def __init__(self, max_retries: int = 3, max_tasks: int = None):
         self.max_retries = max_retries
+        self.max_tasks = max_tasks
         self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
         self._needs_update = False
@@ -75,10 +79,13 @@ class Processor(ABC, Generic[T]):
             True if successful, False otherwise
         """
         try:
-            self.queue.append(task)
-            return True
+            if not self.max_tasks or len(self.queue) < self.max_tasks:
+                self.queue.append(task)
+                return True
+            else:
+                return False
         except Exception as e:
-            self._log_error(f"Error enqueuing task: {e}")
+            logger.error(f"Error enqueuing task: {e}")
             return False
 
 
@@ -93,9 +100,9 @@ class Processor(ABC, Generic[T]):
             return None
         
         task = self.queue.pop(0)
-        task.update_position(None)
+        task.position = None
         self._needs_update = True
-        self._log_debug(f"Dequeued task {getattr(task, 'id', 'unknown')}")
+        logger.debug(f"Dequeued task {getattr(task, 'id', 'unknown')}")
         return task
 
     
@@ -125,7 +132,7 @@ class Processor(ABC, Generic[T]):
         task_status = self.dispatched_task.status
         
         if task_status == TaskStatus.QUEUED:
-            self._log_error(f"Dispatched task is in queued status, this should not happen")
+            logger.error(f"Dispatched task is in queued status, this should not happen")
             self._dispatch()
             return True
 
@@ -145,7 +152,7 @@ class Processor(ABC, Generic[T]):
             self._handle_failed_dispatch()
             return True
 
-        self._log_warning(f"Processor is in an unexpected status: {current_status}")
+        logger.warning(f"Processor is in an unexpected status: {current_status}")
         return False
 
 
@@ -159,7 +166,11 @@ class Processor(ABC, Generic[T]):
         indices = indices or range(len(self.queue))
         for i in indices:
             if i < len(self.queue):
-                self._update_position(i)
+                task = self.queue[i]
+                task.position = i
+                task.respond()
+
+
         self._needs_update = False
 
 
@@ -189,7 +200,7 @@ class Processor(ABC, Generic[T]):
         """
         if self.dispatched_task.retries < self.max_retries:
             # Try again
-            self._log_error(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
+            logger.error(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
             self._dispatch()
             self.dispatched_task.retries += 1
         else:
@@ -197,41 +208,12 @@ class Processor(ABC, Generic[T]):
                 # Try to inform about the failure
                 self.dispatched_task.respond()
             except Exception as e:
-                self._log_error(f"Error handling failed task: {e}")
+                logger.error(f"Error handling failed task: {e}")
             
             self.dispatched_task = None
-
-
-    def _update_position(self, position: int):
-        """
-        Update the position of a task.
-        """
-        task = self.queue[position]
-        task.update_position(position).respond()
 
 
     @abstractmethod
     def _is_invariant_status(self) -> bool:
         """Return True if self.status is in a status invariant with respect to the current lifecycle"""
         pass
-
-    # Logging methods - subclasses can override these to use their own logging
-    
-    def _log_debug(self, message: str):
-        """Log a debug message."""
-        print(f"[DEBUG] {message}")
-
-
-    def _log_error(self, message: str):
-        """Log an error message."""
-        print(f"[ERROR] {message}")
-
-
-    def _log_warning(self, message: str):
-        """Log a warning message."""
-        print(f"[WARNING] {message}")
-
-
-    def _log_info(self, message: str):
-        """Log an info message."""
-        print(f"[INFO] {message}")

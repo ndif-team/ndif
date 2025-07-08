@@ -1,18 +1,17 @@
+import logging
 import os
 import time
 import ray
 from ray import serve
 import threading
 from typing import Dict, Optional, List, Any
-from ..logging import set_logger
 from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
 from ..processing.status import ProcessorStatus, DeploymentStatus
 from .base import Coordinator
 from ..mixins import NetworkingMixin
 
-logger = set_logger("Queue")
-
+logger = logging.getLogger("Queue")
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], NetworkingMixin):
     """
@@ -73,7 +72,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         try:
             # Validate request
             if not request or not request.model_key:
-                self._log_error("Invalid request: missing model_key")
+                logger.error("Invalid request: missing model_key")
                 return False
             
             model_key = request.model_key
@@ -83,10 +82,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 processor = self.active_processors[model_key]
                 success = processor.enqueue(request)
                 if success:
-                    self._log_debug(f"Request {request.id} routed to active processor {model_key}")
+                    logger.debug(f"Request {request.id} routed to active processor {model_key}")
                     return True
                 else:
-                    self._log_error(f"Failed to enqueue request {request.id} to active processor {model_key}")
+                    logger.error(f"Failed to enqueue request {request.id} to active processor {model_key}")
                     return False
 
             # Try to route to inactive processor
@@ -100,10 +99,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     # Move processor to active state
                     self.active_processors[model_key] = processor
                     del self.inactive_processors[model_key]
-                    self._log_info(f"Activated processor {model_key} and routed request {request.id}")
+                    logger.info(f"Activated processor {model_key} and routed request {request.id}")
                     return True
                 else:
-                    self._log_error(f"Failed to enqueue request {request.id} to inactive processor {model_key}")
+                    logger.error(f"Failed to enqueue request {request.id} to inactive processor {model_key}")
                     return False
 
             # Create new processor
@@ -113,17 +112,17 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     success = processor.enqueue(request)
                     if success:
                         self.active_processors[model_key] = processor
-                        self._log_info(f"Created new processor {model_key} and routed request {request.id}")
+                        logger.info(f"Created new processor {model_key} and routed request {request.id}")
                         return True
                     else:
-                        self._log_error(f"Failed to enqueue request {request.id} to new processor {model_key}")
+                        logger.error(f"Failed to enqueue request {request.id} to new processor {model_key}")
                         return False
                 except Exception as e:
-                    self._log_error(f"Failed to create processor {model_key}: {e}")
+                    logger.error(f"Failed to create processor {model_key}: {e}")
                     return False
                     
         except Exception as e:
-            self._log_error(f"Error routing request {request.id if request else 'unknown'}: {e}")
+            logger.error(f"Error routing request {request.id if request else 'unknown'}: {e}")
             return False
 
 
@@ -149,10 +148,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
-                self._log_error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected.")
+                logger.error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected.")
                 reason = "Processor unavailable for unknown reason."
         else:
-            self._log_error(f"Unknown processor failure: {processor_status}")
+            logger.error(f"Unknown processor failure: {processor_status}")
             reason = "Processor failed in unknown state."
 
         # Notify all queued requests of the failure
@@ -190,7 +189,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 try:
                     deployment_status = DeploymentStatus(status_str)
                 except ValueError:
-                    self._log_error(f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'")
+                    logger.error(f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'")
                     deployment_status = DeploymentStatus.CANT_ACCOMMODATE
 
                 # Store the processor's deployment status in a clear attribute
@@ -200,17 +199,23 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             for model_key in evictions:
                 try:
                     self.evict_processor(model_key, reason=reason)
-                    self._log_debug(f"Evicted {model_key}")
+                    logger.debug(f"Evicted {model_key}")
                 except Exception as e:
-                    self._log_error(f"Failed to evict {model_key}: {e}")
+                    logger.error(f"Failed to evict {model_key}: {e}")
 
         except Exception as e:
-            self._log_error(f"Error during processor deployment: {e}")
+            logger.error(f"Error during processor deployment: {e}")
 
 
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
-        return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
+
+        return RequestProcessor(
+            model_key=processor_key,
+            max_retries=self.max_retries,
+            sio=self.sio,
+            object_store=self.object_store
+        )
 
 
     def _evict(self, processor: RequestProcessor, reason: str) -> bool:
@@ -239,41 +244,6 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         processor._queue[:] = []  # ListProxy, so cannot use .clear()
         return True
 
-    # Override logging methods to use the service logger
-    def _log_debug(self, message: str):
-        """Log a debug message using the service logger."""
-        logger.debug(message)
-
-    def _log_info(self, message: str):
-        """Log an info message using the service logger."""
-        logger.info(message)
-
-    def _log_warning(self, message: str):
-        """Log a warning message using the service logger."""
-        logger.warning(message)
-
-    def _log_error(self, message: str):
-        """Log an error message using the service logger."""
-        logger.error(message)
-
-    
-    # These aren't currently being used at all
-    def get_processor_status(self, model_key: str) -> Optional[Dict]:
-        """Get the status of a specific processor."""
-        try:
-            return super().get_processor_status(model_key)
-        except Exception as e:
-            self._log_error(f"Error getting processor status for {model_key}: {e}")
-            return None
-
-
-    def get_all_processors(self) -> List[Dict]:
-        """Get status of all processors."""
-        try:
-            return super().get_all_processors()
-        except Exception as e:
-            self._log_error(f"Error getting all processors: {e}")
-            return []
 
 # TODO: Introduce the concept of time-based states, and canonical ordering of states
 # Then, can just need to return the T previous states which changed
