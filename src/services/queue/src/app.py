@@ -40,86 +40,25 @@ object_store = boto3.client(
 )
 
 sio = socketio.SimpleClient(reconnection_attempts=10)
+api_url = os.environ.get('API_URL')
+sio.connect(
+    api_url,
+    socketio_path="/ws/socket.io",
+    transports=["websocket"],
+    wait_timeout=100000,
+)
 connection_event = asyncio.Event()
 connection_task = None
 
 ray_url = os.environ.get("RAY_ADDRESS")
 max_consecutive_failures = os.environ.get("MAX_CONSECUTIVE_FAILURES", 5)
+
 coordinator = RequestCoordinator(ray_url=ray_url, sio=sio, object_store=object_store)
+coordinator.start()
 
 Instrumentator().instrument(app).expose(app)
 
 dev_mode = os.environ.get("DEV_MODE", True) # TODO: default to false
-
-@app.on_event("startup")
-async def startup_event():
-    await coordinator.start()
-    # Start the socket connection task
-    global connection_task
-    connection_task = asyncio.create_task(manage_socket_connection())
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await coordinator.stop()
-    if connection_task:
-        connection_task.cancel()
-        try:
-            await connection_task
-        except asyncio.CancelledError:
-            pass
-
-async def manage_socket_connection():
-    """Background task to manage socket connection."""
-    while True:
-        try:
-            if not sio.connected:
-                api_url = os.environ.get('API_URL')
-                sio.connected = False
-                sio.connect(
-                    api_url,
-                    socketio_path="/ws/socket.io",
-                    transports=["websocket"],
-                    wait_timeout=100000,
-                )
-                connection_event.set()
-                logger.debug(f"Connected to SocketIO mount: {api_url}")
-            await asyncio.sleep(1)  # Check connection status periodically
-        except Exception as e:
-            logger.error(f"Failed to connect to API: {e}")
-            connection_event.clear()
-            await asyncio.sleep(5)  # Wait before retrying
-
-async def ensure_socket_connection(request: Request, call_next):
-    """Middleware to ensure socket connection for /queue endpoint."""
-    if request.url.path == "/queue" and request.method == "POST":
-        if not sio.connected:
-            # Wait for connection with timeout
-            try:
-                await asyncio.wait_for(connection_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("Socket connection timeout")
-    
-    response = await call_next(request)
-    return response
-
-# This is a hacky fix, ideally the queue should be able to fix itself if it gets in a stuck state
-def check_coordinator_ready():
-    """Checks whether Ray backend connection has been made. It fixes a bug where requests sent before the ray backend connection hang and essentially blocks the queue service indefinitely"""
-    
-    # Conservative upperbound for time needed for coordinator to connect to ray
-    startup_time = int(60 / coordinator.tick_interval)
-    
-    # We only want this error to raise when the service starts up
-    if not coordinator.ray_connected and coordinator.tick_count < startup_time:
-        logger.error("Coordinator not ready!")
-        raise HTTPException(
-            status_code=503,
-            detail="Service not ready - Awaiting connection to ray backend"
-        )
-    return coordinator
-
-
-app.middleware("http")(ensure_socket_connection)
 
 @app.get("/queue")
 async def get_queue_state(return_batch: bool = False):
@@ -130,7 +69,7 @@ async def get_queue_state(return_batch: bool = False):
         return coordinator.get_state()
 
 @app.post("/queue")
-async def queue(request: Request, coordinator: RequestCoordinator = Depends(check_coordinator_ready)):
+async def queue(request: Request):
     """Endpoint to add a request to the queue."""
     
     try:
@@ -155,9 +94,8 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
         
-        while coordinator.in_tick:
-            await asyncio.sleep(0.01)
-        await coordinator.route_request(backend_request)
+        coordinator.route_request(backend_request)
+        
         logger.debug(f"Enqueued request: {backend_request.id}")
 
         return response
@@ -180,7 +118,7 @@ async def queue(request: Request, coordinator: RequestCoordinator = Depends(chec
 async def remove_request(request_id: str):
     """Remove a request from the queue."""
     try:
-        await coordinator.remove_request(request_id)
+        coordinator.remove_request(request_id)
     except Exception as e:
         logger.error(f"Error removing request {request_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Error removing request {request_id}: {e}")

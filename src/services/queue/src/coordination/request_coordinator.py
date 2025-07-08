@@ -64,7 +64,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             time.sleep(retry_interval)
 
 
-    async def route_request(self, request: BackendRequestModel) -> bool:
+    def route_request(self, request: BackendRequestModel) -> bool:
         """Route request to appropriate processor. 
         
         Returns:
