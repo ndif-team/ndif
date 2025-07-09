@@ -1,7 +1,4 @@
-
-
 import logging
-
 from ray import serve
 from typing import Dict, Optional, List, Any
 from ..schema import BackendRequestModel
