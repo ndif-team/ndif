@@ -1,7 +1,7 @@
 import logging
 from typing import Optional, Dict, Any, List
 
-logger = logging.getLogger("Queue")
+logger = logging.getLogger("ndif")
 
 """Mixins for coordination classes."""
 

@@ -8,7 +8,7 @@ from ..tasks.status import TaskStatus
 # Generic type for tasks
 T = TypeVar('T', bound=Task)
 
-logger = logging.getLogger("Queue")
+logger = logging.getLogger("ndif")
 
 class Processor(ABC, Generic[T]):
     """

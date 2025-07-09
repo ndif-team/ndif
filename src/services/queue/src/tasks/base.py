@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from datetime import datetime
 
-logger = logging.getLogger("Queue")
+logger = logging.getLogger("ndif")
 
 class Task(ABC):
     """

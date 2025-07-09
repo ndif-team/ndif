@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging
 import multiprocessing
 import os
 import threading
@@ -15,7 +16,7 @@ from .status import CoordinatorStatus
 T = TypeVar("T")  # Task type
 P = TypeVar("P")  # Processor type
 
-logger = logging.getLogger("Queue")
+logger = logging.getLogger("ndif")
 
 class Coordinator(ABC, Generic[T, P]):
     """
