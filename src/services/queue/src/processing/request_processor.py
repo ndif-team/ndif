@@ -18,15 +18,14 @@ def slugify_model_key(model_key: str) -> str:
     return f"Model:{slugify(model_key)}"
 
 
-class RequestProcessor(Processor[RequestTask], NetworkingMixin):
+class RequestProcessor(Processor[RequestTask]):
     """
     Queue for making requests to model deployments using Ray backend.
     """
 
 
-    def __init__(self, model_key: str, max_retries: int = 3, sio=None, object_store=None):
-        Processor.__init__(self, max_retries)
-        NetworkingMixin.__init__(self, sio, object_store)
+    def __init__(self, model_key: str, max_retries: int = 3):
+        super().__init__(max_retries)
         self.model_key = model_key
         self._queue = Manager().list()
         self._app_handle = None
@@ -117,7 +116,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             return False
 
         try:
-            queue_item.respond(self.sio, self.object_store, description=f"Your job has been added to the queue. Currently at position {position + 1}")
+            queue_item.respond(description=f"Your job has been added to the queue. Currently at position {position + 1}")
         except Exception as e:
             self._log_error(f"{request.id} - Error responding to user at queued stage: {e}")
 
@@ -132,8 +131,6 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         for pending_task in self._queue:
 
             pending_task.respond(
-                self.sio, 
-                self.object_store,
                 description
             )
 
@@ -145,7 +142,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
 
         self._log_debug(f"Attempting to dispatch on {self.model_key}")
         try:
-            self.dispatched_task.respond(self.sio, self.object_store, description="Dispatching request..." )
+            self.dispatched_task.respond(description="Dispatching request..." )
         except Exception as e:
             self._log_error(f"Failed to respond to user about task being dispatched: {e}")
         success = self.dispatched_task.run(self.app_handle)
@@ -174,7 +171,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
         Update the position of a task. Overrides the base class to pass in the networking clients.
         """
         task = self.queue[position]
-        task.update_position(position).respond_position_update(self.sio, self.object_store)
+        task.update_position(position).respond_position_update()
 
     
     def _handle_failed_dispatch(self):
@@ -190,7 +187,7 @@ class RequestProcessor(Processor[RequestTask], NetworkingMixin):
             try: 
                 # Try to inform the user that the request has failed
                 description = f"Unable to reach {self.model_key}. This likely means that the deployment has been evicted."
-                self.dispatched_task.respond_failure(self.sio, self.object_store, description=description)
+                self.dispatched_task.respond_failure(description=description)
             except Exception as e:
                 # Give up
                 self._log_error(f"Error handling failed request {self.dispatched_task.id}: {e}")

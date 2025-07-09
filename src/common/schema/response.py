@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-import requests
-import socketio
-import boto3
 from pydantic import field_serializer
 from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
 from ..metrics import RequestStatusMetric
+from ..providers.objectstore import ObjectStoreProvider
+from ..providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
@@ -28,10 +27,10 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def blocking(self) -> bool:
         return self.session_id is not None
 
-    def respond(self, sio: socketio.SimpleClient, object_store: boto3.client) -> ResponseModel:
+    def respond(self) -> ResponseModel:
         if self.blocking:
 
-            fn = sio.client.emit
+            fn = SioProvider.emit
 
             if (
                 self.status == ResponseModel.JobStatus.COMPLETED
@@ -39,17 +38,18 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
                 or self.status == ResponseModel.JobStatus.NNSIGHT_ERROR
             ):
 
-                fn = sio.client.call
+                fn = SioProvider.call
 
             fn("blocking_response", data=(self.session_id, self.pickle()))
         else:
-            self.save(object_store)
+            self.save(ObjectStoreProvider.object_store)
 
         return self
 
     @field_serializer("status")
     def sstatus(self, value, _info):
         return value.value
+
     def update_metric(
         self,
         request: "BackendRequestModel",

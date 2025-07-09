@@ -30,6 +30,7 @@ logger = set_logger("API")
 from .api_key import api_key_auth
 from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from .providers.objectstore import ObjectStoreProvider
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,17 +62,7 @@ sm = SocketManager(
 )
 
 # Init object_store connection
-object_store = boto3.client(
-    's3',
-    endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
-    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
-    region_name='us-east-1',
-    # Skip verification for local or custom S3 implementations
-    verify=False,
-    # Set to path style for compatibility with non-AWS S3 implementations
-    config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-)
+ObjectStoreProvider.connect()
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
@@ -129,7 +120,7 @@ async def request(
         api_key_auth(request)
         
         try:
-            body = await raw_request.body()
+            body = await request.graph
             headers = dict(raw_request.headers)
             headers["ndif-request_id"] = request.id
             headers["ndif_api_key"] = request.api_key
@@ -174,7 +165,7 @@ async def request(
 
     if not response.blocking:
 
-        response.save(object_store)
+        response.save(ObjectStoreProvider.object_store)
 
     # Return response.
     return response
@@ -214,7 +205,7 @@ async def response(id: str) -> BackendResponseModel:
     """
 
     # Load response from client given id.
-    return BackendResponseModel.load(object_store, id)
+    return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
 
 
 @app.get("/result/{id}")
@@ -232,7 +223,7 @@ async def result(id: str) -> BackendResultModel:
     """
 
     # Get cursor to bytes stored in data backend.
-    object, content_length = BackendResultModel.load(object_store, id, stream=True)
+    object, content_length = BackendResultModel.load(ObjectStoreProvider.object_store, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -249,9 +240,9 @@ async def result(id: str) -> BackendResultModel:
         finally:
             object.close()
 
-            BackendResultModel.delete(object_store, id)
-            BackendResponseModel.delete(object_store, id)
-            BackendRequestModel.delete(object_store, id)
+            BackendResultModel.delete(ObjectStoreProvider.object_store, id)
+            BackendResponseModel.delete(ObjectStoreProvider.object_store, id)
+            BackendRequestModel.delete(ObjectStoreProvider.object_store, id)
 
     return StreamingResponse(
         content=stream(),

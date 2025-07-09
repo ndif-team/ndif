@@ -1,33 +1,28 @@
-import os
-import time
-import ray
+from typing import Any, Dict, List, Optional
+
 from ray import serve
-import threading
-from typing import Dict, Optional, List, Any
+
 from ..logging import set_logger
-from ..schema import BackendRequestModel
 from ..processing.request_processor import RequestProcessor
-from ..processing.status import ProcessorStatus, DeploymentStatus
+from ..processing.status import DeploymentStatus, ProcessorStatus
+from ..providers.ray import RayProvider
+from ..schema import BackendRequestModel
 from .base import Coordinator
-from ..mixins import NetworkingMixin
 
 logger = set_logger("Queue")
 
 
-class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], NetworkingMixin):
+class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """
     Coordinates requests between the queue and the model deployments using Ray backend.
     """
 
 
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, 
-                 sio=None, object_store=None):
-        Coordinator.__init__(self, tick_interval, max_retries)
-        NetworkingMixin.__init__(self, sio, object_store)
-        self.ray_url = ray_url
-        self.ray_connected = False
-        self.ray_watchdog = threading.Thread(target=self.connect_to_ray, daemon=True)
-        self.ray_watchdog.start()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+      
+        RayProvider.watch()
+    
         self._controller = None
 
 
@@ -37,32 +32,6 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
         if self._controller is None:
             self._controller = serve.get_app_handle("Controller")
         return self._controller
-
-
-    def get_state(self) -> Dict[str, Any]:
-        """Get the state of the coordinator. Adds ray_connected to the base state."""
-        base_state = super().get_state()
-        base_state["ray_connected"] = self.ray_connected
-        return base_state
-
-
-    def connect_to_ray(self):
-        """Connect to Ray cluster."""
-        retry_interval = int(os.environ.get("RAY_RETRY_INTERVAL_S", 5))
-        while True:
-            try:
-                if not ray.is_initialized():
-                    ray.shutdown()
-                    serve.context._set_global_client(None)
-                    ray.init(logging_level="error", address = self.ray_url)
-                    time.sleep(3)
-                    logger.info("Connected to Ray cluster.")
-                    self.ray_connected = True
-                    return
-            except Exception as e:
-                logger.error(f"Failed to connect to Ray cluster: {e}")
-            time.sleep(retry_interval)
-
 
     def route_request(self, request: BackendRequestModel) -> bool:
         """Route request to appropriate processor. 
@@ -210,7 +179,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
 
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
-        return RequestProcessor(processor_key, self.max_retries, self.sio, self.object_store)
+        return RequestProcessor(processor_key, self.max_retries)
 
 
     def _evict(self, processor: RequestProcessor, reason: str) -> bool:
@@ -225,7 +194,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 f"Request could not complete because the deployment it was running on was evicted. "
                 f"Model key: {processor.model_key}. Reason: {reason}"
             )
-            processor.dispatched_task.respond_failure(self.sio, self.object_store, description)
+            processor.dispatched_task.respond_failure(description)
             processor.dispatched_task = None
 
         # Inform all queued tasks that their requests could not be processed due to eviction
@@ -234,7 +203,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
                 f"Request was still in the queue when its deployment was evicted and could not be processed. "
                 f"Model key: {processor.model_key}. Reason: {reason}"
             )
-            task.respond_failure(self.sio, self.object_store, description=description)
+            task.respond_failure(description=description)
 
         processor._queue[:] = []  # ListProxy, so cannot use .clear()
         return True
@@ -275,35 +244,3 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor], Net
             self._log_error(f"Error getting all processors: {e}")
             return []
 
-# TODO: Introduce the concept of time-based states, and canonical ordering of states
-# Then, can just need to return the T previous states which changed
-
-class DevRequestCoordinator(RequestCoordinator):
-    """
-    A development coordinator that stores the T previous states of the coordinator.
-    """
-
-    def __init__(self, tick_interval: float = 1.0, max_retries: int = 3, ray_url: str = None, 
-                 num_previous_states: int = 30, sio=None, object_store=None):
-        super().__init__(tick_interval, max_retries, ray_url, sio, object_store)
-        self.previous_states = []
-        self.num_previous_states = num_previous_states
-
-    def get_previous_states(self) -> List[Dict[str, Any]]:
-        """Get the previous states of the coordinator."""
-        return self.previous_states
-
-    def _advance_processor_lifecycles(self):
-        """Override to add state tracking."""
-
-        # Call the parent method synchronously
-        super()._process_lifecycle_tick()
-
-        # Add state tracking
-        self.previous_states.append(self.get_state())
-        if len(self.previous_states) > self.num_previous_states:
-            self.previous_states.pop(0)
-
-if os.environ.get("DEV_MODE", True):
-    logger.info("Using DevRequestCoordinator")
-    RequestCoordinator = DevRequestCoordinator

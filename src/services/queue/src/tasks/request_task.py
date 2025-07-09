@@ -75,7 +75,7 @@ class RequestTask(Task):
             return False
 
 
-    def respond(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description : Optional[str] = None):
+    def respond(self, description : Optional[str] = None):
         """Creates a response for the task and handles routing to the appropriate locations."""
 
         # Handle creating a default response (regarding queue position) if description is None
@@ -88,13 +88,13 @@ class RequestTask(Task):
         )
 
         try:
-            response.respond(sio, object_store)
+            response.respond()
 
         except Exception as e:
             self._log_error(f"Failed to respond back to user: {e}")
 
 
-    def respond_failure(self, sio: "socketio.SimpleClient", object_store: "boto3.client", description: Optional[str] = None):
+    def respond_failure(self, description: Optional[str] = None):
         """
         Respond to the user with a failure message.
         """
@@ -107,7 +107,7 @@ class RequestTask(Task):
             logger=logger,
         )
         try:
-            response.respond(sio, object_store)
+            response.respond()
         except Exception as e:
             self._log_error(f"Failed to respond back to user: {e}")
 

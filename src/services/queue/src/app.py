@@ -13,6 +13,8 @@ from nnsight.schema.response import ResponseModel
 from .schema import BackendRequestModel
 from .logging import set_logger
 from .coordination.request_coordinator import RequestCoordinator
+from .providers.objectstore import ObjectStoreProvider
+from .providers.socketio import SioProvider
 
 logger = set_logger("Queue")
 
@@ -28,32 +30,9 @@ app.add_middleware(
 )
 
 # Init object_store connection
-object_store = boto3.client(
-    os.environ.get("OBJECT_STORE_SERVICE", "s3"),
-    endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
-    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
-    region_name=os.environ.get("OBJECT_STORE_REGION", 'us-east-1'),
-    verify=os.environ.get("OBJECT_STORE_VERIFY", False),
-    # Set to path style for compatibility with non-AWS S3 implementations
-    config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-)
-
-sio = socketio.SimpleClient(reconnection_attempts=10)
-api_url = os.environ.get('API_URL')
-sio.connect(
-    api_url,
-    socketio_path="/ws/socket.io",
-    transports=["websocket"],
-    wait_timeout=100000,
-)
-connection_event = asyncio.Event()
-connection_task = None
-
-ray_url = os.environ.get("RAY_ADDRESS")
-max_consecutive_failures = os.environ.get("MAX_CONSECUTIVE_FAILURES", 5)
-
-coordinator = RequestCoordinator(ray_url=ray_url, sio=sio, object_store=object_store)
+ObjectStoreProvider.connect()
+SioProvider.connect()
+coordinator = RequestCoordinator()
 coordinator.start()
 
 Instrumentator().instrument(app).expose(app)
@@ -79,17 +58,15 @@ async def queue(request: Request):
         backend_request = BackendRequestModel.from_request(
             request
         )
-        try: 
-            logger.debug(f"Creating response for request: {backend_request.id}")
-            response = backend_request.create_response(
-                status=ResponseModel.JobStatus.APPROVED,
-                description="Your job was approved and is waiting to be run.",
-                logger=logger,
-            )
-            response.respond(sio, object_store)
-            logger.debug(f"Responded to request: {backend_request.id}")
-        except Exception as e:
-            logger.error(f"Failed to respond APPROVED message for request {backend_request.id}")
+
+        logger.debug(f"Creating response for request: {backend_request.id}")
+        response = backend_request.create_response(
+            status=ResponseModel.JobStatus.APPROVED,
+            description="Your job was approved and is waiting to be run.",
+            logger=logger,
+        ).respond()
+        logger.debug(f"Responded to request: {backend_request.id}")
+    
  
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
@@ -98,7 +75,6 @@ async def queue(request: Request):
         
         logger.debug(f"Enqueued request: {backend_request.id}")
 
-        return response
         
     except Exception as e:
         logger.error(f"Error processing queue request: {str(e)}")
@@ -109,7 +85,7 @@ async def queue(request: Request):
             logger=logger,
         )
         try:
-            response.respond(sio, object_store)
+            response.respond()
         except:
             logger.error(f"Failed responding ERROR to user: {description}")
         return response
