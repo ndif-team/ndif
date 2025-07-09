@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from ray import serve
 
@@ -10,7 +10,6 @@ from ..schema import BackendRequestModel
 from .base import Coordinator
 
 logger = logging.getLogger("ndif")
-
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """
@@ -30,6 +29,12 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         if self._controller is None:
             self._controller = serve.get_app_handle("Controller")
         return self._controller
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get the state of the coordinator. Adds ray_connected to the base state."""
+        base_state = super().get_state()
+        base_state["ray_connected"] = RayProvider.connected
+        return base_state
 
     def route_request(self, request: BackendRequestModel) -> bool:
         """Route request to appropriate processor.
@@ -101,11 +106,18 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     logger.error(f"Failed to create processor {model_key}: {e}")
                     return False
 
+
         except Exception as e:
             logger.error(
                 f"Error routing request {request.id if request else 'unknown'}: {e}"
             )
             return False
+
+        finally:
+            # Force next tick to start immediately
+            self._interrupt_sleep()
+
+
 
     def _handle_processor_failure(self, processor: RequestProcessor):
         """

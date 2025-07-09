@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Generic, List, Optional, TypeVar
 
@@ -40,18 +41,24 @@ class Coordinator(ABC, Generic[T, P]):
         self.tick_count = 0
         self.running = False
         self._thread = None
-        self._in_tick = multiprocessing.Manager().Value("b", False)
         self._error_count = 0
         self._max_consecutive_errors = max_consecutive_errors
 
+        # Attributes accessible from outside of the coordinator thread (e.g. by the Queue app)
+        manager = multiprocessing.Manager()
+        self._in_tick_flag = manager.Value('b', False)
+        self._sleep_event = manager.Event()
+        
     @property
     def in_tick(self) -> bool:
-        return self._in_tick.value
-
+        """Returns True if currently processing a tick, False otherwise."""
+        return self._in_tick_flag.value
+    
     @in_tick.setter
-    def in_tick(self, new_value: bool):
-        self._in_tick.value = new_value
-
+    def in_tick(self, value: bool):
+        """Sets whether we're currently processing a tick."""
+        self._in_tick_flag.value = value
+    
     @property
     def status(self):
         """
@@ -143,6 +150,62 @@ class Coordinator(ABC, Generic[T, P]):
 
         return evicted
 
+    def _interrupt_sleep(self):
+        """Interrupts the current sleep in the event loop."""
+        self._sleep_event.set()
+
+    @contextmanager
+    def _tick_context(self):
+        """Context manager to handle tick state and ensure cleanup."""
+        self.in_tick = True
+        try:
+            yield
+        finally:
+            self.in_tick = False
+
+    def _run_event_loop(self):
+        """
+        Run the coordinator's event loop.
+        """
+        while self.running:
+            try:
+                # Clear the event before waiting (in case it was set previously)
+                self._sleep_event.clear()
+                
+                # Sleep for tick_interval or until interrupted
+                interrupted = self._sleep_event.wait(self.tick_interval)
+                
+                if interrupted:
+                    logger.debug("Sleep interrupted, processing tick immediately")
+                
+                with self._tick_context():
+                    self._process_lifecycle_tick()
+                    self.tick_count += 1
+                    self._error_count = 0  # Reset error count on successful iteration
+                    
+            except asyncio.CancelledError:
+                logger.info("Event loop cancelled")
+                break
+
+            except asyncio.CancelledError:
+                logger.info("Event loop cancelled")
+                break
+            except Exception as e:
+                self._error_count += 1
+                logger.error(
+                    f"Error in event loop (attempt {self._error_count}): {e}"
+                )
+
+                if self._error_count >= self._max_consecutive_errors:
+                    logger.error(
+                        f"Too many consecutive errors ({self._error_count}), stopping coordinator"
+                    )
+                    self.stop()
+                    break
+            finally:
+                self.in_tick = False
+
+
     def _process_lifecycle_tick(self):
         """
         Advance the lifecycle of all active processors.
@@ -230,34 +293,6 @@ class Coordinator(ABC, Generic[T, P]):
         except Exception as e:
             logger.error(f"Error during final cleanup: {e}")
 
-    def _run_event_loop(self):
-        """
-        Run the coordinator's event loop.
-        """
-        while self.running:
-            try:
-                time.sleep(self.tick_interval)
-                self.in_tick = True
-                self._process_lifecycle_tick()
-                self.tick_count += 1
-                self._error_count = 0  # Reset error count on successful iteration
-            except asyncio.CancelledError:
-                logger.info("Event loop cancelled")
-                break
-            except Exception as e:
-                self._error_count += 1
-                logger.error(
-                    f"Error in event loop (attempt {self._error_count}): {e}"
-                )
-
-                if self._error_count >= self._max_consecutive_errors:
-                    logger.error(
-                        f"Too many consecutive errors ({self._error_count}), stopping coordinator"
-                    )
-                    self.stop()
-                    break
-            finally:
-                self.in_tick = False
 
     @abstractmethod
     def route_request(self, request: T) -> bool:
