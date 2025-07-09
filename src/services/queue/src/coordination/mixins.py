@@ -1,5 +1,7 @@
+import logging
 from typing import Optional, Dict, Any, List
 
+logger = logging.getLogger("ndif")
 
 """Mixins for coordination classes."""
 
@@ -32,7 +34,7 @@ class ProcessorStatusMixin:
             else:
                 return None
         except Exception as e:
-            self._log_error(f"Error getting processor status for {processor_key}: {e}")
+            logger.error(f"Error getting processor status for {processor_key}: {e}")
             return None
 
     def get_all_processors(self) -> List[Dict[str, Any]]:
@@ -61,7 +63,7 @@ class ProcessorStatusMixin:
             
             return processors
         except Exception as e:
-            self._log_error(f"Error getting all processors: {e}")
+            logger.error(f"Error getting all processors: {e}")
             return []
 
 

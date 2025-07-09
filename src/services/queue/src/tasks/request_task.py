@@ -1,17 +1,16 @@
+import logging
 from typing import Dict, Any, Optional
 from .status import TaskStatus
 from .base import Task
 from ..schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
-from ..logging import set_logger
 
-logger = set_logger("Queue")
+logger = logging.getLogger("ndif")
 
 class RequestTask(Task):
     """
     Request for a model deployment using Ray backend.
     """
-
 
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
         Task.__init__(self, request_id, request, position)
@@ -47,7 +46,7 @@ class RequestTask(Task):
         except TimeoutError:
             return TaskStatus.DISPATCHED
         except Exception as e:
-            self._log_error(f"Error checking request {self.id} status: {e}")
+            logger.error(f"Error checking request {self.id} status: {e}")
             return TaskStatus.FAILED
 
 
@@ -63,12 +62,12 @@ class RequestTask(Task):
         """
         try:
             self.position = None
-            self._log_debug(f"{self.data.id} Attempting to make remote() call with app handle")
+            logger.debug(f"{self.data.id} Attempting to make remote() call with app handle")
             self._future = app_handle.remote(self.data)
-            self._log_debug(f"{self.data.id} Succesfully made remote() call with app handle")
+            logger.debug(f"{self.data.id} Succesfully made remote() call with app handle")
             return True
         except Exception as e:
-            self._log_error(f"Error running request {self.id}: {e}")
+            logger.error(f"Error running request {self.id}: {e}")
             
             # This Naively assumes that the controller evicted the deployment
             self._evicted = True
@@ -91,7 +90,7 @@ class RequestTask(Task):
             response.respond()
 
         except Exception as e:
-            self._log_error(f"Failed to respond back to user: {e}")
+            logger.error(f"Failed to respond back to user: {e}")
 
 
     def respond_failure(self, description: Optional[str] = None):
@@ -109,25 +108,4 @@ class RequestTask(Task):
         try:
             response.respond()
         except Exception as e:
-            self._log_error(f"Failed to respond back to user: {e}")
-
-
-    # Override logging methods to use the service logger
-    def _log_debug(self, message: str):
-        """Log a debug message using the service logger."""
-        logger.debug(message)
-
-
-    def _log_error(self, message: str):
-        """Log an error message using the service logger."""
-        logger.error(message)
-
-
-    def _log_warning(self, message: str):
-        """Log a warning message using the service logger."""
-        logger.warning(message)
-
-
-    def _log_info(self, message: str):
-        """Log an info message using the service logger."""
-        logger.info(message)
+            logger.error(f"Failed to respond back to user: {e}")

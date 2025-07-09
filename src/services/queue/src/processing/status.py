@@ -10,6 +10,7 @@ class ProcessorStatus(Enum):
     PROVISIONING = "provisioning"
     ACTIVE = "active"
     TERMINATED = "terminated"
+    DRAINING = "draining"
 
 class DeploymentStatus(Enum):
     """

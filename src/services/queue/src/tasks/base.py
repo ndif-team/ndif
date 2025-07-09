@@ -1,6 +1,9 @@
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from datetime import datetime
+
+logger = logging.getLogger("ndif")
 
 class Task(ABC):
     """
@@ -48,20 +51,6 @@ class Task(ABC):
         }
 
 
-    def update_position(self, position: int):
-        """
-        Update the position of the task in the queue.
-        
-        Args:
-            position: The new position
-            
-        Returns:
-            Self for method chaining
-        """
-        self.position = position
-        return self
-
-
     @abstractmethod
     def run(self, backend_handle) -> bool:
         """
@@ -92,64 +81,6 @@ class Task(ABC):
         else:
             description = f"{self.id} - Status updated to {self.status}"
         
-        self._log_debug(description)
+        logger.debug(description)
 
         return description
-
-
-    # Methods for dealing with task failure
-
-    def increment_retries(self) -> int:
-        """
-        Increment the retry counter and return the new count.
-        
-        Returns:
-            The new retry count
-        """
-        self.retries += 1
-        return self.retries
-
-
-    def reset_retries(self) -> int:
-        """
-        Reset the retry counter to 0.
-        
-        Returns:
-            The reset retry count (0)
-        """
-        self.retries = 0
-        return self.retries
-
-
-    def is_retryable(self, max_retries: int) -> bool:
-        """
-        Check if the task can be retried.
-        
-        Args:
-            max_retries: Maximum number of retries allowed
-            
-        Returns:
-            True if the task can be retried, False otherwise
-        """
-        return self.retries < max_retries
-
-    # Logging methods - subclasses can override these to use their own logging
-    
-    def _log_debug(self, message: str):
-        """Log a debug message."""
-        print(f"[DEBUG] Task {self.id}: {message}")
-
-
-    def _log_error(self, message: str):
-        """Log an error message."""
-        print(f"[ERROR] Task {self.id}: {message}")
-
-
-    def _log_warning(self, message: str):
-        """Log a warning message."""
-        print(f"[WARNING] Task {self.id}: {message}")
-
-
-    def _log_info(self, message: str):
-        """Log an info message."""
-        print(f"[INFO] Task {self.id}: {message}")

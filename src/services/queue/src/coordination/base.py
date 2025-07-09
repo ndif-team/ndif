@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import multiprocessing
 import os
 import threading
@@ -14,6 +15,7 @@ from .status import CoordinatorStatus
 T = TypeVar("T")  # Task type
 P = TypeVar("P")  # Processor type
 
+logger = logging.getLogger("ndif")
 
 class Coordinator(ABC, Generic[T, P]):
     """
@@ -86,7 +88,7 @@ class Coordinator(ABC, Generic[T, P]):
     def start(self):
         """Start the coordinator."""
         if self.running:
-            self._log_warning("Coordinator is already running")
+            logger.warning("Coordinator is already running")
             return
 
         try:
@@ -95,16 +97,16 @@ class Coordinator(ABC, Generic[T, P]):
             self.running = True
             self._thread.start()
             
-            self._log_info("Coordinator started successfully")
+            logger.info("Coordinator started successfully")
         except Exception as e:
             self._thread = None
-            self._log_error(f"Failed to start coordinator: {e}")
+            logger.error(f"Failed to start coordinator: {e}")
             raise
 
     def stop(self):
         """Stop the coordinator."""
         if not self.running:
-            self._log_warning("Coordinator is not running")
+            logger.warning("Coordinator is not running")
             return
 
         try:
@@ -112,9 +114,9 @@ class Coordinator(ABC, Generic[T, P]):
             # Clean up all processors
             self._cleanup_all_processors()
             self.running = False
-            self._log_info("Coordinator stopped successfully")
+            logger.info("Coordinator stopped successfully")
         except Exception as e:
-            self._log_error(f"Error stopping coordinator: {e}")
+            logger.error(f"Error stopping coordinator: {e}")
             raise
 
     def evict_processor(
@@ -133,7 +135,7 @@ class Coordinator(ABC, Generic[T, P]):
             evicted = self._evict(processor, reason=reason, *args, **kwargs)
 
         else:
-            self._log_warning(
+            logger.warning(
                 f"Warning: An eviction attempt was made for a processor which does not exist: {processor_key}"
             )
             evicted = True
@@ -177,10 +179,10 @@ class Coordinator(ABC, Generic[T, P]):
                         try:
                             processor.notify_pending_task()
                         except Exception as e:
-                            self._log_error(f"Failed to notify_pending_tasks")
+                            logger.error(f"Failed to notify_pending_tasks")
 
             except Exception as e:
-                self._log_error(
+                logger.error(
                     f"Error advancing lifecycle for processor {processor_key}: {e}"
                 )
                 processors_to_deactivate.append(processor_key)
@@ -207,13 +209,13 @@ class Coordinator(ABC, Generic[T, P]):
             if processor_key in self.active_processors:
                 processor = self.active_processors.pop(processor_key)
                 if processor_key in self.inactive_processors:
-                    self._log_warning(
+                    logger.warning(
                         f"Processor {processor_key} is already in inactive state. This should not happen."
                     )
                 self.inactive_processors[processor_key] = processor
-                self._log_info(f"Deactivated processor {processor_key}")
+                logger.info(f"Deactivated processor {processor_key}")
         except Exception as e:
-            self._log_error(f"Error deactivating processor {processor_key}: {e}")
+            logger.error(f"Error deactivating processor {processor_key}: {e}")
 
     def _cleanup_all_processors(self):
         """
@@ -223,9 +225,9 @@ class Coordinator(ABC, Generic[T, P]):
             # Clear all processors
             self.active_processors.clear()
             self.inactive_processors.clear()
-            self._log_info("Cleaned up all processors")
+            logger.info("Cleaned up all processors")
         except Exception as e:
-            self._log_error(f"Error during final cleanup: {e}")
+            logger.error(f"Error during final cleanup: {e}")
 
     def _run_event_loop(self):
         """
@@ -239,16 +241,16 @@ class Coordinator(ABC, Generic[T, P]):
                 self.tick_count += 1
                 self._error_count = 0  # Reset error count on successful iteration
             except asyncio.CancelledError:
-                self._log_info("Event loop cancelled")
+                logger.info("Event loop cancelled")
                 break
             except Exception as e:
                 self._error_count += 1
-                self._log_error(
+                logger.error(
                     f"Error in event loop (attempt {self._error_count}): {e}"
                 )
 
                 if self._error_count >= self._max_consecutive_errors:
-                    self._log_error(
+                    logger.error(
                         f"Too many consecutive errors ({self._error_count}), stopping coordinator"
                     )
                     self.stop()
@@ -297,20 +299,3 @@ class Coordinator(ABC, Generic[T, P]):
     def _evict(self, processor: P, *args, **kwargs) -> bool:
         """Abstract method which defines the operations which take place to evict a processor."""
         pass
-
-    # Logging methods - subclasses can override these to use their own logging
-    def _log_debug(self, message: str):
-        """Log a debug message."""
-        print(f"[DEBUG] Coordinator: {message}")
-
-    def _log_info(self, message: str):
-        """Log an info message."""
-        print(f"[INFO] Coordinator: {message}")
-
-    def _log_warning(self, message: str):
-        """Log a warning message."""
-        print(f"[WARNING] Coordinator: {message}")
-
-    def _log_error(self, message: str):
-        """Log an error message."""
-        print(f"[ERROR] Coordinator: {message}")
