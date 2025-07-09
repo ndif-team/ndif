@@ -53,7 +53,6 @@ async def queue(request: Request):
     
     try:
         headers = request.headers
-        logger.info(f"Request headers : {headers}")
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(
             request

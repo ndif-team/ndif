@@ -1,17 +1,17 @@
+import logging
 from multiprocessing import Manager
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 from ray import serve
 from slugify import slugify
 from ..schema import BackendRequestModel
-from ..logging import set_logger
 from .base import Processor
 from .status import ProcessorStatus, DeploymentStatus
 from ..tasks.request_task import RequestTask
 from ..tasks.status import TaskStatus
 from ..mixins import NetworkingMixin
 
-logger = set_logger("Queue")
+logger = logging.getLogger("ndif")
 
 def slugify_model_key(model_key: str) -> str:
     """Slugify a model key. This places it in a format suitable to fetch from ray."""
@@ -24,8 +24,9 @@ class RequestProcessor(Processor[RequestTask]):
     """
 
 
-    def __init__(self, model_key: str, max_retries: int = 3):
-        super().__init__(max_retries)
+    def __init__(self, model_key: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
         self.model_key = model_key
         self._queue = Manager().list()
         self._app_handle = None
@@ -42,10 +43,10 @@ class RequestProcessor(Processor[RequestTask]):
             try:
                 ray_model_key = slugify_model_key(self.model_key)
                 self._app_handle = serve.get_app_handle(ray_model_key)
-                self._log_debug(f"Successfully fetched app handle for {ray_model_key}")
+                logger.debug(f"Successfully fetched app handle for {ray_model_key}")
                 self.deployment_status = DeploymentStatus.DEPLOYED
             except Exception as e:
-                self._log_debug(f"Failed to get app handle for {self.model_key}..")
+                logger.debug(f"Failed to get app handle for {self.model_key}..")
                 self._app_handle = None
         return self._app_handle
 
@@ -75,6 +76,8 @@ class RequestProcessor(Processor[RequestTask]):
                 return ProcessorStatus.TERMINATED
             if not self.dispatched_task and len(self._queue) == 0:
                 return ProcessorStatus.INACTIVE
+            if self.max_tasks and len(self.queue) >= self.max_tasks:
+                return ProcessorStatus.DRAINING
             return ProcessorStatus.ACTIVE
             
         # The deployment has been scheduled, but might not be finished
@@ -109,22 +112,27 @@ class RequestProcessor(Processor[RequestTask]):
         try:
             position = len(self._queue)
             queue_item = RequestTask(request.id, request, position)
-            result = super().enqueue(queue_item)
+            enqueued = super().enqueue(queue_item)
+            if not enqueued:
+                if self.status == ProcessorStatus.DRAINING:
+                    queue_item.respond_failure(self.sio, self.object_store, f"Queue has currently at max capacity of {self.max_tasks}, please try again later.")
+                else:
+                    queue_item.respond_failure(self.sio, self.object_store, f"Request could not be enqueued for unknown reason.")
 
         except Exception as e:
-            self._log_error(f"{request.id} - Error enqueuing request: {e}")
+            logger.error(f"{request.id} - Error enqueuing request: {e}")
             return False
 
         try:
             queue_item.respond(description=f"Your job has been added to the queue. Currently at position {position + 1}")
         except Exception as e:
-            self._log_error(f"{request.id} - Error responding to user at queued stage: {e}")
+            logger.error(f"{request.id} - Error responding to user at queued stage: {e}")
 
-        return result
+        return enqueued
     
 
-    # TODO: This seems like it will double notify.
     def notify_pending_task(self):
+        """Helper method used to update user(s) waiting for model to be scheduled."""
 
         description = f"{self.model_key} is being scheduled... stand by"
 
@@ -140,14 +148,14 @@ class RequestProcessor(Processor[RequestTask]):
         Dispatch a request using Ray backend.
         """
 
-        self._log_debug(f"Attempting to dispatch on {self.model_key}")
+        logger.debug(f"Attempting to dispatch on {self.model_key}")
         try:
             self.dispatched_task.respond(description="Dispatching request..." )
         except Exception as e:
-            self._log_error(f"Failed to respond to user about task being dispatched: {e}")
+            logger.error(f"Failed to respond to user about task being dispatched: {e}")
         success = self.dispatched_task.run(self.app_handle)
         if success:
-            self._log_debug(f"Succesfully dispatched on {self.model_key}")
+            logger.debug(f"Succesfully dispatched on {self.model_key}")
             self.last_dispatched = datetime.now()
         return success
 
@@ -165,24 +173,32 @@ class RequestProcessor(Processor[RequestTask]):
 
         return any(current_status == status for status in invariant_statuses)
         
-    
-    def _update_position(self, position: int):
-        """
-        Update the position of a task. Overrides the base class to pass in the networking clients.
-        """
-        task = self.queue[position]
-        task.update_position(position).respond_position_update()
 
-    
+    def update_positions(self, indices: Optional[List[int]] = None):
+        """
+        Update the positions of tasks in the queue. Overrides the base class to pass in the networking clients.
+        
+        Args:
+            indices: Optional list of indices to update. If None, updates all.
+        """
+
+        indices = indices or range(len(self.queue))
+        for i in indices:
+            if i < len(self.queue):
+                task = self.queue[i]
+                task.position = i
+                task.respond_position_update()
+
     def _handle_failed_dispatch(self):
         """
         Handle a failed request with Ray-specific logic.
         """
-        if self.dispatched_task.is_retryable(self.max_retries):
+        
+        if self.dispatched_task.retries < self.max_retries:
             # Try again
-            self._log_error(f"Request {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
+            logger.error(f"Request {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
             self._dispatch()
-            self.dispatched_task.increment_retries()
+            self.dispatched_task.retries += 1
         else:
             try: 
                 # Try to inform the user that the request has failed
@@ -190,23 +206,6 @@ class RequestProcessor(Processor[RequestTask]):
                 self.dispatched_task.respond_failure(description=description)
             except Exception as e:
                 # Give up
-                self._log_error(f"Error handling failed request {self.dispatched_task.id}: {e}")
+                logger.error(f"Error handling failed request {self.dispatched_task.id}: {e}")
 
             self.dispatched_task = None
-
-    # Override logging methods to use the service logger
-    def _log_debug(self, message: str):
-        """Log a debug message using the service logger."""
-        logger.debug(message)
-
-    def _log_error(self, message: str):
-        """Log an error message using the service logger."""
-        logger.error(message)
-
-    def _log_warning(self, message: str):
-        """Log a warning message using the service logger."""
-        logger.warning(message)
-
-    def _log_info(self, message: str):
-        """Log an info message using the service logger."""
-        logger.info(message)
