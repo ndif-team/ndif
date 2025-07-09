@@ -1,7 +1,8 @@
 import logging
+from typing import Any, Dict, List, Optional
+
 from ray import serve
-from typing import Dict, Optional, List, Any
-from ..schema import BackendRequestModel
+
 from ..processing.request_processor import RequestProcessor
 from ..processing.status import DeploymentStatus, ProcessorStatus
 from ..providers.ray import RayProvider
@@ -10,19 +11,18 @@ from .base import Coordinator
 
 logger = logging.getLogger("ndif")
 
+
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """
     Coordinates requests between the queue and the model deployments using Ray backend.
     """
 
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-      
-        RayProvider.watch()
-    
-        self._controller = None
 
+        RayProvider.watch()
+
+        self._controller = None
 
     @property
     def controller(self):
@@ -32,8 +32,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         return self._controller
 
     def route_request(self, request: BackendRequestModel) -> bool:
-        """Route request to appropriate processor. 
-        
+        """Route request to appropriate processor.
+
         Returns:
             True if request was routed successfully, False otherwise.
         """
@@ -42,24 +42,28 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             if not request or not request.model_key:
                 logger.error("Invalid request: missing model_key")
                 return False
-            
+
             model_key = request.model_key
-            
+
             # Try to route to existing active processor
             if model_key in self.active_processors:
                 processor = self.active_processors[model_key]
                 success = processor.enqueue(request)
                 if success:
-                    logger.debug(f"Request {request.id} routed to active processor {model_key}")
+                    logger.debug(
+                        f"Request {request.id} routed to active processor {model_key}"
+                    )
                     return True
                 else:
-                    logger.error(f"Failed to enqueue request {request.id} to active processor {model_key}")
+                    logger.error(
+                        f"Failed to enqueue request {request.id} to active processor {model_key}"
+                    )
                     return False
 
             # Try to route to inactive processor
             elif model_key in self.inactive_processors:
                 processor = self.inactive_processors[model_key]
-                
+
                 # TODO: Verify whether this is necessary. I had it prior to the controller returning evicted deployments from controller.deploy()
                 processor.deployment_status = DeploymentStatus.UNINITIALIZED
                 success = processor.enqueue(request)
@@ -67,10 +71,14 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     # Move processor to active state
                     self.active_processors[model_key] = processor
                     del self.inactive_processors[model_key]
-                    logger.info(f"Activated processor {model_key} and routed request {request.id}")
+                    logger.info(
+                        f"Activated processor {model_key} and routed request {request.id}"
+                    )
                     return True
                 else:
-                    logger.error(f"Failed to enqueue request {request.id} to inactive processor {model_key}")
+                    logger.error(
+                        f"Failed to enqueue request {request.id} to inactive processor {model_key}"
+                    )
                     return False
 
             # Create new processor
@@ -80,19 +88,24 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     success = processor.enqueue(request)
                     if success:
                         self.active_processors[model_key] = processor
-                        logger.info(f"Created new processor {model_key} and routed request {request.id}")
+                        logger.info(
+                            f"Created new processor {model_key} and routed request {request.id}"
+                        )
                         return True
                     else:
-                        logger.error(f"Failed to enqueue request {request.id} to new processor {model_key}")
+                        logger.error(
+                            f"Failed to enqueue request {request.id} to new processor {model_key}"
+                        )
                         return False
                 except Exception as e:
                     logger.error(f"Failed to create processor {model_key}: {e}")
                     return False
-                    
-        except Exception as e:
-            logger.error(f"Error routing request {request.id if request else 'unknown'}: {e}")
-            return False
 
+        except Exception as e:
+            logger.error(
+                f"Error routing request {request.id if request else 'unknown'}: {e}"
+            )
+            return False
 
     def _handle_processor_failure(self, processor: RequestProcessor):
         """
@@ -116,7 +129,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
-                logger.error(f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected.")
+                logger.error(
+                    f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected."
+                )
                 reason = "Processor unavailable for unknown reason."
         else:
             logger.error(f"Unknown processor failure: {processor_status}")
@@ -124,7 +139,6 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
         # Notify all queued requests of the failure
         self.evict_processor(processor, reason=reason)
-           
 
     def _deploy(self, processors: List[RequestProcessor]):
         """
@@ -157,13 +171,17 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                 try:
                     deployment_status = DeploymentStatus(status_str)
                 except ValueError:
-                    logger.error(f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'")
+                    logger.error(
+                        f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'"
+                    )
                     deployment_status = DeploymentStatus.CANT_ACCOMMODATE
 
                 # Store the processor's deployment status in a clear attribute
                 processor.deployment_status = deployment_status
-            
-            reason =  "Controller evicted deployment in order to a schedule different model."
+
+            reason = (
+                "Controller evicted deployment in order to a schedule different model."
+            )
             for model_key in evictions:
                 try:
                     self.evict_processor(model_key, reason=reason)
@@ -174,11 +192,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         except Exception as e:
             logger.error(f"Error during processor deployment: {e}")
 
-
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, self.max_retries)
-
 
     def _evict(self, processor: RequestProcessor, reason: str) -> bool:
         """Concrete implementation of eviction process performed on a RequestProcessor."""
@@ -205,5 +221,3 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
         processor._queue[:] = []  # ListProxy, so cannot use .clear()
         return True
-
-

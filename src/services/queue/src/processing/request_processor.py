@@ -1,17 +1,18 @@
 import logging
-from multiprocessing import Manager
-from typing import Dict, Any, List, Optional
 from datetime import datetime
+from multiprocessing import Manager
+from typing import Any, Dict, List, Optional
+
 from ray import serve
 from slugify import slugify
+
 from ..schema import BackendRequestModel
-from .base import Processor
-from .status import ProcessorStatus, DeploymentStatus
 from ..tasks.request_task import RequestTask
-from ..tasks.status import TaskStatus
-from ..mixins import NetworkingMixin
+from .base import Processor
+from .status import DeploymentStatus, ProcessorStatus
 
 logger = logging.getLogger("ndif")
+
 
 def slugify_model_key(model_key: str) -> str:
     """Slugify a model key. This places it in a format suitable to fetch from ray."""
@@ -23,7 +24,6 @@ class RequestProcessor(Processor[RequestTask]):
     Queue for making requests to model deployments using Ray backend.
     """
 
-
     def __init__(self, model_key: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -33,8 +33,7 @@ class RequestProcessor(Processor[RequestTask]):
         self.deployment_status = DeploymentStatus.UNINITIALIZED
         self._has_been_terminated = False
 
-
-    @property    
+    @property
     def app_handle(self):
         """
         Get the app handle for the model.
@@ -50,7 +49,6 @@ class RequestProcessor(Processor[RequestTask]):
                 self._app_handle = None
         return self._app_handle
 
-
     @property
     def queue(self) -> List[RequestTask]:
         """
@@ -58,14 +56,18 @@ class RequestProcessor(Processor[RequestTask]):
         """
         return self._queue
 
-
     @property
     def status(self):
         """
         The status of the queue.
         """
 
-        scheduled_status = [DeploymentStatus.FREE, DeploymentStatus.FULL, DeploymentStatus.CACHED_AND_FREE, DeploymentStatus.CACHED_AND_FULL]
+        scheduled_status = [
+            DeploymentStatus.FREE,
+            DeploymentStatus.FULL,
+            DeploymentStatus.CACHED_AND_FREE,
+            DeploymentStatus.CACHED_AND_FULL,
+        ]
 
         # No attempt has been made to submit a request for this model to the controller.
         if self.deployment_status == DeploymentStatus.UNINITIALIZED:
@@ -79,7 +81,7 @@ class RequestProcessor(Processor[RequestTask]):
             if self.max_tasks and len(self.queue) >= self.max_tasks:
                 return ProcessorStatus.DRAINING
             return ProcessorStatus.ACTIVE
-            
+
         # The deployment has been scheduled, but might not be finished
         elif self.deployment_status in scheduled_status:
             # Still waiting
@@ -90,11 +92,10 @@ class RequestProcessor(Processor[RequestTask]):
             else:
                 self.deployment_status = DeploymentStatus.DEPLOYED
                 return ProcessorStatus.ACTIVE
-            
+
         # The controller was unable to schedule the model
         else:
             return ProcessorStatus.UNAVAILABLE
-
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -103,7 +104,6 @@ class RequestProcessor(Processor[RequestTask]):
         base_state = super().get_state()
         base_state["model_key"] = self.model_key
         return base_state
-
 
     def enqueue(self, request: BackendRequestModel) -> bool:
         """
@@ -115,21 +115,32 @@ class RequestProcessor(Processor[RequestTask]):
             enqueued = super().enqueue(queue_item)
             if not enqueued:
                 if self.status == ProcessorStatus.DRAINING:
-                    queue_item.respond_failure(self.sio, self.object_store, f"Queue has currently at max capacity of {self.max_tasks}, please try again later.")
+                    queue_item.respond_failure(
+                        self.sio,
+                        self.object_store,
+                        f"Queue has currently at max capacity of {self.max_tasks}, please try again later.",
+                    )
                 else:
-                    queue_item.respond_failure(self.sio, self.object_store, f"Request could not be enqueued for unknown reason.")
+                    queue_item.respond_failure(
+                        self.sio,
+                        self.object_store,
+                        f"Request could not be enqueued for unknown reason.",
+                    )
 
         except Exception as e:
             logger.error(f"{request.id} - Error enqueuing request: {e}")
             return False
 
         try:
-            queue_item.respond(description=f"Your job has been added to the queue. Currently at position {position + 1}")
+            queue_item.respond(
+                description=f"Your job has been added to the queue. Currently at position {position + 1}"
+            )
         except Exception as e:
-            logger.error(f"{request.id} - Error responding to user at queued stage: {e}")
+            logger.error(
+                f"{request.id} - Error responding to user at queued stage: {e}"
+            )
 
         return enqueued
-    
 
     def notify_pending_task(self):
         """Helper method used to update user(s) waiting for model to be scheduled."""
@@ -138,10 +149,7 @@ class RequestProcessor(Processor[RequestTask]):
 
         for pending_task in self._queue:
 
-            pending_task.respond(
-                description
-            )
-
+            pending_task.respond(description)
 
     def _dispatch(self) -> bool:
         """
@@ -150,7 +158,7 @@ class RequestProcessor(Processor[RequestTask]):
 
         logger.debug(f"Attempting to dispatch on {self.model_key}")
         try:
-            self.dispatched_task.respond(description="Dispatching request..." )
+            self.dispatched_task.respond(description="Dispatching request...")
         except Exception as e:
             logger.error(f"Failed to respond to user about task being dispatched: {e}")
         success = self.dispatched_task.run(self.app_handle)
@@ -159,25 +167,23 @@ class RequestProcessor(Processor[RequestTask]):
             self.last_dispatched = datetime.now()
         return success
 
-
     # TODO: Come up with better name
-    def _is_invariant_status(self, current_status : ProcessorStatus) -> bool:
+    def _is_invariant_status(self, current_status: ProcessorStatus) -> bool:
 
         # Statuses which have nothing to do with tasks.
         invariant_statuses = [
-            ProcessorStatus.UNINITIALIZED, 
+            ProcessorStatus.UNINITIALIZED,
             ProcessorStatus.INACTIVE,
             ProcessorStatus.PROVISIONING,
             ProcessorStatus.UNAVAILABLE,
         ]
 
         return any(current_status == status for status in invariant_statuses)
-        
 
     def update_positions(self, indices: Optional[List[int]] = None):
         """
         Update the positions of tasks in the queue. Overrides the base class to pass in the networking clients.
-        
+
         Args:
             indices: Optional list of indices to update. If None, updates all.
         """
@@ -193,19 +199,23 @@ class RequestProcessor(Processor[RequestTask]):
         """
         Handle a failed request with Ray-specific logic.
         """
-        
+
         if self.dispatched_task.retries < self.max_retries:
             # Try again
-            logger.error(f"Request {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
+            logger.error(
+                f"Request {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})"
+            )
             self._dispatch()
             self.dispatched_task.retries += 1
         else:
-            try: 
+            try:
                 # Try to inform the user that the request has failed
                 description = f"Unable to reach {self.model_key}. This likely means that the deployment has been evicted."
                 self.dispatched_task.respond_failure(description=description)
             except Exception as e:
                 # Give up
-                logger.error(f"Error handling failed request {self.dispatched_task.id}: {e}")
+                logger.error(
+                    f"Error handling failed request {self.dispatched_task.id}: {e}"
+                )
 
             self.dispatched_task = None
