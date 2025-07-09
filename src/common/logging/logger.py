@@ -123,7 +123,7 @@ def set_logger(service_name) -> logging.Logger:
     }'''
     
     # Simpler format for console output with filename and process id
-    console_format = '[%(asctime)s] [%(process)d] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s'
+    console_format = '[%(asctime)s] [%(process)d] [%(levelname)s] [%(pathname)s:%(lineno)d] %(message)s'
     # Create formatters for different outputs
     json_formatter = CustomJSONFormatter(
         fmt=json_format,
