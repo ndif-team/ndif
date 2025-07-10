@@ -1,4 +1,5 @@
 #!/bin/bash
+
 PORT="${QUEUE_PORT:-6001}"
 
 # This service currently does not support multiple workers.
