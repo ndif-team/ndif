@@ -4,6 +4,7 @@ import traceback
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
+from ray import serve
 
 from nnsight.schema.response import ResponseModel
 
@@ -31,9 +32,9 @@ ObjectStoreProvider.connect()
 SioProvider.connect()
 
 coordinator = RequestCoordinator(
-    tick_interval = float(os.environ.get("QUEUE_TICK_INTERVAL", 1)),
-    max_retries = int(os.environ.get("QUEUE_MAX_RETRIES", 3)),
-    max_consecutive_errors = int(os.environ.get("QUEUE_MAX_CONSECUTIVE_ERRORS", 5))
+    tick_interval=float(os.environ.get("QUEUE_TICK_INTERVAL", 1)),
+    max_retries=int(os.environ.get("QUEUE_MAX_RETRIES", 3)),
+    max_consecutive_errors=int(os.environ.get("QUEUE_MAX_CONSECUTIVE_ERRORS", 5)),
 )
 
 coordinator.start()
@@ -106,3 +107,9 @@ async def remove_request(request_id: str):
 async def ping():
     """Endpoint to check if the server is online."""
     return "pong"
+
+
+@app.get("/status", status_code=200)
+async def status():
+    """Endpoint to check if the server is online."""
+    return await serve.get_app_handle("Controller").status.remote()
