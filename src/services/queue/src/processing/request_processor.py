@@ -145,7 +145,7 @@ class RequestProcessor(Processor[RequestTask]):
     def notify_pending_task(self):
         """Helper method used to update user(s) waiting for model to be scheduled."""
 
-        description = f"{self.model_key} is being scheduled... stand by"
+        description = f"`{self.model_key}` is being deployed... stand by."
 
         for pending_task in self._queue:
 

@@ -26,7 +26,7 @@ from nnsight.tracing.protocols import StopProtocol
 from nnsight.util import NNsightError
 
 from ....logging import set_logger
-from ....metrics import ExecutionTimeMetric, GPUMemMetric, RequestResponseSizeMetric
+from ....metrics import ExecutionTimeMetric, GPUMemMetric, ModelLoadTimeMetric, RequestResponseSizeMetric
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
@@ -129,9 +129,13 @@ class BaseModelDeployment:
                 **self.extra_kwargs,
             )
         )
+        
+        load_time = time.time() - start
+        
+        ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
 
         self.logger.info(
-            f"Model loaded from disk in {time.time() - start} seconds on device: {model.device}"
+            f"Model loaded from disk in {load_time} seconds on device: {model.device}"
         )
 
         return model
@@ -161,8 +165,11 @@ class BaseModelDeployment:
         # Dispatch the model according to the inferred device map
         self.model._module = dispatch_model(self.model._module, device_map=device_map)
 
+        load_time = time.time() - start
+        ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
+
         self.logger.info(
-            f"Model loaded from cache in {time.time() - start} seconds on device: {self.model.device}"
+            f"Model loaded from cache in {load_time} seconds on device: {self.model.device}"
         )
 
     async def __call__(self, request: BackendRequestModel) -> None:
