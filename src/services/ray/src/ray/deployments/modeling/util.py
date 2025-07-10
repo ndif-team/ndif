@@ -88,6 +88,8 @@ def load_with_cache_deletion_retry(load_fn: Callable):
                 make_room(expected_mb, available_mb)
 
                 return load_fn()
+            
+        raise exception
 
 
 def get_downloaded_models():

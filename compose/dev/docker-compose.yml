@@ -14,7 +14,7 @@ services:
     image: ray:${RAY_VERSION}
     shm_size: '15gb'
     volumes:
-      - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
+      - ~/.cache/huggingface/:/root/.cache/huggingface
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ../../src/services/ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
