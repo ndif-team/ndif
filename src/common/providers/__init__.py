@@ -74,11 +74,20 @@ def retry(fn: Callable) -> Callable:
     
     @wraps(fn)
     def inner(cls:Type[Provider], *args, **kwargs):
+        
+        exception = None
+        
         for _ in range(cls.max_retries):
-            if not cls.connected():
-                cls.reset()
-                cls.connect()
-            return fn(cls,*args, **kwargs)
-    
+            try:
+                if not cls.connected():
+                    cls.reset()
+                    cls.connect()
+                return fn(cls,*args, **kwargs)
+            except Exception as e:
+                exception = e
+                time.sleep(cls.retry_interval)
+                
+        if exception is not None:
+            raise exception
     
     return inner
