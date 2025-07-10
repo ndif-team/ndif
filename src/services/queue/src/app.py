@@ -30,7 +30,12 @@ app.add_middleware(
 ObjectStoreProvider.connect()
 SioProvider.connect()
 
-coordinator = RequestCoordinator()
+coordinator = RequestCoordinator(
+    tick_interval = float(os.environ.get("QUEUE_TICK_INTERVAL", 1)),
+    max_retries = int(os.environ.get("QUEUE_MAX_RETRIES", 3)),
+    max_consecutive_errors = int(os.environ.get("QUEUE_MAX_CONSECUTIVE_ERRORS", 5))
+)
+
 coordinator.start()
 
 Instrumentator().instrument(app).expose(app)
