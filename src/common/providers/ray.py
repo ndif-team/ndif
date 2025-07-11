@@ -4,7 +4,7 @@ import os
 import ray
 from ray import serve
 
-from . import Provider, retry
+from . import Provider
 
 logger = logging.getLogger("ndif")
 
@@ -26,7 +26,6 @@ class RayProvider(Provider):
         }
 
     @classmethod
-    @retry
     def connect(cls):
         logger.info(f"Connecting to Ray at {cls.ray_url}...")
         ray.init(logging_level="error", address=cls.ray_url)
