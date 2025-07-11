@@ -27,6 +27,7 @@ class SioProvider(Provider):
         }
 
     @classmethod
+    @retry
     def connect(cls):
         logger.info(f"Connecting to API at {cls.api_url}...")
         if cls.sio is None:

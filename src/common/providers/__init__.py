@@ -76,6 +76,8 @@ def retry(fn: Callable) -> Callable:
     def inner(cls:Type[Provider], *args, **kwargs):
         
         exception = None
+
+        logger.debug(f"Attempting to call {fn.__name__} with {cls.max_retries} retries...")
         
         for _ in range(cls.max_retries):
             try:
