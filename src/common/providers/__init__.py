@@ -81,7 +81,7 @@ def retry(fn: Callable) -> Callable:
         
         for _ in range(cls.max_retries):
             try:
-                if not cls.connected():
+                if not cls.connected() and fn.__name__ != 'connect':
                     cls.reset()
                     cls.connect()
                 return fn(cls,*args, **kwargs)
