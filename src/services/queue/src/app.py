@@ -92,10 +92,14 @@ async def queue(request: Request):
 
 
 @app.delete("/queue/{request_id}")
-async def remove_request(request_id: str):
+async def delete_request(request_id: str):
     """Remove a request from the queue."""
     try:
         coordinator.remove_request(request_id)
+        return {"message": f"Request {request_id} successfully removed from queue"}
+    except ValueError as e:  # TODO: Ensure coordinator raises ValueError for not found
+        logger.error(f"Request {request_id} not found: {e}")
+        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
     except Exception as e:
         logger.error(f"Error removing request {request_id}: {e}")
         raise HTTPException(
