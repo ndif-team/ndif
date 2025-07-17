@@ -1,5 +1,5 @@
 import inspect
-from nnsight.intervention.tracing.util import ExceptionWrapper, wrap_exception
+from nnsight.intervention.tracing.util import wrap_exception
 
 def run(tracer, fn):
     __nnsight_tracing_info__ = tracer.info

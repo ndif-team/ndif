@@ -4,15 +4,12 @@ from typing import Any, Dict, List, TYPE_CHECKING
 from types import ModuleType
 from pydantic import BaseModel
 
-from ....util import Patch, Patcher
-from ...backends import ExecutionBackend
-from ...tracing.globals import Globals
-from ...tracing.util import wrap_exception
-from ...interleaver import Interleaver
-if TYPE_CHECKING:
-    from ...tracing.base import Tracer
-else:
-    Tracer = Any
+from nnsight.util import Patch, Patcher
+from nnsight.intervention.backends import ExecutionBackend
+from nnsight.intervention.tracing.globals import Globals
+from nnsight.intervention.tracing.util import wrap_exception
+from nnsight.intervention.interleaver import Interleaver
+from nnsight.intervention.tracing.base import Tracer
 
 # Built-in functions and types that are allowed to be used
 WHITELISTED_BUILTINS = {

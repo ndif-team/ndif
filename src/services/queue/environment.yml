@@ -36,4 +36,4 @@ dependencies:
     - torch
     - python-slugify
     - influxdb-client
-    - nnsight>=0.5.0.dev0
+    - nnsight>=0.5.0.dev9

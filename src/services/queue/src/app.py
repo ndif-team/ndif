@@ -70,7 +70,7 @@ async def queue(request: Request):
         logger.debug(f"Responded to request: {backend_request.id}")
 
         # Replace the coroutine graph with the actual bytes
-        backend_request.graph = await backend_request.graph
+        backend_request.request = await backend_request.request
 
         coordinator.route_request(backend_request)
 

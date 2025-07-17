@@ -1,16 +1,11 @@
 import asyncio
 import gc
 import os
-import time
-import traceback
-import weakref
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict
-
 import threading
 import time
 import traceback
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict
 
 import ray
@@ -20,30 +15,23 @@ from accelerate.utils import get_balanced_memory
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 
 from ....logging import set_logger
 from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
-                         RequestResponseSizeMetric)
+                         ModelLoadTimeMetric, RequestResponseSizeMetric)
+from ....providers.objectstore import ObjectStoreProvider
+from ....providers.socketio import SioProvider
 from ....schema import (BackendRequestModel, BackendResponseModel,
                         BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from .util import load_with_cache_deletion_retry
-from nnsight.schema.request import RequestModel
-
-
-from ....logging import set_logger
-from ....metrics import ExecutionTimeMetric, GPUMemMetric, ModelLoadTimeMetric, RequestResponseSizeMetric
-from ....providers.objectstore import ObjectStoreProvider
-from ....providers.socketio import SioProvider
-from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-
+from ...nn.protected import ProtectedEnvoy, protect
 from .util import kill_thread, load_with_cache_deletion_retry
-
 
 
 class BaseModelDeployment:
@@ -84,11 +72,8 @@ class BaseModelDeployment:
 
         torch.set_default_dtype(torch.bfloat16)
 
-        # if self.cache_evictions is not None:
-        #     object_refs = [object_ref_from_id(cache_id) for cache_id in self.cache_evictions]
-        #     ray_free(object_refs, local_only=True)
-
         self.model = self.load_from_disk()
+        self.protected_model = protect(self.model)
 
         if dispatch:
             self.model._module.requires_grad_(False)
@@ -229,7 +214,10 @@ class BaseModelDeployment:
 
     def pre(self) -> RequestModel:
         """Logic to execute before execution."""
-        request = self.request.deserialize(self.model)
+        request = self.request.deserialize(self.protected_model)
+        
+        if hasattr(request.tracer, "model"):
+            request.tracer.model = self.model
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,

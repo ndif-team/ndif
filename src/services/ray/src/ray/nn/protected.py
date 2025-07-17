@@ -145,6 +145,10 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
         return self.__obj__.device
     
     @allow
+    def get(self, *args, **kwargs):
+        return Envoy.get(self, *args, **kwargs)
+    
+    @allow
     def skip(self, *args, **kwargs):
         return self.__obj__.skip(*args, **kwargs)
     
@@ -166,38 +170,46 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
 
         
     
+def protect(obj: Any):
+    
+    if isinstance(obj, Envoy):
+        class _ProtectedEnvoy(ProtectedEnvoy, obj.__class__):
+            pass
+        return _ProtectedEnvoy(obj)
+    
+    return obj
         
-from nnsight import Envoy
-import torch
-from collections import OrderedDict
+# from nnsight import Envoy
+# import torch
+# from collections import OrderedDict
 
-input_size = 5
-hidden_dims = 10
-output_size = 2
-
-
-
-net = torch.nn.Sequential(
-    OrderedDict(
-        [
-            ("layer1", torch.nn.Linear(input_size, hidden_dims)),
-            ("layer2", torch.nn.Linear(hidden_dims, output_size)),
-        ]
-    )
-)
-
-net = Envoy(net).cuda()
+# input_size = 5
+# hidden_dims = 10
+# output_size = 2
 
 
-tiny_input =  torch.rand((1, input_size))
 
-net = ProtectedEnvoy(net)
+# net = torch.nn.Sequential(
+#     OrderedDict(
+#         [
+#             ("layer1", torch.nn.Linear(input_size, hidden_dims)),
+#             ("layer2", torch.nn.Linear(hidden_dims, output_size)),
+#         ]
+#     )
+# )
+
+# net = Envoy(net).cuda()
 
 
-with net.trace(tiny_input):
-    output = net.layer1.inputs.shape.save()
+# tiny_input =  torch.rand((1, input_size))
+
+# net = ProtectedEnvoy(net)
+
+
+# with net.trace(tiny_input):
+#     output = net.layer1.inputs.shape.save()
         
-print(output)
+# print(output)
     
     
     

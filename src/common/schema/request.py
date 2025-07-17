@@ -53,7 +53,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
     sent: Optional[float] = None
 
-    def deserialize(self, model: NNsight) -> Graph:
+    def deserialize(self, model: NNsight) -> RequestModel:
 
         request = self.request
 

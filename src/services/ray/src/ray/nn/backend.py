@@ -1,12 +1,12 @@
 from typing import Any, Callable
 
 from nnsight.intervention.backends import Backend
-# from .utils import (
-#     WHITELISTED_MODULES_DESERIALIZATION,
-#     Protector,
-#     WHITELISTED_MODULES,
-#     ProtectorEscape,
-# )
+from .utils import (
+    WHITELISTED_MODULES_DESERIALIZATION,
+    Protector,
+    WHITELISTED_MODULES,
+    ProtectorEscape,
+)
 from .sandbox import run
 from nnsight.intervention.tracing.globals import Globals
 from nnsight.intervention.tracing.tracer import Tracer
@@ -19,14 +19,14 @@ class RemoteExecutionBackend(Backend):
 
     def __call__(self, tracer: Tracer):
 
-        # protector = Protector(WHITELISTED_MODULES)
-        # escape = ProtectorEscape(protector)
+        protector = Protector(WHITELISTED_MODULES)
+        #escape = ProtectorEscape(protector)
 
         Globals.enter()
 
-        # with protector:
-        #     with escape:
-        run(tracer, self.fn)
+        with protector:
+            #with escape:
+            run(tracer, self.fn)
 
         Globals.exit()
 
