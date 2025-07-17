@@ -9,6 +9,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from ray.serve.handle import DeploymentHandle
 from .....providers.mailgun import MailgunProvider
+from ..cluster.node import CandidateLevel
 
 logger = logging.getLogger("ndif")
 
@@ -46,7 +47,7 @@ class SchedulingActor:
         self.previous_model_keys_hash = hash("")
 
         # Google API authorization scopes
-        scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+        scopes = ["https://www.googleapis.com/auth/calendar"]
 
         # Create credentials from the service account file
         credentials = service_account.Credentials.from_service_account_file(
@@ -69,7 +70,7 @@ class SchedulingActor:
         while True:
 
             try:
-                self.check_calendar()
+                await self.check_calendar()
             except Exception as e:
                 import traceback
 
@@ -94,7 +95,7 @@ class SchedulingActor:
         description = re.sub(CLEANR, "", description)
         return description
 
-    def check_calendar(self):
+    async def check_calendar(self):
         """
         Check the Google Calendar for events and process any changes.
 
@@ -122,10 +123,11 @@ class SchedulingActor:
 
         events = events_result.get("items", [])
 
-        model_keys = sorted([self.sanitize(event["description"]) for event in events])
+        model_keys_to_event = {self.sanitize(event["description"]): event for event in events}
+        model_keys_to_event = dict(sorted(model_keys_to_event.items(), key=lambda item: item[0]))
 
         # Generate a hash of the model keys to check for changes
-        current_hash = hash("".join(model_keys))
+        current_hash = hash("".join(model_keys_to_event.keys()))
 
         # Only update if the model keys have changed
         if current_hash != self.previous_model_keys_hash:
@@ -135,7 +137,65 @@ class SchedulingActor:
             # Update the stored hash
             self.previous_model_keys_hash = current_hash
             # Update the controller with new model keys
-            self.controller_handle.deploy.remote(model_keys, dedicated=True)
+            result: Dict[str, str] = await self.controller_handle.deploy.remote(list(model_keys_to_event.keys()), dedicated=True)
+            result = result['result']
+            error_messages = {model_key: value for model_key, value in result.items() if value not in CandidateLevel.__members__}
+
+            # Loop through error messages and update the corresponding calendar event
+            for model_key, error_message in error_messages.items():
+                # Find the event with the matching sanitized description
+                logger.error(f"Model key '{model_key}' encountered error: {error_message}")
+                event = model_keys_to_event[model_key]
+                event_id = event["id"]
+                # Prepend "ERROR:" to the event summary/title
+                new_summary = f"ERROR: {event.get('summary', '')}"
+                # Update the event with the error message in the description and new summary
+                try:
+                    # Move the event 24 hours earlier
+                    start = event.get("start", {})
+                    end = event.get("end", {})
+                    # Handle both dateTime and date (all-day) events
+                    if "dateTime" in start and "dateTime" in end:
+                        # Parse and subtract 24 hours
+                        start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00")) - timedelta(days=1)
+                        end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00")) - timedelta(days=1)
+                        new_start = {"dateTime": start_dt.isoformat().replace("+00:00", "Z")}
+                        new_end = {"dateTime": end_dt.isoformat().replace("+00:00", "Z")}
+                    elif "date" in start and "date" in end:
+                        # All-day event, subtract one day
+                        start_date = datetime.fromisoformat(start["date"]) - timedelta(days=1)
+                        end_date = datetime.fromisoformat(end["date"]) - timedelta(days=1)
+                        new_start = {"date": start_date.date().isoformat()}
+                        new_end = {"date": end_date.date().isoformat()}
+                    else:
+                        # Fallback: don't change times
+                        new_start = start
+                        new_end = end
+
+                    # Ensure the creator is an attendee
+                    attendees = event.get("attendees", [])
+                    creator_email = event.get("creator", {}).get("email", None)
+                    if creator_email:
+                        # Check if creator is already in attendees
+                        if not any(a.get("email") == creator_email for a in attendees):
+                            attendees.append({"email": creator_email})
+                    self.service.events().patch(
+                        calendarId=self.google_calendar_id,
+                        eventId=event_id,
+                        body={
+                            "summary": new_summary,
+                            "description": error_message,
+                            "start": new_start,
+                            "end": new_end,
+                            "attendees": attendees,
+                        },
+                        sendUpdates="all",
+                    ).execute()
+                    logger.info(f"Updated event {event_id} with error message.")
+                except Exception as e:
+                    logger.error(f"Failed to update event {event_id} with error: {e}")
+                break
+   
 
     async def get_schedule(self):
         """
