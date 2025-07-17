@@ -82,6 +82,7 @@ class BackendRequestModel(ObjectStorageMixin):
             id=str(uuid.uuid4()),
             sent=float(headers.get("sent-timestamp", None)),
             api_key=api_key,
+            callback=headers.get("callback", ''),
         )
 
     def create_response(
@@ -110,6 +111,7 @@ class BackendRequestModel(ObjectStorageMixin):
                 status=status,
                 description=description,
                 data=data,
+                callback=self.callback,
             )
             .backend_log(
                 logger=logger,

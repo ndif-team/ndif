@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from io import BytesIO
-from typing import ClassVar, TYPE_CHECKING, Union, Any
+from typing import ClassVar, TYPE_CHECKING, Union, Any, Optional
 
 import torch
 import boto3
@@ -41,7 +41,7 @@ class ObjectStorageMixin(BaseModel):
             Deletes the object from S3 storage.
     """
     id: str
-    size: int = None
+    size: Optional[int] = None
     
     _bucket_name: ClassVar[str] = "default"
     _file_extension: ClassVar[str] = "json"
