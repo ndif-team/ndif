@@ -88,6 +88,8 @@ def load_with_cache_deletion_retry(load_fn: Callable):
                 make_room(expected_mb, available_mb)
 
                 return load_fn()
+            
+        raise exception
 
 
 def get_downloaded_models():
@@ -95,3 +97,28 @@ def get_downloaded_models():
     hf_info = scan_cache_dir()
 
     return [repo.repo_id for repo in hf_info.repos if downloaded(repo)]
+
+
+import threading
+import ctypes
+
+def kill_thread(ident: int, exc_type=SystemExit):
+    if not isinstance(exc_type, type) or not issubclass(exc_type, BaseException):
+        raise TypeError("exc_type must be an exception type")
+
+    # Optionally check if thread ID exists
+    if ident not in [t.ident for t in threading.enumerate()]:
+        raise ValueError("Thread ID not found")
+
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_long(ident), ctypes.py_object(exc_type)
+    )
+    if res == 0:
+        raise ValueError("Invalid thread ID")
+    elif res > 1:
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_long(ident), None
+        )
+        raise SystemError("PyThreadState_SetAsyncExc failed")
+    
+    

@@ -118,7 +118,7 @@ class Cluster:
             f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
         )
 
-        results = {}
+        results = {'result': {}, 'evictions': set()}
 
         change = False
 
@@ -135,7 +135,7 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                results[model_key] = str(size_in_bytes)
+                results['result'][model_key] = str(size_in_bytes)
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
@@ -151,6 +151,8 @@ class Cluster:
                         logger.info(
                             f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                         )
+
+                        results['evictions'].add(model_key)
 
                         node.evict(model_key)
 
@@ -216,7 +218,7 @@ class Cluster:
 
             candidate_level = candidate.candidate_level
 
-            results[model_key] = candidate_level.name
+            results['result'][model_key] = candidate_level.name
 
             if candidate_level == CandidateLevel.DEPLOYED:
 
@@ -237,6 +239,8 @@ class Cluster:
                 self.nodes[node_id].deploy(
                     model_key, candidate, size_in_bytes, dedicated=dedicated
                 )
+                
+                results['evictions'].update(candidate.evictions)
 
                 change = True
 

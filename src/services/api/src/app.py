@@ -5,7 +5,7 @@ from typing import Any, Dict
 
 import socketio
 import uvicorn
-import boto3
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -14,7 +14,6 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from prometheus_fastapi_instrumentator import Instrumentator
-from slugify import slugify
 import requests
 
 from nnsight.schema.response import ResponseModel
@@ -26,6 +25,7 @@ logger = set_logger("API")
 from .api_key import api_key_auth
 from .metrics import NetworkStatusMetric, TransportLatencyMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from .providers.objectstore import ObjectStoreProvider
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,17 +57,7 @@ sm = SocketManager(
 )
 
 # Init object_store connection
-object_store = boto3.client(
-    's3',
-    endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
-    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
-    region_name='us-east-1',
-    # Skip verification for local or custom S3 implementations
-    verify=False,
-    # Set to path style for compatibility with non-AWS S3 implementations
-    config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-)
+ObjectStoreProvider.connect()
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
@@ -106,9 +96,9 @@ async def request(
         # Extract just the base version number from user version
         user_base_version = re.match(r'^(\d+\.\d+\.\d+)', user_nnsight_version).group(1)
         
-        if user_base_version != SERVER_NNSIGHT_VERSION:
-            raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
-        # extract the request data
+        # if user_base_version != SERVER_NNSIGHT_VERSION:
+        #     raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
+        # # extract the request data
         
 
         response = request.create_response(
@@ -135,21 +125,29 @@ async def request(
                 data=body,
                 headers=headers,
             )
-            
-            #if not queue_response.ok:
-            #    raise Exception(f"Queue service returned error: {queue_response.status_code} - {queue_response.text}")
-                
+
+            queue_response.raise_for_status()
             logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
         except Exception as e:
-            description = f"Failed to send request to queue: {e}"
-            logger.error(description)
+            # Check if it's an HTTPError and if it's a 503
+            error_message = str(e)
+            status_code = None
+            if hasattr(e, "response") and e.response is not None:
+                status_code = getattr(e.response, "status_code", None)
+            if status_code == 503:
+                description = (
+                    "Queue service is not ready yet (waiting to connect to the ray backend). "
+                    "Please try again in a bit."
+                )
+            else:
+                description = "Failed to submit request to queue endpoint."
+            logger.error(f"{description} Exception: {error_message}")
             response = request.create_response(
                 status=ResponseModel.JobStatus.ERROR,
                 description=description,
                 logger=logger,
             )
     except Exception as exception:
-
         description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
@@ -161,7 +159,7 @@ async def request(
 
     if not response.blocking:
 
-        response.save(object_store)
+        response.save(ObjectStoreProvider.object_store)
 
     # Return response.
     return response
@@ -201,7 +199,7 @@ async def response(id: str) -> BackendResponseModel:
     """
 
     # Load response from client given id.
-    return BackendResponseModel.load(object_store, id)
+    return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
 
 
 @app.get("/result/{id}")
@@ -219,7 +217,7 @@ async def result(id: str) -> BackendResultModel:
     """
 
     # Get cursor to bytes stored in data backend.
-    object, content_length = BackendResultModel.load(object_store, id, stream=True)
+    object, content_length = BackendResultModel.load(ObjectStoreProvider.object_store, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -236,9 +234,9 @@ async def result(id: str) -> BackendResultModel:
         finally:
             object.close()
 
-            BackendResultModel.delete(object_store, id)
-            BackendResponseModel.delete(object_store, id)
-            BackendRequestModel.delete(object_store, id)
+            BackendResultModel.delete(ObjectStoreProvider.object_store, id)
+            BackendResponseModel.delete(ObjectStoreProvider.object_store, id)
+            BackendRequestModel.delete(ObjectStoreProvider.object_store, id)
 
     return StreamingResponse(
         content=stream(),

@@ -17,11 +17,11 @@ from ray.serve.schema import (
 from slugify import slugify
 
 from ....logging.logger import set_logger
+from ....providers.objectstore import ObjectStoreProvider
+from ....providers.socketio import SioProvider
 from ..modeling.base import BaseModelDeploymentArgs
-from .cluster import Cluster, Deployment, DeploymentLevel
 from ..modeling.util import get_downloaded_models
-
-
+from .cluster import Cluster, Deployment, DeploymentLevel
 
 
 class _ControllerDeployment:
@@ -29,22 +29,14 @@ class _ControllerDeployment:
         self,
         deployments: List[str],
         model_import_path: str,
-        object_store_url: str,
-        object_store_access_key: str,
-        object_store_secret_key: str,
-        api_url: str,
         execution_timeout_seconds: float,
-        minimum_deployment_time_seconds: float,
         model_cache_percentage: float,
+        minimum_deployment_time_seconds: float = 60,
     ):
 
         super().__init__()
 
         self.model_import_path = model_import_path
-        self.object_store_url = object_store_url
-        self.object_store_access_key = object_store_access_key
-        self.object_store_secret_key = object_store_secret_key
-        self.api_url = api_url
         self.execution_timeout_seconds = execution_timeout_seconds
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
@@ -54,7 +46,7 @@ class _ControllerDeployment:
         self.ray_dashboard_url = (
             f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
         )
-        
+
         self.logger = set_logger("Controller")
 
         self.client = ServeSubmissionClient(self.ray_dashboard_url)
@@ -107,10 +99,6 @@ class _ControllerDeployment:
             model_key=deployment.model_key,
             node_name=node_name,
             cached=cached,
-            api_url=self.api_url,
-            object_store_url=self.object_store_url,
-            object_store_access_key=self.object_store_access_key,
-            object_store_secret_key=self.object_store_secret_key,
             execution_timeout=self.execution_timeout_seconds,
         )
 
@@ -126,6 +114,10 @@ class _ControllerDeployment:
                         num_cpus=1,
                         num_gpus=deployment.gpus_required,
                         resources={f"node:{node_name}": 0.01},
+                        runtime_env={
+                            **SioProvider.to_env(),
+                            **ObjectStoreProvider.to_env()
+                        },
                     ),
                 )
             ],
@@ -191,10 +183,12 @@ class _ControllerDeployment:
                         deployment.model_key
                     ].config.to_json_string(),
                 }
-                
+
                 if self.minimum_deployment_time_seconds is not None:
                     status[application_name]["schedule"] = {
-                        "end_time": deployment.end_time(self.minimum_deployment_time_seconds),
+                        "end_time": deployment.end_time(
+                            self.minimum_deployment_time_seconds
+                        ),
                     }
 
                 existing_repo_ids.add(
@@ -249,14 +243,6 @@ class ControllerDeploymentArgs(BaseModel):
 
     deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split(",")
 
-    object_store_url: str = os.environ.get("OBJECT_STORE_URL", None)
-    object_store_access_key: str = os.environ.get(
-        "OBJECT_STORE_ACCESS_KEY", "minioadmin"
-    )
-    object_store_secret_key: str = os.environ.get(
-        "OBJECT_STORE_SECRET_KEY", "minioadmin"
-    )
-    api_url: str = os.environ.get("API_URL", None)
     model_import_path: str = "src.ray.deployments.modeling.model:app"
     execution_timeout_seconds: Optional[float] = None
     minimum_deployment_time_seconds: Optional[float] = None

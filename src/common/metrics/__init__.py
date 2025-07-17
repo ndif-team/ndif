@@ -6,3 +6,4 @@ from .request_status import RequestStatusMetric
 from .request_transport_latency import TransportLatencyMetric
 from .request_execution_time import ExecutionTimeMetric
 from .request_response_size import RequestResponseSizeMetric
+from .model_load_time import ModelLoadTimeMetric

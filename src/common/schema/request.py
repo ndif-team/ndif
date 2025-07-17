@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-import uuid
 import time
-from typing import TYPE_CHECKING, ClassVar, Optional, Union, Coroutine
+import uuid
+from typing import TYPE_CHECKING, ClassVar, Coroutine, Optional, Union
 
 import ray
 from fastapi import Request
@@ -40,20 +40,20 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
+    _last_status: Optional[ResponseModel.JobStatus] = None
+
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
     model_key: Optional[str] = None
     session_id: Optional[str] = None
     zlib: Optional[bool] = True
-    api_key: Optional[str] = ''
+    api_key: Optional[str] = ""
 
     id: str
-        
+
     sent: Optional[float] = None
 
-    
-
-    def deserialize(self, model: NNsight):
+    def deserialize(self, model: NNsight) -> Graph:
 
         request = self.request
 
@@ -64,9 +64,7 @@ class BackendRequestModel(ObjectStorageMixin):
         return RequestModel.deserialize(model, request, self.zlib)
 
     @classmethod
-    def from_request(
-        cls, request: Request
-    ) -> Self:
+    def from_request(cls, request: Request) -> Self:
 
         headers = request.headers
         
@@ -82,7 +80,7 @@ class BackendRequestModel(ObjectStorageMixin):
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
             sent=sent,
-            api_key=headers.get("ndif-api-key", ''),
+            api_key=headers.get("ndif-api-key", ""),
         )
 
     def create_response(
@@ -95,31 +93,34 @@ class BackendRequestModel(ObjectStorageMixin):
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 
         log_msg = f"{self.id} - {status.name}: {description}"
-        
+
         logging_level = "info"
 
         if status == ResponseModel.JobStatus.ERROR:
             logging_level = "exception"
         elif status == ResponseModel.JobStatus.NNSIGHT_ERROR:
             logging_level = "exception"
-            
 
-        response = (
-            BackendResponseModel(
-                id=self.id,
-                session_id=self.session_id,
-                status=status,
-                description=description,
-                data=data,
-            )
-            .backend_log(
-                logger=logger,
-                message=log_msg,
-                level=logging_level,
-            )
-            .update_metric(
+        response = BackendResponseModel(
+            id=self.id,
+            session_id=self.session_id,
+            status=status,
+            description=description,
+            data=data,
+        ).backend_log(
+            logger=logger,
+            message=log_msg,
+            level=logging_level,
+        )
+
+        if (
+            status != self._last_status
+            and status != ResponseModel.JobStatus.ERROR
+            and status != ResponseModel.JobStatus.NNSIGHT_ERROR
+        ):
+            self._last_status = status
+            response.update_metric(
                 self,
             )
-        )
 
         return response
