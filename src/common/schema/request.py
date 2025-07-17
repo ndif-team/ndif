@@ -47,6 +47,8 @@ class BackendRequestModel(ObjectStorageMixin):
     session_id: Optional[str] = None
     format: str
     zlib: bool
+    
+    callback: Optional[str] = ''
 
     id: str
         
