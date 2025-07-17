@@ -8,6 +8,7 @@ import ray
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from ray.serve.handle import DeploymentHandle
+from .....providers.mailgun import MailgunProvider
 
 logger = logging.getLogger("ndif")
 

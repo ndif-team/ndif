@@ -19,6 +19,7 @@ from slugify import slugify
 from ....logging.logger import set_logger
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
+from ....providers.mailgun import MailgunProvider
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
@@ -116,7 +117,8 @@ class _ControllerDeployment:
                         resources={f"node:{node_name}": 0.01},
                         runtime_env={
                             **SioProvider.to_env(),
-                            **ObjectStoreProvider.to_env()
+                            **ObjectStoreProvider.to_env(),
+                            **MailgunProvider.to_env(),
                         },
                     ),
                 )
