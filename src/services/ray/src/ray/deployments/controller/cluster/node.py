@@ -114,7 +114,7 @@ class Node:
             
             cache_evictions = []
             
-            for model_key, deployment in sorted(self.cache.items(), key=lambda x: x[1].size_bytes):
+            for deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
                 
                 cpu_memory_needed -= deployment.size_bytes
                 
