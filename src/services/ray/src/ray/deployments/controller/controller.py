@@ -78,7 +78,7 @@ class _ControllerDeployment:
         )
         
         if deployments:
-            self.deploy(self.deployments, dedicated=True)
+            self.deploy(deployments, dedicated=True)
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 

@@ -41,6 +41,7 @@ class BackendRequestModel(ObjectStorageMixin):
     _file_extension: ClassVar[str] = "json"
 
     _last_status: Optional[ResponseModel.JobStatus] = None
+    _last_status_time: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
@@ -51,8 +52,6 @@ class BackendRequestModel(ObjectStorageMixin):
     callback: Optional[str] = ''
 
     id: str
-
-    sent: Optional[float] = None
 
     def deserialize(self, model: NNsight) -> RequestModel:
 
@@ -80,7 +79,7 @@ class BackendRequestModel(ObjectStorageMixin):
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
-            sent=sent,
+            _last_status_time=sent,
             api_key=headers.get("ndif-api-key", ""),
             callback=headers.get("ndif-callback", ""),
         )
@@ -122,8 +121,10 @@ class BackendRequestModel(ObjectStorageMixin):
             and status != ResponseModel.JobStatus.NNSIGHT_ERROR
         ):
             self._last_status = status
+            
             response.update_metric(
                 self,
             )
+            
 
         return response

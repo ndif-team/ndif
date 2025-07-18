@@ -23,7 +23,7 @@ from .logging import set_logger
 logger = set_logger("API")
 
 from .api_key import api_key_auth
-from .metrics import NetworkStatusMetric, TransportLatencyMetric
+from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from .providers.objectstore import ObjectStoreProvider
 
@@ -106,9 +106,7 @@ async def request(
             description="Your job has been received and is waiting to be queued.",
             logger=logger,
         )
-        
-        TransportLatencyMetric.update(request)
-        
+                
         NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key

@@ -9,7 +9,7 @@ from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusMetric
+from ..metrics import RequestStatusTimeMetric
 from ..providers.mailgun import MailgunProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..providers.socketio import SioProvider
@@ -82,6 +82,6 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             Self.
         """
 
-        RequestStatusMetric.update(request, self)
+        RequestStatusTimeMetric.update(request, self)
 
         return self
