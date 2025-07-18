@@ -76,8 +76,9 @@ class _ControllerDeployment:
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
         )
-
-        # self.deploy(self.deployments, dedicated=True)
+        
+        if deployments:
+            self.deploy(self.deployments, dedicated=True)
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 
@@ -243,7 +244,7 @@ class ControllerDeployment(_ControllerDeployment):
 
 class ControllerDeploymentArgs(BaseModel):
 
-    deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split(",")
+    deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
     execution_timeout_seconds: Optional[float] = None
