@@ -1,11 +1,13 @@
 import os
+import pickle
+import re
 import traceback
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
+import requests
 import socketio
 import uvicorn
-
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -14,7 +16,6 @@ from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from prometheus_fastapi_instrumentator import Instrumentator
-import requests
 
 from nnsight.schema.response import ResponseModel
 
@@ -24,8 +25,10 @@ logger = set_logger("API")
 
 from .api_key import api_key_auth
 from .metrics import NetworkStatusMetric
-from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from .providers.objectstore import ObjectStoreProvider
+from .schema import (BackendRequestModel, BackendResponseModel,
+                     BackendResultModel)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,8 +65,9 @@ ObjectStoreProvider.connect()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
+
+
 from nnsight import __version__
-import re
 
 # Extract just the base version number (e.g. 0.4.7 from 0.4.7.dev10+gbcb756d)
 SERVER_NNSIGHT_VERSION = re.match(r'^(\d+\.\d+\.\d+)', __version__).group(1)
@@ -113,15 +117,12 @@ async def request(
         api_key_auth(request)
         
         try:
-            body = await request.request
-            headers = dict(raw_request.headers)
-            headers["ndif-request_id"] = request.id
-            
+            request.request = await request.request
+    
             logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
             queue_response = requests.post(
                 f"http://{os.environ.get('QUEUE_URL')}/queue",
-                data=body,
-                headers=headers,
+                data=pickle.dumps(request),
             )
 
             queue_response.raise_for_status()

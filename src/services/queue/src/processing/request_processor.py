@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime
-from multiprocessing import Manager
 from typing import Any, Dict, List, Optional
 
 from ray import serve
@@ -28,7 +27,7 @@ class RequestProcessor(Processor[RequestTask]):
         super().__init__(*args, **kwargs)
 
         self.model_key = model_key
-        self._queue = Manager().list()
+        self._queue = []
         self._app_handle = None
         self.deployment_status = DeploymentStatus.UNINITIALIZED
         self._has_been_terminated = False

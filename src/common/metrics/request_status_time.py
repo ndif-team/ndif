@@ -37,9 +37,9 @@ class RequestStatusTimeMetric(Metric):
         
         
         _new_last_status_time = time.time()
-        _last_status_time = request._last_status_time
+        _last_status_time = request.last_status_time
         
-        request._last_status_time = _new_last_status_time
+        request.last_status_time = _new_last_status_time
         
         if _last_status_time is None:
             return
@@ -51,5 +51,5 @@ class RequestStatusTimeMetric(Metric):
             request_id=str(request.id),
             api_key=str(request.api_key),
             model_key=str(request.model_key),
-            status=request._last_status.value,
+            status=request.last_status.value,
         )

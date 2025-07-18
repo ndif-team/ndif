@@ -40,8 +40,8 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    _last_status: Optional[ResponseModel.JobStatus] = None
-    _last_status_time: Optional[float] = None
+    last_status: Optional[ResponseModel.JobStatus] = None
+    last_status_time: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
@@ -79,7 +79,7 @@ class BackendRequestModel(ObjectStorageMixin):
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
-            _last_status_time=sent,
+            last_status_time=sent,
             api_key=headers.get("ndif-api-key", ""),
             callback=headers.get("ndif-callback", ""),
         )
@@ -114,13 +114,16 @@ class BackendRequestModel(ObjectStorageMixin):
             message=log_msg,
             level=logging_level,
         )
+        
+        logger.info(f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}")
 
         if (
-            status != self._last_status
+            status != self.last_status
             and status != ResponseModel.JobStatus.ERROR
             and status != ResponseModel.JobStatus.NNSIGHT_ERROR
         ):
-            self._last_status = status
+            logger.info(f"Updating last status: {status}")
+            self.last_status = status
             
             response.update_metric(
                 self,

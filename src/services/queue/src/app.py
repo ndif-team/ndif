@@ -1,5 +1,6 @@
 import os
 import traceback
+import pickle
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,7 +60,7 @@ async def queue(request: Request):
 
     try:
         # Create a modified request object with the resolved body
-        backend_request = BackendRequestModel.from_request(request)
+        backend_request: BackendRequestModel = pickle.loads(await request.body())
 
         logger.debug(f"Creating response for request: {backend_request.id}")
         response = backend_request.create_response(
@@ -68,9 +69,6 @@ async def queue(request: Request):
             logger=logger,
         ).respond()
         logger.debug(f"Responded to request: {backend_request.id}")
-
-        # Replace the coroutine graph with the actual bytes
-        backend_request.request = await backend_request.request
 
         coordinator.route_request(backend_request)
 
