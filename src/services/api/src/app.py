@@ -103,7 +103,7 @@ async def request(
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting approval.",
+            description="Your job has been received and is waiting to be queued.",
             logger=logger,
         )
         

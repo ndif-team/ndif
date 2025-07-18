@@ -75,14 +75,14 @@ class RequestTask(Task):
             return False
 
 
-    def respond(self, description : Optional[str] = None):
+    def respond(self, description : Optional[str] = None, status: ResponseModel.JobStatus = ResponseModel.JobStatus.QUEUED):
         """Creates a response for the task and handles routing to the appropriate locations."""
 
         # Handle creating a default response (regarding queue position) if description is None
         description = super().respond(description)
 
         response = self.data.create_response(
-            status=ResponseModel.JobStatus.APPROVED,
+            status=status,
             description=description,
             logger=logger,
         )

@@ -63,8 +63,8 @@ async def queue(request: Request):
 
         logger.debug(f"Creating response for request: {backend_request.id}")
         response = backend_request.create_response(
-            status=ResponseModel.JobStatus.APPROVED,
-            description="Your job was approved and is waiting to be run.",
+            status=ResponseModel.JobStatus.QUEUED,
+            description="Your job has been recieved by the coordinator and is waiting to be queued.",
             logger=logger,
         ).respond()
         logger.debug(f"Responded to request: {backend_request.id}")

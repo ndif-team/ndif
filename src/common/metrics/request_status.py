@@ -24,13 +24,14 @@ class RequestStatusMetric(Metric):
 
     class NumericJobStatus(Enum):
         RECEIVED = 1
-        APPROVED = 2
-        RUNNING = 3
-        COMPLETED = 4
-        LOG = 5
-        ERROR = 6
-        STREAM = 7
-        NNSIGHT_ERROR = 8
+        QUEUED = 2
+        DISPATCHED = 3
+        RUNNING = 4
+        COMPLETED = 5
+        LOG = 6
+        ERROR = 7
+        STREAM = 8
+        NNSIGHT_ERROR = 9
 
     name: str = "request_status"
 
