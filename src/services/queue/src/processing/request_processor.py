@@ -157,7 +157,7 @@ class RequestProcessor(Processor[RequestTask]):
 
         logger.debug(f"Attempting to dispatch on {self.model_key}")
         try:
-            self.dispatched_task.respond(description="Dispatching request...", status=BackendResponseModel.JobStatus.DISPATCHED)
+            self.dispatched_task.respond(description="Your job is being dispatched to the model deployment.", status=BackendResponseModel.JobStatus.DISPATCHED)
         except Exception as e:
             logger.error(f"Failed to respond to user about task being dispatched: {e}")
         success = self.dispatched_task.run(self.app_handle)

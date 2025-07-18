@@ -1,5 +1,6 @@
 import logging
 import random
+import traceback
 from typing import Dict, List, Optional
 
 from ray._private import services
@@ -135,7 +136,8 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                results['result'][model_key] = str(size_in_bytes)
+                
+                results['result'][model_key] = f"{size_in_bytes}\n{traceback.format_exc()}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
