@@ -148,46 +148,26 @@ class SchedulingActor:
                 event = model_keys_to_event[model_key]
                 event_id = event["id"]
                 # Prepend "ERROR:" to the event summary/title
-                new_summary = f"ERROR: {event.get('summary', '')}"
+                summary = event.get('summary', '')
+                if not summary.startswith("ERROR:"):
+                    summary = f"ERROR: {summary}"
+                else:
+                    summary = summary
                 # Update the event with the error message in the description and new summary
                 try:
-                    # Move the event 24 hours earlier
-                    start = event.get("start", {})
-                    end = event.get("end", {})
-                    # Handle both dateTime and date (all-day) events
-                    if "dateTime" in start and "dateTime" in end:
-                        # Parse and subtract 24 hours
-                        start_dt = datetime.fromisoformat(start["dateTime"].replace("Z", "+00:00")) - timedelta(days=1)
-                        end_dt = datetime.fromisoformat(end["dateTime"].replace("Z", "+00:00")) - timedelta(days=1)
-                        new_start = {"dateTime": start_dt.isoformat().replace("+00:00", "Z")}
-                        new_end = {"dateTime": end_dt.isoformat().replace("+00:00", "Z")}
-                    elif "date" in start and "date" in end:
-                        # All-day event, subtract one day
-                        start_date = datetime.fromisoformat(start["date"]) - timedelta(days=1)
-                        end_date = datetime.fromisoformat(end["date"]) - timedelta(days=1)
-                        new_start = {"date": start_date.date().isoformat()}
-                        new_end = {"date": end_date.date().isoformat()}
-                    else:
-                        # Fallback: don't change times
-                        new_start = start
-                        new_end = end
+                   
 
                     # Ensure the creator is an attendee
-                    attendees = event.get("attendees", [])
                     creator_email = event.get("creator", {}).get("email", None)
-                    if creator_email:
-                        # Check if creator is already in attendees
-                        if not any(a.get("email") == creator_email for a in attendees):
-                            attendees.append({"email": creator_email})
+                    if creator_email and MailgunProvider.connected():
+                        MailgunProvider.send_email(creator_email, f"NDIF Scheduling Error for {summary}", error_message)
+
                     self.service.events().patch(
                         calendarId=self.google_calendar_id,
                         eventId=event_id,
                         body={
-                            "summary": new_summary,
-                            "description": error_message,
-                            "start": new_start,
-                            "end": new_end,
-                            "attendees": attendees,
+                            "summary": summary.removeprefix("ERROR: "), 
+                            "colorId": "11",             
                         },
                         sendUpdates="all",
                     ).execute()

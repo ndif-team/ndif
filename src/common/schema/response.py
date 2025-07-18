@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import requests
@@ -9,13 +10,17 @@ from typing_extensions import Self
 from nnsight.schema.response import ResponseModel
 
 from ..metrics import RequestStatusMetric
+from ..providers.mailgun import MailgunProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
     from . import BackendRequestModel
-
+    
+def is_email(s):
+    pattern = r'^[\w\.-]+@[\w\.-]+\.\w{2,}$'
+    return re.match(pattern, s) is not None
 
 class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
@@ -46,8 +51,12 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             fn("blocking_response", data=(self.session_id, self.pickle()))
         else:
             if self.callback != '':
-                callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
-                requests.get(callback_url)
+                if is_email(self.callback):
+                    if MailgunProvider.connected():
+                        MailgunProvider.send_email(self.callback, f"NDIF Update For Job ID: {self.id}", self.model_dump_json(exclude_none=True, exclude_unset=True, exclude_defaults=True, exclude=["value"]))
+                else:
+                    callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
+                    requests.get(callback_url)
             self.save(ObjectStoreProvider.object_store)
 
         return self
