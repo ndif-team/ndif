@@ -1,4 +1,5 @@
 import time
+import logging
 from datetime import datetime, timezone
 from enum import Enum
 
@@ -6,6 +7,7 @@ import ray
 
 from ... import MODEL_KEY
 
+logger = logging.getLogger("ndif")
 
 class DeploymentLevel(Enum):
 
@@ -41,5 +43,9 @@ class Deployment:
 
     def remove_from_cache(self):
 
-        actor = ray.get_actor(f"ModelActor:{self.model_key}")
-        ray.kill(actor)
+        try:
+            actor = ray.get_actor(f"ModelActor:{self.model_key}")
+            ray.kill(actor)
+        except Exception:
+            logger.error(f"Error removing actor {self.model_key} from cache")
+            pass

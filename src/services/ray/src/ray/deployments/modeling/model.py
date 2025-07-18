@@ -1,11 +1,10 @@
 import os
-
 import ray
 from ray import serve
 
 from ....schema import BackendRequestModel
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
-
+from ....logging import set_logger
 
 @ray.remote(num_cpus=0, num_gpus=0)
 class ModelActor(BaseModelDeployment):
@@ -29,6 +28,7 @@ class ModelDeployment:
         self.model_key = model_key
         self.node_name = node_name
         self.kwargs = kwargs
+        self.logger = set_logger(model_key)
         
         self.cuda_devices = os.environ["CUDA_VISIBLE_DEVICES"]
         
@@ -36,8 +36,12 @@ class ModelDeployment:
         self.app = self.replica_context.app_name
                 
         if self.cached:
-            self.model_actor = ray.get_actor(f"ModelActor:{self.model_key}")
-            ray.get(self.model_actor.from_cache.remote(self.cuda_devices, self.app))
+            try:
+                self.model_actor = ray.get_actor(f"ModelActor:{self.model_key}")
+                ray.get(self.model_actor.from_cache.remote(self.cuda_devices, self.app))
+            except Exception:
+                self.logger.error(f"Error getting actor {self.model_key} from cache")
+                self.create_model_actor()
         else:
             self.create_model_actor()
             
