@@ -49,13 +49,13 @@ class ModelDeployment:
         ).remote(model_key=self.model_key, cuda_devices=self.cuda_devices, app=self.app, **self.kwargs)
         ray.get(self.model_actor.__ray_ready__.remote())
             
-    def __call__(self, request: BackendRequestModel):
-        return self.model_actor.__call__.remote(request)
+    async def __call__(self, request: BackendRequestModel):
+        await self.model_actor.__call__.remote(request)
     
-    def cancel(self):
-        self.model_actor.cancel.remote()
+    async def cancel(self):
+        await self.model_actor.cancel.remote()
     
-    def restart(self):
+    async def restart(self):
         ray.kill(self.model_actor)
         self.create_model_actor()
     

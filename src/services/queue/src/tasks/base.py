@@ -81,6 +81,4 @@ class Task(ABC):
         else:
             description = f"{self.id} - Status updated to {self.status}"
         
-        logger.debug(description)
-
         return description

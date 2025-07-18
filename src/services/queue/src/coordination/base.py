@@ -108,7 +108,7 @@ class Coordinator(ABC, Generic[T, P]):
             logger.info("Coordinator started successfully")
         except Exception as e:
             self._thread = None
-            logger.error(f"Failed to start coordinator: {e}")
+            logger.exception(f"Failed to start coordinator: {e}")
             raise
 
     def stop(self):
@@ -124,7 +124,7 @@ class Coordinator(ABC, Generic[T, P]):
             self.running = False
             logger.info("Coordinator stopped successfully")
         except Exception as e:
-            logger.error(f"Error stopping coordinator: {e}")
+            logger.exception(f"Error stopping coordinator: {e}")
             raise
 
     def evict_processor(
@@ -186,24 +186,18 @@ class Coordinator(ABC, Generic[T, P]):
             except asyncio.CancelledError:
                 logger.info("Event loop cancelled")
                 break
-
-            except asyncio.CancelledError:
-                logger.info("Event loop cancelled")
-                break
             except Exception as e:
                 self._error_count += 1
-                logger.error(
+                logger.exception(
                     f"Error in event loop (attempt {self._error_count}): {e}"
                 )
 
                 if self._error_count >= self._max_consecutive_errors:
-                    logger.error(
+                    logger.exception(
                         f"Too many consecutive errors ({self._error_count}), stopping coordinator"
                     )
                     self.stop()
                     break
-            finally:
-                self.in_tick = False
 
 
     def _process_lifecycle_tick(self):
@@ -214,6 +208,8 @@ class Coordinator(ABC, Generic[T, P]):
         processors_to_deploy = []
         failed_processors = []
 
+        #logger.debug(f"[COORDINATOR] Processing lifecycle tick #{self.tick_count} with {len(self.active_processors)} active processors")
+
         for processor_key, processor in self.active_processors.items():
             try:
                 # Modify state (except for actions which need to be done in batch and background tasks)
@@ -221,9 +217,11 @@ class Coordinator(ABC, Generic[T, P]):
                 processor_status = processor.status
 
                 if processor_status == ProcessorStatus.UNINITIALIZED:
+                    logger.info(f"[COORDINATOR] Processor {processor_key} needs deployment")
                     processors_to_deploy.append(processor)
 
                 elif processor_status == ProcessorStatus.INACTIVE:
+                    logger.info(f"[COORDINATOR] Processor {processor_key} became inactive")
                     processor._app_handle = None
                     processors_to_deactivate.append(processor_key)
 
@@ -231,6 +229,7 @@ class Coordinator(ABC, Generic[T, P]):
                     ProcessorStatus.TERMINATED,
                     ProcessorStatus.UNAVAILABLE,
                 ]:
+                    logger.warning(f"[COORDINATOR] Processor {processor_key} failed with status: {processor_status}")
                     failed_processors.append(processor)
 
                 elif processor_status == ProcessorStatus.PROVISIONING:
@@ -243,16 +242,18 @@ class Coordinator(ABC, Generic[T, P]):
                         try:
                             processor.notify_pending_task()
                         except Exception as e:
-                            logger.error(f"Failed to notify_pending_tasks")
+                            logger.exception(f"Failed to notify pending tasks: {e}")
 
             except Exception as e:
-                logger.error(
-                    f"Error advancing lifecycle for processor {processor_key}: {e}"
+                logger.exception(
+                    f"[COORDINATOR] Error advancing lifecycle for processor {processor_key}: {e}"
                 )
                 processors_to_deactivate.append(processor_key)
 
         # Deploy processors
-        self._deploy(processors_to_deploy)
+        if processors_to_deploy:
+            logger.info(f"[COORDINATOR] Deploying {len(processors_to_deploy)} processors")
+            self._deploy(processors_to_deploy)
 
         # Move processors to inactive status
         for processor_key in processors_to_deactivate:
@@ -277,9 +278,9 @@ class Coordinator(ABC, Generic[T, P]):
                         f"Processor {processor_key} is already in inactive state. This should not happen."
                     )
                 self.inactive_processors[processor_key] = processor
-                logger.info(f"Deactivated processor {processor_key}")
+                logger.info(f"[COORDINATOR] Deactivated processor {processor_key}")
         except Exception as e:
-            logger.error(f"Error deactivating processor {processor_key}: {e}")
+            logger.exception(f"[COORDINATOR] Error deactivating processor {processor_key}: {e}")
 
     def _cleanup_all_processors(self):
         """
@@ -289,9 +290,9 @@ class Coordinator(ABC, Generic[T, P]):
             # Clear all processors
             self.active_processors.clear()
             self.inactive_processors.clear()
-            logger.info("Cleaned up all processors")
+            logger.info("[COORDINATOR] Cleaned up all processors")
         except Exception as e:
-            logger.error(f"Error during final cleanup: {e}")
+            logger.exception(f"[COORDINATOR] Error during final cleanup: {e}")
 
 
     @abstractmethod
@@ -328,7 +329,7 @@ class Coordinator(ABC, Generic[T, P]):
         pass
 
     @abstractmethod
-    def _deploy(processor_keys: List[str]) -> Any:
+    def _deploy(self, processors: List[P]) -> Any:
         pass
 
     @abstractmethod

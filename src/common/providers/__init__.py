@@ -56,9 +56,14 @@ class Provider:
     @classmethod
     def watchdog_loop(cls) -> None:
         while cls.watchdog is not None:
-            if not cls.connected():
-                cls.reset()
-                cls.connect()
+            try:
+                if not cls.connected():
+                    logger.warning(f"Provider {cls.__name__} is not connected, attempting to reconnect...")
+                    cls.reset()
+                    cls.connect()
+            except Exception as e:
+                logger.exception(f"Error in watchdog loop for provider {cls.__name__}: {e}")
+            
             time.sleep(cls.retry_interval)
             
     def __enter__(self):
@@ -77,7 +82,7 @@ def retry(fn: Callable) -> Callable:
         
         exception = None
 
-        logger.debug(f"Attempting to call {fn.__name__} with {cls.max_retries} retries...")
+        logger.debug(f"Attempting to call {cls.__name__}.{fn.__name__}() with {cls.max_retries} retries...")
         
         for _ in range(cls.max_retries):
             try:

@@ -56,11 +56,14 @@ async def get_queue_state(return_batch: bool = False):
 @app.post("/queue")
 async def queue(request: Request):
     """Endpoint to add a request to the queue."""
-
+    backend_request = None
+    
     try:
         # Create a modified request object with the resolved body
         backend_request = BackendRequestModel.from_request(request)
 
+        logger.info(f"[REQUEST:{backend_request.id}] Received request for model: {backend_request.model_key}")
+        
         logger.debug(f"Creating response for request: {backend_request.id}")
         response = backend_request.create_response(
             status=ResponseModel.JobStatus.APPROVED,
@@ -72,36 +75,45 @@ async def queue(request: Request):
         # Replace the coroutine graph with the actual bytes
         backend_request.graph = await backend_request.graph
 
-        coordinator.route_request(backend_request)
+        success = coordinator.route_request(backend_request)
+        if success:
+            logger.info(f"[REQUEST:{backend_request.id}] Successfully routed to coordinator")
+        else:
+            logger.error(f"[REQUEST:{backend_request.id}] Failed to route to coordinator")
 
         logger.debug(f"Enqueued request: {backend_request.id}")
 
     except Exception as e:
-        logger.error(f"Error processing queue request: {str(e)}")
+        logger.exception(f"Error processing queue request: {str(e)}")
         description = f"{traceback.format_exc()}\n{str(e)}"
-        response = backend_request.create_response(
-            status=ResponseModel.JobStatus.ERROR,
-            description=description,
-            logger=logger,
-        )
-        try:
-            response.respond()
-        except:
-            logger.error(f"Failed responding ERROR to user: {description}")
-        return response
+        
+        if backend_request:
+            response = backend_request.create_response(
+                status=ResponseModel.JobStatus.ERROR,
+                description=description,
+                logger=logger,
+            )
+            try:
+                response.respond()
+            except:
+                logger.exception(f"Failed responding ERROR to user: {description}")
+        else:
+            logger.exception(f"Could not create error response - backend_request was not initialized")
+            
+        return {"error": description}
 
 
 @app.delete("/queue/{request_id}")
 async def delete_request(request_id: str):
     """Remove a request from the queue."""
     try:
-        coordinator.remove_request(request_id)
-        return {"message": f"Request {request_id} successfully removed from queue"}
-    except ValueError as e:  # TODO: Ensure coordinator raises ValueError for not found
-        logger.error(f"Request {request_id} not found: {e}")
-        raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+        if coordinator.remove_request(request_id):
+            return {"message": f"Request {request_id} successfully removed from queue"}
+        else:
+            logger.exception(f"Request {request_id} not found")
+            raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
     except Exception as e:
-        logger.error(f"Error removing request {request_id}: {e}")
+        logger.exception(f"Error removing request {request_id}: {e}")
         raise HTTPException(
             status_code=500, detail=f"Error removing request {request_id}: {e}"
         )

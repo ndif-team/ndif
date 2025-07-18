@@ -31,6 +31,7 @@ class SioProvider(Provider):
     def connect(cls):
         logger.info(f"Connecting to API at {cls.api_url}...")
         if cls.sio is None:
+            logger.debug("Creating new socketio client")
             cls.sio = socketio.SimpleClient(reconnection_attempts=10)
 
         cls.sio.connect(
@@ -45,7 +46,13 @@ class SioProvider(Provider):
 
     @classmethod
     def disconnect(cls):
-        cls.sio.disconnect()
+        logger.debug("SioProvider.disconnect() called")
+        if cls.sio is not None:
+            logger.info("Disconnecting socketio client")
+            cls.sio.disconnect()
+            logger.debug("Socketio client disconnected")
+        else:
+            logger.debug("No socketio client to disconnect")
 
     @classmethod
     def connected(cls) -> bool:
@@ -55,12 +62,12 @@ class SioProvider(Provider):
     def reset(cls):
         if cls.sio is not None:
             cls.sio.connected = False
-    
+
     @classmethod
     @retry
     def call(cls, *args, **kwargs):
         return cls.sio.client.call(*args, **kwargs)
-    
+
     @classmethod
     @retry
     def emit(cls, *args, **kwargs):

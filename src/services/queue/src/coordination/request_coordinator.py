@@ -9,7 +9,12 @@ from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel
 from .base import Coordinator
 
+import time
+
 logger = logging.getLogger("ndif")
+
+# Constants
+DEPLOYMENT_TIMEOUT_SECONDS = 3.14  # Timeout for deployment results
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """
@@ -27,7 +32,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     def controller(self):
         """Creates a Controller handle used to submit requests for models to deploy"""
         if self._controller is None:
+            start = time.perf_counter()
             self._controller = serve.get_app_handle("Controller")
+            logger.debug(f"Created controller app handle in {time.perf_counter() - start} seconds")
         return self._controller
 
     def get_state(self) -> Dict[str, Any]:
@@ -45,7 +52,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         try:
             # Validate request
             if not request or not request.model_key:
-                logger.error("Invalid request: missing model_key")
+                logger.exception("Invalid request: missing model_key")
                 return False
 
             model_key = request.model_key
@@ -60,7 +67,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     )
                     return True
                 else:
-                    logger.error(
+                    logger.exception(
                         f"Failed to enqueue request {request.id} to active processor {model_key}"
                     )
                     return False
@@ -81,7 +88,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     )
                     return True
                 else:
-                    logger.error(
+                    logger.exception(
                         f"Failed to enqueue request {request.id} to inactive processor {model_key}"
                     )
                     return False
@@ -98,17 +105,17 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                         )
                         return True
                     else:
-                        logger.error(
+                        logger.exception(
                             f"Failed to enqueue request {request.id} to new processor {model_key}"
                         )
                         return False
                 except Exception as e:
-                    logger.error(f"Failed to create processor {model_key}: {e}")
+                    logger.exception(f"Failed to create processor {model_key}: {e}")
                     return False
 
 
         except Exception as e:
-            logger.error(
+            logger.exception(
                 f"Error routing request {request.id if request else 'unknown'}: {e}"
             )
             return False
@@ -117,7 +124,16 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             # Force next tick to start immediately
             self._interrupt_sleep()
 
+    def remove_request(self, request_id : str) -> bool:
+        """Initiates process to have request deleted from queue."""
+        for processor in self.active_processors.values():
+            if processor.has_request(request_id):
+                processor.deletion_queue.append(request_id)
+                logger.debug(f"[COORDINATOR] Processor {processor.model_key} had request placed on deletion queue: {request_id}")
+                return True
 
+        logger.debug(f"[COORDINATOR] Request {request_id} attempted to be removed from queue but was not found in any active processors")
+        return False
 
     def _handle_processor_failure(self, processor: RequestProcessor):
         """
@@ -141,16 +157,16 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
             else:
-                logger.error(
+                logger.exception(
                     f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected."
                 )
                 reason = "Processor unavailable for unknown reason."
         else:
-            logger.error(f"Unknown processor failure: {processor_status}")
+            logger.exception(f"Unknown processor failure: {processor_status}")
             reason = "Processor failed in unknown state."
 
         # Notify all queued requests of the failure
-        self.evict_processor(processor, reason=reason)
+        self.evict_processor(processor.model_key, reason=reason)
 
     def _deploy(self, processors: List[RequestProcessor]):
         """
@@ -172,8 +188,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
             # Synchronously fetch deployment results (blocking)
             deployment_results = deployment_future._fetch_future_result_sync()
-            # The .get(3.14) is a hack to retrieve the result with a timeout
-            deployment_statuses, evictions = deployment_results.get(3.14).values()
+            # The .get() is a hack to retrieve the result with a timeout
+            deployment_statuses, evictions = deployment_results.get(DEPLOYMENT_TIMEOUT_SECONDS).values()
 
             logger.debug(f"Deployment results from controller: {deployment_statuses}")
 
@@ -182,8 +198,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                 status_str = str(deployment_statuses[processor.model_key]).lower()
                 try:
                     deployment_status = DeploymentStatus(status_str)
+                    logger.info(f"[COORDINATOR] Processor {processor.model_key} deployment status: {deployment_status}")
                 except ValueError:
-                    logger.error(
+                    logger.exception(
                         f"Unknown processor status '{status_str}' for model_key '{processor.model_key}'"
                     )
                     deployment_status = DeploymentStatus.CANT_ACCOMMODATE
@@ -191,18 +208,22 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                 # Store the processor's deployment status in a clear attribute
                 processor.deployment_status = deployment_status
 
-            reason = (
-                "Controller evicted deployment in order to a schedule different model."
-            )
-            for model_key in evictions:
-                try:
-                    self.evict_processor(model_key, reason=reason)
-                    logger.debug(f"Evicted {model_key}")
-                except Exception as e:
-                    logger.error(f"Failed to evict {model_key}: {e}")
+            if evictions:
+                logger.info(f"[COORDINATOR] Controller evicted {len(evictions)} processors: {evictions}")
+                reason = (
+                    "Controller evicted deployment in order to a schedule different model."
+                )
+                for model_key in evictions:
+                    try:
+                        self.evict_processor(model_key, reason=reason)
+                        logger.debug(f"Evicted {model_key}")
+                    except Exception as e:
+                        logger.exception(f"Failed to evict {model_key}: {e}")
+            else:
+                logger.debug("[COORDINATOR] No processors were evicted by controller")
 
         except Exception as e:
-            logger.error(f"Error during processor deployment: {e}")
+            logger.exception(f"Error during processor deployment: {e}")
 
     def _create_processor(self, processor_key: str) -> RequestProcessor:
         """Create a new RequestProcessor."""
@@ -212,7 +233,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         """Concrete implementation of eviction process performed on a RequestProcessor."""
         processor._has_been_terminated = True
         processor._app_handle = None
-        processor.deployment_status = ProcessorStatus.UNINITIALIZED
+        processor.deployment_status = DeploymentStatus.UNINITIALIZED
 
         # If a user has a job running on this processor at eviction, inform them with a detailed reason
         if processor.dispatched_task:

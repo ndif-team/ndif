@@ -84,7 +84,7 @@ class Processor(ABC, Generic[T]):
             else:
                 return False
         except Exception as e:
-            logger.error(f"Error enqueuing task: {e}")
+            logger.exception(f"Error enqueuing task: {e}")
             return False
 
 
@@ -131,7 +131,7 @@ class Processor(ABC, Generic[T]):
         task_status = self.dispatched_task.status
         
         if task_status == TaskStatus.QUEUED:
-            logger.error(f"Dispatched task is in queued status, this should not happen")
+            logger.error("Dispatched task is in queued status, this should not happen")
             self._dispatch()
             return True
 
@@ -187,6 +187,7 @@ class Processor(ABC, Generic[T]):
         """
         Handle a completed task.
         """
+        logger.info(f"[TASK:{self.dispatched_task.id}] completed!")
         self.dispatched_task = None
 
 
@@ -196,7 +197,7 @@ class Processor(ABC, Generic[T]):
         """
         if self.dispatched_task.retries < self.max_retries:
             # Try again
-            logger.error(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
+            logger.exception(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
             self._dispatch()
             self.dispatched_task.retries += 1
         else:
@@ -204,7 +205,7 @@ class Processor(ABC, Generic[T]):
                 # Try to inform about the failure
                 self.dispatched_task.respond()
             except Exception as e:
-                logger.error(f"Error handling failed task: {e}")
+                logger.exception(f"Error handling failed task: {e}")
             
             self.dispatched_task = None
 
