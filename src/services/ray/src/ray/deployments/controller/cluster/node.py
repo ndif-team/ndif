@@ -114,11 +114,11 @@ class Node:
             
             cache_evictions = []
             
-            for deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
+            for eviction_deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
                 
-                cpu_memory_needed -= deployment.size_bytes
+                cpu_memory_needed -= eviction_deployment.size_bytes
                 
-                cache_evictions.append(deployment)
+                cache_evictions.append(eviction_deployment)
 
                 if cpu_memory_needed <= 0:
 
