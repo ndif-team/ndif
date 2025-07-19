@@ -52,6 +52,9 @@ class WhitelistedModule(BaseModel):
     """Configuration for a module that is allowed to be imported."""
     name: str
     strict: bool = True
+    
+    def check(self, name: str) -> bool:
+        return self.strict and self.name == name or not self.strict and name.startswith(self.name)
 
 # Modules that are allowed to be imported
 WHITELISTED_MODULES = [
@@ -63,11 +66,10 @@ WHITELISTED_MODULES = [
 WHITELISTED_MODULES_DESERIALIZATION = [
     WhitelistedModule(name="pickle", strict=False),
     WhitelistedModule(name="dill", strict=False),
-    WhitelistedModule(name="nnsight.intervention.backends.remote.schema", strict=True),
+    WhitelistedModule(name="nnsight.schema.request", strict=True),
     WhitelistedModule(name="nnsight.intervention.tracing.tracer", strict=True),
     WhitelistedModule(name="nnsight.intervention.tracing.base", strict=True),
     WhitelistedModule(name="nnsight.intervention.interleaver", strict=True),
-    WhitelistedModule(name="builtins", strict=True),
     WhitelistedModule(name="nnsight.intervention.batching", strict=True),
     *WHITELISTED_MODULES
 ]
@@ -105,8 +107,7 @@ class Importer:
     def __call__(self, name: str, globals: Dict[str, Any]=None, locals: Dict[str, Any]=None,
                  fromlist: List[str]=None, level: int=0):
         for module in self.whitelisted_modules:
-            if (module.strict and module.name == name) or \
-               (not module.strict and name.startswith(module.name)):
+            if module.check(name):
                 self.protector.__exit__(None, None, None)
                 try:
                     result = self.original_import(name, globals, locals, fromlist, level)
@@ -138,70 +139,4 @@ class Protector(Patcher):
             if key not in WHITELISTED_BUILTINS:
                 self.add(Patch(__builtins__, key=key, as_dict=True))
                 
-        self.add(Patch(__builtins__, key="globals", replacement=lambda:{"__builtins__": __builtins__}, as_dict=True))
-
-class ProtectorEscape(Patcher):
-    """Temporarily disables protection for specific operations."""
-    
-    def __init__(self, protector: Protector):
-        super().__init__()
-        self.protector = protector
-        
-        from ...tracing.tracer import Tracer
-        
-        # Wrap safe methods
-        for method, obj in [("__init__", Tracer), ("__enter__", Interleaver)]:
-            self.add(Patch(obj, replacement=self.wrap(method, obj), key=method))
-            
-        self.add(Patch(ExecutionBackend, replacement=self.safe_execution_backend, key="__call__"))
-    
-    def wrap(self, method: str, obj: Any):
-        """Wraps a method to temporarily disable protection."""
-        fn = getattr(obj, method)
-        
-        @wraps(fn)
-        def inner(*args, **kwargs):
-            self.escape()
-            try:
-                return fn(*args, **kwargs)
-            finally:
-                self.unescape()
-                
-        return inner
-    
-    def safe_execution_backend(self, tracer: Tracer):
-        """Safely executes code in the tracer's context."""
-        tracer.compile()
-        self.escape()
-        
-        # Compile and execute the code
-        source = "".join(tracer.info.source)
-        code_obj = compile(source, tracer.info.filename, "exec")
-        local_namespace = {}
-        
-        exec(code_obj, {**tracer.info.frame.f_globals, **tracer.info.frame.f_locals}, local_namespace)
-        fn = list(local_namespace.values())[-1]
-        
-        def unsafe_fn(*args, **kwargs):
-            self.unescape()
-            try:
-                return fn(*args, **kwargs)
-            finally:
-                self.escape()
-        
-        try:
-            Globals.enter()
-            tracer.execute(unsafe_fn)
-        except Exception as e:
-            raise wrap_exception(e, tracer.info) from None
-        finally:
-            Globals.exit()
-            self.unescape()
-    
-    def escape(self):
-        """Temporarily disables protection."""
-        self.protector.__exit__(None, None, None)
-    
-    def unescape(self):
-        """Re-enables protection."""
-        self.protector.__enter__()
+        self.add(Patch(__builtins__, key="globals", replacement=lambda:{"__builtins__": None}, as_dict=True))

@@ -30,7 +30,8 @@ from ....schema import (BackendRequestModel, BackendResponseModel,
                         BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.protected import ProtectedEnvoy, protect
+from ...nn.protected import protect
+from ...nn.utils import WHITELISTED_MODULES_DESERIALIZATION, Protector
 from .util import kill_thread, load_with_cache_deletion_retry
 
 
@@ -214,7 +215,8 @@ class BaseModelDeployment:
 
     def pre(self) -> RequestModel:
         """Logic to execute before execution."""
-        request = self.request.deserialize(self.protected_model)
+        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+            request = self.request.deserialize(self.protected_model)
         
         if hasattr(request.tracer, "model"):
             request.tracer.model = self.model
