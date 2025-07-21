@@ -5,11 +5,11 @@ def run(tracer, fn):
     __nnsight_tracing_info__ = tracer.info
     _frame = inspect.currentframe()
     tracer.info.frame = _frame
-    
-    for mediator in tracer.mediators:
+    if hasattr(tracer, "mediators"):
+        for mediator in tracer.mediators:
+            
+            mediator.info.frame = _frame
         
-        mediator.info.frame = _frame
-    
     try:
         tracer.execute(fn)
     except Exception as e:

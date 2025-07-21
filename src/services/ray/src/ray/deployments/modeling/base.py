@@ -30,8 +30,8 @@ from ....schema import (BackendRequestModel, BackendResponseModel,
                         BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.protected import protect
-from ...nn.utils import WHITELISTED_MODULES_DESERIALIZATION, Protector
+from ...nn.security.protected_objects import protect
+from ...nn.security.protected_environment import WHITELISTED_MODULES_DESERIALIZATION, Protector
 from .util import kill_thread, load_with_cache_deletion_retry
 
 

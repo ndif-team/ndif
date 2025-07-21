@@ -1,7 +1,7 @@
 from typing import Any, Callable
 
 from nnsight.intervention.backends import Backend
-from .utils import (
+from .security.protected_environment import (
     Protector,
     WHITELISTED_MODULES,
 )

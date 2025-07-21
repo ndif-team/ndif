@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from nnsight.intervention.envoy import Envoy
 from copy import deepcopy
-
+from nnsight.intervention.tracing.base import Tracer
 PROTECTION = set()
 ALLOWED = set()  
         
@@ -56,6 +56,7 @@ class ProtectedObject:
     
     __allowed_attr__ = ()
     __allowed_setattr__ = ()
+    __allowed_types__ = ()
     
     def __init__(self, obj: Any):
         
@@ -74,7 +75,7 @@ class ProtectedObject:
         
         value = object.__getattribute__(self, name)
        
-        if protected(self) and not (name in type(self).__allowed_attr__ or isinstance(value, ProtectedObject) or allowed(value)):
+        if protected(self) and not (name in type(self).__allowed_attr__ or isinstance(value, ProtectedObject) or isinstance(value, type(self).__allowed_types__) or allowed(value)):
             raise ValueError(f"Attribute '{name}' is not allowed")
        
         return value
@@ -90,7 +91,8 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
     
     __allowed_attr__ = ("output", "inputs", "input", "device")
     __allowed_setattr__ = ("output", "inputs", "input")
-    
+    __allowed_types__ = (Tracer,)    
+        
     def __init__(self, envoy: Envoy):
         ProtectedObject.__init__(self, envoy)
         
@@ -102,7 +104,15 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
         
     def __getattr__(self, name: str):
         with UnprotectContext(id(self)):    
-            return deepcopy(self.__obj__.__getattr__(name))
+            value = self.__obj__.__getattr__(name)
+            
+            if isinstance(value, Tracer):
+                #TODO Protect
+                return value
+            
+            return deepcopy(value)
+        
+        
 
     @allow
     def trace(self, *args, **kwargs):

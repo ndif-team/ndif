@@ -1,15 +1,13 @@
 from __future__ import annotations
+
+import inspect
 from functools import wraps
-from typing import Any, Dict, List, TYPE_CHECKING
 from types import ModuleType
+from typing import TYPE_CHECKING, Any, Callable, Dict, List
+
 from pydantic import BaseModel
 
 from nnsight.util import Patch, Patcher
-from nnsight.intervention.backends import ExecutionBackend
-from nnsight.intervention.tracing.globals import Globals
-from nnsight.intervention.tracing.util import wrap_exception
-from nnsight.intervention.interleaver import Interleaver
-from nnsight.intervention.tracing.base import Tracer
 
 # Built-in functions and types that are allowed to be used
 WHITELISTED_BUILTINS = {
@@ -95,6 +93,16 @@ class ProtectedModule(ModuleType):
         protected = ProtectedModule(self.whitelist_entry)
         protected.__dict__.update(attr.__dict__)
         return protected
+def is_nnsight():
+    
+    frame = inspect.currentframe().f_back
+    print('')
+    while frame:
+        print(frame.f_code.co_filename)
+        if '/nnsight/' in frame.f_code.co_filename:
+            return True
+        frame = frame.f_back
+    return False
 
 class Importer:
     """Handles importing modules while enforcing whitelist rules."""
@@ -107,7 +115,7 @@ class Importer:
     def __call__(self, name: str, globals: Dict[str, Any]=None, locals: Dict[str, Any]=None,
                  fromlist: List[str]=None, level: int=0):
         for module in self.whitelisted_modules:
-            if module.check(name):
+            if module.check(name) or is_nnsight():
                 self.protector.__exit__(None, None, None)
                 try:
                     result = self.original_import(name, globals, locals, fromlist, level)
@@ -118,6 +126,18 @@ class Importer:
                     self.protector.__enter__()
                     
         raise ImportError(f"Module {name} is not whitelisted")
+
+NNSIGHTS_BUILTIN_DEPENDENCIES = {"compile", "exec", "open"}
+
+def wrap_nnsight_builtins(fn: Callable):
+    """Wraps a function to enforce whitelist rules on built-ins."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if is_nnsight():
+            return fn(*args, **kwargs)
+        else:
+            raise AttributeError(f"Built-in {fn.__name__} is not whitelisted")
+    return wrapper
 
 class Protector(Patcher):
     """Enforces security restrictions on Python's built-ins and imports."""
@@ -137,6 +157,9 @@ class Protector(Patcher):
         # Remove non-whitelisted built-ins
         for key in __builtins__.keys():
             if key not in WHITELISTED_BUILTINS:
-                self.add(Patch(__builtins__, key=key, as_dict=True))
+                if key in NNSIGHTS_BUILTIN_DEPENDENCIES:
+                    self.add(Patch(__builtins__, key=key, replacement=wrap_nnsight_builtins(__builtins__[key]), as_dict=True))
+                else:
+                    self.add(Patch(__builtins__, key=key, as_dict=True))
                 
         self.add(Patch(__builtins__, key="globals", replacement=lambda:{"__builtins__": None}, as_dict=True))
