@@ -143,16 +143,16 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         processor_status = processor.status
 
         if processor_status == ProcessorStatus.TERMINATED:
-            reason = (
+            user_message = (
                 f"Deployment for {processor.model_key} has been terminated by the scheduler. "
                 "You can request it to be rescheduled by re-running your nnsight script."
             )
         elif processor_status == ProcessorStatus.UNAVAILABLE:
             task_status = processor.deployment_status
             if task_status == DeploymentStatus.CANT_ACCOMMODATE:
-                reason = (
-                    f"Cannot accommodate deployment for {processor.model_key}. "
-                    "It is currently unavailable to be deployed on our cluster, either due to size, or issues loading. "
+                user_message = (
+                    f"Your request could not be processed because {processor.model_key} is currently unavailable for deployment, "
+                    "either due to size constraints or loading issues. "
                     "If you believe this model should be supported, feel free to make a post on https://discuss.ndif.us/ "
                     "or raise a Github issue: https://github.com/ndif-team/ndif/issues"
                 )
@@ -160,13 +160,13 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
                 logger.exception(
                     f"Processor for {processor.model_key} was set to UNAVAILABLE, but the deployment status is: {task_status}. This is unexpected."
                 )
-                reason = "Processor unavailable for unknown reason."
+                user_message = "Your request could not be processed because the model deployment became unavailable due to an internal error. Please try again in a few moments."
         else:
             logger.exception(f"Unknown processor failure: {processor_status}")
-            reason = "Processor failed in unknown state."
+            user_message = "Your request could not be processed because the model deployment encountered an unexpected error. Please try again in a few moments."
 
         # Notify all queued requests of the failure
-        self.evict_processor(processor.model_key, reason=reason)
+        self.evict_processor(processor.model_key, user_message=user_message)
 
     def _deploy(self, processors: List[RequestProcessor]):
         """
@@ -210,12 +210,13 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
             if evictions:
                 logger.info(f"[COORDINATOR] Controller evicted {len(evictions)} processors: {evictions}")
-                reason = (
-                    "Controller evicted deployment in order to a schedule different model."
+                user_message = (
+                    "Your request could not be processed because the model was unloaded to make room for another model. "
+                    "Please submit your request again to attempt redeployment."
                 )
                 for model_key in evictions:
                     try:
-                        self.evict_processor(model_key, reason=reason)
+                        self.evict_processor(model_key, user_message=user_message)
                         logger.debug(f"Evicted {model_key}")
                     except Exception as e:
                         logger.exception(f"Failed to evict {model_key}: {e}")
@@ -229,27 +230,23 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, self.max_retries)
 
-    def _evict(self, processor: RequestProcessor, reason: str) -> bool:
+    def _evict(self, processor: RequestProcessor, user_message: str) -> bool:
         """Concrete implementation of eviction process performed on a RequestProcessor."""
         # Set termination flag before restart to maintain eviction semantics
         processor._has_been_terminated = True
 
         # If a user has a job running on this processor at eviction, inform them with a detailed reason
         if processor.dispatched_task:
-            description = (
-                f"Request could not complete because the deployment it was running on was evicted. "
-                f"Model key: {processor.model_key}. Reason: {reason}"
-            )
-            processor.dispatched_task.respond_failure(description)
+            status_message = "Request interrupted during execution."
+            full_message = f"{status_message} {user_message}"
+            processor.dispatched_task.respond_failure(full_message)
             processor.dispatched_task = None
 
         # Inform all queued tasks that their requests could not be processed due to eviction
         for task in processor._queue:
-            description = (
-                f"Request was still in the queue when its deployment was evicted and could not be processed. "
-                f"Model key: {processor.model_key}. Reason: {reason}"
-            )
-            task.respond_failure(description=description)
+            status_message = "Request removed from queue."
+            full_message = f"{status_message} {user_message}"
+            task.respond_failure(description=full_message)
 
         processor._queue[:] = []  # ListProxy, so cannot use .clear()
         return True

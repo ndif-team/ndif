@@ -128,19 +128,19 @@ class Coordinator(ABC, Generic[T, P]):
             raise
 
     def evict_processor(
-        self, processor_key: str, reason: Optional[str] = None, *args, **kwargs
+        self, processor_key: str, user_message: Optional[str] = None, *args, **kwargs
     ) -> bool:
         """Evict the procesor for a given key. Returns True if the processor no longer exists in an active state after the operation."""
 
         if processor_key in self.active_processors:
             processor = self.active_processors[processor_key]
-            evicted = self._evict(processor, reason=reason, *args, **kwargs)
+            evicted = self._evict(processor, user_message=user_message, *args, **kwargs)
             self.active_processors.pop(processor_key)
             self.inactive_processors[processor_key] = processor
 
         elif processor_key in self.inactive_processors:
             processor = self.inactive_processors[processor_key]
-            evicted = self._evict(processor, reason=reason, *args, **kwargs)
+            evicted = self._evict(processor, user_message=user_message, *args, **kwargs)
 
         else:
             logger.warning(
