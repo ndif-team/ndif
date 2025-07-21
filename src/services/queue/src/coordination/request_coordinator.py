@@ -76,8 +76,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             elif model_key in self.inactive_processors:
                 processor = self.inactive_processors[model_key]
 
-                # TODO: Verify whether this is necessary. I had it prior to the controller returning evicted deployments from controller.deploy()
-                processor.deployment_status = DeploymentStatus.UNINITIALIZED
+                # Restart the processor to ensure clean state
+                processor.restart()
                 success = processor.enqueue(request)
                 if success:
                     # Move processor to active state
@@ -231,9 +231,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
     def _evict(self, processor: RequestProcessor, reason: str) -> bool:
         """Concrete implementation of eviction process performed on a RequestProcessor."""
+        # Set termination flag before restart to maintain eviction semantics
         processor._has_been_terminated = True
-        processor._app_handle = None
-        processor.deployment_status = DeploymentStatus.UNINITIALIZED
 
         # If a user has a job running on this processor at eviction, inform them with a detailed reason
         if processor.dispatched_task:

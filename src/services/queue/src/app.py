@@ -41,7 +41,7 @@ coordinator.start()
 
 Instrumentator().instrument(app).expose(app)
 
-dev_mode = os.environ.get("DEV_MODE", True)  # TODO: default to false
+dev_mode = os.environ.get("DEV_MODE", "false").lower() == "true"
 
 
 @app.get("/queue")

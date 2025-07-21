@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
 from ..tasks.base import Task
 from ..tasks.status import TaskStatus
-
+from .status import ProcessorStatus
 # Generic type for tasks
 T = TypeVar('T', bound=Task)
 
@@ -25,6 +25,7 @@ class Processor(ABC, Generic[T]):
         self.max_tasks = max_tasks
         self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
+        self.deletion_queue: List[str] = []  # Track IDs to delete
 
 
     @property
@@ -64,8 +65,24 @@ class Processor(ABC, Generic[T]):
             "dispatched_task": self.dispatched_task.get_state() if self.dispatched_task else None,
             "queue": [task.get_state() for task in self.queue],
             "last_dispatched": self.last_dispatched,
+            "deletion_queue": self.deletion_queue,
         }
 
+    def has_request(self, request_id: str) -> bool:
+        """Return whether the processor contains a request with the given id."""
+        if self.dispatched_task and getattr(self.dispatched_task, 'id', None) == request_id:
+            return True
+        for task in self.queue:
+            if getattr(task, 'id', None) == request_id:
+                return True
+        return False
+
+    def notify_pending_task(self, description: Optional[str] = None):
+        """Notify all pending tasks in the queue with a description."""
+        if description is None:
+            description = "A task is pending... stand by."
+        for pending_task in self.queue:
+            pending_task.respond(description)
 
     def enqueue(self, task: T) -> bool:
         """
@@ -107,17 +124,13 @@ class Processor(ABC, Generic[T]):
     
     def advance_lifecycle(self) -> bool:
         """
-        Check whether the processor "state" needs to be updated.
-        
-        This method implements the core lifecycle logic that should work
-        for any task processor implementation.
-        
-        Returns:
-            True if the state was updated, False otherwise
+        Advance the lifecycle of the processor.
         """
-        # Get current status (this may trigger status updates in subclasses)
-        current_status = self.status
+        self.process_deletion_queue()
+        return self._advance_lifecycle_core()
 
+    def _advance_lifecycle_core(self) -> bool:
+        current_status = self.status
         if self._is_invariant_status(current_status):
             return False
 
@@ -126,34 +139,47 @@ class Processor(ABC, Generic[T]):
             self.dispatched_task = self.dequeue()
             if not self.dispatched_task:
                 return False
-
-        # Handle different task statuses
         task_status = self.dispatched_task.status
-        
         if task_status == TaskStatus.QUEUED:
             logger.error("Dispatched task is in queued status, this should not happen")
             self._dispatch()
             return True
-
         if task_status == TaskStatus.PENDING:
             self._dispatch()
             return True
-
         if task_status == TaskStatus.DISPATCHED:
             # Task is already dispatched, no action needed
             return False
-
         if task_status == TaskStatus.COMPLETED:
             self._handle_completed_dispatch()
             return True
-
         if task_status == TaskStatus.FAILED:
             self._handle_failed_dispatch()
             return True
-
         logger.warning(f"Processor is in an unexpected status: {current_status}")
         return False
 
+    def process_deletion_queue(self):
+        """Process requests marked for deletion from the queue. Calls backend-specific cancel if needed."""
+        if not self.deletion_queue:
+            return
+        deletion_ids = set(self.deletion_queue)
+        i = 0
+        while i < len(self.queue):
+            if getattr(self.queue[i], 'id', None) in deletion_ids:
+                deleted_task = self.queue.pop(i)
+                logger.debug(f"[PROCESSOR] Deleted task {getattr(deleted_task, 'id', 'unknown')} from queue (position {i+1})")
+            else:
+                i += 1
+        if self.dispatched_task and getattr(self.dispatched_task, 'id', None) in deletion_ids:
+            self._cancel_dispatched_task()
+            self.dispatched_task = None
+        self.deletion_queue.clear()
+        self.update_positions()
+
+    def _cancel_dispatched_task(self):
+        """Hook for subclasses to implement backend-specific cancellation logic."""
+        pass
 
     def update_positions(self, indices: Optional[List[int]] = None):
         """
@@ -166,8 +192,14 @@ class Processor(ABC, Generic[T]):
         for i in indices:
             if i < len(self.queue):
                 task = self.queue[i]
-                task.position = i
-                task.respond()
+                old_position = getattr(task, "position", None)
+                if old_position != i:
+                    if old_position is not None and abs(old_position - i) > 1:
+                        logger.warning(
+                            f"Task {getattr(task, 'id', 'unknown')} position changed from {old_position} to {i} (diff={i - old_position})"
+                        )
+                    task.position = i
+                    task.respond()
 
 
     @abstractmethod
@@ -203,14 +235,42 @@ class Processor(ABC, Generic[T]):
         else:
             try:
                 # Try to inform about the failure
-                self.dispatched_task.respond()
+                self.dispatched_task.respond(description="Task failed after maximum retries.")
             except Exception as e:
                 logger.exception(f"Error handling failed task: {e}")
             
             self.dispatched_task = None
 
-
-    @abstractmethod
-    def _is_invariant_status(self) -> bool:
+    def _is_invariant_status(self, current_status : ProcessorStatus) -> bool:
         """Return True if self.status is in a status invariant with respect to the current lifecycle"""
+        invariant_statuses = [
+            ProcessorStatus.UNINITIALIZED,
+            ProcessorStatus.INACTIVE,
+            ProcessorStatus.PROVISIONING,
+            ProcessorStatus.UNAVAILABLE,
+        ]
+        return any(current_status == status for status in invariant_statuses)
+
+    def restart(self):
+        """
+        Restart the processor, resetting it to initial state.
+        
+        This method resets the processor to a clean state by:
+        - Clearing the dispatched task
+        - Clearing the deletion queue
+        - Calling subclass-specific restart logic
+        """
+        logger.info("Restarting processor")
+        self.dispatched_task = None
+        self.deletion_queue.clear()
+        self._restart_implementation()
+        
+    @abstractmethod
+    def _restart_implementation(self):
+        """
+        Abstract method for subclass-specific restart logic.
+        
+        Subclasses should implement this method to handle their specific
+        restart requirements (e.g., resetting deployment status, app handles, etc.).
+        """
         pass

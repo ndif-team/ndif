@@ -52,7 +52,12 @@ class RequestTask(Task):
 
         except Exception as e:
             logger.exception(f"Error checking request {self.id} status: {e}")
+            self._dispatch_failed = True
             return TaskStatus.FAILED
+
+
+    def __str__(self):
+        return f"RequestTask({self.id})"
 
 
     def run(self, app_handle) -> bool:
@@ -67,12 +72,12 @@ class RequestTask(Task):
         """
         try:
             self.position = None
-            logger.info(f"[TASK:{self.id}] Starting remote execution")
+            logger.info(f"[{str(self)}] Starting remote execution")
             self._future = app_handle.remote(self.data)
-            logger.info(f"[TASK:{self.id}] Successfully initiated remote execution")
+            logger.info(f"[{str(self)}] Successfully initiated remote execution")
             return True
         except Exception as e:
-            logger.exception(f"[TASK:{self.id}] Failed to start remote execution: {e}")
+            logger.exception(f"[{str(self)}] Failed to start remote execution: {e}")
             
             # This Naively assumes that the controller evicted the deployment
             self._dispatch_failed = True

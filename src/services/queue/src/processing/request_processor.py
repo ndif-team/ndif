@@ -31,14 +31,11 @@ class RequestProcessor(Processor[RequestTask]):
 
     def __init__(self, model_key: str, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
         self.model_key = model_key
         self._queue = Manager().list()
         self._app_handle = None
         self.deployment_status = DeploymentStatus.UNINITIALIZED
         self._has_been_terminated = False
-        self.deletion_queue = []
-
 
     @property
     def app_handle(self):
@@ -116,21 +113,7 @@ class RequestProcessor(Processor[RequestTask]):
         """
         base_state = super().get_state()
         base_state["model_key"] = self.model_key
-        base_state["deletion_queue"] = self.deletion_queue
         return base_state
-
-    def has_request(self, request_id : str) -> bool:
-        """For a given request id, returns whether the processor contains a request cooresponding to it."""
-        if self.dispatched_task:
-            if self.dispatched_task.id == request_id:
-                return True
-        
-        for task in self._queue:
-            if task.id == request_id:
-                return True
-
-        return False
-
 
     def enqueue(self, request: BackendRequestModel) -> bool:
         """
@@ -163,13 +146,12 @@ class RequestProcessor(Processor[RequestTask]):
                 description=f"Your job has been added to the queue. Currently at position {position + 1}"
             )
         except Exception as e:
-            logger.exception(
+            logger.error(
                 f"{request.id} - Error responding to user at queued stage: {e}"
             )
 
         return enqueued
 
-    # TODO: This is getting called multiple times
     def notify_pending_task(self):
         """Helper method used to update user(s) waiting for model to be scheduled."""
 
@@ -178,64 +160,6 @@ class RequestProcessor(Processor[RequestTask]):
         for pending_task in self._queue:
 
             pending_task.respond(description)
-
-    def advance_lifecycle(self) -> bool:
-        """
-        Advance the lifecycle of the processor.
-        """
-        # Process any pending deletions first
-        self.process_deletion_queue()
-        
-        # Call the parent implementation
-        return super().advance_lifecycle()
-
-    def process_deletion_queue(self):
-        """Process requests marked for deletion from the queue."""
-
-        if not self.deletion_queue:
-            return
-
-        # Prepare a set for fast lookup
-        deletion_ids = set(self.deletion_queue)
-
-        # Remove tasks from the Manager().list() in-place (do not assign a new list!)
-        i = 0
-        while i < len(self._queue):
-            if self._queue[i].id in deletion_ids:
-                deleted_task = self._queue.pop(i)
-                logger.debug(f"[PROCESSOR] {self.model_key} - Deleted task {deleted_task.id} from queue (position {i+1})")
-            else:
-                i += 1
-
-        # Check if the dispatched task is in the deletion queue
-        if self.dispatched_task and self.dispatched_task.id in deletion_ids:
-            try:
-                # Defensive: avoid blocking forever if app_handle is invalid
-                ray_cancel_timeout = float(os.environ.get("_RAY_CANCEL_TIMEOUT", 5.0))
-                cancel_ref = self.app_handle.cancel.remote()
-                #result = cancel_ref.result(timeout_s=ray_cancel_timeout)
-                #ready, _ = ray.wait([result], timeout=ray_cancel_timeout)
-                ready = True
-                if not ready:
-                    logger.warning(
-                        f"[PROCESSOR] {self.model_key} - Timed out trying to cancel dispatched task {self.dispatched_task.id} via app_handle.cancel.remote() after {ray_cancel_timeout} seconds."
-                    )
-                else:
-                    logger.debug(
-                        f"[PROCESSOR] {self.model_key} - Successfully called cancel.remote() for dispatched task {self.dispatched_task.id}."
-                    )
-            except Exception as e:
-                logger.exception(
-                    f"[PROCESSOR] {self.model_key} - Error attempting to cancel dispatched task {self.dispatched_task.id}: {e}"
-                )
-            finally:
-                self.dispatched_task = None
-
-        # Clear the deletion queue
-        self.deletion_queue.clear()
-
-        # Update positions for remaining tasks
-        self.update_positions()
 
     def _dispatch(self) -> bool:
         """
@@ -253,39 +177,34 @@ class RequestProcessor(Processor[RequestTask]):
             self.last_dispatched = datetime.now()
         return success
 
-    def update_positions(self):
-        """
-        Update the positions of tasks in the queue. Only notify users if their position actually changed.
-        If a task's position changes by more than 1, log a warning for debugging.
-        """
-        for i, task in enumerate(self.queue):
-            old_position = getattr(task, "position", None)
-            if old_position != i:
-                if old_position is not None and abs(old_position - i) > 1:
+    def _cancel_dispatched_task(self):
+        if self.dispatched_task:
+            ray_cancel_timeout = float(os.environ.get("_RAY_CANCEL_TIMEOUT", 5.0))
+            try:
+                # Defensive: avoid blocking forever if app_handle is invalid
+                cancel_ref = self.app_handle.cancel.remote()
+                try:
+                    result = cancel_ref.result(timeout_s=ray_cancel_timeout)
+                except Exception as timeout_exc:
                     logger.warning(
-                        f"Task {getattr(task, 'id', 'unknown')} position changed from {old_position} to {i} (diff={i - old_position})"
+                        f"[PROCESSOR] {self.model_key} - Timed out or failed trying to cancel dispatched task {self.dispatched_task.id} via app_handle.cancel.remote() after {ray_cancel_timeout} seconds: {timeout_exc}"
                     )
-                task.position = i
-                task.respond()
+                else:
+                    logger.debug(
+                        f"[PROCESSOR] {self.model_key} - Successfully called cancel.remote() for dispatched task {self.dispatched_task.id}."
+                    )
+            except Exception as e:
+                logger.exception(
+                    f"[PROCESSOR] {self.model_key} - Error attempting to cancel dispatched task {self.dispatched_task.id}: {e}"
+                )
 
-    # TODO: Come up with better name
-    def _is_invariant_status(self, current_status: ProcessorStatus) -> bool:
-        """Return True if self.status is in a status invariant with respect to the current lifecycle"""
-        # Statuses which have nothing to do with tasks.
-        invariant_statuses = [
-            ProcessorStatus.UNINITIALIZED,
-            ProcessorStatus.INACTIVE,
-            ProcessorStatus.PROVISIONING,
-            ProcessorStatus.UNAVAILABLE,
-        ]
+        # Clear the deletion queue
+        self.deletion_queue.clear()
 
-        return any(current_status == status for status in invariant_statuses)
+        # Update positions for remaining tasks
+        self.update_positions()
 
     def _handle_failed_dispatch(self):
-        """
-        Handle a failed request with Ray-specific logic.
-        """
-
         if self.dispatched_task.retries < self.max_retries:
             # Try again
             logger.exception(
@@ -303,5 +222,20 @@ class RequestProcessor(Processor[RequestTask]):
                 logger.exception(
                     f"Error handling failed request {self.dispatched_task.id}: {e}"
                 )
-
             self.dispatched_task = None
+
+    def _restart_implementation(self):
+        """
+        RequestProcessor-specific restart logic.
+        
+        Resets the processor to initial state by:
+        - Setting deployment_status to UNINITIALIZED
+        - Setting app_handle to None
+        - Setting _has_been_terminated to False
+        - Reinitializing the queue to avoid multiprocessing broken pipe issues
+        """
+        logger.info(f"Restarting RequestProcessor for model {self.model_key}")
+        self.deployment_status = DeploymentStatus.UNINITIALIZED
+        self._app_handle = None
+        self._has_been_terminated = False
+        self._queue = Manager().list()

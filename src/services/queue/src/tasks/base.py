@@ -82,3 +82,6 @@ class Task(ABC):
             description = f"{self.id} - Status updated to {self.status}"
         
         return description
+
+    def __str__(self):
+        return f"{self.__class__.__name__}({self.id})"
