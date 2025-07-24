@@ -21,6 +21,8 @@ class Task(ABC):
         self.position = position
         self.retries = 0
         self.created_at = datetime.now()
+        self._failed = False
+        self._failure_reason: Optional[str] = None
 
 
     @property
@@ -42,13 +44,18 @@ class Task(ABC):
         Returns:
             Dictionary containing task state information
         """
-        return {
+        state = {
             "id": self.id,
             "position": self.position,
             "status": self.status,
             "retries": self.retries,
             "created_at": self.created_at.isoformat(),
         }
+        
+        if self._failed and self._failure_reason:
+            state["failed"] = self._failure_reason
+        
+        return state
 
 
     @abstractmethod
@@ -80,6 +87,29 @@ class Task(ABC):
             description = f"{self.id} - Moved to position {self.position + 1}"
         else:
             description = f"{self.id} - Status updated to {self.status}"
+        
+        return description
+
+    def respond_failure(self, description: Optional[str] = None) -> str:
+        """
+        Handle failure response for the task.
+        
+        This method sets the task failure state and provides a default
+        failure response. Subclasses can override for specific failure handling.
+        
+        Args:
+            description: Optional failure description
+            
+        Returns:
+            The failure description used
+        """
+        if description is None:
+            description = f"{self.id} - Task failed!"
+        
+        self._failed = True
+        self._failure_reason = description
+        
+        logger.debug(f"Task {self.id} failed with description: {description}")
         
         return description
 

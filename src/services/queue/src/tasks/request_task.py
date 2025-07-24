@@ -14,9 +14,8 @@ class RequestTask(Task):
     """
 
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
-        Task.__init__(self, request_id, request, position)
+        super().__init__(request_id, request, position)
         self._future = None
-        self._dispatch_failed = False
 
 
     @property
@@ -26,7 +25,7 @@ class RequestTask(Task):
         """
         
         # This happens when calling .remote() fails
-        if self._dispatch_failed:
+        if self._failed:
             return TaskStatus.FAILED
 
         # Request must still be in the queue
@@ -51,8 +50,9 @@ class RequestTask(Task):
             return TaskStatus.DISPATCHED
 
         except Exception as e:
-            logger.exception(f"Error checking request {self.id} status: {e}")
-            self._dispatch_failed = True
+            error_msg = f"Error checking request {self.id} status: {e}"
+            logger.exception(error_msg)
+            self.respond_failure(error_msg)
             return TaskStatus.FAILED
 
 
@@ -77,10 +77,11 @@ class RequestTask(Task):
             logger.info(f"[{str(self)}] Successfully initiated remote execution")
             return True
         except Exception as e:
-            logger.exception(f"[{str(self)}] Failed to start remote execution: {e}")
+            error_msg = f"[{str(self)}] Failed to start remote execution: {e}"
+            logger.exception(error_msg)
             
             # This Naively assumes that the controller evicted the deployment
-            self._dispatch_failed = True
+            self.respond_failure(error_msg)
             return False
 
 
@@ -107,8 +108,8 @@ class RequestTask(Task):
         """
         Respond to the user with a failure message.
         """
-        if description is None:
-            description = f"{self.id} - Dispatch failed!"
+        # Let the base class handle the failure state management
+        description = super().respond_failure(description)
 
         logger.debug(f"Responding failure to user with following description: {description}")
         response = self.data.create_response(

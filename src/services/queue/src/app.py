@@ -107,7 +107,7 @@ async def queue(request: Request):
 async def delete_request(request_id: str):
     """Remove a request from the queue."""
     try:
-        if coordinator.remove_request(request_id):
+        if coordinator.remove_task(request_id):
             return {"message": f"Request {request_id} successfully removed from queue"}
         else:
             logger.exception(f"Request {request_id} not found")
