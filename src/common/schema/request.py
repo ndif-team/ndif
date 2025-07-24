@@ -121,6 +121,7 @@ class BackendRequestModel(ObjectStorageMixin):
             status != self.last_status
             and status != ResponseModel.JobStatus.ERROR
             and status != ResponseModel.JobStatus.NNSIGHT_ERROR
+            and status != ResponseModel.JobStatus.LOG
         ):
             logger.info(f"Updating last status: {status}")
             self.last_status = status
