@@ -1,10 +1,10 @@
 import logging
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
 from ..tasks.base import Task
 from ..tasks.status import TaskStatus
-from .status import ProcessorStatus
+from .status import ProcessorStatus, DeploymentStatus
 # Generic type for tasks
 T = TypeVar('T', bound=Task)
 
@@ -20,37 +20,80 @@ class Processor(ABC, Generic[T]):
     """
     
 
-    def __init__(self, max_retries: int = 3, max_tasks: int = None):
+    def __init__(self, processor_id: str, max_retries: int = 3, max_tasks: int = None):
+        self.id = processor_id
         self.max_retries = max_retries
         self.max_tasks = max_tasks
         self.last_dispatched: Optional[datetime] = None
         self.dispatched_task: Optional[T] = None
         self.deletion_queue: List[str] = []  # Track IDs to delete
+        self._has_been_terminated: bool = False
+        self.backend_status: Optional[Any] = None
+        self._queue: List[T] = []
 
 
     @property
-    @abstractmethod
     def queue(self) -> List[T]:
         """
-        Abstract property for the task queue.
+        The task queue.
         
-        Subclasses should override this to provide their specific queue implementation.
-        For example, RequestProcessor might use Manager().list() for multiprocessing,
-        while a local processor might use a simple list.
+        Subclasses can override this to provide their specific queue implementation.
+        For example, RequestProcessor uses Manager().list() for multiprocessing.
         """
-        pass
+        return self._queue
 
 
     @property
-    @abstractmethod
+    def handle(self):
+        """
+        The backend handle for task execution.
+        
+        Subclasses can override this to provide their specific backend handle
+        (e.g., Ray app handle, HTTP client, local function reference).
+        Defaults to None - can be set externally or overridden by subclasses.
+        """
+        return getattr(self, '_handle', None)
+
+
+    @property
     def status(self):
         """
-        Abstract property for the processor status.
-        
-        Subclasses should implement their own status logic based on their specific
-        requirements (e.g., connected/disconnected for remote backends).
+        The status of the processor based on backend state and queue activity.
         """
-        pass
+        
+        # Check termination first
+        if self._has_been_terminated:
+            return ProcessorStatus.TERMINATED
+        
+        # Check if processor is inactive (no work)
+        if not self.dispatched_task and len(self.queue) == 0:
+            return ProcessorStatus.INACTIVE
+            
+        # Check if draining (at capacity)
+        if self.max_tasks and len(self.queue) >= self.max_tasks:
+            return ProcessorStatus.DRAINING
+            
+        # Backend-specific status checks
+        if self.backend_status == DeploymentStatus.CANT_ACCOMMODATE:
+            return ProcessorStatus.UNAVAILABLE
+            
+        # Check if we're provisioning (scheduled but no handle yet)
+        if hasattr(DeploymentStatus, 'FREE'):  # Check if we're dealing with Ray statuses
+            scheduled_statuses = [
+                DeploymentStatus.FREE,
+                DeploymentStatus.FULL,
+                DeploymentStatus.CACHED_AND_FREE,
+                DeploymentStatus.CACHED_AND_FULL,
+            ]
+            if self.backend_status in scheduled_statuses and self.handle is None:
+                return ProcessorStatus.PROVISIONING
+            
+        # If we have a handle or are deployed, we're active
+        if self.handle is not None or self.backend_status == getattr(DeploymentStatus, 'DEPLOYED', None):
+            return ProcessorStatus.ACTIVE
+            
+        # Default to uninitialized if no handle yet
+        return ProcessorStatus.UNINITIALIZED
 
 
     def get_state(self) -> Dict[str, Any]:
@@ -61,11 +104,14 @@ class Processor(ABC, Generic[T]):
             Dictionary containing processor state information
         """
         return {
+            "id": self.id,
             "status": self.status,
             "dispatched_task": self.dispatched_task.get_state() if self.dispatched_task else None,
             "queue": [task.get_state() for task in self.queue],
             "last_dispatched": self.last_dispatched,
             "deletion_queue": self.deletion_queue,
+            "has_been_terminated": self._has_been_terminated,
+            "backend_status": self.backend_status,
         }
 
     def has_request(self, request_id: str) -> bool:
@@ -86,7 +132,7 @@ class Processor(ABC, Generic[T]):
 
     def enqueue(self, task: T) -> bool:
         """
-        Enqueue a task.
+        Enqueue a task and handle both success and failure responses.
         
         Args:
             task: The task to enqueue
@@ -96,12 +142,32 @@ class Processor(ABC, Generic[T]):
         """
         try:
             if not self.max_tasks or len(self.queue) < self.max_tasks:
+                position = len(self.queue)
+                task.position = position  # Set the position on the task
                 self.queue.append(task)
+                
+                # Handle success response
+                try:
+                    task.respond(
+                        description=f"Task {getattr(task, 'id', 'unknown')} has been added to the queue. Currently at position {position + 1}"
+                    )
+                except Exception as e:
+                    logger.error(f"Error responding to task {getattr(task, 'id', 'unknown')} at queued stage: {e}")
+                
                 return True
             else:
+                # Handle failure response for capacity limit
+                if self.status == ProcessorStatus.DRAINING:
+                    task.respond_failure(
+                        f"Queue has currently at max capacity of {self.max_tasks}, please try again later."
+                    )
+                else:
+                    task.respond_failure(
+                        f"Task could not be enqueued for unknown reason."
+                    )
                 return False
         except Exception as e:
-            logger.exception(f"Error enqueuing task: {e}")
+            logger.exception(f"Error enqueuing task {getattr(task, 'id', 'unknown')}: {e}")
             return False
 
 
@@ -173,13 +239,27 @@ class Processor(ABC, Generic[T]):
                 i += 1
         if self.dispatched_task and getattr(self.dispatched_task, 'id', None) in deletion_ids:
             self._cancel_dispatched_task()
-            self.dispatched_task = None
         self.deletion_queue.clear()
         self.update_positions()
 
     def _cancel_dispatched_task(self):
-        """Hook for subclasses to implement backend-specific cancellation logic."""
-        pass
+        """
+        Cancel the currently dispatched task and perform cleanup.
+        
+        This method handles common cleanup logic that applies regardless of backend:
+        - Clears the deletion queue
+        - Updates positions for remaining tasks in queue
+        
+        Subclasses should override this method to add backend-specific cancellation
+        logic, but should call super()._cancel_dispatched_task() for cleanup.
+        """
+        # Clear the deletion queue
+        self.deletion_queue.clear()
+        
+        # Update positions for remaining tasks
+        self.update_positions()
+
+        self.dispatched_task = None
 
     def update_positions(self, indices: Optional[List[int]] = None):
         """
@@ -202,17 +282,34 @@ class Processor(ABC, Generic[T]):
                     task.respond()
 
 
-    @abstractmethod
     def _dispatch(self) -> bool:
         """
-        Abstract method to dispatch a task.
+        Dispatch a task using the backend handle.
         
-        Subclasses should implement the specific dispatch logic for their backend.
+        This method provides common dispatch logic with error handling.
+        Subclasses can override this method for backend-specific dispatch behavior.
         
         Returns:
             True if dispatch was successful, False otherwise
         """
-        pass
+        logger.debug(f"Attempting to dispatch task {getattr(self.dispatched_task, 'id', 'unknown')} on {self.id}")
+        
+        try:
+            # Notify about dispatch attempt
+            self.dispatched_task.respond(description="Dispatching task...")
+        except Exception as e:
+            logger.exception(f"Failed to respond to user about task being dispatched: {e}")
+        
+        try:
+            # Use the task's run method with our handle
+            success = self.dispatched_task.run(self.handle)
+            if success:
+                logger.debug(f"Successfully dispatched task {getattr(self.dispatched_task, 'id', 'unknown')} on {self.id}")
+                self.last_dispatched = datetime.now()
+            return success
+        except Exception as e:
+            logger.exception(f"Error during task dispatch on {self.id}: {e}")
+            return False
 
 
     def _handle_completed_dispatch(self):
@@ -225,21 +322,34 @@ class Processor(ABC, Generic[T]):
 
     def _handle_failed_dispatch(self):
         """
-        Handle a failed task.
+        Handle a failed task with retry logic and failure notifications.
         """
         if self.dispatched_task.retries < self.max_retries:
             # Try again
-            logger.exception(f"Task failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
+            logger.exception(f"Task {self.dispatched_task.id} failed, retrying... (attempt {self.dispatched_task.retries + 1} of {self.max_retries})")
             self._dispatch()
             self.dispatched_task.retries += 1
         else:
             try:
-                # Try to inform about the failure
-                self.dispatched_task.respond(description="Task failed after maximum retries.")
+                # Get backend-specific failure message
+                failure_message = self._get_failure_message()
+                self.dispatched_task.respond_failure(description=failure_message)
             except Exception as e:
-                logger.exception(f"Error handling failed task: {e}")
+                logger.exception(f"Error handling failed task {self.dispatched_task.id}: {e}")
             
             self.dispatched_task = None
+
+    def _get_failure_message(self) -> str:
+        """
+        Get a failure message for when a task fails after maximum retries.
+        
+        Subclasses can override this method to provide backend-specific
+        failure messages with more context about what went wrong.
+        
+        Returns:
+            A string describing why the task failed
+        """
+        return "Task failed after maximum retries."
 
     def _is_invariant_status(self, current_status : ProcessorStatus) -> bool:
         """Return True if self.status is in a status invariant with respect to the current lifecycle"""
@@ -251,6 +361,9 @@ class Processor(ABC, Generic[T]):
         ]
         return any(current_status == status for status in invariant_statuses)
 
+    def __str__(self):
+        return f"{self.__class__.__name__}({self.id})"
+
     def restart(self):
         """
         Restart the processor, resetting it to initial state.
@@ -258,19 +371,23 @@ class Processor(ABC, Generic[T]):
         This method resets the processor to a clean state by:
         - Clearing the dispatched task
         - Clearing the deletion queue
+        - Clearing the task queue
+        - Resetting termination flag
         - Calling subclass-specific restart logic
         """
-        logger.info("Restarting processor")
+        logger.info(f"Restarting processor {self.id}")
         self.dispatched_task = None
         self.deletion_queue.clear()
+        self._queue = []
+        self._has_been_terminated = False
         self._restart_implementation()
         
-    @abstractmethod
     def _restart_implementation(self):
         """
-        Abstract method for subclass-specific restart logic.
+        Hook for subclass-specific restart logic.
         
-        Subclasses should implement this method to handle their specific
+        Subclasses can override this method to handle their specific
         restart requirements (e.g., resetting deployment status, app handles, etc.).
+        Default implementation does nothing.
         """
         pass
