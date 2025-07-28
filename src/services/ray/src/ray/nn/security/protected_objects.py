@@ -89,7 +89,7 @@ class ProtectedObject:
         
 class ProtectedEnvoy(ProtectedObject, Envoy):
     
-    __allowed_attr__ = ("output", "inputs", "input", "device")
+    __allowed_attr__ = ("output", "inputs", "input", "device", "iter", "path", "__class__")
     __allowed_setattr__ = ("output", "inputs", "input")
     __allowed_types__ = (Tracer,)    
         
@@ -98,9 +98,15 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
         
         with UnprotectContext(id(self)):
             
+            children = []
+            
             for key, value in self.__dict__.items():
                 if isinstance(value, Envoy) and key != "__obj__":
                     self.__dict__[key] = ProtectedEnvoy(value)
+                    children.append(value)
+                    
+            self._children = children
+                
         
     def __getattr__(self, name: str):
         with UnprotectContext(id(self)):    
@@ -112,6 +118,10 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
             
             return deepcopy(value)
         
+    @allow
+    def __getitem__(self, key: str):
+    
+        return self._children[key]
         
 
     @allow
@@ -153,6 +163,16 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
     @allow
     def device(self):
         return self.__obj__.device
+    
+    @property
+    @allow
+    def iter(self):
+        return self.__obj__.iter
+    
+    @allow
+    def all(self):
+        __defer_capture__ = False
+        return self.__obj__.all()
     
     @allow
     def get(self, *args, **kwargs):

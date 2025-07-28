@@ -164,20 +164,20 @@ async def request(
     return response
 
 
-@sm.on("connect")
-async def connect(session_id: str, environ: Dict):
-    params = environ.get("QUERY_STRING")
-    params = dict(x.split("=") for x in params.split("&"))
-
-    if "job_id" in params:
-
-        await sm.enter_room(session_id, params["job_id"])
 
 
 @sm.on("blocking_response")
 async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
     await sm.emit("blocking_response", data=data, to=client_session_id)
+
+
+@sm.on("stream")
+async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: str):
+    
+    await sm.enter_room(session_id, job_id)
+
+    await blocking_response(session_id, client_session_id, data)
 
 
 @sm.on("stream_upload")

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List
 from pydantic import BaseModel
 
 from nnsight.util import Patch, Patcher
-
+from nnsight.modeling.mixins.remoteable import StreamTracer
 # Built-in functions and types that are allowed to be used
 WHITELISTED_BUILTINS = {
     # Built-in exceptions
@@ -33,8 +33,7 @@ WHITELISTED_BUILTINS = {
     
     # Built-in special attributes
     "__doc__", "__import__", "__loader__", "__name__", "__package__", "__spec__",
-    "__build_class__",
-    
+    "__build_class__", 
     # Built-in functions
     "abs", "aiter", "all", "anext", "any", "ascii", "bool", "bytearray", "bytes",
     "callable", "chr", "classmethod", "complex", "copyright", "credits", "delattr",
@@ -43,9 +42,23 @@ WHITELISTED_BUILTINS = {
     "iter", "len", "list", "map", "max", "min", "next", "object", "oct", "ord",
     "pow", "print", "property", "range", "repr", "reversed", "round", "set",
     "setattr", "slice", "sorted", "staticmethod", "str", "sum", "super", "tuple",
-    "type", "vars", "zip", "memoryview", "globals"
+    "type", "vars", "zip", "memoryview", "globals", "input"
 }
 
+SAFE_BUILTINS = { key: value for key, value in __builtins__.items() if key in WHITELISTED_BUILTINS }
+class SafeBuiltins(ModuleType):
+    """A wrapper around the built-in module that enforces whitelist rules."""
+    
+    def __init__(self):
+        super().__init__("safe_builtins")
+
+    def __getattribute__(self, name: str):
+        return SAFE_BUILTINS[name]
+    
+    def __getitem__(self, name: str):
+        return SAFE_BUILTINS[name]
+
+PROTECTED_BUILTINS = SafeBuiltins()
 class WhitelistedModule(BaseModel):
     """Configuration for a module that is allowed to be imported."""
     name: str
@@ -56,16 +69,20 @@ class WhitelistedModule(BaseModel):
 
 # Modules that are allowed to be imported
 WHITELISTED_MODULES = [
+    WhitelistedModule(name="builtins", strict=True),
     WhitelistedModule(name="torch", strict=False),
     WhitelistedModule(name="collections", strict=False),
+    
+    
 ]
 
 # Modules allowed during deserialization
 WHITELISTED_MODULES_DESERIALIZATION = [
+    
     WhitelistedModule(name="pickle", strict=False),
     WhitelistedModule(name="dill", strict=False),
     WhitelistedModule(name="nnsight.schema.request", strict=True),
-    WhitelistedModule(name="nnsight.intervention.tracing.tracer", strict=True),
+    WhitelistedModule(name="nnsight.modeling.mixins.remoteable", strict=True),
     WhitelistedModule(name="nnsight.intervention.tracing.base", strict=True),
     WhitelistedModule(name="nnsight.intervention.interleaver", strict=True),
     WhitelistedModule(name="nnsight.intervention.batching", strict=True),
@@ -93,16 +110,16 @@ class ProtectedModule(ModuleType):
         protected = ProtectedModule(self.whitelist_entry)
         protected.__dict__.update(attr.__dict__)
         return protected
-def is_nnsight():
+# def is_nnsight():
     
-    frame = inspect.currentframe().f_back
-    print('')
-    while frame:
-        print(frame.f_code.co_filename)
-        if '/nnsight/' in frame.f_code.co_filename:
-            return True
-        frame = frame.f_back
-    return False
+#     frame = inspect.currentframe().f_back
+#     print('')
+#     while frame:
+#         print(frame.f_code.co_filename)
+#         if '/nnsight/' in frame.f_code.co_filename:
+#             return True
+#         frame = frame.f_back
+#     return False
 
 class Importer:
     """Handles importing modules while enforcing whitelist rules."""
@@ -114,9 +131,14 @@ class Importer:
 
     def __call__(self, name: str, globals: Dict[str, Any]=None, locals: Dict[str, Any]=None,
                  fromlist: List[str]=None, level: int=0):
+        if name in ["builtins", "__builtins__"]:
+            return PROTECTED_BUILTINS
+        
         for module in self.whitelisted_modules:
-            if module.check(name) or is_nnsight():
+            if module.check(name):
+                
                 self.protector.__exit__(None, None, None)
+   
                 try:
                     result = self.original_import(name, globals, locals, fromlist, level)
                     protected = ProtectedModule(module)
@@ -124,25 +146,25 @@ class Importer:
                     return protected
                 finally:
                     self.protector.__enter__()
-                    
+             
         raise ImportError(f"Module {name} is not whitelisted")
 
-NNSIGHTS_BUILTIN_DEPENDENCIES = {"compile", "exec", "open"}
+# NNSIGHTS_BUILTIN_DEPENDENCIES = {"compile", "exec", "open"}
 
-def wrap_nnsight_builtins(fn: Callable):
-    """Wraps a function to enforce whitelist rules on built-ins."""
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        if is_nnsight():
-            return fn(*args, **kwargs)
-        else:
-            raise AttributeError(f"Built-in {fn.__name__} is not whitelisted")
-    return wrapper
+# def wrap_nnsight_builtins(fn: Callable):
+#     """Wraps a function to enforce whitelist rules on built-ins."""
+#     @wraps(fn)
+#     def wrapper(*args, **kwargs):
+#         if is_nnsight():
+#             return fn(*args, **kwargs)
+#         else:
+#             raise AttributeError(f"Built-in {fn.__name__} is not whitelisted")
+#     return wrapper
 
 class Protector(Patcher):
     """Enforces security restrictions on Python's built-ins and imports."""
     
-    def __init__(self, whitelisted_modules: List[WhitelistedModule]):
+    def __init__(self, whitelisted_modules: List[WhitelistedModule], builtins:bool=False):
         super().__init__()
         self.importer = Importer(whitelisted_modules, self)
         
@@ -154,12 +176,38 @@ class Protector(Patcher):
             as_dict=True
         ))
         
+        self.add(Patch(
+            SAFE_BUILTINS,
+            replacement=self.importer.__call__,
+            key="__import__",
+            as_dict=True
+        ))
+        
+        self.add(Patch(
+            StreamTracer,
+            replacement=self.escape(StreamTracer.execute),
+            key="execute"
+        ))
+        
         # Remove non-whitelisted built-ins
-        for key in __builtins__.keys():
-            if key not in WHITELISTED_BUILTINS:
-                if key in NNSIGHTS_BUILTIN_DEPENDENCIES:
-                    self.add(Patch(__builtins__, key=key, replacement=wrap_nnsight_builtins(__builtins__[key]), as_dict=True))
-                else:
+        if builtins:
+            for key in __builtins__.keys():
+                if key not in WHITELISTED_BUILTINS:
                     self.add(Patch(__builtins__, key=key, as_dict=True))
+                    
+    def escape(self, fn: Callable):
+        
+        @wraps(fn)
+        def inner(*args, **kwargs):
+            
+            self.__exit__(None, None, None)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                self.__enter__()
+        
+        return inner
+                    
                 
-        self.add(Patch(__builtins__, key="globals", replacement=lambda:{"__builtins__": None}, as_dict=True))
+import ast
+setattr(ast, 'compile', compile)

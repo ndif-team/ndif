@@ -12,16 +12,16 @@ from nnsight.intervention.tracing.tracer import Tracer
 
 class RemoteExecutionBackend(Backend):
 
-    def __init__(self, fn: Callable):
+    def __init__(self, fn: Callable, protector: Protector):
         self.fn = fn
+        self.protector = protector
 
     def __call__(self, tracer: Tracer):
 
-        protector = Protector(WHITELISTED_MODULES)
 
         Globals.enter()
 
-        with protector:
+        with self.protector:
             run(tracer, self.fn)
 
         Globals.exit()

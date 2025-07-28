@@ -20,7 +20,7 @@ from torch.cuda import (max_memory_allocated, memory_allocated,
 
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
-
+from nnsight.modeling.mixins.remoteable import StreamTracer
 from ....logging import set_logger
 from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
                          ModelLoadTimeMetric, RequestResponseSizeMetric)
@@ -31,7 +31,7 @@ from ....schema import (BackendRequestModel, BackendResponseModel,
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_objects import protect
-from ...nn.security.protected_environment import WHITELISTED_MODULES_DESERIALIZATION, Protector
+from ...nn.security.protected_environment import WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector
 from .util import kill_thread, load_with_cache_deletion_retry
 
 
@@ -74,6 +74,8 @@ class BaseModelDeployment:
         torch.set_default_dtype(torch.bfloat16)
 
         self.model = self.load_from_disk()
+        
+        self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
         self.protected_model = protect(self.model)
 
         if dispatch:
@@ -87,6 +89,8 @@ class BaseModelDeployment:
 
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
+        
+        StreamTracer.register(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
 
@@ -215,7 +219,7 @@ class BaseModelDeployment:
 
     def pre(self) -> RequestModel:
         """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+        with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
             request = self.request.deserialize(self.protected_model)
         
         if hasattr(request.tracer, "model"):
@@ -250,7 +254,7 @@ class BaseModelDeployment:
 
             # Execute object.
             with StdoutRedirect(self.log):
-                result = RemoteExecutionBackend(request.interventions)(request.tracer)
+                result = RemoteExecutionBackend(request.interventions, self.execution_protector)(request.tracer)
 
             execution_time = time.time() - execution_time
 
@@ -372,7 +376,10 @@ class BaseModelDeployment:
         Args:
             data (Any): The data to stream back to the client.
         """
-        self.respond(status=BackendResponseModel.JobStatus.STREAM, data=data)
+        
+        response = self.request.create_response(BackendResponseModel.JobStatus.STREAM, self.logger, data=data)
+        
+        SioProvider.emit("stream", data=(self.request.session_id,  response.pickle(), self.request.id))
 
     def stream_receive(self, *args):
         """Receives streaming data from the client.
@@ -383,7 +390,7 @@ class BaseModelDeployment:
         Returns:
             The deserialized data received from the client.
         """
-        return StreamValueModel.deserialize(self.sio.receive(5)[1], "json", True)
+        return SioProvider.sio.receive(5)[1]
 
     def respond(self, **kwargs) -> None:
         """Sends a response back to the client.
