@@ -46,7 +46,7 @@ class Resources:
 
     def gpus_required(self, model_size_in_bytes: int) -> int:
 
-        return model_size_in_bytes // self.gpu_memory_bytes + 1
+        return model_size_in_bytes // (self.gpu_memory_bytes + 1)
 
     def __str__(self):
         return (
