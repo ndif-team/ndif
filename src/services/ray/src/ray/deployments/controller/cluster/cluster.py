@@ -60,6 +60,10 @@ class Cluster:
 
         for node in nodes:
 
+            if "GPU" not in node.resources_total:
+                # We currently only do resource management for nodes with GPUs
+                continue
+
             id = node.node_id
             name = node.node_name
 
@@ -67,10 +71,10 @@ class Cluster:
 
             if id not in self.nodes:
 
-                total_gpus = 0 if "GPU" not in node.resources_total else node.resources_total["GPU"]
+                total_gpus = node.resources_total["GPU"]
                 gpu_type = "TEST"
                 # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = 0 if "GPU" not in node.resources_total else (node.resources_total["cuda_memory_bytes"]) / total_gpus
+                gpu_memory_bytes = (node.resources_total["cuda_memory_bytes"]) / total_gpus
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
