@@ -233,6 +233,12 @@ class _ControllerDeployment:
 
         return {"deployments": status}
 
+    def sync(self):
+        """
+        Sync the cluster with the latest state of the nodes. Used to update the cluster when a worker node connects or disconnects from Ray head.
+        """
+
+        self.cluster.update_nodes()
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment(_ControllerDeployment):
