@@ -1,6 +1,5 @@
 import os
 import logging
-from multiprocessing import Manager
 import ray
 from ray import serve
 from ray.serve.exceptions import RayServeException
@@ -28,8 +27,6 @@ class RequestProcessor(Processor[RequestTask]):
 
     def __init__(self, model_key: str, *args, **kwargs):
         super().__init__(processor_id=model_key, *args, **kwargs)
-        # Override the base class queue with multiprocessing Manager list
-        self._queue = Manager().list()
         self._app_handle = None
         self.backend_status = DeploymentStatus.UNINITIALIZED
 
@@ -111,5 +108,3 @@ class RequestProcessor(Processor[RequestTask]):
         logger.info(f"Restarting RequestProcessor for model {self.id}")
         self.backend_status = DeploymentStatus.UNINITIALIZED
         self._app_handle = None
-        # Re-initialize with multiprocessing Manager list (base class will clear it first)
-        self._queue = Manager().list()
