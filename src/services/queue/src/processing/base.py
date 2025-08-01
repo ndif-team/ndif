@@ -114,12 +114,12 @@ class Processor(ABC, Generic[T]):
             "backend_status": self.backend_status,
         }
 
-    def has_request(self, request_id: str) -> bool:
-        """Return whether the processor contains a request with the given id."""
-        if self.dispatched_task and getattr(self.dispatched_task, 'id', None) == request_id:
+    def has_task(self, task_id: str) -> bool:
+        """Return whether the processor contains a task with the given id."""
+        if self.dispatched_task and getattr(self.dispatched_task, 'id', None) == task_id:
             return True
         for task in self.queue:
-            if getattr(task, 'id', None) == request_id:
+            if getattr(task, 'id', None) == task_id:
                 return True
         return False
 
