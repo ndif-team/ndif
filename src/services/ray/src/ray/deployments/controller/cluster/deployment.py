@@ -40,7 +40,7 @@ class Deployment:
 
         return {
             "model_key": self.model_key,
-            "deployment_level": self.deployment_level,
+            "deployment_level": self.deployment_level.value,
             "gpus_required": self.gpus_required,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
