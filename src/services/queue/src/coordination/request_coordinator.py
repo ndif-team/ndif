@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict, List
+import os
 
 from ray import serve
 
@@ -13,8 +14,7 @@ import time
 
 logger = logging.getLogger("ndif")
 
-# Constants
-DEPLOYMENT_TIMEOUT_SECONDS = 3.14  # Timeout for deployment results
+DEPLOYMENT_TIMEOUT_SECONDS = os.environ.get("DEPLOYMENT_TIMEOUT_SECONDS", 0.1)
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """
