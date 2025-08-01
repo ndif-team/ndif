@@ -2,7 +2,7 @@ import time
 import logging
 from datetime import datetime, timezone
 from enum import Enum
-
+from typing import Any, Dict
 import ray
 
 from ... import MODEL_KEY
@@ -34,6 +34,19 @@ class Deployment:
         self.dedicated = dedicated
 
         self.deployed = time.time()
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get the state of the deployment."""
+
+        return {
+            "model_key": self.model_key,
+            "deployment_level": self.deployment_level,
+            "gpus_required": self.gpus_required,
+            "size_bytes": self.size_bytes,
+            "dedicated": self.dedicated,
+            "deployed": self.deployed,
+        }
+
 
     def end_time(self, minimim_deployment_time_seconds: int) -> datetime:
 

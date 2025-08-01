@@ -1,6 +1,6 @@
 import logging
 import random
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ray._private import services
 from ray._private.state import GlobalState
@@ -49,6 +49,21 @@ class Cluster:
             self._state = state
 
         return self._state
+
+    def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
+        """Get the state of the cluster."""
+
+        state = {
+            "nodes": [node.get_state() for node in self.nodes.values()],
+            "evaluator": self.evaluator.get_state(),
+        }
+
+        if include_ray_state:
+
+            # TODO: The choice of cluster_resources() was arbitrary, GlobalState exposes a lot of potentially useful ray cluster information
+            state["ray_state"] = self.state.cluster_resources()
+
+        return state
 
     def update_nodes(self):
 
