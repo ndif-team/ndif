@@ -30,6 +30,7 @@ class Processor(ABC, Generic[T]):
         self._has_been_terminated: bool = False
         self.backend_status: Optional[Any] = None
         self._queue: List[T] = []
+        self._status = None  # Private status cache
 
 
     @property
@@ -63,22 +64,22 @@ class Processor(ABC, Generic[T]):
         
         # Check termination first
         if self._has_been_terminated:
-            return ProcessorStatus.TERMINATED
+            self._status = ProcessorStatus.TERMINATED
         
         # Check if processor is inactive (no work)
-        if not self.dispatched_task and len(self.queue) == 0:
-            return ProcessorStatus.INACTIVE
+        elif not self.dispatched_task and len(self.queue) == 0:
+            self._status = ProcessorStatus.INACTIVE
             
         # Check if draining (at capacity)
-        if self.max_tasks and len(self.queue) >= self.max_tasks:
-            return ProcessorStatus.DRAINING
+        elif self.max_tasks and len(self.queue) >= self.max_tasks:
+            self._status = ProcessorStatus.DRAINING
             
         # Backend-specific status checks
-        if self.backend_status == DeploymentStatus.CANT_ACCOMMODATE:
-            return ProcessorStatus.UNAVAILABLE
+        elif self.backend_status == DeploymentStatus.CANT_ACCOMMODATE:
+            self._status = ProcessorStatus.UNAVAILABLE
             
         # Check if we're provisioning (scheduled but no handle yet)
-        if hasattr(DeploymentStatus, 'FREE'):  # Check if we're dealing with Ray statuses
+        elif hasattr(DeploymentStatus, 'FREE'):  # Check if we're dealing with Ray statuses
             scheduled_statuses = [
                 DeploymentStatus.FREE,
                 DeploymentStatus.FULL,
@@ -86,14 +87,23 @@ class Processor(ABC, Generic[T]):
                 DeploymentStatus.CACHED_AND_FULL,
             ]
             if self.backend_status in scheduled_statuses and self.handle is None:
-                return ProcessorStatus.PROVISIONING
-            
+                self._status = ProcessorStatus.PROVISIONING
+            # If we have a handle or are deployed, we're active
+            elif self.handle is not None or self.backend_status == getattr(DeploymentStatus, 'DEPLOYED', None):
+                self._status = ProcessorStatus.ACTIVE
+            # Default to uninitialized if no handle yet
+            else:
+                self._status = ProcessorStatus.UNINITIALIZED
+        
         # If we have a handle or are deployed, we're active
-        if self.handle is not None or self.backend_status == getattr(DeploymentStatus, 'DEPLOYED', None):
-            return ProcessorStatus.ACTIVE
+        elif self.handle is not None or self.backend_status == getattr(DeploymentStatus, 'DEPLOYED', None):
+            self._status = ProcessorStatus.ACTIVE
             
         # Default to uninitialized if no handle yet
-        return ProcessorStatus.UNINITIALIZED
+        else:
+            self._status = ProcessorStatus.UNINITIALIZED
+            
+        return self._status
 
 
     def get_state(self) -> Dict[str, Any]:
@@ -105,7 +115,7 @@ class Processor(ABC, Generic[T]):
         """
         return {
             "id": self.id,
-            "status": self.status,
+            "status": self._status,
             "dispatched_task": self.dispatched_task.get_state() if self.dispatched_task else None,
             "queue": [task.get_state() for task in self.queue],
             "last_dispatched": self.last_dispatched,

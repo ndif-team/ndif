@@ -42,6 +42,7 @@ class Coordinator(ABC, Generic[T, P]):
         self._thread = None
         self._error_count = 0
         self._max_consecutive_errors = max_consecutive_errors
+        self._status = CoordinatorStatus.STOPPED  # Private status cache
 
         # Attributes accessible from outside of the coordinator thread (e.g. by the Queue app)
         manager = multiprocessing.Manager()
@@ -80,11 +81,13 @@ class Coordinator(ABC, Generic[T, P]):
         The status of the coordinator.
         """
         if not self.running:
-            return CoordinatorStatus.STOPPED
+            self._status = CoordinatorStatus.STOPPED
         elif self._error_count >= self._max_consecutive_errors:
-            return CoordinatorStatus.ERROR
+            self._status = CoordinatorStatus.ERROR
         else:
-            return CoordinatorStatus.RUNNING
+            self._status = CoordinatorStatus.RUNNING
+            
+        return self._status
 
     def get_state(self) -> Dict[str, Any]:
         """
@@ -94,7 +97,7 @@ class Coordinator(ABC, Generic[T, P]):
             Dictionary containing coordinator state information
         """
         return {
-            "status": self.status,
+            "status": self._status,
             "active_processors": [
                 processor.get_state() for processor in self.active_processors.values()
             ],
@@ -203,7 +206,7 @@ class Coordinator(ABC, Generic[T, P]):
         """
         Run the coordinator's event loop.
         """
-        while self.running:
+        while self.status == CoordinatorStatus.RUNNING:
             try:
                 # Clear the event before waiting (in case it was set previously)
                 self._sleep_event.clear()

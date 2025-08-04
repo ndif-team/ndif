@@ -14,7 +14,7 @@ import time
 
 logger = logging.getLogger("ndif")
 
-DEPLOYMENT_TIMEOUT_SECONDS = os.environ.get("DEPLOYMENT_TIMEOUT_SECONDS", 3.14)
+DEPLOYMENT_TIMEOUT_SECONDS = float(os.environ.get("DEPLOYMENT_TIMEOUT_SECONDS", 3.14))
 
 class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     """

@@ -23,6 +23,7 @@ class Task(ABC):
         self.created_at = datetime.now()
         self._failed = False
         self._failure_reason: Optional[str] = None
+        self._status = None  # Private status cache
 
 
     @property
@@ -47,7 +48,7 @@ class Task(ABC):
         state = {
             "id": self.id,
             "position": self.position,
-            "status": self.status,
+            "status": self._status,
             "retries": self.retries,
             "created_at": self.created_at.isoformat(),
         }
