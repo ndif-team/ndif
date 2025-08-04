@@ -38,14 +38,10 @@ class RequestTask(Task):
 
         # Request has been dispatched, check if it has completed
         try:
-            result = self._future._to_object_ref_sync()
-            ready, _ = ray.wait([result], timeout=0)
-            if len(ready) > 0:
-                logger.debug(f"[TASK:{self.id}] Request {self.id} completed")
-                self._future = None
-                return TaskStatus.COMPLETED
-            else:
-                raise TimeoutError()
+            _ = self._future.result(timeout_s=0, _skip_asyncio_check=True)
+            logger.debug(f"[TASK:{self.id}] Request {self.id} completed")
+            self._future = None
+            return TaskStatus.COMPLETED
         except TimeoutError:
             return TaskStatus.DISPATCHED
 
