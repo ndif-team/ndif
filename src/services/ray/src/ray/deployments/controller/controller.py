@@ -76,7 +76,7 @@ class _ControllerDeployment:
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
         )
-        
+
         if deployments:
             self.deploy(deployments, dedicated=True)
 
@@ -185,6 +185,9 @@ class _ControllerDeployment:
                     "config": self.cluster.evaluator.cache[
                         deployment.model_key
                     ].config.to_json_string(),
+                    "n_params": self.cluster.evaluator.cache[
+                        deployment.model_key
+                    ].n_params,
                 }
 
                 if self.minimum_deployment_time_seconds is not None:
@@ -215,6 +218,9 @@ class _ControllerDeployment:
                         "config": self.cluster.evaluator.cache[
                             cached_model_key
                         ].config.to_json_string(),
+                        "n_params": self.cluster.evaluator.cache[
+                            cached_model_key
+                        ].n_params,
                     }
 
                     existing_repo_ids.add(
@@ -234,7 +240,27 @@ class _ControllerDeployment:
                     "repo_id": repo_id,
                 }
 
-        return {"deployments": status}
+        return {
+            "deployments": status,
+            "cluster": {
+                "nodes": {
+                    node_id: {
+                        "resources": {
+                            "total_gpus": node.resources.total_gpus,
+                            "gpu_memory_bytes": node.resources.gpu_memory_bytes,
+                            "available_gpus": node.resources.available_gpus,
+                        },
+                        "deployments": {
+                            model_key: {
+                                "gpus_required": deployment.gpus_required,
+                            }
+                            for model_key, deployment in node.deployments.items()
+                        },
+                    }
+                    for node_id, node in self.cluster.nodes.items()
+                }
+            },
+        }
 
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})

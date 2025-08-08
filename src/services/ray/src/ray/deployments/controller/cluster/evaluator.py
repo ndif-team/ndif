@@ -11,8 +11,9 @@ logger = logging.getLogger("ndif")
 
 
 class CacheEntry:
-    def __init__(self, size_in_bytes: int, config: str):
+    def __init__(self, size_in_bytes: int, n_params: int, config: str):
         self.size_in_bytes = size_in_bytes
+        self.n_params = n_params
         self.config = config
 
 
@@ -52,8 +53,10 @@ class ModelEvaluator:
             return exception
 
         param_size = 0
+        n_params = 0
         for param in meta_model._model.parameters():
             param_size += param.nelement() * param.element_size()
+            n_params += param.nelement()
         buffer_size = 0
         for buffer in meta_model._model.buffers():
             buffer_size += buffer.nelement() * buffer.element_size()
@@ -62,7 +65,11 @@ class ModelEvaluator:
 
         model_size_bytes += model_size_bytes * self.padding_factor
 
-        self.cache[model_key] = CacheEntry(model_size_bytes, meta_model._model.config)
+        self.cache[model_key] = CacheEntry(
+            model_size_bytes,
+            n_params,
+            meta_model._model.config,
+        )
 
         logger.info(f"=> New model evaluated: {model_key} size: {model_size_bytes}")
 

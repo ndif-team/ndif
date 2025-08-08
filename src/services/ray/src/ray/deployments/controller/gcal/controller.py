@@ -67,6 +67,9 @@ class SchedulingControllerDeployment(_ControllerDeployment):
                         model_key
                     ].config.to_json_string(),
                     "schedule": schedule,
+                    "n_params": self.cluster.evaluator.cache[
+                        model_key
+                    ].n_params,
                 }
 
         return status
