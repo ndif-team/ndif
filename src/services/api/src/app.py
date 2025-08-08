@@ -8,7 +8,7 @@ from typing import Any, Dict
 import requests
 import socketio
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi_cache import FastAPICache
@@ -164,6 +164,42 @@ async def request(
     return response
 
 
+@app.delete("/request/{request_id}")
+async def delete_request(request_id: str):
+    """Delete a submitted request, provided it is either queued or running"""
+    try:
+        endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
+        response = requests.delete(endpoint)
+        response.raise_for_status()
+        return {"message": f"Request {request_id} successfully submitted for deletion!"}
+    except requests.exceptions.HTTPError as e:
+        # Handle HTTP errors from the queue service
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+        elif e.response.status_code == 500:
+            # Try to extract the error message from the queue service
+            try:
+                error_detail = e.response.json().get('detail', str(e))
+            except:
+                error_detail = str(e)
+            raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
+        else:
+            raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except requests.exceptions.RequestException as e:
+        # Handle connection errors, timeouts, etc.
+        raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+
+
+@sm.on("connect")
+async def connect(session_id: str, environ: Dict):
+    params = environ.get("QUERY_STRING")
+    params = dict(x.split("=") for x in params.split("&"))
+
+    if "job_id" in params:
+
+        await sm.enter_room(session_id, params["job_id"])
 
 
 @sm.on("blocking_response")

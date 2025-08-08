@@ -1,6 +1,7 @@
 import os
-import time
-from typing import List, Optional
+from dataclasses import asdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import ray
 from pydantic import BaseModel
@@ -79,6 +80,27 @@ class _ControllerDeployment:
 
         if deployments:
             self.deploy(deployments, dedicated=True)
+
+    def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
+        """Get the state of the controller."""
+
+        state = {
+            "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
+            "execution_timeout_seconds": self.execution_timeout_seconds,
+            "model_cache_percentage": self.model_cache_percentage,
+            "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
+        }
+
+        if include_ray_state:
+
+            state["ray_dashboard_url"] = self.ray_dashboard_url
+            state["runtime_context"] = self.runtime_context.get()
+            state["replica_context"] = asdict(self.replica_context)
+            state["serve_details"] = self.client.get_serve_details()
+            
+
+        state["datetime"] = datetime.now().isoformat()
+        return state
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 
@@ -262,6 +284,12 @@ class _ControllerDeployment:
             },
         }
 
+    def sync(self):
+        """
+        Sync the cluster with the latest state of the nodes. Used to update the cluster when a worker node connects or disconnects from Ray head.
+        """
+
+        self.cluster.update_nodes()
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment(_ControllerDeployment):

@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Union
+from typing import Dict, Union, Any
 
 import torch
 
@@ -29,6 +29,21 @@ class ModelEvaluator:
         self.cache: Dict[MODEL_KEY, CacheEntry] = {}
 
         torch.set_default_dtype(torch.bfloat16)
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get the state of the evaluator."""
+
+        return {
+            "cache": {
+                key: {
+                    "size_in_bytes": value.size_in_bytes,
+                    "config": value.config,
+                }
+                for key, value in self.cache.items()
+            },
+            "padding_factor": self.padding_factor,
+            "dtype": str(torch.get_default_dtype()),
+        }
 
     def __call__(self, model_key: MODEL_KEY) -> Union[float, Exception]:
 

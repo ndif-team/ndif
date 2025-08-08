@@ -12,4 +12,4 @@ logging_config:
   enable_access_log: true
 applications:
   - name: Controller
-    import_path: src.ray.deployments.controller.gcal.controller:app
+    import_path: src.ray.deployments.controller.controller:app

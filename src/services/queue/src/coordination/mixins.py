@@ -34,7 +34,7 @@ class ProcessorStatusMixin:
             else:
                 return None
         except Exception as e:
-            logger.error(f"Error getting processor status for {processor_key}: {e}")
+            logger.exception(f"Error getting processor status for {processor_key}: {e}")
             return None
 
     def get_all_processors(self) -> List[Dict[str, Any]]:
@@ -63,7 +63,7 @@ class ProcessorStatusMixin:
             
             return processors
         except Exception as e:
-            logger.error(f"Error getting all processors: {e}")
+            logger.exception(f"Error getting all processors: {e}")
             return []
 
 

@@ -1,11 +1,13 @@
 import time
+import logging
 from datetime import datetime, timezone
 from enum import Enum
-
+from typing import Any, Dict
 import ray
 
 from ... import MODEL_KEY
-import ray
+
+logger = logging.getLogger("ndif")
 
 class DeploymentLevel(Enum):
 
@@ -33,6 +35,19 @@ class Deployment:
 
         self.deployed = time.time()
 
+    def get_state(self) -> Dict[str, Any]:
+        """Get the state of the deployment."""
+
+        return {
+            "model_key": self.model_key,
+            "deployment_level": self.deployment_level.value,
+            "gpus_required": self.gpus_required,
+            "size_bytes": self.size_bytes,
+            "dedicated": self.dedicated,
+            "deployed": self.deployed,
+        }
+
+
     def end_time(self, minimim_deployment_time_seconds: int) -> datetime:
 
         return datetime.fromtimestamp(
@@ -41,5 +56,9 @@ class Deployment:
 
     def remove_from_cache(self):
 
-        actor = ray.get_actor(f"ModelActor:{self.model_key}")
-        ray.kill(actor)
+        try:
+            actor = ray.get_actor(f"ModelActor:{self.model_key}")
+            ray.kill(actor)
+        except Exception:
+            logger.error(f"Error removing actor {self.model_key} from cache")
+            pass

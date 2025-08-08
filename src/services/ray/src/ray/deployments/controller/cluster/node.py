@@ -1,7 +1,7 @@
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from enum import IntEnum
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from ... import MODEL_KEY
 from .deployment import Deployment, DeploymentLevel
@@ -46,6 +46,9 @@ class Resources:
 
     def gpus_required(self, model_size_in_bytes: int) -> int:
 
+        if self.gpu_memory_bytes == 0:
+            raise ValueError("GPU memory bytes is 0")
+
         return model_size_in_bytes // self.gpu_memory_bytes + 1
 
     def __str__(self):
@@ -79,6 +82,18 @@ class Node:
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
         self.cache: Dict[MODEL_KEY, Deployment] = {}
 
+    def get_state(self) -> Dict[str, Any]:
+        """Get the state of the node."""
+
+        return {
+            "id": self.id,
+            "name": self.name,
+            "resources": asdict(self.resources),
+            "deployments": [deployment.get_state() for deployment in self.deployments.values()],
+            "num_deployments": len(self.deployments),
+            "cache": [deployment.get_state() for deployment in self.cache.values()],
+            "cache_size": sum([deployment.size_bytes for deployment in self.cache.values()]),
+        }
 
     def deploy(
         self,
