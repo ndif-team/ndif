@@ -1,6 +1,6 @@
 import logging
 import random
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ray._private import services
 from ray._private.state import GlobalState
@@ -50,6 +50,21 @@ class Cluster:
 
         return self._state
 
+    def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
+        """Get the state of the cluster."""
+
+        state = {
+            "nodes": [node.get_state() for node in self.nodes.values()],
+            "evaluator": self.evaluator.get_state(),
+        }
+
+        if include_ray_state:
+
+            # TODO: The choice of cluster_resources() was arbitrary, GlobalState exposes a lot of potentially useful ray cluster information
+            state["ray_state"] = self.state.cluster_resources()
+
+        return state
+
     def update_nodes(self):
 
         logger.info("Updating nodes...")
@@ -59,6 +74,10 @@ class Cluster:
         current_nodes = set()
 
         for node in nodes:
+
+            if "GPU" not in node.resources_total:
+                # We currently only do resource management for nodes with GPUs
+                continue
 
             id = node.node_id
             name = node.node_name
@@ -70,9 +89,7 @@ class Cluster:
                 total_gpus = node.resources_total["GPU"]
                 gpu_type = "TEST"
                 # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (
-                    node.resources_total["cuda_memory_bytes"]
-                ) / total_gpus
+                gpu_memory_bytes = (node.resources_total["cuda_memory_bytes"]) / total_gpus
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage

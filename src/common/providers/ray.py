@@ -16,13 +16,13 @@ class RayProvider(Provider):
     @classmethod
     def from_env(cls) -> None:
         super().from_env()
-        cls.ray_url = os.environ.get("RAY_URL")
+        cls.ray_url = os.environ.get("RAY_ADDRESS")
 
     @classmethod
     def to_env(cls) -> dict:
         return {
             **super().to_env(),
-            "RAY_URL": cls.ray_url,
+            "RAY_ADDRESS": cls.ray_url,
         }
 
     @classmethod

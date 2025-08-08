@@ -1,5 +1,5 @@
 import logging
-import logging
+import ray
 from typing import Dict, Any, Optional
 from .status import TaskStatus
 from .base import Task
@@ -14,9 +14,8 @@ class RequestTask(Task):
     """
 
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
-        Task.__init__(self, request_id, request, position)
+        super().__init__(request_id, request, position)
         self._future = None
-        self._evicted = False
 
 
     @property
@@ -26,7 +25,7 @@ class RequestTask(Task):
         """
         
         # This happens when calling .remote() fails
-        if self._evicted:
+        if self._failed:
             return TaskStatus.FAILED
 
         # Request must still be in the queue
@@ -39,16 +38,22 @@ class RequestTask(Task):
 
         # Request has been dispatched, check if it has completed
         try:
-            # ray 2.47.0
-            ready = self._future._fetch_future_result_sync(_timeout_s=0)
-            if ready:
-                return TaskStatus.COMPLETED
-            
+            _ = self._future.result(timeout_s=0, _skip_asyncio_check=True)
+            logger.debug(f"[TASK:{self.id}] Request {self.id} completed")
+            self._future = None
+            return TaskStatus.COMPLETED
         except TimeoutError:
             return TaskStatus.DISPATCHED
+
         except Exception as e:
-            logger.error(f"Error checking request {self.id} status: {e}")
+            error_msg = f"Error checking request {self.id} status: {e}"
+            logger.exception(error_msg)
+            self.respond_failure(error_msg)
             return TaskStatus.FAILED
+
+
+    def __str__(self):
+        return f"RequestTask({self.id})"
 
 
     def run(self, app_handle) -> bool:
@@ -63,15 +68,16 @@ class RequestTask(Task):
         """
         try:
             self.position = None
-            logger.debug(f"{self.data.id} Attempting to make remote() call with app handle")
+            logger.info(f"[{str(self)}] Starting remote execution")
             self._future = app_handle.remote(self.data)
-            logger.debug(f"{self.data.id} Succesfully made remote() call with app handle")
+            logger.info(f"[{str(self)}] Successfully initiated remote execution")
             return True
         except Exception as e:
-            logger.error(f"Error running request {self.id}: {e}")
+            error_msg = f"[{str(self)}] Failed to start remote execution: {e}"
+            logger.exception(error_msg)
             
             # This Naively assumes that the controller evicted the deployment
-            self._evicted = True
+            self.respond_failure(error_msg)
             return False
 
 
@@ -91,16 +97,17 @@ class RequestTask(Task):
             response.respond()
 
         except Exception as e:
-            logger.error(f"Failed to respond back to user: {e}")
+            logger.exception(f"Failed to respond back to user: {e}")
 
 
     def respond_failure(self, description: Optional[str] = None):
         """
         Respond to the user with a failure message.
         """
-        if description is None:
-            description = f"{self.id} - Dispatch failed!"
+        # Let the base class handle the failure state management
+        description = super().respond_failure(description)
 
+        logger.debug(f"Responding failure to user with following description: {description}")
         response = self.data.create_response(
             status=ResponseModel.JobStatus.ERROR,
             description=description,
@@ -109,4 +116,4 @@ class RequestTask(Task):
         try:
             response.respond()
         except Exception as e:
-            logger.error(f"Failed to respond back to user: {e}")
+            logger.exception(f"Failed to respond back to user: {e}")
