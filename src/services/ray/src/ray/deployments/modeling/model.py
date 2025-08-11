@@ -67,7 +67,8 @@ class ModelDeployment:
     
     def __del__(self):
 
-        self.model_actor.to_cache.remote()
+        if self.model_actor is not None:
+            self.model_actor.to_cache.remote()
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:
 
