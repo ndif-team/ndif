@@ -18,6 +18,7 @@ from torch.amp import autocast
 from torch.cuda import (max_memory_allocated, memory_allocated,
                         reset_peak_memory_stats)
 
+from transformers.modeling_utils import _get_device_map
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
@@ -32,7 +33,7 @@ from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_objects import protect
 from ...nn.security.protected_environment import WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector
-from .util import kill_thread, load_with_cache_deletion_retry
+from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
 class BaseModelDeployment:
@@ -122,7 +123,9 @@ class BaseModelDeployment:
 
         await self.cancel()
 
-        self.model.cpu()
+        remove_accelerate_hooks(self.model._module)
+
+        self.model._module = dispatch_model(self.model._module, {'': torch.device('cpu')})
 
     def from_cache(self, cuda_devices: str, app: str):
 
@@ -134,22 +137,19 @@ class BaseModelDeployment:
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        # Automatically compute balanced memory allocation
-        max_memory = get_balanced_memory(self.model._module)
+        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
 
-        # Infer an optimal device map based on the computed memory allocation
-        device_map = infer_auto_device_map(self.model._module, max_memory=max_memory)
+        remove_accelerate_hooks(self.model._module)        
 
-        # Dispatch the model according to the inferred device map
-
-        self.model._module = dispatch_model(self.model._module, device_map=device_map)
+        self.model._module = dispatch_model(self.model._module, device_map)
 
         load_time = time.time() - start
+        
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
         self.logger.info(
             f"Model loaded from cache in {load_time} seconds on device: {self.model.device}"
-        )
+        )    
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:

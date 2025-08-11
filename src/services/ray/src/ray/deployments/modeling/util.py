@@ -2,6 +2,7 @@ import re
 import warnings
 from typing import Callable
 
+from accelerate.hooks import remove_hook_from_module
 from huggingface_hub import scan_cache_dir
 from huggingface_hub.utils._cache_manager import CachedRepoInfo
 
@@ -12,6 +13,13 @@ pattern = re.compile(
     r"expected file size is:\s*([0-9]+(?:\.[0-9]+)?)\s*MB.*?only has\s*([0-9]+(?:\.[0-9]+)?)\s*MB",
     re.IGNORECASE,
 )
+
+
+def remove_accelerate_hooks(model):
+    for name, module in model.named_modules():
+        if hasattr(module, "_hf_hook") and module._hf_hook is not None:
+            remove_hook_from_module(module)
+    return model
 
 
 def downloaded(repo: CachedRepoInfo):
