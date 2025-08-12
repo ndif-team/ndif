@@ -303,7 +303,7 @@ class ControllerDeploymentArgs(BaseModel):
     model_import_path: str = "src.ray.deployments.modeling.model:app"
     execution_timeout_seconds: Optional[float] = None
     minimum_deployment_time_seconds: Optional[float] = None
-    model_cache_percentage: Optional[float] = 0.5
+    model_cache_percentage: Optional[float] = os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
 
 
 def app(args: ControllerDeploymentArgs) -> Application:
