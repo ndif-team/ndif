@@ -8,13 +8,13 @@ from ....schema import BackendRequestModel
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
 
-@ray.remote(num_cpus=0, num_gpus=0)
+@ray.remote(num_cpus=2, num_gpus=0)
 class ModelActor(BaseModelDeployment):
 
     pass
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 1,
+        "num_cpus": 2,
     },
     max_ongoing_requests=200, max_queued_requests=200,
     health_check_period_s=10000000000000000000000000000000,
@@ -37,15 +37,19 @@ class ModelDeployment:
         self.replica_context = serve.get_replica_context()
         self.app = self.replica_context.app_name
                 
+        try:
+            self.model_actor = ray.get_actor(f"ModelActor:{self.model_key}")
+        except Exception:
+            self.logger.info(f"Creating actor {self.model_key}...")
+            self.create_model_actor()
+        
         if self.cached:
+            self.logger.info(f"Loading actor {self.model_key} from cache...")
             try:
-                self.model_actor = ray.get_actor(f"ModelActor:{self.model_key}")
                 ray.get(self.model_actor.from_cache.remote(self.cuda_devices, self.app))
             except Exception:
                 self.logger.error(f"Error getting actor {self.model_key} from cache")
-                self.create_model_actor()
-        else:
-            self.create_model_actor()
+        
             
     def create_model_actor(self):
         self.model_actor = ModelActor.options(
@@ -65,10 +69,12 @@ class ModelDeployment:
         ray.kill(self.model_actor)
         self.create_model_actor()
     
-    def __del__(self):
+    async def __del__(self):
 
-        if self.model_actor is not None:
-            self.model_actor.to_cache.remote()
+        self.logger.info(f"Deleting model for model key {self.model_key}...")
+
+        if getattr(self, "model_actor", None) is not None:
+            await self.model_actor.to_cache.remote()
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:
 

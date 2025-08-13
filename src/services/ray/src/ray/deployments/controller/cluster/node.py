@@ -1,10 +1,14 @@
+import logging
 import time
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
+from .....logging.logger import set_logger
 from ... import MODEL_KEY
 from .deployment import Deployment, DeploymentLevel
+
+logger = logging.getLogger("ndif")
 
 
 class CandidateLevel(IntEnum):
@@ -81,6 +85,7 @@ class Node:
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
         self.cache: Dict[MODEL_KEY, Deployment] = {}
+        self.logger = set_logger(f"ndif.node.{self.id}")
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
@@ -102,6 +107,12 @@ class Node:
         size_bytes: int,
         dedicated: Optional[bool] = None,
     ):
+
+        if model_key in self.cache:
+
+            self.resources.available_cpu_memory_bytes += size_bytes
+
+            del self.cache[model_key]
 
         for eviction in candidate.evictions:
 
@@ -141,6 +152,8 @@ class Node:
                 
             for eviction_deployment in cache_evictions:
                 
+                self.logger.info(f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}")
+
                 eviction_deployment.remove_from_cache()
                 
                 del self.cache[eviction_deployment.model_key]
