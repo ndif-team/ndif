@@ -14,7 +14,7 @@ class ModelActor(BaseModelDeployment):
     pass
 @serve.deployment(
     ray_actor_options={
-        "num_cpus": 2,
+        "num_cpus": 1,
     },
     max_ongoing_requests=200, max_queued_requests=200,
     health_check_period_s=10000000000000000000000000000000,
@@ -68,13 +68,10 @@ class ModelDeployment:
     async def restart(self):
         ray.kill(self.model_actor)
         self.create_model_actor()
-    
+
     async def __del__(self):
 
         self.logger.info(f"Deleting model for model key {self.model_key}...")
-
-        if getattr(self, "model_actor", None) is not None:
-            await self.model_actor.to_cache.remote()
 
 def app(args: BaseModelDeploymentArgs) -> serve.Application:
 

@@ -4,12 +4,12 @@ from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
-from .....logging.logger import set_logger
+import ray
+
 from ... import MODEL_KEY
 from .deployment import Deployment, DeploymentLevel
 
 logger = logging.getLogger("ndif")
-
 
 class CandidateLevel(IntEnum):
 
@@ -85,7 +85,6 @@ class Node:
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
         self.cache: Dict[MODEL_KEY, Deployment] = {}
-        self.logger = set_logger(f"ndif.node.{self.id}")
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
@@ -108,16 +107,26 @@ class Node:
         dedicated: Optional[bool] = None,
     ):
 
+        # Remove the model from the cache if its cached as were going to deploy it (move it to gpu)
         if model_key in self.cache:
 
+            # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
 
+            # Remove the model from our representation of the cache
             del self.cache[model_key]
+            
+        cache_futures = []
 
+        # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
 
             self.evict(eviction)
-
+            
+            # Send request to move the evicted deployemnts to cpu. Collect them so we can wait for them to be moved.
+            # If we dont wait, it might take too long to go from GPU -> CPU and our new model won't have room.
+            cache_futures.append(self.cache[eviction].add_to_cache())
+            
         self.deployments[model_key] = Deployment(
             model_key=model_key,
             deployment_level=DeploymentLevel.HOT,
@@ -127,6 +136,9 @@ class Node:
         )
 
         self.resources.available_gpus -= candidate.gpus_required
+        
+        # Wait for the evicted deployments to be moved to cpu.
+        ray.get(cache_futures)
 
     def evict(self, model_key: MODEL_KEY):
         
@@ -152,7 +164,7 @@ class Node:
                 
             for eviction_deployment in cache_evictions:
                 
-                self.logger.info(f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}")
+                logger.info(f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}")
 
                 eviction_deployment.remove_from_cache()
                 
@@ -179,7 +191,6 @@ class Node:
 
         for deployment in deployments:
             
-
             if deployment.dedicated:
 
                 continue

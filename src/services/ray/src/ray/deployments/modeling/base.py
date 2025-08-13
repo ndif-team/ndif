@@ -142,14 +142,7 @@ class BaseModelDeployment:
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        while True:
-            device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
-
-            if 'cpu' not in device_map:
-                break
-
-            self.logger.debug(f"GPU not yet available, waiting for 1 second...")
-            time.sleep(1)
+        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
 
         t1 = time.time()
 
