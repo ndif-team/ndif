@@ -127,7 +127,7 @@ class BaseModelDeployment:
 
         remove_accelerate_hooks(self.model._module)
 
-        self.model._module = dispatch_model(self.model._module, {'': torch.device('cpu')})
+        self.model._module = self.model._module.cpu()
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -158,8 +158,13 @@ class BaseModelDeployment:
         t3 = time.time()
 
         load_time = time.time() - start
+        
+        devices = set()
+        
+        for param in self.model._module.parameters():
+            devices.add(param.device.type)
 
-        self.logger.info(f"Model loaded from cache in {load_time} seconds on device: {self.model.device}")
+        self.logger.info(f"Model loaded from cache in {load_time} seconds on devices: {devices}")
         
         self.logger.info(f"Time taken to remove accelerate hooks: {t2 - t1} seconds")
         self.logger.info(f"Time taken to dispatch model: {t3 - t2} seconds")
