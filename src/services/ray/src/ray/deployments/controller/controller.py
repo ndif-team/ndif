@@ -114,7 +114,7 @@ class _ControllerDeployment:
         return results
 
     def deployment_to_application(
-        self, deployment: Deployment, node_name: str, cached: bool = False
+        self, deployment: Deployment, node_name: str
     ) -> ServeApplicationSchema:
 
         slugified_model_key = slugify(deployment.model_key)
@@ -122,7 +122,7 @@ class _ControllerDeployment:
         deployment_args = BaseModelDeploymentArgs(
             model_key=deployment.model_key,
             node_name=node_name,
-            cached=cached,
+            cached=deployment.cached,
             execution_timeout=self.execution_timeout_seconds,
         )
 
@@ -156,13 +156,10 @@ class _ControllerDeployment:
         for node in self.cluster.nodes.values():
             for deployment in node.deployments.values():
 
-                cached = deployment.model_key in node.cache
-
                 self.state.applications.append(
                     self.deployment_to_application(
                         deployment,
                         node.name,
-                        cached=cached,
                     )
                 )
 

@@ -106,9 +106,10 @@ class Node:
         size_bytes: int,
         dedicated: Optional[bool] = None,
     ):
+        cached = model_key in self.cache
 
         # Remove the model from the cache if its cached as were going to deploy it (move it to gpu)
-        if model_key in self.cache:
+        if cached:
 
             # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
@@ -133,6 +134,7 @@ class Node:
             gpus_required=candidate.gpus_required,
             size_bytes=size_bytes,
             dedicated=dedicated,
+            cached=cached,
         )
 
         self.resources.available_gpus -= candidate.gpus_required
