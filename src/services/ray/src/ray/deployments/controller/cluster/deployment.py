@@ -56,7 +56,7 @@ class Deployment:
             self.deployed + minimim_deployment_time_seconds, tz=timezone.utc
         )
 
-    def remove_from_cache(self):
+    def delete(self):
 
         try:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
@@ -65,7 +65,7 @@ class Deployment:
             logger.error(f"Error removing actor {self.model_key} from cache")
             pass
         
-    def add_to_cache(self):
+    def cache(self):
         
         try:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")

@@ -162,7 +162,7 @@ class BaseModelDeployment:
         devices = set()
         
         for param in self.model._module.parameters():
-            devices.add(param.device.type)
+            devices.add(f"{param.device.type}:{param.device.index}")
 
         self.logger.info(f"Model loaded from cache in {load_time} seconds on devices: {devices}")
         
