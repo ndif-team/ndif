@@ -25,6 +25,7 @@ class Deployment:
         gpus_required: int,
         size_bytes: int,
         dedicated: bool = False,
+        cached: bool = False,
     ):
 
         self.model_key = model_key
@@ -32,7 +33,7 @@ class Deployment:
         self.gpus_required = gpus_required
         self.size_bytes = size_bytes
         self.dedicated = dedicated
-
+        self.cached = cached
         self.deployed = time.time()
 
     def get_state(self) -> Dict[str, Any]:
@@ -44,6 +45,7 @@ class Deployment:
             "gpus_required": self.gpus_required,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
+            "cached": self.cached,
             "deployed": self.deployed,
         }
 
@@ -54,11 +56,20 @@ class Deployment:
             self.deployed + minimim_deployment_time_seconds, tz=timezone.utc
         )
 
-    def remove_from_cache(self):
+    def delete(self):
 
         try:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
             ray.kill(actor)
         except Exception:
             logger.error(f"Error removing actor {self.model_key} from cache")
+            pass
+        
+    def cache(self):
+        
+        try:
+            actor = ray.get_actor(f"ModelActor:{self.model_key}")
+            return actor.to_cache.remote()
+        except Exception:
+            logger.error(f"Error adding actor {self.model_key} to cache")
             pass

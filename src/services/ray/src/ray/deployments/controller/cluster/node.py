@@ -1,11 +1,15 @@
+import logging
 import time
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional
 
+import ray
+
 from ... import MODEL_KEY
 from .deployment import Deployment, DeploymentLevel
 
+logger = logging.getLogger("ndif")
 
 class CandidateLevel(IntEnum):
 
@@ -102,20 +106,44 @@ class Node:
         size_bytes: int,
         dedicated: Optional[bool] = None,
     ):
+        cached = model_key in self.cache
 
+        # Remove the model from the cache if its cached as were going to deploy it (move it to gpu)
+        if cached:
+
+            # Remove the model from our representation of the cache
+            del self.cache[model_key]
+            
+        cache_futures = []
+
+        # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
 
-            self.evict(eviction)
-
+            if self.evict(eviction):
+                
+                # Send request to move the evicted deployemnts to cpu. Collect them so we can wait for them to be moved.
+                # If we dont wait, it might take too long to go from GPU -> CPU and our new model won't have room.
+                cache_futures.append(self.cache[eviction].cache())
+                
         self.deployments[model_key] = Deployment(
             model_key=model_key,
             deployment_level=DeploymentLevel.HOT,
             gpus_required=candidate.gpus_required,
             size_bytes=size_bytes,
             dedicated=dedicated,
+            cached=cached,
         )
+        
+        #TODO this is problematic
+        if cached:
+
+            # Return its cpu memory to the node
+            self.resources.available_cpu_memory_bytes += size_bytes
 
         self.resources.available_gpus -= candidate.gpus_required
+        
+        # Wait for the evicted deployments to be moved to cpu.
+        ray.get(cache_futures)
 
     def evict(self, model_key: MODEL_KEY):
         
@@ -123,10 +151,12 @@ class Node:
 
         self.resources.available_gpus += deployment.gpus_required
         
-        if self.resources.available_cpu_memory_bytes < deployment.size_bytes:
-            
-            cpu_memory_needed = deployment.size_bytes - self.resources.available_cpu_memory_bytes
-            
+        cpu_memory_needed = deployment.size_bytes - self.resources.available_cpu_memory_bytes
+        
+        logger.info(f"Evicting {model_key} from {self.name} with cpu memory needed: {cpu_memory_needed} = {deployment.size_bytes} - {self.resources.available_cpu_memory_bytes}")
+        
+        if cpu_memory_needed > 0:
+                        
             cache_evictions = []
             
             for eviction_deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
@@ -139,22 +169,38 @@ class Node:
 
                     break
                 
-            for eviction_deployment in cache_evictions:
+            if cpu_memory_needed <= 0:
                 
-                eviction_deployment.remove_from_cache()
-                
-                del self.cache[eviction_deployment.model_key]
-                
-                self.resources.available_cpu_memory_bytes += eviction_deployment.size_bytes
-                
-        self.resources.available_cpu_memory_bytes -= deployment.size_bytes
-        
-        deployment.deployment_level = DeploymentLevel.WARM
-        
-        self.cache[model_key] = deployment
-        
-        del self.deployments[model_key]
+                for eviction_deployment in cache_evictions:
+                    
+                    logger.info(f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}")
 
+                    eviction_deployment.delete()
+                    
+                    del self.cache[eviction_deployment.model_key]
+                    
+                    self.resources.available_cpu_memory_bytes += eviction_deployment.size_bytes
+                    
+        del self.deployments[model_key]
+        
+        if cpu_memory_needed <= 0:
+            
+            self.resources.available_cpu_memory_bytes -= deployment.size_bytes
+            
+            deployment.deployment_level = DeploymentLevel.WARM
+            
+            self.cache[model_key] = deployment
+            
+            return True
+            
+        else:
+            
+            logger.error(f"Not enough cpu memory to evict {model_key} to cpu. Deleting it.")
+            
+            deployment.delete()
+
+            return False
+        
     def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
         deployments = sorted(
             list(self.deployments.values()), key=lambda x: x.gpus_required
@@ -166,7 +212,6 @@ class Node:
 
         for deployment in deployments:
             
-
             if deployment.dedicated:
 
                 continue

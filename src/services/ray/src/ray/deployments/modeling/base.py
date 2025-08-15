@@ -121,11 +121,16 @@ class BaseModelDeployment:
 
     async def to_cache(self):
 
+        self.logger.info(f"Saving model to cache for model key {self.model_key}...")
+
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
 
-        self.model._module = dispatch_model(self.model._module, {'': torch.device('cpu')})
+        self.model._module = self.model._module.cpu()
+
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def from_cache(self, cuda_devices: str, app: str):
 
@@ -139,17 +144,33 @@ class BaseModelDeployment:
 
         device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
 
+        t1 = time.time()
+
         remove_accelerate_hooks(self.model._module)        
+
+        t2 = time.time()
 
         self.model._module = dispatch_model(self.model._module, device_map)
 
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        t3 = time.time()
+
         load_time = time.time() - start
+        
+        devices = set()
+        
+        for param in self.model._module.parameters():
+            devices.add(f"{param.device.type}:{param.device.index}")
+
+        self.logger.info(f"Model loaded from cache in {load_time} seconds on devices: {devices}")
+        
+        self.logger.info(f"Time taken to remove accelerate hooks: {t2 - t1} seconds")
+        self.logger.info(f"Time taken to dispatch model: {t3 - t2} seconds")
         
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
-        self.logger.info(
-            f"Model loaded from cache in {load_time} seconds on device: {self.model.device}"
-        )    
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
