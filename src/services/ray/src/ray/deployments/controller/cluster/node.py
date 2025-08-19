@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass, asdict
 from enum import IntEnum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import ray
 
@@ -105,25 +105,21 @@ class Node:
         candidate: Candidate,
         size_bytes: int,
         dedicated: Optional[bool] = None,
+        exclude: Optional[Set[MODEL_KEY]] = None,
     ):
-        cached = model_key in self.cache
 
-        # Remove the model from the cache if its cached as were going to deploy it (move it to gpu)
-        if cached:
-
-            # Remove the model from our representation of the cache
-            del self.cache[model_key]
-            
         cache_futures = []
 
         # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
 
-            if self.evict(eviction):
+            if self.evict(eviction, exclude=exclude):
                 
                 # Send request to move the evicted deployemnts to cpu. Collect them so we can wait for them to be moved.
                 # If we dont wait, it might take too long to go from GPU -> CPU and our new model won't have room.
                 cache_futures.append(self.cache[eviction].cache())
+                
+        cached = model_key in self.cache
                 
         self.deployments[model_key] = Deployment(
             model_key=model_key,
@@ -136,6 +132,8 @@ class Node:
         
         #TODO this is problematic
         if cached:
+            
+            del self.cache[model_key]
 
             # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
@@ -145,7 +143,7 @@ class Node:
         # Wait for the evicted deployments to be moved to cpu.
         ray.get(cache_futures)
 
-    def evict(self, model_key: MODEL_KEY):
+    def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
         
         deployment = self.deployments[model_key]
 
@@ -160,6 +158,9 @@ class Node:
             cache_evictions = []
             
             for eviction_deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
+                
+                if exclude is not None and eviction_deployment.model_key in exclude:
+                    continue
                 
                 cpu_memory_needed -= eviction_deployment.size_bytes
                 

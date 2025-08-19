@@ -3,6 +3,7 @@ import random
 import traceback
 from typing import Any, Dict, List, Optional
 
+import ray
 from ray._private import services
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
@@ -160,6 +161,8 @@ class Cluster:
         if dedicated:
 
             logger.info("=> Checking to evict deprecated dedicated deployments...")
+            
+            cache_futures = []
 
             for node in self.nodes.values():
 
@@ -173,9 +176,13 @@ class Cluster:
 
                         results['evictions'].add(model_key)
 
-                        node.evict(model_key)
+                        if node.evict(model_key, exclude=set(model_keys)):
+
+                            cache_futures.append(deployment.cache())
 
                         change = True
+
+            ray.get(cache_futures)
 
         # Sort models by size in descending order (deploy biggest ones first)
         sorted_models = sorted(
@@ -256,7 +263,7 @@ class Cluster:
                 )
 
                 self.nodes[node_id].deploy(
-                    model_key, candidate, size_in_bytes, dedicated=dedicated
+                    model_key, candidate, size_in_bytes, dedicated=dedicated, exclude=set(model_keys)
                 )
                 
                 results['evictions'].update(candidate.evictions)
