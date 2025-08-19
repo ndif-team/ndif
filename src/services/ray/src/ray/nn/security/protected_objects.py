@@ -4,6 +4,7 @@ from typing import Any
 from nnsight.intervention.envoy import Envoy
 from copy import deepcopy
 from nnsight.intervention.tracing.base import Tracer
+from nnsight import util
 PROTECTION = set()
 ALLOWED = set()  
         
@@ -107,9 +108,11 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
                     
             self._children = children
                 
-        
+
     def __getattr__(self, name: str):
-        with UnprotectContext(id(self)):    
+        with UnprotectContext(id(self)):   
+            if self.__obj__._alias is not None and name in self.__obj__._alias.alias_to_name:
+                return util.fetch_attr(self, self.__obj__._alias.alias_to_name[name]) 
             value = self.__obj__.__getattr__(name)
             
             if isinstance(value, Tracer):
@@ -189,6 +192,15 @@ class ProtectedEnvoy(ProtectedObject, Envoy):
     @allow
     def wait_for_output(self, *args, **kwargs):
         return self.__obj__.wait_for_output(*args, **kwargs)
+    
+    @allow
+    def _update_alias(self, alias: dict):
+        self.__obj__._update_alias(alias)
+       
+    @allow
+    def __iter__(self):
+   
+        return iter(self._children)
     
     @allow
     def __str__(self):
