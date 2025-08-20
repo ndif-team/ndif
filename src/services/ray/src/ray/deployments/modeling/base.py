@@ -112,9 +112,14 @@ class BaseModelDeployment:
         load_time = time.time() - start
         
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
+        
+        devices = set()
+        
+        for param in model._module.parameters():
+            devices.add(f"{param.device.type}:{param.device.index}")
 
         self.logger.info(
-            f"Model loaded from disk in {load_time} seconds on device: {model.device}"
+            f"Model loaded from disk in {load_time} seconds on devices: {devices}"
         )
 
         return model
@@ -368,6 +373,8 @@ class BaseModelDeployment:
         """
         self.kill_switch.clear()
         self.execution_ident = None
+        
+        self.model._update_alias(None)
 
         SioProvider.disconnect()
 

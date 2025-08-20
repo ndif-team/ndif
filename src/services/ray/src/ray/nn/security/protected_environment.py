@@ -72,6 +72,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="builtins", strict=True),
     WhitelistedModule(name="torch", strict=False),
     WhitelistedModule(name="collections", strict=False),
+    WhitelistedModule(name="nnsight.intervention.envoy", strict=False),
     
     
 ]

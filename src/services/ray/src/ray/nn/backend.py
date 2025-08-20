@@ -37,6 +37,7 @@ class RemoteExecutionBackend(Backend):
                 "fn",
                 "__nnsight_tracing_info__",
                 "_frame",
-                "mediator"
+                "mediator",
+                "self",
             }
         }
