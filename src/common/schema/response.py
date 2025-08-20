@@ -51,13 +51,10 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             fn("blocking_response", data=(self.session_id, self.pickle()))
         else:
             if self.callback != '':
-                if is_email(self.callback):
-                    if MailgunProvider.connected():
-                        MailgunProvider.send_email(self.callback, f"NDIF Update For Job ID: {self.id}", self.model_dump_json(exclude_none=True, exclude_unset=True, exclude_defaults=True, exclude=["value"]))
-                else:
-                    callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
-                    requests.get(callback_url)
-            self.save(ObjectStoreProvider.object_store)
+                callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
+                requests.get(callback_url)
+                
+            self.save(object_store)
 
         return self
 

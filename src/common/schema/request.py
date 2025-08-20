@@ -47,8 +47,9 @@ class BackendRequestModel(ObjectStorageMixin):
 
     model_key: Optional[str] = None
     session_id: Optional[str] = None
-    zlib: Optional[bool] = True
-    api_key: Optional[str] = ""
+    format: str
+    zlib: bool
+    
     callback: Optional[str] = ''
 
     id: str
@@ -74,14 +75,15 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         return BackendRequestModel(
-            id=request.headers.get("ndif-request_id", str(uuid.uuid4())),
-            request=request.body(),
-            model_key=headers.get("nnsight-model-key", None),
-            session_id=headers.get("ndif-session_id", None),
-            zlib=headers.get("nnsight-zlib", True),
-            last_status_time=sent,
-            api_key=headers.get("ndif-api-key", ""),
-            callback=headers.get("ndif-callback", ""),
+            graph=request.body(),
+            model_key=headers["model_key"],
+            session_id=headers.get("session_id", None),
+            format=headers["format"],
+            zlib=headers["zlib"],
+            id=str(uuid.uuid4()),
+            sent=float(headers.get("sent-timestamp", None)),
+            api_key=api_key,
+            callback=headers.get("callback", ''),
         )
 
     def create_response(
@@ -101,32 +103,23 @@ class BackendRequestModel(ObjectStorageMixin):
             logging_level = "exception"
         elif status == ResponseModel.JobStatus.NNSIGHT_ERROR:
             logging_level = "exception"
-
-        response = BackendResponseModel(
-            id=self.id,
-            session_id=self.session_id,
-            status=status,
-            description=description,
-            data=data,
-            callback=self.callback,
-        ).backend_log(
-            logger=logger,
-            message=log_msg,
-            level=logging_level,
-        )
-        
-        logger.info(f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}")
-
-        if (
-            status != self.last_status
-            and status != ResponseModel.JobStatus.ERROR
-            and status != ResponseModel.JobStatus.NNSIGHT_ERROR
-            and status != ResponseModel.JobStatus.LOG
-        ):
-            logger.info(f"Updating last status: {status}")
-            self.last_status = status
             
-            response.update_metric(
+
+        response = (
+            BackendResponseModel(
+                id=self.id,
+                session_id=self.session_id,
+                status=status,
+                description=description,
+                data=data,
+                callback=self.callback,
+            )
+            .backend_log(
+                logger=logger,
+                message=log_msg,
+                level=logging_level,
+            )
+            .update_metric(
                 self,
             )
             
