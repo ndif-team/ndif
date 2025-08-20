@@ -18,26 +18,25 @@ class RemoteExecutionBackend(Backend):
 
     def __call__(self, tracer: Tracer):
 
-
+        Globals.stack = 0
         Globals.enter()
+        
+        try:
 
-        with self.protector:
-            run(tracer, self.fn)
-
-        Globals.exit()
-
-        return {
+            with self.protector:
+                run(tracer, self.fn)
+                
+        finally:
+            
+            Globals.exit()
+        
+        saves = {
             key: value
             for key, value in tracer.info.frame.f_locals.items()
-            if not key
-            in {
-                "__nnsight_tracer__",
-                "__nnsight_model__",
-                "tracer",
-                "fn",
-                "__nnsight_tracing_info__",
-                "_frame",
-                "mediator",
-                "self",
-            }
+            if id(value) in Globals.saves
         }
+        
+        Globals.saves.clear()
+        Globals.stack = 0
+
+        return saves
