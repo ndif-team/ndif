@@ -73,6 +73,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="torch", strict=False),
     WhitelistedModule(name="collections", strict=False),
     WhitelistedModule(name="nnsight.intervention.envoy", strict=False),
+    WhitelistedModule(name="time", strict=False),
     
     
 ]
@@ -81,7 +82,7 @@ WHITELISTED_MODULES = [
 WHITELISTED_MODULES_DESERIALIZATION = [
     
     WhitelistedModule(name="pickle", strict=False),
-    WhitelistedModule(name="dill", strict=False),
+    WhitelistedModule(name="cloudpickle", strict=False),
     WhitelistedModule(name="nnsight.schema.request", strict=True),
     WhitelistedModule(name="nnsight.modeling.mixins.remoteable", strict=True),
     WhitelistedModule(name="nnsight.intervention.tracing.base", strict=True),
