@@ -18,7 +18,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("ndif")
 
-# TODO: Make this be derived from a base class
+def parse_model_key(model_key: str) -> str:
+    """
+    Extracts the model ID (repo_id) from a model key string.
+
+    Example:
+        model_key = 'nnsight.modeling.language.languagemodel:{"repo_id": "meta-llama/Meta-Llama-3.1-8B", "revision": "main"}'
+        returns 'meta-llama/meta-llama-3.1-8b'
+    """
+    import json
+
+    try:
+        # Split on the first colon to separate the prefix and the JSON part
+        _, json_part = model_key.split(":", 1)
+        # Parse the JSON part
+        model_info = json.loads(json_part)
+        # Return the repo_id if present
+        return model_info.get("repo_id", "").lower()
+    except Exception as e:
+        logger.error(f"Failed to parse model_key '{model_key}': {e}")
+        return ""
 
 class AccountsDB:
     """Database class for accounts"""
@@ -53,7 +72,7 @@ class AccountsDB:
         """Get the model ID from a key ID"""
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT model_id FROM models WHERE model_key = %s", (key_id,))
+                cur.execute("SELECT model_id FROM tiered_models WHERE model_key = %s", (key_id,))
                 result = cur.fetchone()
                 return result[0] if result else None
         except Exception as e:
@@ -79,6 +98,28 @@ class AccountsDB:
             self.conn.rollback()
             return False
 
+    def model_is_whitelisted(self, model_key: str) -> bool:
+        """Check if a model is whitelisted by matching any prefix at the start of the model_key"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT EXISTS(
+                        SELECT 1 FROM allowed_model_prefixes
+                        WHERE %s LIKE CONCAT(prefix, '%%')
+                    )
+                    """,
+                    (model_key,)
+                )
+                result = cur.fetchone()
+                if result and result[0]:
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Error checking if model is whitelisted: {e}")
+            self.conn.rollback()
+            return False
+
 
 host = os.environ.get("POSTGRES_HOST")
 port = os.environ.get("POSTGRES_PORT")
@@ -86,11 +127,9 @@ database = os.environ.get("POSTGRES_DB")
 user = os.environ.get("POSTGRES_USER")
 password = os.environ.get("POSTGRES_PASSWORD")
 
-
 api_key_store = None
 if host is not None:
     api_key_store = AccountsDB(host, port, database, user, password)
-
 
 
 def api_key_auth(
@@ -120,16 +159,21 @@ def api_key_auth(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
         )
-    model_key = request.model_key.lower()
-    # Get the model ID from the API key
-    model_id = api_key_store.model_id_from_key(model_key)
-    if not model_id:
-        # Let them have access by default (to support future usecase of dynamic model loading)
-        return
+    model_key = parse_model_key(request.model_key)
 
-    # Check if the model has access to the API key
-    if not api_key_store.key_has_access_to_model(request.api_key, model_id):
+  # Check gated
+    model_id = api_key_store.model_id_from_key(model_key)
+    if model_id:
+        # Check if the model has access to the API key
+        if not api_key_store.key_has_access_to_model(request.api_key, model_id):
+            raise HTTPException(
+                status_code=HTTP_401_UNAUTHORIZED,
+                detail=f"API key does not have authorization to access the requested model: {model_key}.",
+            )
+
+    # Now check whitelist
+    if not api_key_store.model_is_whitelisted(model_key):
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
-            detail=f"API key does not have authorization to access the requested model: {model_key}.",
+            detail=f"Model {model_key} is not whitelisted. Please contact info@ndif.us to request access.",
         )
