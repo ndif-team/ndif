@@ -5,6 +5,7 @@ from ray import serve
 from ray.serve.exceptions import RayServeException
 from slugify import slugify
 
+from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel, BackendResponseModel
 from ..tasks.request_task import RequestTask
 from .base import Processor
@@ -29,13 +30,17 @@ class RequestProcessor(Processor[RequestTask]):
         super().__init__(processor_id=model_key, *args, **kwargs)
         self._app_handle = None
         self.backend_status = DeploymentStatus.UNINITIALIZED
+        RayProvider.watch()
 
     @property
     def handle(self):
         """
         Get the Ray app handle for the model.
         """
-        if not self._app_handle:
+        if not self.connected:
+            self._app_handle = None
+        
+        elif not self._app_handle:
             try:
                 ray_model_key = convert_to_ray_app_name(self.id)
                 start = time.perf_counter()
@@ -50,7 +55,17 @@ class RequestProcessor(Processor[RequestTask]):
             except Exception as e:
                 logger.exception(f"Failed to get app handle for {self.id}..{e}")
                 self._app_handle = None
+
         return self._app_handle
+
+    @property
+    def connected(self) -> bool:
+        """Check if the processor runtime is connected to the Ray controller."""
+        try:
+            return RayProvider.connected()
+        except Exception as e:
+            logger.exception(f"Error checking Ray connection: {e}")
+            return False
 
     def enqueue(self, request: BackendRequestModel) -> bool:
         """
@@ -67,7 +82,8 @@ class RequestProcessor(Processor[RequestTask]):
 
     def _cancel_dispatched_task(self):
         """Cancel dispatched task with Ray-specific cancellation logic."""
-        if self.dispatched_task:
+
+        if self.dispatched_task and self.connected:
             ray_cancel_timeout = float(os.environ.get("_RAY_CANCEL_TIMEOUT", 5.0))
             try:
                 # Defensive: avoid blocking forever if app_handle is invalid
@@ -86,6 +102,9 @@ class RequestProcessor(Processor[RequestTask]):
                 logger.exception(
                     f"[PROCESSOR] {self.id} - Error attempting to cancel dispatched task {self.dispatched_task.id}: {e}"
                 )
+
+        if not self.connected:
+            logger.warning(f"[{str(self)}] Disconnected from Ray controller, so cannot cancel dispatched task.")
 
         # Perform common cleanup via base class
         super()._cancel_dispatched_task()

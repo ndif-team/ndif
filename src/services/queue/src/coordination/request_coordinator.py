@@ -31,17 +31,36 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     @property
     def backend_handle(self):
         """Get the Ray controller handle for deployment operations."""
-        if self._controller is None:
+        if not self.connected:
+            self._controller = None
+
+        elif self._controller is None:
             start = time.perf_counter()
             self._controller = serve.get_app_handle("Controller")
             logger.debug(f"Created controller app handle in {time.perf_counter() - start} seconds")
         return self._controller
 
+    @property
+    def connected(self) -> bool:
+        """Check if the coordinator is connected to the Ray controller."""
+        try:
+            return RayProvider.connected()
+        except Exception as e:
+            logger.exception(f"Error checking Ray connection: {e}")
+            return False
+
     def get_state(self) -> Dict[str, Any]:
-        """Get the state of the coordinator. Adds ray_connected to the base state."""
-        base_state = super().get_state()
-        base_state["ray_connected"] = RayProvider.connected()
-        return base_state
+        """Get the state of the coordinator."""
+        state = super().get_state()
+        state["ray_connected"] = self.connected
+        return state
+
+    def route_request(self, request: BackendRequestModel) -> None:
+        """Route a request to the coordinator."""
+        if not self.connected:
+            raise RuntimeError("Ray controller is not connected.")
+        
+        return super().route_request(request)
 
     def _get_processor_key(self, request: BackendRequestModel) -> str:
         """Extract the model key from a backend request."""
@@ -93,15 +112,25 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         if not processors:
             return
 
+        # Helper to ensure Ray is connected before each operation
+        def _require_connected():
+            if not self.connected:
+                raise RuntimeError("Ray Serve is not connected.")
+
         try:
             # Prepare model keys for deployment
             model_keys = [processor.id for processor in processors]
 
+
+            _require_connected()
             # Initiate deployment via Ray controller (Ray 2.47.0)
             deployment_future = self.backend_handle.deploy.remote(model_keys)
 
+            _require_connected()
             # Synchronously fetch deployment results (blocking)
             deployment_results = deployment_future._fetch_future_result_sync()
+
+            _require_connected()
             # The .get() is a hack to retrieve the result with a timeout
             deployment_statuses, evictions = deployment_results.get(DEPLOYMENT_TIMEOUT_SECONDS).values()
 

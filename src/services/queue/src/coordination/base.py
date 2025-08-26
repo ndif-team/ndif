@@ -290,7 +290,10 @@ class Coordinator(ABC, Generic[T, P]):
         # Deploy processors
         if processors_to_deploy:
             logger.info(f"[COORDINATOR] Deploying {len(processors_to_deploy)} processors")
-            self._deploy(processors_to_deploy)
+            try:
+                self._deploy(processors_to_deploy)
+            except Exception as e:
+                logger.exception(f"[COORDINATOR] Error deploying processors: {e}")
 
         # Move processors to inactive status
         for processor_key in processors_to_deactivate:
@@ -300,7 +303,7 @@ class Coordinator(ABC, Generic[T, P]):
         for processor in failed_processors:
             self._handle_processor_failure(processor)
 
-    def route_request(self, request: T) -> bool:
+    def route_request(self, request: T) -> None:
         """
         Route a request to the appropriate processor.
 
@@ -315,7 +318,7 @@ class Coordinator(ABC, Generic[T, P]):
             processor_key = self._get_processor_key(request)
             if not request or not processor_key:
                 logger.exception("Invalid request: missing request or processor key")
-                return False
+                raise ValueError("Invalid request: missing request or processor key")
 
             # Try to route to existing active processor
             if processor_key in self.active_processors:
@@ -323,10 +326,10 @@ class Coordinator(ABC, Generic[T, P]):
                 success = processor.enqueue(request)
                 if success:
                     logger.debug(f"Request {request.id} routed to active processor {processor_key}")
-                    return True
+                    return
                 else:
                     logger.exception(f"Failed to enqueue request {request.id} to active processor {processor_key}")
-                    return False
+                    raise ValueError(f"Failed to enqueue request {request.id} to active processor {processor_key}")
 
             # Try to route to inactive processor
             elif processor_key in self.inactive_processors:
@@ -340,10 +343,10 @@ class Coordinator(ABC, Generic[T, P]):
                     self.active_processors[processor_key] = processor
                     del self.inactive_processors[processor_key]
                     logger.info(f"Activated processor {processor_key} and routed request {request.id}")
-                    return True
+                    return
                 else:
                     logger.exception(f"Failed to enqueue request {request.id} to inactive processor {processor_key}")
-                    return False
+                    raise ValueError(f"Failed to enqueue request {request.id} to inactive processor {processor_key}")
 
             # Create new processor
             else:
@@ -353,17 +356,17 @@ class Coordinator(ABC, Generic[T, P]):
                     if success:
                         self.active_processors[processor_key] = processor
                         logger.info(f"Created new processor {processor_key} and routed request {request.id}")
-                        return True
+                        return
                     else:
                         logger.exception(f"Failed to enqueue request {request.id} to new processor {processor_key}")
-                        return False
+                        raise ValueError(f"Failed to enqueue request {request.id} to new processor {processor_key}")
                 except Exception as e:
                     logger.exception(f"Failed to create processor {processor_key}: {e}")
                     return False
 
         except Exception as e:
             logger.exception(f"Error routing request {request.id if request else 'unknown'}: {e}")
-            return False
+            raise
 
         finally:
             # Force next tick to start immediately

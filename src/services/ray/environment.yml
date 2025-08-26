@@ -7,7 +7,7 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - nnsight>=0.5.0.dev9
+    - nnsight>=0.5.0
     - ray[serve]==2.47.0
     - python-slugify
     # Telemetry

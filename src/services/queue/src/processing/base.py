@@ -210,11 +210,12 @@ class Processor(ABC, Generic[T]):
         if self._is_invariant_status(current_status):
             return False
 
-        # If no task is currently dispatched, try to dequeue one
-        if not self.dispatched_task:
+        # If no task is currently dispatched, try to dequeue one (only if connected)
+        if not self.dispatched_task and self.connected:
             self.dispatched_task = self.dequeue()
-            if not self.dispatched_task:
-                return False
+        if not self.dispatched_task:
+            return False
+
         task_status = self.dispatched_task.status
         if task_status == TaskStatus.QUEUED:
             logger.error("Dispatched task is in queued status, this should not happen")
