@@ -74,8 +74,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="collections", strict=False),
     WhitelistedModule(name="nnsight.intervention.envoy", strict=False),
     WhitelistedModule(name="time", strict=False),
-    
-    
+    WhitelistedModule(name="numpy", strict=False),
 ]
 
 # Modules allowed during deserialization
