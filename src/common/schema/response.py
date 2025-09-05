@@ -36,19 +36,10 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
         return self.session_id is not None
 
     def respond(self) -> ResponseModel:
+
         if self.blocking:
-
-            fn = SioProvider.emit
-
-            if (
-                self.status == ResponseModel.JobStatus.COMPLETED
-                or self.status == ResponseModel.JobStatus.ERROR
-                or self.status == ResponseModel.JobStatus.NNSIGHT_ERROR
-            ):
-
-                fn = SioProvider.call
-
-            fn("blocking_response", data=(self.session_id, self.pickle()))
+            # Emit to socket manager - it will forward to the client (i.e. the user)
+            SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
         else:
             if self.callback != '':
                 if is_email(self.callback):

@@ -31,6 +31,7 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     @property
     def backend_handle(self):
         """Get the Ray controller handle for deployment operations."""
+
         if not self.connected:
             self._controller = None
 
@@ -44,10 +45,21 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
     def connected(self) -> bool:
         """Check if the coordinator is connected to the Ray controller."""
         try:
-            return RayProvider.connected()
+            self._connected = RayProvider.connected()
         except Exception as e:
             logger.exception(f"Error checking Ray connection: {e}")
-            return False
+            self._connected = False
+        if not self._connected:
+            self._cleanup_after_disconnect()
+        return self._connected
+
+    def _cleanup_after_disconnect(self):
+        """Cleanup the coordinator after a disconnect."""
+        self._controller = None
+        for processor in self.active_processors.values():
+            processor._restart_implementation()
+        for processor in self.inactive_processors.values():
+            processor._restart_implementation()
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the coordinator."""

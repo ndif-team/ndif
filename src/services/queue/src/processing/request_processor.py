@@ -1,6 +1,6 @@
 import os
+from typing import Optional
 import logging
-import ray
 from ray import serve
 from ray.serve.exceptions import RayServeException
 from slugify import slugify
@@ -75,6 +75,27 @@ class RequestProcessor(Processor[RequestTask]):
         queue_item = RequestTask(request.id, request, position)
         return super().enqueue(queue_item)
 
+    def dequeue(self) -> Optional[RequestTask]:
+        """
+        Dequeue a request with RequestTask-specific logic.
+        """
+        if not self.connected:
+            logger.warning(f"[{str(self)}] Disconnected from Ray controller, so cannot dequeue request.")
+            return None
+        else:
+            return super().dequeue()
+
+    def _advance_lifecycle_core(self) -> bool:
+        """
+        Advance the lifecycle of the processor.
+        """
+        if not self.connected:
+            if self.dispatched_task:
+                self._handle_failed_dispatch()
+            return False
+        else:
+            return super()._advance_lifecycle_core()
+
     def notify_pending_task(self):
         """Helper method used to update user(s) waiting for model to be scheduled."""
         description = f"`{self.id}` is being deployed... stand by."
@@ -113,7 +134,10 @@ class RequestProcessor(Processor[RequestTask]):
         """
         Get Ray-specific failure message for deployment-related failures.
         """
-        return f"Unable to reach {self.id}. This likely means that the deployment has been evicted."
+        if not self.connected:
+            return "Connection to Ray controller lost, so remote request cannot be processed."
+        else:
+            return f"Unable to reach {self.id}. This likely means that the deployment has been evicted."
 
     def _restart_implementation(self):
         """

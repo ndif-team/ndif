@@ -82,9 +82,9 @@ class RequestTask(Task):
         """
         
         # Avoid running app_handle if disconnected from Ray controller (runtime will hang indefinitely otherwise)
-        if not self.connected:
-            error_msg = f"[{str(self)}] Disconnected from Ray controller, so cannot run task."
-            self.respond_failure(error_msg)
+        if not self.connected or app_handle is None:
+            self._failed = True
+            self.respond_failure(f"[{str(self)}] Disconnected from Ray controller, so cannot run task.")
             return False
 
         self.position = None
