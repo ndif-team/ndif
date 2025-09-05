@@ -45,7 +45,7 @@ class BaseModelDeployment:
         app: str,
         execution_timeout: float | None,
         dispatch: bool,
-        dtype: str | torch.dtype,
+        dtype: str,
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -61,16 +61,12 @@ class BaseModelDeployment:
         self.model_key = model_key
         self.execution_timeout = execution_timeout
         self.dispatch = dispatch
-        self.dtype = dtype
+        self.dtype = getattr(torch, dtype)
         self.extra_kwargs = extra_kwargs
 
         self.logger = set_logger(app)
 
         self.runtime_context = ray.get_runtime_context()
-
-        if isinstance(dtype, str):
-
-            dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
 
@@ -455,4 +451,4 @@ class BaseModelDeploymentArgs(BaseModel):
     execution_timeout: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
-    dtype: str | torch.dtype = "bfloat16"
+    dtype: str = "bfloat16"
