@@ -2,6 +2,7 @@ import logging
 from abc import ABC
 from typing import Dict, Any, List, Optional, Generic, TypeVar
 from datetime import datetime
+from nnsight.schema.response import ResponseModel
 from ..tasks.base import Task
 from ..tasks.status import TaskStatus
 from .status import ProcessorStatus, DeploymentStatus
@@ -307,7 +308,7 @@ class Processor(ABC, Generic[T]):
         
         try:
             # Notify about dispatch attempt
-            self.dispatched_task.respond(description="Dispatching task...")
+            self.dispatched_task.respond(description="Dispatching task...", status = ResponseModel.JobStatus.DISPATCHED)
         except Exception as e:
             logger.exception(f"Failed to respond to user about task being dispatched: {e}")
         
