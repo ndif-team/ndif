@@ -50,16 +50,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             logger.exception(f"Error checking Ray connection: {e}")
             self._connected = False
         if not self._connected:
-            self._cleanup_after_disconnect()
+            self._controller = None
         return self._connected
-
-    def _cleanup_after_disconnect(self):
-        """Cleanup the coordinator after a disconnect."""
-        self._controller = None
-        for processor in self.active_processors.values():
-            processor._restart_implementation()
-        for processor in self.inactive_processors.values():
-            processor._restart_implementation()
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the coordinator."""
