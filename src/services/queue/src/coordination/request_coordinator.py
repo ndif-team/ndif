@@ -185,6 +185,15 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         """Create a new RequestProcessor."""
         return RequestProcessor(processor_key, max_retries=self.max_retries)
 
+    def _process_lifecycle_tick(self):
+        """Before processing lifecycle tick, see if service is disconnected from Controller, if it is, fail the processors"""
+        
+        # MR Sept 10: I'm not super satisfied with this pattern, but it does prevent "zombie processors" from occuring and immediately notifies queued users when the service is disconnected from the backend.
+        if not self.connected:
+            for processor in self.active_processors.values():
+                self._handle_processor_failure(processor)
+        return super()._process_lifecycle_tick()
+
     def _get_eviction_message(self, context: str) -> str:
         """
         Get request-specific eviction messages.
