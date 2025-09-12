@@ -96,9 +96,9 @@ class BaseModelDeployment:
     def load_from_disk(self):
 
         start = time.time()
-
+        torch.cuda.synchronize()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
-
+        
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
@@ -108,7 +108,7 @@ class BaseModelDeployment:
                 **self.extra_kwargs,
             )
         )
-        
+        torch.cuda.synchronize()
         load_time = time.time() - start
         
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
@@ -127,13 +127,13 @@ class BaseModelDeployment:
     async def to_cache(self):
 
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-
+        torch.cuda.synchronize()
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
-
+        
         self.model._module = self.model._module.cpu()
-
+        torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -142,26 +142,22 @@ class BaseModelDeployment:
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         self.app = app
-
+        torch.cuda.synchronize()
         start = time.time()
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
         device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
-
-        t1 = time.time()
-
+        
         remove_accelerate_hooks(self.model._module)        
-
-        t2 = time.time()
-
+ 
         self.model._module = dispatch_model(self.model._module, device_map)
 
+        torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
-        t3 = time.time()
-
+  
         load_time = time.time() - start
         
         devices = set()
@@ -170,10 +166,7 @@ class BaseModelDeployment:
             devices.add(f"{param.device.type}:{param.device.index}")
 
         self.logger.info(f"Model loaded from cache in {load_time} seconds on devices: {devices}")
-        
-        self.logger.info(f"Time taken to remove accelerate hooks: {t2 - t1} seconds")
-        self.logger.info(f"Time taken to dispatch model: {t3 - t2} seconds")
-        
+
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
 
