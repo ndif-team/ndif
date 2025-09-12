@@ -30,7 +30,6 @@ class RequestProcessor(Processor[RequestTask]):
         super().__init__(processor_id=model_key, *args, **kwargs)
         self._app_handle = None
         self.backend_status = DeploymentStatus.UNINITIALIZED
-        RayProvider.watch()
 
     @property
     def handle(self):
