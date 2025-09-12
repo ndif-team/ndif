@@ -1,6 +1,5 @@
 import os
 import pickle
-import re
 import traceback
 from contextlib import asynccontextmanager
 from typing import Any, Dict
@@ -28,6 +27,7 @@ from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import (BackendRequestModel, BackendResponseModel,
                      BackendResultModel)
+from .util import verify_python_version, verify_nnsight_version
 
 
 @asynccontextmanager
@@ -66,13 +66,6 @@ ObjectStoreProvider.connect()
 Instrumentator().instrument(app).expose(app)
 
 
-
-from nnsight import __version__
-
-# Extract just the base version number (e.g. 0.4.7 from 0.4.7.dev10+gbcb756d)
-SERVER_NNSIGHT_VERSION = re.match(r'^(\d+\.\d+\.\d+)', __version__).group(1)
-
-
 @app.post("/request")
 async def request(
     raw_request: Request
@@ -95,14 +88,12 @@ async def request(
         request: BackendRequestModel = BackendRequestModel.from_request(
             raw_request
         )
-        
+
+        user_python_version = raw_request.headers.get("python-version", '')
         user_nnsight_version = raw_request.headers.get("nnsight-version", '')
-        # Extract just the base version number from user version
-        user_base_version = re.match(r'^(\d+\.\d+\.\d+)', user_nnsight_version).group(1)
         
-        if user_base_version != SERVER_NNSIGHT_VERSION:
-            raise Exception(f"Client version {user_base_version} does not match server version {SERVER_NNSIGHT_VERSION}\nPlease update your nnsight version `pip install --upgrade nnsight`")
-        
+        verify_python_version(user_python_version)
+        verify_nnsight_version(user_nnsight_version)
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
