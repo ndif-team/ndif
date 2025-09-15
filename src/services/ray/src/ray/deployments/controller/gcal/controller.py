@@ -85,7 +85,7 @@ class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
     google_credentials_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", "")
     google_calendar_id: str = os.environ.get("SCHEDULING_GOOGLE_CALENDAR_ID", "")
     check_interval_s: float = float(os.environ.get("SCHEDULING_CHECK_INTERVAL_S", "10"))
-    delay_start_s: float = float(os.environ.get("SCHEDULING_DELAY_START_S", "30"))
+    delay_start_s: float = float(os.environ.get("SCHEDULING_DELAY_START_S", "15"))
 
 
 def app(args: SchedulingControllerDeploymentArgs):
