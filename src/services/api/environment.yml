@@ -1,7 +1,7 @@
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.12
   - pip
   - git
   - pip:
@@ -36,4 +36,4 @@ dependencies:
     - torch
     - python-slugify
     - influxdb-client
-    - nnsight>=0.5.0
+    - nnsight

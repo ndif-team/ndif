@@ -177,8 +177,10 @@ class Cluster:
                         results['evictions'].add(model_key)
 
                         if node.evict(model_key, exclude=set(model_keys)):
-
-                            cache_futures.append(deployment.cache())
+                            cache_future = deployment.cache()
+                            
+                            if cache_future is not None:
+                                cache_futures.append(cache_future)
 
                         change = True
 
