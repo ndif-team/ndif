@@ -83,7 +83,7 @@ class ModelDeployment:
         Creates a Ray actor for model execution with resource constraints
         and lifetime management.
         """
-        actor =ModelActor.options(
+        actor = ModelActor.options(
             name=f"ModelActor:{self.model_key}",
             resources={f"node:{self.node_name}": 0.01},
             lifetime="detached"
@@ -106,15 +106,24 @@ class ModelDeployment:
         Returns:
             The result from the model actor
         """
-        return await ray.get_actor(f"ModelActor:{self.model_key}").__call__.remote(request)
+        
+        actor = ray.get_actor(f"ModelActor:{self.model_key}")
+        
+        return await actor.__call__.remote(request)
     
     async def cancel(self) -> None:
         """Cancel ongoing operations on the model actor."""
-        await ray.get_actor(f"ModelActor:{self.model_key}").cancel.remote()
+        
+        actor = ray.get_actor(f"ModelActor:{self.model_key}")
+        
+        await actor.cancel.remote()
     
     async def restart(self) -> None:
         """Restart the model actor by killing and recreating it."""
-        ray.kill(ray.get_actor(f"ModelActor:{self.model_key}"), no_restart=False)
+        
+        actor = ray.get_actor(f"ModelActor:{self.model_key}")
+        
+        ray.kill(actor, no_restart=False)
 
     async def __del__(self) -> None:
         """Cleanup method called when the deployment is destroyed."""
