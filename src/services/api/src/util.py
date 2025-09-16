@@ -1,6 +1,10 @@
-import re
+import os
 import sys
+from packaging.version import Version
 from nnsight import __version__
+
+MIN_NNSIGHT_VERSION = os.getenv('MIN_NNSIGHT_VERSION', __version__)
+# TODO: At some point, we might want to have the supported python versions also be configurable
 
 def check_valid_email(user_id : str) -> bool:
     '''Helper function which verifies that the `user_id` field contains a "valid" email.'''
@@ -13,14 +17,21 @@ def verify_python_version(python_version: str):
     
     server_python_version = '.'.join(sys.version.split('.')[0:2]) # e.g. 3.12
     user_python_version = '.'.join(python_version.split('.')[0:2])
-    if user_python_version != server_python_version:
+
+    if user_python_version == '':
+        raise Exception("Client python version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.")
+
+    elif user_python_version != server_python_version:
         raise Exception(f"Client python version {user_python_version} does not match server version: {server_python_version}\nPlease update your python version and try again.")
 
 def verify_nnsight_version(nnsight_version: str):
         '''Helper function which verifies that the `nnsight_version` field contains a valid nnsight version. Raises an exception if the version is not valid.'''
 
-        # Extract just the base version number (e.g. 0.4.7 from 0.4.7.dev10+gbcb756d)
-        server_nnsight_version = re.match(r'^(\d+\.\d+\.\d+)', __version__).group(1)
-        user_base_version = re.match(r'^(\d+\.\d+\.\d+)', nnsight_version).group(1)
-        if user_base_version != server_nnsight_version:
-                raise Exception(f"Client version {user_base_version} does not match server version {server_nnsight_version}\nPlease update your nnsight version `pip install --upgrade nnsight`")
+        if nnsight_version == '':
+            raise Exception("Client nnsight version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.")
+
+        min_nnsight_version = Version(MIN_NNSIGHT_VERSION)
+        user_nnsight_version = Version(nnsight_version)
+
+        if user_nnsight_version < min_nnsight_version:
+                raise Exception(f"Client nnsight version {user_nnsight_version} is incompatible with the server nnsight version. The minimum supported version is {min_nnsight_version}\nPlease update nnsight to the latest version: `pip install --upgrade nnsight`")
