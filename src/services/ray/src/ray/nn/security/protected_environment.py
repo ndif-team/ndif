@@ -12,7 +12,7 @@ from nnsight.modeling.mixins.remoteable import StreamTracer
 # Built-in functions and types that are allowed to be used
 WHITELISTED_BUILTINS = {
     # Built-in exceptions
-    "ArithmeticError", "AssertionError", "AttributeError", "BaseException",
+    "BaseExceptionGroup", "ArithmeticError", "AssertionError", "AttributeError", "BaseException",
     "BlockingIOError", "BrokenPipeError", "BufferError", "BytesWarning",
     "ChildProcessError", "ConnectionAbortedError", "ConnectionError",
     "ConnectionRefusedError", "ConnectionResetError", "DeprecationWarning",
