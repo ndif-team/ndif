@@ -73,11 +73,8 @@ async def queue(request: Request):
         ).respond()
         logger.debug(f"Responded to request: {backend_request.id}")
         
-        success = coordinator.route_request(backend_request)
-        if success:
-            logger.info(f"[REQUEST:{backend_request.id}] Successfully routed to coordinator")
-        else:
-            logger.error(f"[REQUEST:{backend_request.id}] Failed to route to coordinator")
+        coordinator.route_request(backend_request)
+        logger.info(f"[REQUEST:{backend_request.id}] Successfully routed to coordinator")
 
         logger.debug(f"Enqueued request: {backend_request.id}")
 

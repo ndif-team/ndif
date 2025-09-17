@@ -91,7 +91,7 @@ class Task(ABC):
         
         return description
 
-    def respond_failure(self, description: Optional[str] = None) -> str:
+    def respond_failure(self, description: Optional[str] = None, traceback : bool = False) -> str:
         """
         Handle failure response for the task.
         
@@ -100,7 +100,7 @@ class Task(ABC):
         
         Args:
             description: Optional failure description
-            
+            traceback: Whether to log the traceback
         Returns:
             The failure description used
         """
@@ -110,7 +110,10 @@ class Task(ABC):
         self._failed = True
         self._failure_reason = description
         
-        logger.debug(f"Task {self.id} failed with description: {description}")
+        if traceback:
+            logger.exception(f"Task {self.id} failed with description: {description}")
+        else:
+            logger.error(f"Task {self.id} failed with description: {description}")
         
         return description
 
