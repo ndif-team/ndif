@@ -62,7 +62,7 @@ class Deployment:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
             ray.kill(actor)
         except Exception:
-            logger.error(f"Error removing actor {self.model_key} from cache")
+            logger.exception(f"Error removing actor {self.model_key} from cache.")
             pass
         
     def cache(self):
@@ -71,5 +71,5 @@ class Deployment:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
             return actor.to_cache.remote()
         except Exception:
-            logger.error(f"Error adding actor {self.model_key} to cache")
+            logger.exception(f"Error adding actor {self.model_key} to cache.")
             pass
