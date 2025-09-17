@@ -16,7 +16,6 @@ class RequestTask(Task):
     def __init__(self, request_id: str, request: BackendRequestModel, position: int):
         super().__init__(request_id, request, position)
         self._future = None
-        RayProvider.watch()
 
 
     @property
