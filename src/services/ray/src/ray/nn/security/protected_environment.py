@@ -76,6 +76,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="time", strict=False),
     WhitelistedModule(name="numpy", strict=False),
     WhitelistedModule(name="sympy", strict=False),
+    WhitelistedModule(name="math", strict=False),
 ]
 
 # Modules allowed during deserialization
