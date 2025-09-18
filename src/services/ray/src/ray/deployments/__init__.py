@@ -1,1 +1,0 @@
-MODEL_KEY = str

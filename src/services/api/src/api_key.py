@@ -10,6 +10,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 import logging
 from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
+from .types import API_KEY, MODEL_KEY
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -37,7 +38,7 @@ class AccountsDB:
         self.cur.close()
         self.conn.close()
 
-    def api_key_exists(self, key_id: str) -> bool:
+    def api_key_exists(self, key_id: API_KEY) -> bool:
         """Check if a key exists"""
         try:
             with self.conn.cursor() as cur:
@@ -49,7 +50,7 @@ class AccountsDB:
             self.conn.rollback()
             return False
 
-    def model_id_from_key(self, key_id: str) -> Optional[str]:
+    def model_id_from_key(self, key_id: MODEL_KEY) -> Optional[str]:
         """Get the model ID from a key ID"""
         try:
             with self.conn.cursor() as cur:
@@ -61,7 +62,7 @@ class AccountsDB:
             self.conn.rollback()
             return None
 
-    def key_has_access_to_model(self, key_id: str, model_id: str) -> bool:
+    def key_has_access_to_model(self, key_id: API_KEY, model_id: str) -> bool:
         """Check if a key has access to a model"""
         try:
             with self.conn.cursor() as cur:

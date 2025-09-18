@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict
 import ray
 
-from ... import MODEL_KEY
+from .....types import MODEL_KEY
 
 logger = logging.getLogger("ndif")
 
@@ -28,7 +28,7 @@ class Deployment:
         cached: bool = False,
     ):
 
-        self.model_key = model_key
+        self.model_key = MODEL_KEY(model_key)
         self.deployment_level = deployment_level
         self.gpus_required = gpus_required
         self.size_bytes = size_bytes

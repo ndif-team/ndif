@@ -3,8 +3,8 @@ from typing import Optional
 import logging
 from ray import serve
 from ray.serve.exceptions import RayServeException
-from slugify import slugify
 
+from ..types import MODEL_KEY, RAY_APP_NAME
 from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel, BackendResponseModel
 from ..tasks.request_task import RequestTask
@@ -16,17 +16,13 @@ import time
 logger = logging.getLogger("ndif")
 
 
-def convert_to_ray_app_name(processor_id: str) -> str:
-    """Convert a processor ID to a Ray app handle name format."""
-    return f"Model:{slugify(processor_id)}"
-
 
 class RequestProcessor(Processor[RequestTask]):
     """
     Queue for making requests to model deployments using Ray backend.
     """
 
-    def __init__(self, model_key: str, *args, **kwargs):
+    def __init__(self, model_key: MODEL_KEY, *args, **kwargs):
         super().__init__(processor_id=model_key, *args, **kwargs)
         self._app_handle = None
         self.backend_status = DeploymentStatus.UNINITIALIZED
@@ -41,7 +37,7 @@ class RequestProcessor(Processor[RequestTask]):
         
         elif not self._app_handle:
             try:
-                ray_model_key = convert_to_ray_app_name(self.id)
+                ray_model_key = RAY_APP_NAME(MODEL_KEY(self.id))
                 start = time.perf_counter()
                 self._app_handle = serve.get_app_handle(ray_model_key)
                 logger.debug(f"Successfully fetched app handle in {time.perf_counter() - start} seconds for {ray_model_key}")
