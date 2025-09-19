@@ -4,7 +4,6 @@ import os
 import threading
 import time
 import traceback
-import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict
 
@@ -128,13 +127,13 @@ class BaseModelDeployment:
     async def to_cache(self):
 
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
         
         self.model._module = self.model._module.cpu()
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -183,7 +182,7 @@ class BaseModelDeployment:
             request (BackendRequestModel): Request.
         """
 
-        self.request = weakref.proxy(request)
+        self.request = request
 
         try:
 
@@ -368,11 +367,10 @@ class BaseModelDeployment:
         self.kill_switch.clear()
         self.execution_ident = None
         
-        self.model._update_alias(None)
-
         SioProvider.disconnect()
 
         self.model._model.zero_grad()
+        self.request = None
         gc.collect()
         torch.cuda.empty_cache()
 

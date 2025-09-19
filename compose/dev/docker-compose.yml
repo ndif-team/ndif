@@ -18,7 +18,6 @@ services:
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ../../src/services/ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
-      # - /share/u/jadenfk/wd/nnsight/src/nnsight:/opt/conda/envs/service/lib/python3.10/site-packages/nnsight
 
     ports:
       - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
@@ -64,9 +63,11 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       QUEUE_URL: ${HOST_IP}:${DEV_QUEUE_PORT}
-
-    # volumes:
-    #   - /share/u/jadenfk/wd/nnsight/src/nnsight:/opt/conda/envs/service/lib/python3.10/site-packages/nnsight
+      POSTGRES_HOST: ${HOST_IP}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     
   queue:
@@ -85,9 +86,6 @@ services:
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
-
-    # volumes:
-    #   - /share/u/jadenfk/wd/nnsight/src/nnsight:/opt/conda/envs/service/lib/python3.10/site-packages/nnsight
 
 
   prometheus:

@@ -78,7 +78,7 @@ class _ControllerDeployment:
             model_cache_percentage=self.model_cache_percentage,
         )
 
-        if deployments:
+        if deployments and deployments != ['']:
             self.deploy(deployments, dedicated=True)
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:

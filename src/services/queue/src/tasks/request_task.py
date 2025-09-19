@@ -1,8 +1,8 @@
 import logging
-import ray
-from typing import Dict, Any, Optional
+from typing import Optional
 from .status import TaskStatus
 from .base import Task
+from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
 
@@ -36,7 +36,12 @@ class RequestTask(Task):
         elif self._future is None and self.position is None:
             return TaskStatus.PENDING
 
-        # Request has been dispatched, check if it has completed
+        # Request has been dispatched, first ensure there is still a connection to Ray
+        if not self.connected:
+            self.respond_failure("Disconnected from Ray controller, so cannot run task.")
+            return TaskStatus.FAILED
+
+        #check if it has completed
         try:
             _ = self._future.result(timeout_s=0, _skip_asyncio_check=True)
             logger.debug(f"[TASK:{self.id}] Request {self.id} completed")
@@ -47,9 +52,17 @@ class RequestTask(Task):
 
         except Exception as e:
             error_msg = f"Error checking request {self.id} status: {e}"
-            logger.exception(error_msg)
-            self.respond_failure(error_msg)
+            self.respond_failure(error_msg, traceback=True)
             return TaskStatus.FAILED
+
+    @property
+    def connected(self) -> bool:
+        """Check if the task is connected to the Ray controller."""
+        try:
+            return RayProvider.connected()
+        except Exception as e:
+            logger.exception(f"Error checking Ray connection: {e}")
+            return False
 
 
     def __str__(self):
@@ -66,19 +79,25 @@ class RequestTask(Task):
         Returns:
             True if the request was successfully started, False otherwise
         """
+        
+        # Avoid running app_handle if disconnected from Ray controller (runtime will hang indefinitely otherwise)
+        if not self.connected or app_handle is None:
+            self._failed = True
+            self.respond_failure(f"[{str(self)}] Disconnected from Ray controller, so cannot run task.")
+            return False
+
+        self.position = None
+        logger.info(f"[{str(self)}] Starting remote execution")
         try:
-            self.position = None
-            logger.info(f"[{str(self)}] Starting remote execution")
             self._future = app_handle.remote(self.data)
-            logger.info(f"[{str(self)}] Successfully initiated remote execution")
-            return True
         except Exception as e:
             error_msg = f"[{str(self)}] Failed to start remote execution: {e}"
-            logger.exception(error_msg)
-            
-            # This Naively assumes that the controller evicted the deployment
-            self.respond_failure(error_msg)
+            # This naively assumes that the controller evicted the deployment
+            self.respond_failure(error_msg, traceback=True)
             return False
+
+        logger.info(f"[{str(self)}] Successfully initiated remote execution")
+        return True
 
 
     def respond(self, description : Optional[str] = None, status: ResponseModel.JobStatus = ResponseModel.JobStatus.QUEUED):
@@ -100,12 +119,12 @@ class RequestTask(Task):
             logger.exception(f"Failed to respond back to user: {e}")
 
 
-    def respond_failure(self, description: Optional[str] = None):
+    def respond_failure(self, description: Optional[str] = None, traceback: bool = False):
         """
         Respond to the user with a failure message.
         """
         # Let the base class handle the failure state management
-        description = super().respond_failure(description)
+        description = super().respond_failure(description, traceback)
 
         logger.debug(f"Responding failure to user with following description: {description}")
         response = self.data.create_response(
@@ -117,3 +136,5 @@ class RequestTask(Task):
             response.respond()
         except Exception as e:
             logger.exception(f"Failed to respond back to user: {e}")
+        finally:
+            self._future = None

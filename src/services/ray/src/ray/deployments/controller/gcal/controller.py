@@ -1,4 +1,5 @@
 import os
+import time
 
 from ray import ray, serve
 from slugify import slugify
@@ -14,6 +15,7 @@ class SchedulingControllerDeployment(_ControllerDeployment):
         google_credentials_path: str,
         google_calendar_id: str,
         check_interval_s: float,
+        delay_start_s: float,
         **kwargs,
     ):
 
@@ -29,6 +31,9 @@ class SchedulingControllerDeployment(_ControllerDeployment):
             google_calendar_id=google_calendar_id,
             check_interval_s=check_interval_s,
         )
+
+        # Allow time for all nodes to sync with the controller
+        time.sleep(delay_start_s)
 
         self.scheduler.start.remote()
 
@@ -80,6 +85,7 @@ class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
     google_credentials_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", "")
     google_calendar_id: str = os.environ.get("SCHEDULING_GOOGLE_CALENDAR_ID", "")
     check_interval_s: float = float(os.environ.get("SCHEDULING_CHECK_INTERVAL_S", "10"))
+    delay_start_s: float = float(os.environ.get("SCHEDULING_DELAY_START_S", "15"))
 
 
 def app(args: SchedulingControllerDeploymentArgs):
