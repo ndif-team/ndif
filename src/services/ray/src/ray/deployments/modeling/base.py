@@ -240,10 +240,7 @@ class BaseModelDeployment:
         """Logic to execute before execution."""
         with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
             request = self.request.deserialize(self.model)
-        
-        if hasattr(request.tracer, "model"):
-            request.tracer.model = self.model
-
+            
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",

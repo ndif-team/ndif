@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import warnings
+
 from typing import Any
 from nnsight.intervention import serialization
 from nnsight.intervention.envoy import Envoy
+from nnsight.util import Patcher, Patch
+
 
 PROTECTIONS = {}
 
@@ -26,7 +28,7 @@ class ProtectedObject:
 
         value = deepcopy(value)
         
-        warnings.warn(f"Accessing attribute {name} of protected object {PROTECTIONS[id(self)]}. Will return a deepcopy of the attribute.")
+        #print(f" WARNINIG: Accessing attribute {name} of protected object {PROTECTIONS[id(self)]} will return a deepcopy of the attribute.")
 
         return value
 
@@ -46,30 +48,36 @@ def protect(obj: Any):
 
     return _ProtectedObject(obj)
 
-
+original_setstate = Envoy.__setstate__
 class ProtectedCustomCloudUnpickler(serialization.CustomCloudUnpickler):
-    def find_class(self, module, name):
-        cls = super().find_class(module, name)
+    
+    def load(self):
         
-        if isinstance(cls, type) and issubclass(cls, Envoy):
+        def inject(_self, state):
             
-            class EnvoyProxy(cls):
-                def __setstate__(_self, state):
-                    cls.__setstate__(_self, state) 
-                    
-                    envoy = self.root.get(_self.path.removeprefix("model"))
+            original_setstate(_self, state)
+            
+            envoy = self.root.get(_self.path.removeprefix("model"))
 
-                    module = protect(envoy._module)
-                    
-                    _self._module = module
-                    _self._interleaver = envoy._interleaver
-                                                        
-                    for key, value in envoy.__dict__.items():
-                        if key not in _self.__dict__:
-                            _self.__dict__[key] = value
+            module = protect(envoy._module)
             
-            return EnvoyProxy
-        return cls
+            _self._module = module
+            _self._interleaver = envoy._interleaver
+                                                
+            for key, value in envoy.__dict__.items():
+                if key not in _self.__dict__:
+                    _self.__dict__[key] = value
+        
+        with Patcher([Patch(Envoy, inject, '__setstate__')]):
+            return super().load()
+        
+    
+
+            
+            
+                
+    
+
 
 def protect_model():
 

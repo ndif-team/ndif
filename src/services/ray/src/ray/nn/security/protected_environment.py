@@ -85,6 +85,7 @@ WHITELISTED_MODULES_DESERIALIZATION = [
     
     WhitelistedModule(name="pickle", strict=False),
     WhitelistedModule(name="cloudpickle", strict=False),
+    WhitelistedModule(name="copyreg", strict=False),
     WhitelistedModule(name="nnsight.schema.request", strict=True),
     WhitelistedModule(name="nnsight.modeling.mixins.remoteable", strict=True),
     WhitelistedModule(name="nnsight.intervention.tracing.base", strict=True),
