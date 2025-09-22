@@ -50,7 +50,7 @@ class BackendRequestModel(ObjectStorageMixin):
     zlib: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ''
-
+    hotswapping: Optional[bool] = False
     id: REQUEST_ID
 
     def deserialize(self, model: NNsight) -> RequestModel:
@@ -82,6 +82,7 @@ class BackendRequestModel(ObjectStorageMixin):
             last_status_time=sent,
             api_key=API_KEY(headers.get("ndif-api-key")),
             callback=headers.get("ndif-callback", ""),
+            hotswapping=headers.get("ndif-hotswapping", False),
         )
 
     def create_response(

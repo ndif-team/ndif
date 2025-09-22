@@ -63,6 +63,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         """Route a request to the coordinator."""
         if not self.connected:
             raise RuntimeError("Ray controller is not connected.")
+
+        if not request.hotswapping:
+            raise RuntimeError("Hotswap is not supported for this API key.")
         
         return super().route_request(request)
 
