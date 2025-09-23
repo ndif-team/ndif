@@ -134,13 +134,33 @@ class SchedulingActor:
             logger.info(
                 "Change in model deployment state. Sending deployment request to Controller..."
             )
-            # Update the stored hash
-            self.previous_model_keys_hash = current_hash
             # Update the controller with new model keys
             result: Dict[str, str] = await self.controller_handle.deploy.remote(list(model_keys_to_event.keys()), dedicated=True)
             result = result['result']
             error_messages = {model_key: value for model_key, value in result.items() if value not in CandidateLevel.__members__}
 
+            # Only update the stored hash if there were no errors
+            if not error_messages:
+                self.previous_model_keys_hash = current_hash
+
+        # For successful deployments, set event color to dark green if not already
+            DARK_GREEN_COLOR_ID = "10"  # Google Calendar 'Basil' (dark green)
+            successful_model_keys = [k for k in model_keys_to_event.keys() if k not in error_messages]
+            for model_key in successful_model_keys:
+                event = model_keys_to_event[model_key]
+                event_id = event["id"]
+                current_color = event.get("colorId")
+                if current_color != DARK_GREEN_COLOR_ID:
+                    self.service.events().patch(
+                        calendarId=self.google_calendar_id,
+                        eventId=event_id,
+                        body={
+                            "colorId": DARK_GREEN_COLOR_ID,
+                        },
+                        sendUpdates="all",
+                    ).execute()
+                    logger.info(f"Updated event {event_id} to dark green.")
+   
             # Loop through error messages and update the corresponding calendar event
             for model_key, error_message in error_messages.items():
                 # Find the event with the matching sanitized description
