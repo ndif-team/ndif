@@ -91,6 +91,7 @@ class SchedulingActor:
             str: Cleaned description string
         """
         description = description.replace("\n", "")
+        description = description.replace("&quot;", "")
         CLEANR = re.compile("<.*?>")
         description = re.sub(CLEANR, "", description)
         return description
