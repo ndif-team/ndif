@@ -168,11 +168,11 @@ class _ControllerDeployment:
 
         self.client.deploy_applications(self.state.dict(exclude_unset=True))
 
-    def get_deployment(self, model_key: MODEL_KEY) -> Optional[Deployment]:
+    def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
         """Get the deployment of a model key (or None if not found)."""
         for node in self.cluster.nodes.values():
             if model_key in node.deployments.keys():
-                return node.deployments[model_key]
+                return node.deployments[model_key].get_state()
         return None
 
     def status(self):
