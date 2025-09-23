@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from typing import Any, Dict, List
 import os
 
@@ -8,6 +9,8 @@ from ..processing.request_processor import RequestProcessor
 from ..processing.status import DeploymentStatus, ProcessorStatus
 from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel
+from ..types import MODEL_KEY
+from ..util import cache_maintainer
 from .base import Coordinator
 
 import time
@@ -63,7 +66,12 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         """Route a request to the coordinator."""
         if not self.connected:
             raise RuntimeError("Ray controller is not connected.")
-        
+
+        # For now, only dedicated models will be accessible to users not in the hotswapping pilot program.
+        if not request.hotswapping:
+            if not self._is_dedicated(request.model_key):
+                raise RuntimeError(f"Model {request.model_key} is not dedicated and hotswapping is not supported for this API key.")
+       
         return super().route_request(request)
 
     def _get_processor_key(self, request: BackendRequestModel) -> str:
@@ -116,25 +124,21 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         if not processors:
             return
 
-        # Helper to ensure Ray is connected before each operation
-        def _require_connected():
-            if not self.connected:
-                raise RuntimeError("Ray Serve is not connected.")
 
         try:
             # Prepare model keys for deployment
             model_keys = [processor.id for processor in processors]
 
 
-            _require_connected()
+            self._require_connected()
             # Initiate deployment via Ray controller (Ray 2.47.0)
             deployment_future = self.backend_handle.deploy.remote(model_keys)
 
-            _require_connected()
+            self._require_connected()
             # Synchronously fetch deployment results (blocking)
             deployment_results = deployment_future._fetch_future_result_sync()
 
-            _require_connected()
+            self._require_connected()
             # The .get() is a hack to retrieve the result with a timeout
             deployment_statuses, evictions = deployment_results.get(DEPLOYMENT_TIMEOUT_SECONDS).values()
 
@@ -202,3 +206,27 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             return "Request removed from queue."
         else:
             return "Request interrupted."
+            
+    # Helper to ensure Ray is connected before each operation
+    def _require_connected(self):
+        """Helper which raises an error if not connected to Ray Serve."""
+        if not self.connected:
+            raise RuntimeError("Ray Serve is not connected.")
+
+    @cache_maintainer(clear_time=600)
+    @lru_cache(maxsize=1000)
+    def _is_dedicated(self, model_key: MODEL_KEY):
+        """Helper which returns True if the model is dedicated."""
+        try:
+            self._require_connected()
+            future = self.backend_handle.get_deployment.remote(model_key)
+            self._require_connected()
+            results = future._fetch_future_result_sync()
+            deployment_dict = results.get(DEPLOYMENT_TIMEOUT_SECONDS)
+            if deployment_dict:
+                return deployment_dict.get("dedicated", False)
+            else:
+                return False
+        except Exception as e:
+            logger.exception(f"Error checking if model {model_key} is dedicated: {e}")
+            return False

@@ -1,4 +1,5 @@
 import uuid
+from enum import Enum
 from typing import Optional
 from slugify import slugify
 
@@ -49,6 +50,12 @@ class RAY_APP_NAME(str):
     def _from_model_key(cls, model_key: MODEL_KEY) -> 'RAY_APP_NAME':
         """Create RAY_APP_NAME from MODEL_KEY using slugify"""
         return f"Model:{slugify(model_key)}"
+
+class TIER(Enum):
+    """Tier identifier for API keys"""
+    TIER_405B = "405b"
+    TIER_HOTSWAP = "hotswapping"
+
 
 class API_KEY(str):
     """API key identifier with validation"""
