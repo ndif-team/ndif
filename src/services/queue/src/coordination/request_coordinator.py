@@ -1,4 +1,5 @@
 import logging
+from functools import lru_cache
 from typing import Any, Dict, List
 import os
 
@@ -9,6 +10,7 @@ from ..processing.status import DeploymentStatus, ProcessorStatus
 from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel
 from ..types import MODEL_KEY
+from ..util import cache_maintainer
 from .base import Coordinator
 
 import time
@@ -67,7 +69,8 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
 
         # For now, only dedicated models will be accessible to users not in the hotswapping pilot program.
         if not request.hotswapping:
-            self._ensure_dedicated(request.model_key)
+            if not self._is_dedicated(request.model_key):
+                raise RuntimeError(f"Model {request.model_key} is not dedicated and hotswapping is not supported for this API key.")
        
         return super().route_request(request)
 
@@ -210,8 +213,10 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
         if not self.connected:
             raise RuntimeError("Ray Serve is not connected.")
 
-    def _ensure_dedicated(self, model_key: MODEL_KEY):
-        """Helper which raises an error if the model is not dedicated."""
+    @cache_maintainer(clear_time=600)
+    @lru_cache(maxsize=1000)
+    def _is_dedicated(self, model_key: MODEL_KEY):
+        """Helper which returns True if the model is dedicated."""
         try:
             self._require_connected()
             future = self.backend_handle.get_deployment.remote(model_key)
@@ -219,12 +224,9 @@ class RequestCoordinator(Coordinator[BackendRequestModel, RequestProcessor]):
             results = future._fetch_future_result_sync()
             deployment_dict = results.get(DEPLOYMENT_TIMEOUT_SECONDS)
             if deployment_dict:
-                if not deployment_dict.get("dedicated", False):
-                    raise RuntimeError(f"Model {model_key} is not dedicated and hotswapping is not supported for this API key.")
+                return deployment_dict.get("dedicated", False)
             else:
-                raise RuntimeError(f"Model {model_key} is not deployed and hotswapping is not supported for this API key.")
-
+                return False
         except Exception as e:
             logger.exception(f"Error checking if model {model_key} is dedicated: {e}")
-            raise RuntimeError(f"Model {model_key} is not dedicated and hotswapping is not supported for this API key.")
-
+            return False
