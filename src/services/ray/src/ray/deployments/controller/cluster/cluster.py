@@ -149,13 +149,12 @@ class Cluster:
         for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
 
             if isinstance(size_in_bytes, Exception):
-
-                logger.error(f"=> Model{model_key} failed to evaluate: {size_in_bytes}")
+                tb = ''.join(traceback.format_exception(type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__))
+                logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
 
                 del model_sizes_in_bytes[model_key]
 
-                
-                results['result'][model_key] = f"{size_in_bytes}\n{traceback.format_exc()}"
+                results['result'][model_key] = f"{size_in_bytes}\n{tb}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:

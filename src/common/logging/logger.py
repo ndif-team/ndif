@@ -119,7 +119,7 @@ def set_logger(service_name) -> logging.Logger:
             "file": "%(code_file)s",
             "line": %(code_line)d
         },
-        "message": "%(message)s",
+        "message": "%(message)s"
     }'''
     
     # Simpler format for console output with filename and process id
