@@ -10,6 +10,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
 import logging
 from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
+from .types import API_KEY, MODEL_KEY, TIER
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -37,7 +38,7 @@ class AccountsDB:
         self.cur.close()
         self.conn.close()
 
-    def api_key_exists(self, key_id: str) -> bool:
+    def api_key_exists(self, key_id: API_KEY) -> bool:
         """Check if a key exists"""
         try:
             with self.conn.cursor() as cur:
@@ -49,7 +50,7 @@ class AccountsDB:
             self.conn.rollback()
             return False
 
-    def model_id_from_key(self, key_id: str) -> Optional[str]:
+    def model_id_from_key(self, key_id: MODEL_KEY) -> Optional[str]:
         """Get the model ID from a key ID"""
         try:
             with self.conn.cursor() as cur:
@@ -61,7 +62,7 @@ class AccountsDB:
             self.conn.rollback()
             return None
 
-    def key_has_access_to_model(self, key_id: str, model_id: str) -> bool:
+    def key_has_access_to_model(self, key_id: API_KEY, model_id: str) -> bool:
         """Check if a key has access to a model"""
         try:
             with self.conn.cursor() as cur:
@@ -76,6 +77,31 @@ class AccountsDB:
                 return result[0] if result else False
         except Exception as e:
             logger.error(f"Error checking if key has access to model: {e}")
+            self.conn.rollback()
+            return False
+
+    def tier_id_from_name(self, name: TIER) -> Optional[str]:
+        """Get the tier ID from a tier name"""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT tier_id FROM tiers WHERE name = %s", (str(name.value).lower(),))
+                result = cur.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error getting tier ID from tier name: {e}")
+            self.conn.rollback()
+            return None
+
+    def key_has_hotswapping_access(self, key_id: API_KEY) -> bool:
+        """Check if a key has hotswapping access"""
+        print(f"Checking if key {key_id} has hotswapping access")
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT EXISTS(SELECT 1 FROM key_tier_assignments WHERE key_id = %s AND tier_id = %s)", (key_id, self.tier_id_from_name(TIER.TIER_HOTSWAP)))
+                result = cur.fetchone()
+                return result[0] if result else False
+        except Exception as e:
+            logger.error(f"Error checking if key has hotswapping access: {e}")
             self.conn.rollback()
             return False
 
@@ -109,6 +135,7 @@ def api_key_auth(
 
     # For local development, we don't want to check the API key
     if host is None:
+        request.hotswapping = True
         return
 
     # TODO: There should be some form of caching here
@@ -120,6 +147,10 @@ def api_key_auth(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
         )
+
+    if api_key_store.key_has_hotswapping_access(request.api_key):
+        request.hotswapping = True
+        
     model_key = request.model_key.lower()
     # Get the model ID from the API key
     model_id = api_key_store.model_id_from_key(model_key)

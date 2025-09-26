@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-import uuid
 from typing import TYPE_CHECKING, ClassVar, Coroutine, Optional, Union
 
 import ray
@@ -14,6 +13,7 @@ from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
+from ..types import API_KEY, REQUEST_ID, SESSION_ID, MODEL_KEY
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
@@ -45,13 +45,13 @@ class BackendRequestModel(ObjectStorageMixin):
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
-    model_key: Optional[str] = None
-    session_id: Optional[str] = None
+    model_key: Optional[MODEL_KEY] = None
+    session_id: Optional[SESSION_ID] = None
     zlib: Optional[bool] = True
-    api_key: Optional[str] = ""
+    api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ''
-
-    id: str
+    hotswapping: Optional[bool] = False
+    id: REQUEST_ID
 
     def deserialize(self, model: NNsight) -> RequestModel:
 
@@ -74,13 +74,13 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         return BackendRequestModel(
-            id=request.headers.get("ndif-request_id", str(uuid.uuid4())),
+            id=REQUEST_ID(request.headers.get("ndif-request_id")),
             request=request.body(),
-            model_key=headers.get("nnsight-model-key", ""),
-            session_id=headers.get("ndif-session_id", None),
+            model_key=MODEL_KEY(headers.get("nnsight-model-key")),
+            session_id=SESSION_ID(headers.get("ndif-session_id")),
             zlib=headers.get("nnsight-zlib", True),
             last_status_time=sent,
-            api_key=headers.get("ndif-api-key", ""),
+            api_key=API_KEY(headers.get("ndif-api-key")),
             callback=headers.get("ndif-callback", ""),
         )
 

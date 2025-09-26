@@ -15,8 +15,7 @@ from ray.serve.schema import (
     ServeDeploySchema,
     ServeInstanceDetails,
 )
-from slugify import slugify
-
+from ....types import MODEL_KEY, RAY_APP_NAME, NODE_ID
 from ....logging.logger import set_logger
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
@@ -114,10 +113,8 @@ class _ControllerDeployment:
         return results
 
     def deployment_to_application(
-        self, deployment: Deployment, node_name: str
+        self, deployment: Deployment, node_name: NODE_ID
     ) -> ServeApplicationSchema:
-
-        slugified_model_key = slugify(deployment.model_key)
 
         deployment_args = BaseModelDeploymentArgs(
             model_key=deployment.model_key,
@@ -127,9 +124,9 @@ class _ControllerDeployment:
         )
 
         return ServeApplicationSchema(
-            name=f"Model:{slugified_model_key}",
+            name=RAY_APP_NAME(deployment.model_key),
             import_path=self.model_import_path,
-            route_prefix=f"/Model:{slugified_model_key}",
+            route_prefix=f"/{RAY_APP_NAME(deployment.model_key)}",
             deployments=[
                 DeploymentSchema(
                     name="ModelDeployment",
@@ -171,6 +168,13 @@ class _ControllerDeployment:
 
         self.client.deploy_applications(self.state.dict(exclude_unset=True))
 
+    def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
+        """Get the deployment of a model key (or None if not found)."""
+        for node in self.cluster.nodes.values():
+            if model_key in node.deployments.keys():
+                return node.deployments[model_key].get_state()
+        return None
+
     def status(self):
 
         serve_status = serve.status()
@@ -191,7 +195,7 @@ class _ControllerDeployment:
 
             for deployment in node.deployments.values():
 
-                application_name = f"Model:{slugify(deployment.model_key)}"
+                application_name = RAY_APP_NAME(deployment.model_key)
 
                 status[application_name] = {
                     **status[application_name],
@@ -224,7 +228,7 @@ class _ControllerDeployment:
 
             for cached_model_key in node.cache.keys():
 
-                application_name = f"Model:{slugify(cached_model_key)}"
+                application_name = RAY_APP_NAME(MODEL_KEY(cached_model_key))
 
                 if application_name not in status:
 

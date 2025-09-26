@@ -22,7 +22,7 @@ from .logging import set_logger
 
 logger = set_logger("API")
 
-from .api_key import api_key_auth
+from .auth import api_key_auth
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import (BackendRequestModel, BackendResponseModel,

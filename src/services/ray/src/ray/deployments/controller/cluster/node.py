@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import ray
 
-from ... import MODEL_KEY
+from .....types import MODEL_KEY, NODE_ID
 from .deployment import Deployment, DeploymentLevel
 
 logger = logging.getLogger("ndif")
@@ -72,7 +72,7 @@ class Node:
 
     def __init__(
         self,
-        id: str,
+        id: NODE_ID,
         name: str,
         resources: Resources,
         minimum_deployment_time_seconds: float = None,
