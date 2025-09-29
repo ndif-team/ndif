@@ -30,7 +30,7 @@ from ....schema import (BackendRequestModel, BackendResponseModel,
                         BackendResultModel)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_objects import protect
+from ...nn.security.protected_objects import protect_model
 from ...nn.security.protected_environment import WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
@@ -76,7 +76,6 @@ class BaseModelDeployment:
         self.model = self.load_from_disk()
         
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
-        self.protected_model = protect(self.model)
 
         if dispatch:
             self.model._module.requires_grad_(False)
@@ -90,7 +89,9 @@ class BaseModelDeployment:
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
         
+        protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
+        
 
     def load_from_disk(self):
 
@@ -238,11 +239,8 @@ class BaseModelDeployment:
     def pre(self) -> RequestModel:
         """Logic to execute before execution."""
         with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
-            request = self.request.deserialize(self.protected_model)
-        
-        if hasattr(request.tracer, "model"):
-            request.tracer.model = self.model
-
+            request = self.request.deserialize(self.model)
+            
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
