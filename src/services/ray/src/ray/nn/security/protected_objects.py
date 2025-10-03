@@ -37,6 +37,7 @@ class ProtectedObject:
             "generate",
             "_compiled_call_impl",
             "parameters",
+            "forward",
         ):
 
             return value
