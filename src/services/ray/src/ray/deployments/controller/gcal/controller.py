@@ -68,6 +68,9 @@ class SchedulingControllerDeployment(_ControllerDeployment):
                     "deployment_level": DeploymentLevel.COLD.name,
                     "model_key": model_key,
                     "repo_id": repo_id,
+                    "revision": self.cluster.evaluator.cache[
+                        model_key
+                    ].revision,
                     "config": self.cluster.evaluator.cache[
                         model_key
                     ].config.to_json_string(),

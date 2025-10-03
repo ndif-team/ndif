@@ -11,10 +11,11 @@ logger = logging.getLogger("ndif")
 
 
 class CacheEntry:
-    def __init__(self, size_in_bytes: int, n_params: int, config: str):
+    def __init__(self, size_in_bytes: int, n_params: int, config: str, revision: str):
         self.size_in_bytes = size_in_bytes
         self.n_params = n_params
         self.config = config
+        self.revision = revision
 
 
 class ModelEvaluator:
@@ -84,6 +85,7 @@ class ModelEvaluator:
             model_size_bytes,
             n_params,
             meta_model._model.config,
+            getattr(meta_model._model, "revision", "main"),
         )
 
         logger.info(f"=> New model evaluated: {model_key} size: {model_size_bytes}")

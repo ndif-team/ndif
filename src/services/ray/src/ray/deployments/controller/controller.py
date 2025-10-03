@@ -238,6 +238,9 @@ class _ControllerDeployment:
                         "repo_id": self.cluster.evaluator.cache[
                             cached_model_key
                         ].config._name_or_path,
+                        "revision": self.cluster.evaluator.cache[
+                            cached_model_key
+                        ].revision,
                         "config": self.cluster.evaluator.cache[
                             cached_model_key
                         ].config.to_json_string(),
