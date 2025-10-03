@@ -131,6 +131,27 @@ class Importer:
         if name in ["builtins", "__builtins__"]:
             return PROTECTED_BUILTINS
         
+        
+        if level > 0:
+            
+            self.protector.__exit__(None, None, None)
+
+            try:
+                result = self.original_import(name, globals, locals, fromlist, level)
+              
+            finally:
+                self.protector.__enter__()
+                
+            for module in self.whitelisted_modules:
+                if module.check(result.__name__):
+                    protected = ProtectedModule(module)
+                    protected.__dict__.update(result.__dict__)
+                    return protected
+                
+            raise ImportError(f"Module {result.__name__} is not whitelisted")
+        
+            
+        
         for module in self.whitelisted_modules:
             if module.check(name):
                 
