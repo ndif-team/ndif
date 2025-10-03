@@ -11,7 +11,7 @@ dependencies:
     - fastapi-cache2
     - fastapi==0.108.0
     - fastapi-socketio
-    - python-socketio
+    - python-socketio==5.13.0
     - redis
     #- firebase-admin
     - psycopg2-binary

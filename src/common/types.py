@@ -89,10 +89,8 @@ class REQUEST_ID(str):
 
 class SESSION_ID(str):
     """Session ID identifier"""
-    def __new__(cls, value: Optional[str] = None) -> 'SESSION_ID':
-        if value is None:
-            value = str(uuid.uuid4())
-        elif not isinstance(value, str):
+    def __new__(cls, value: str) -> Optional['SESSION_ID']:
+        if not isinstance(value, str):
             raise ValueError(f"SESSION_ID must be a string, got: {type(value)}")
         return str.__new__(cls, value.strip())
 
