@@ -78,6 +78,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="sympy", strict=False),
     WhitelistedModule(name="nnterp", strict=False),
     WhitelistedModule(name="math", strict=False),
+    WhitelistedModule(name="einops", strict=False),
 ]
 
 # Modules allowed during deserialization
