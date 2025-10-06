@@ -1,7 +1,32 @@
 import json
 
-from .util import get_total_cudamemory_MBs
+import psutil
+import torch
 
+
+def get_available_cpu_memory_bytes():
+    mem = psutil.virtual_memory()
+    return mem.available
+
+def get_total_cudamemory_bytes(return_ids=False) -> int:
+
+    cudamemory = 0
+
+    ids = []
+
+    for device in range(torch.cuda.device_count()):
+        try:
+            cudamemory += torch.cuda.mem_get_info(device)[1]
+            if return_ids:
+                ids.append(device)
+        except:
+            pass
+
+    if return_ids:
+
+        return int(cudamemory), ids
+
+    return int(cudamemory)
 
 def main(head: bool, name: str = None):
 
@@ -11,7 +36,8 @@ def main(head: bool, name: str = None):
 
         resources["head"] = 10
 
-    resources["cuda_memory_MB"] = get_total_cudamemory_MBs()
+    resources["cuda_memory_bytes"] = get_total_cudamemory_bytes()
+    resources["cpu_memory_bytes"] = get_available_cpu_memory_bytes()
 
     if name is not None:
 

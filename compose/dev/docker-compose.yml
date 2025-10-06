@@ -1,24 +1,24 @@
 services:
   message_broker:
-    image: redis:latest
+    image: redis:${REDIS_VERSION}
     ports:
       - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:${MINIO_VERSION}
     command: server /data
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray:
-    image: ray:latest
+    image: ray:${RAY_VERSION}
     shm_size: '15gb'
     volumes:
-      - ~/.cache/huggingface/hub/:/root/.cache/huggingface/hub
-      - ./service_config.yml:/src/ray/config/service_config.yml
+      - ~/.cache/huggingface/:/root/.cache/huggingface
       - ./ray_config.yml:/src/ray/config/ray_config.yml
       - ../../src/services/ray/start.sh:/start.sh
       - ray-data:/tmp/ray/
+
     ports:
       - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
       - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
@@ -40,18 +40,40 @@ services:
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
+
+      - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
+      - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
+
     env_file:
       - .env
 
   api:
-    image: api:latest
+    image: api:${API_VERSION}
     ports:
       - ${DEV_API_PORT}:${API_INTERNAL_PORT}
     environment:
       OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
       BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
-      WORKERS: 1
+      WORKERS: ${API_WORKERS}
       RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      QUEUE_URL: ${HOST_IP}:${DEV_QUEUE_PORT}
+
+    
+  queue:
+    image: queue:${QUEUE_VERSION}
+    ports:
+      - ${DEV_QUEUE_PORT}:${QUEUE_INTERNAL_PORT}
+    environment:
+      OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
+      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
+      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      API_URL: http://${HOST_IP}:${DEV_API_PORT}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
       INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
@@ -60,8 +82,9 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
 
+
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:${PROMETHEUS_VERSION}
     network_mode: "host"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -75,7 +98,7 @@ services:
       - ray
 
   influxdb:
-    image: influxdb:2
+    image: influxdb:${INFLUXDB_VERSION}
     network_mode: "host"
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
@@ -89,7 +112,7 @@ services:
       - influxdb2-config:/etc/influxdb2
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:${GRAFANA_VERSION}
     network_mode: "host"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
@@ -104,7 +127,7 @@ services:
       - influxdb
 
   loki:
-    image: grafana/loki:2.8.1
+    image: grafana/loki:${LOKI_VERSION}
     network_mode: "host"
     volumes:
       - loki-data:/loki

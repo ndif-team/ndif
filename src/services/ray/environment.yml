@@ -1,14 +1,14 @@
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.12
   - pip
   - git
   - pip:
     - pip
     - setuptools
     - nnsight
-    - ray[serve]==2.45.0
+    - ray[serve]==2.47.0
     - python-slugify
     # Telemetry
     - prometheus_client
@@ -16,3 +16,6 @@ dependencies:
     # Database
     - boto3
     - influxdb-client
+    # Google Cal Scheduling
+    - google-api-python-client
+    - google

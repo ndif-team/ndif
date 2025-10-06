@@ -6,4 +6,14 @@ FROM ${BASE_IMAGE}:${TAG}
 ARG NAME
 COPY src/services/${NAME}/environment.yml .
 
-RUN conda env update --name service -f environment.yml
+RUN conda env update --name service -f environment.yml \
+    && conda clean -afy \
+    && find /opt/conda -type d -name "__pycache__" -exec rm -rf {} + \
+    && find /opt/conda -name "*.pyc" -delete \
+    && find /opt/conda -name "*.pyo" -delete \
+    && find /opt/conda -type d -name "tests" -exec rm -rf {} + \
+    && find /opt/conda -type d -name "test" -exec rm -rf {} + \
+    && find /opt/conda -name "*.a" -delete \
+    && rm -rf /opt/conda/pkgs \
+    && rm -rf /opt/conda/envs/service/conda-meta/history \
+    && rm -rf /tmp/*

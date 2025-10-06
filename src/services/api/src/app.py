@@ -1,40 +1,33 @@
-import asyncio
 import os
-import threading
-import time
+import pickle
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any, Dict
-import uuid
 
-import ray
+import requests
 import socketio
 import uvicorn
-import boto3
-from fastapi import FastAPI, Request, Security
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.security.api_key import APIKeyHeader
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.inmemory import InMemoryBackend
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from influxdb_client import Point
 from prometheus_fastapi_instrumentator import Instrumentator
-from ray import serve
 
 from nnsight.schema.response import ResponseModel
 
-from .logging import load_logger
+from .logging import set_logger
 
-logger = load_logger(service_name="API", logger_name="API")
+logger = set_logger("API")
 
-
-from .api_key import api_key_auth
-from .metrics import TransportLatencyMetric
-from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-
+from .auth import api_key_auth
+from .metrics import NetworkStatusMetric
+from .providers.objectstore import ObjectStoreProvider
+from .schema import (BackendRequestModel, BackendResponseModel,
+                     BackendResultModel)
+from .util import verify_python_version, verify_nnsight_version
 
 
 @asynccontextmanager
@@ -67,48 +60,15 @@ sm = SocketManager(
 )
 
 # Init object_store connection
-object_store = boto3.client(
-    's3',
-    endpoint_url=f"http://{os.environ.get('OBJECT_STORE_URL')}",
-    aws_access_key_id=os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-    aws_secret_access_key=os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin"),
-    region_name='us-east-1',
-    # Skip verification for local or custom S3 implementations
-    verify=False,
-    # Set to path style for compatibility with non-AWS S3 implementations
-    config=boto3.session.Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-)
-
-# Init Ray connection
-RAY_RETRY_INTERVAL_S = os.environ.get("RAY_RETRY_INTERVAL_S", 5)
-
-def connect_to_ray():
-    while True:
-        try:
-            if not ray.is_initialized():
-                ray.shutdown()
-                serve.context._set_global_client(None)
-                ray.init(logging_level="error")
-                logger.info("Connected to Ray cluster.")
-        except Exception as e:
-            logger.error(f"Failed to connect to Ray cluster: {e}")
-            
-        time.sleep(RAY_RETRY_INTERVAL_S)
-        
-        
-# Start the background thread
-ray_watchdog = threading.Thread(target=connect_to_ray, daemon=True)
-ray_watchdog.start()
+ObjectStoreProvider.connect()
 
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-api_key_header = APIKeyHeader(name="ndif-api-key", auto_error=False)
-
 
 @app.post("/request")
 async def request(
-    raw_request: Request, api_key: str = Security(api_key_header)
+    raw_request: Request
 ) -> BackendResponseModel:
     """Endpoint to submit request.
 
@@ -122,43 +82,65 @@ async def request(
         BackendResponseModel: reponse to the user request.
     """
 
-    # extract the request data
-    
-    request: BackendRequestModel = BackendRequestModel.from_request(
-        raw_request, api_key
-    )
-
     # process the request
     try:
+        
+        request: BackendRequestModel = BackendRequestModel.from_request(
+            raw_request
+        )
 
-        TransportLatencyMetric.update(request)
+        user_python_version = raw_request.headers.get("python-version", '')
+        user_nnsight_version = raw_request.headers.get("nnsight-version", '')
+        
+        verify_python_version(user_python_version)
+        verify_nnsight_version(user_nnsight_version)
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting approval.",
+            description="Your job has been received and is waiting to be queued.",
             logger=logger,
         )
+                
+        if not response.blocking:
+            response.save(ObjectStoreProvider.object_store)
+
+        NetworkStatusMetric.update(request, raw_request)
 
         # authenticate api key
-        api_key_auth(raw_request, request)
+        api_key_auth(request)
         
-        request.graph = await request.graph
-        request.graph = ray.put(request.graph)
+        try:
+            request.request = await request.request
+    
+            logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
+            queue_response = requests.post(
+                f"http://{os.environ.get('QUEUE_URL')}/queue",
+                data=pickle.dumps(request),
+            )
 
-        # Send to request workers waiting to process requests on the "request" queue.
-        # Forget as we don't care about the response.
-        serve.get_app_handle("Request").remote(request)
-
-        # Back up request object by default (to be deleted on successful completion)
-        # request = request.model_copy()
-        # request.object = object
-        # request.save(object_store)
+            queue_response.raise_for_status()
+            logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
+        except Exception as e:
+            # Check if it's an HTTPError and if it's a 503
+            error_message = str(e)
+            status_code = None
+            if hasattr(e, "response") and e.response is not None:
+                status_code = getattr(e.response, "status_code", None)
+            if status_code == 503:
+                description = (
+                    "Queue service is not ready yet (waiting to connect to the ray backend). "
+                    "Please try again in a bit."
+                )
+            else:
+                description = "Failed to submit request to queue endpoint."
+            logger.error(f"{description} Exception: {error_message}")
+            response = request.create_response(
+                status=ResponseModel.JobStatus.ERROR,
+                description=description,
+                logger=logger,
+            )
     except Exception as exception:
-
-        if 'ray ' in str(exception).lower():
-            description = "Issue with Ray. NDIF compute backend must be down :("
-        else:
-            description = f"{traceback.format_exc()}\n{str(exception)}"
+        description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
         response = request.create_response(
@@ -167,12 +149,36 @@ async def request(
             logger=logger,
         )
 
-    if not response.blocking:
-
-        response.save(object_store)
-
     # Return response.
     return response
+
+
+@app.delete("/request/{request_id}")
+async def delete_request(request_id: str):
+    """Delete a submitted request, provided it is either queued or running"""
+    try:
+        endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
+        response = requests.delete(endpoint)
+        response.raise_for_status()
+        return {"message": f"Request {request_id} successfully submitted for deletion!"}
+    except requests.exceptions.HTTPError as e:
+        # Handle HTTP errors from the queue service
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+        elif e.response.status_code == 500:
+            # Try to extract the error message from the queue service
+            try:
+                error_detail = e.response.json().get('detail', str(e))
+            except:
+                error_detail = str(e)
+            raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
+        else:
+            raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except requests.exceptions.RequestException as e:
+        # Handle connection errors, timeouts, etc.
+        raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
 
 
 @sm.on("connect")
@@ -189,6 +195,14 @@ async def connect(session_id: str, environ: Dict):
 async def blocking_response(session_id: str, client_session_id: str, data: Any):
 
     await sm.emit("blocking_response", data=data, to=client_session_id)
+
+
+@sm.on("stream")
+async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: str):
+    
+    await sm.enter_room(session_id, job_id)
+
+    await blocking_response(session_id, client_session_id, data)
 
 
 @sm.on("stream_upload")
@@ -209,7 +223,7 @@ async def response(id: str) -> BackendResponseModel:
     """
 
     # Load response from client given id.
-    return BackendResponseModel.load(object_store, id)
+    return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
 
 
 @app.get("/result/{id}")
@@ -227,7 +241,7 @@ async def result(id: str) -> BackendResultModel:
     """
 
     # Get cursor to bytes stored in data backend.
-    object, content_length = BackendResultModel.load(object_store, id, stream=True)
+    object, content_length = BackendResultModel.load(ObjectStoreProvider.object_store, id, stream=True)
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -244,9 +258,9 @@ async def result(id: str) -> BackendResultModel:
         finally:
             object.close()
 
-            BackendResultModel.delete(object_store, id)
-            BackendResponseModel.delete(object_store, id)
-            BackendRequestModel.delete(object_store, id)
+            BackendResultModel.delete(ObjectStoreProvider.object_store, id)
+            BackendResponseModel.delete(ObjectStoreProvider.object_store, id)
+            BackendRequestModel.delete(ObjectStoreProvider.object_store, id)
 
     return StreamingResponse(
         content=stream(),
@@ -258,49 +272,18 @@ async def result(id: str) -> BackendResultModel:
 @app.get("/ping", status_code=200)
 async def ping():
     """Endpoint to check if the server is online.
-
-    Returns:
-        _type_: _description_
     """
     return "pong"
 
 
-@app.get("/stats", status_code=200)
-@cache(expire=600)
+@app.get("/status", status_code=200)
+@cache(expire=60)
 async def status():
+    return requests.get(
+        f"http://{os.environ.get('QUEUE_URL')}/status",
+    ).json()
 
-    response = {}
-
-    status = serve.status()
-
-    model_configurations = await serve.get_app_handle(
-        "Controller"
-    ).get_model_configurations.remote()
-
-    for application_name, application in status.applications.items():
-
-        if application_name.startswith("Model"):
-
-            deployment = application.deployments["ModelDeployment"]
-
-            num_running_replicas = 0
-
-            for replica_status in deployment.replica_states:
-
-                if replica_status == "RUNNING":
-
-                    num_running_replicas += 1
-
-            if num_running_replicas > 0:
-
-                config = model_configurations[application_name]
-
-                response[application_name] = {
-                    "num_running_replicas": num_running_replicas,
-                    **config,
-                }
-
-    return response
+    
 
 
 if __name__ == "__main__":

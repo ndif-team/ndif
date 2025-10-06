@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import uuid
 import time
-from typing import TYPE_CHECKING, ClassVar, Optional, Union, Coroutine
+from typing import TYPE_CHECKING, ClassVar, Coroutine, Optional, Union
 
 import ray
 from fastapi import Request
@@ -13,8 +12,8 @@ from typing_extensions import Self
 from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
-from nnsight.tracing.graph import Graph
 
+from ..types import API_KEY, REQUEST_ID, SESSION_ID, MODEL_KEY
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
@@ -41,45 +40,48 @@ class BackendRequestModel(ObjectStorageMixin):
     _bucket_name: ClassVar[str] = "serialized-requests"
     _file_extension: ClassVar[str] = "json"
 
-    graph: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
+    last_status: Optional[ResponseModel.JobStatus] = None
+    last_status_time: Optional[float] = None
 
-    model_key: str
-    session_id: Optional[str] = None
-    format: str
-    zlib: bool
+    request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
-    id: str
-        
-    sent: Optional[float] = None
+    model_key: Optional[MODEL_KEY] = None
+    session_id: Optional[SESSION_ID] = None
+    zlib: Optional[bool] = True
+    api_key: Optional[API_KEY] = ""
+    callback: Optional[str] = ''
+    hotswapping: Optional[bool] = False
+    id: REQUEST_ID
 
-    api_key: Optional[str] = ''
+    def deserialize(self, model: NNsight) -> RequestModel:
 
-    def deserialize(self, model: NNsight) -> Graph:
+        request = self.request
 
-        graph = self.graph
+        if isinstance(self.request, ray.ObjectRef):
 
-        if isinstance(self.graph, ray.ObjectRef):
+            request = ray.get(request)
 
-            graph = ray.get(graph)
-
-        return RequestModel.deserialize(model, graph, "json", self.zlib)
+        return RequestModel.deserialize(model, request, self.zlib)
 
     @classmethod
-    def from_request(
-        cls, request: Request, api_key: str
-    ) -> Self:
+    def from_request(cls, request: Request) -> Self:
 
         headers = request.headers
+        
+        sent = headers.get("ndif-timestamp", None)
+        
+        if sent is not None:
+            sent = float(sent)
 
         return BackendRequestModel(
-            graph=request.body(),
-            model_key=headers["model_key"],
-            session_id=headers.get("session_id", None),
-            format=headers["format"],
-            zlib=headers["zlib"],
-            id=str(uuid.uuid4()),
-            sent=float(headers.get("sent-timestamp", None)),
-            api_key=api_key,
+            id=REQUEST_ID(request.headers.get("ndif-request_id")),
+            request=request.body(),
+            model_key=MODEL_KEY(headers.get("nnsight-model-key")),
+            session_id=SESSION_ID(headers.get("ndif-session_id")) if headers.get("ndif-session_id") else None,
+            zlib=headers.get("nnsight-zlib", True),
+            last_status_time=sent,
+            api_key=API_KEY(headers.get("ndif-api-key")),
+            callback=headers.get("ndif-callback", ""),
         )
 
     def create_response(
@@ -92,31 +94,39 @@ class BackendRequestModel(ObjectStorageMixin):
         """Generates a BackendResponseModel given a change in status to an ongoing request."""
 
         log_msg = f"{self.id} - {status.name}: {description}"
-        
+
         logging_level = "info"
 
         if status == ResponseModel.JobStatus.ERROR:
             logging_level = "exception"
         elif status == ResponseModel.JobStatus.NNSIGHT_ERROR:
             logging_level = "exception"
-            
 
-        response = (
-            BackendResponseModel(
-                id=self.id,
-                session_id=self.session_id,
-                status=status,
-                description=description,
-                data=data,
-            )
-            .backend_log(
-                logger=logger,
-                message=log_msg,
-                level=logging_level,
-            )
-            .update_metric(
+        response = BackendResponseModel(
+            id=self.id,
+            session_id=self.session_id,
+            status=status,
+            description=description,
+            data=data,
+            callback=self.callback,
+        ).backend_log(
+            logger=logger,
+            message=log_msg,
+            level=logging_level,
+        )
+        
+        logger.info(f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}")
+
+        if (
+            status != self.last_status
+            and status != ResponseModel.JobStatus.LOG
+        ):
+            logger.info(f"Updating last status: {status}")
+            self.last_status = status
+            
+            response.update_metric(
                 self,
             )
-        )
+            
 
         return response

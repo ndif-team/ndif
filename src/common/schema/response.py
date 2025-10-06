@@ -1,25 +1,32 @@
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 import requests
-import socketio
-import boto3
 from pydantic import field_serializer
 from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusMetric
+from ..metrics import RequestStatusTimeMetric
+from ..providers.mailgun import MailgunProvider
+from ..providers.objectstore import ObjectStoreProvider
+from ..providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
     from . import BackendRequestModel
-
+    
+def is_email(s):
+    pattern = r'^[\w\.-]+@[\w\.-]+\.\w{2,}$'
+    return re.match(pattern, s) is not None
 
 class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
     _bucket_name: ClassVar[str] = "responses"
+    
+    callback: Optional[str] = ''
 
     def __str__(self) -> str:
         return f"{self.id} - {self.status.name}: {self.description}"
@@ -28,28 +35,27 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def blocking(self) -> bool:
         return self.session_id is not None
 
-    def respond(self, sio: socketio.SimpleClient, object_store: boto3.client) -> ResponseModel:
+    def respond(self) -> ResponseModel:
+
         if self.blocking:
-
-            fn = sio.client.emit
-
-            if (
-                self.status == ResponseModel.JobStatus.COMPLETED
-                or self.status == ResponseModel.JobStatus.ERROR
-                or self.status == ResponseModel.JobStatus.NNSIGHT_ERROR
-            ):
-
-                fn = sio.client.call
-
-            fn("blocking_response", data=(self.session_id, self.pickle()))
+            # Emit to socket manager - it will forward to the client (i.e. the user)
+            SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
         else:
-            self.save(object_store)
+            if self.callback != '':
+                if is_email(self.callback):
+                    if MailgunProvider.connected():
+                        MailgunProvider.send_email(self.callback, f"NDIF Update For Job ID: {self.id}", self.model_dump_json(exclude_none=True, exclude_unset=True, exclude_defaults=True, exclude=["value"]))
+                else:
+                    callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
+                    requests.get(callback_url)
+            self.save(ObjectStoreProvider.object_store)
 
         return self
 
     @field_serializer("status")
     def sstatus(self, value, _info):
         return value.value
+
     def update_metric(
         self,
         request: "BackendRequestModel",
@@ -67,6 +73,6 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             Self.
         """
 
-        RequestStatusMetric.update(request, self)
+        RequestStatusTimeMetric.update(request, self)
 
         return self
