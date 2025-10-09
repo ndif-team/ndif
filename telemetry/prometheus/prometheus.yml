@@ -9,8 +9,9 @@ scrape_configs:
   - job_name: 'combined_metrics' # Merges metrics from FastAPI and Ray together (needed for Grafana to group metrics from a single request together).
     static_configs:
       - targets: 
-        - localhost:5000  # FastAPI - Prod
-        - localhost:5001 # FastAPI - Dev
+        - localhost:5001 # FastAPI (API)
+        - localhost:6001 # FastAPI (Queue)
+        - localhost:9121 # Redis exporter
     file_sd_configs:
       - files:
         - '/tmp/ray/prom_metrics_service_discovery.json' # Contains dynamically updated list of ports & IP addresses of all the Ray nodes.

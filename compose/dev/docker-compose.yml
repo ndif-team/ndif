@@ -4,6 +4,14 @@ services:
     ports:
       - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
+  redis_exporter:
+    image: bitnami/redis-exporter
+    network_mode: "host"
+    environment:
+      - REDIS_ADDR=redis://localhost:${DEV_BROKER_PORT}
+    depends_on:
+      - message_broker
+
   minio:
     image: minio/minio:${MINIO_VERSION}
     command: server /data
