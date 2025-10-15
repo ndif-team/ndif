@@ -43,12 +43,16 @@ class _ControllerDeployment:
         self.model_cache_percentage = model_cache_percentage
         self.runtime_context = ray.get_runtime_context()
         self.replica_context = serve.get_replica_context()
-
-        self.ray_dashboard_url = (
-            f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
-        )
-
         self.logger = set_logger("Controller")
+
+        if os.getenv("RAY_DASHBOARD_URL"):
+            self.ray_dashboard_url = os.getenv("RAY_DASHBOARD_URL")
+        else:   
+            self.logger.warning("RAY_DASHBOARD_URL is not set, using default dashboard URL")
+            self.ray_dashboard_url = (
+                f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
+            )
+
 
         self.client = ServeSubmissionClient(self.ray_dashboard_url)
 
