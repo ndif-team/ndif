@@ -1,25 +1,20 @@
+from functools import lru_cache
 import os
 from typing import TYPE_CHECKING
 import psycopg2
 from typing import Optional
 
 from fastapi import HTTPException
-from fastapi.responses import JSONResponse
-from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_400_BAD_REQUEST
+from starlette.status import HTTP_401_UNAUTHORIZED
 
 import logging
-from .metrics import NetworkStatusMetric
 from .schema import BackendRequestModel
-from .types import API_KEY, MODEL_KEY, TIER
+from .types import API_KEY, TIER
 
 if TYPE_CHECKING:
-    from fastapi import Request
-
     from .schema import BackendRequestModel
 
 logger = logging.getLogger("ndif")
-
-# TODO: Make this be derived from a base class
 
 class AccountsDB:
     """Database class for accounts"""
@@ -38,6 +33,7 @@ class AccountsDB:
         self.cur.close()
         self.conn.close()
 
+    @lru_cache(maxsize=1000)
     def api_key_exists(self, key_id: API_KEY) -> bool:
         """Check if a key exists"""
         try:
@@ -47,36 +43,6 @@ class AccountsDB:
                 return result[0] if result else False
         except Exception as e:
             logger.error(f"Error checking if key exists: {e}")
-            self.conn.rollback()
-            return False
-
-    def model_id_from_key(self, key_id: MODEL_KEY) -> Optional[str]:
-        """Get the model ID from a key ID"""
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute("SELECT model_id FROM models WHERE model_key = %s", (key_id,))
-                result = cur.fetchone()
-                return result[0] if result else None
-        except Exception as e:
-            logger.error(f"Error getting model ID from key ID: {e}")
-            self.conn.rollback()
-            return None
-
-    def key_has_access_to_model(self, key_id: API_KEY, model_id: str) -> bool:
-        """Check if a key has access to a model"""
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute("""
-                SELECT EXISTS(
-                    SELECT 1 FROM key_tier_assignments
-                    JOIN model_tier_assignments ON key_tier_assignments.tier_id = model_tier_assignments.tier_id
-                    WHERE key_tier_assignments.key_id = %s AND model_tier_assignments.model_id = %s
-                )
-                """, (key_id, model_id))
-                result = cur.fetchone()
-                return result[0] if result else False
-        except Exception as e:
-            logger.error(f"Error checking if key has access to model: {e}")
             self.conn.rollback()
             return False
 
@@ -138,9 +104,6 @@ def api_key_auth(
         request.hotswapping = True
         return
 
-    # TODO: There should be some form of caching here
-    # TODO: I should reintroduce the user email check here (unless we choose not to migrate keys which are missing an email)        
-    
     # Check if the API key exists and is valid
     if not api_key_store.api_key_exists(request.api_key):
         raise HTTPException(
@@ -150,17 +113,3 @@ def api_key_auth(
 
     if api_key_store.key_has_hotswapping_access(request.api_key):
         request.hotswapping = True
-        
-    model_key = request.model_key.lower()
-    # Get the model ID from the API key
-    model_id = api_key_store.model_id_from_key(model_key)
-    if not model_id:
-        # Let them have access by default (to support future usecase of dynamic model loading)
-        return
-
-    # Check if the model has access to the API key
-    if not api_key_store.key_has_access_to_model(request.api_key, model_id):
-        raise HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED,
-            detail=f"API key does not have authorization to access the requested model: {model_key}.",
-        )
