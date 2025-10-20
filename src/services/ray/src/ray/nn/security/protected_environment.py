@@ -80,6 +80,9 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="math", strict=False),
     WhitelistedModule(name="einops", strict=False),
     WhitelistedModule(name="urllib3", strict=False),
+    WhitelistedModule(name="typing", strict=False),
+    WhitelistedModule(name="_operator", strict=True),
+    WhitelistedModule(name="operator", strict=True),
 ]
 
 # Modules allowed during deserialization
