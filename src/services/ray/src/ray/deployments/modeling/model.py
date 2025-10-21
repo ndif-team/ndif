@@ -76,6 +76,10 @@ class ModelDeployment:
                 ray.get(actor.from_cache.remote(self.cuda_devices, self.app))
             except Exception as e:
                 self.logger.error(f"Error getting actor {self.model_key} from cache: {e}")
+                
+    def ready(self):
+        
+        return ray.get_runtime_context().namespace
     
     def create_model_actor(self) -> None:
         """Create a new model actor with specified configuration.
@@ -97,19 +101,6 @@ class ModelDeployment:
         
         return actor
     
-    async def __call__(self, request: BackendRequestModel) -> Any:
-        """Handle incoming requests by delegating to the model actor.
-        
-        Args:
-            request: The incoming request to process
-            
-        Returns:
-            The result from the model actor
-        """
-        
-        actor = ray.get_actor(f"ModelActor:{self.model_key}")
-        
-        return await actor.__call__.remote(request)
     
     async def cancel(self) -> None:
         """Cancel ongoing operations on the model actor."""

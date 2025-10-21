@@ -45,7 +45,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
-    model_key: Optional[MODEL_KEY] = None
+    model_key: Optional[str] = None
     session_id: Optional[SESSION_ID] = None
     zlib: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
