@@ -27,6 +27,7 @@ logger = logging.getLogger("ndif")
 
 class ProcessorStatus(Enum):
     """States for the per-model processor lifecycle."""
+
     UNINITIALIZED = "uninitialized"
     PROVISIONING = "provisioning"
     DEPLOYING = "deploying"
@@ -37,6 +38,7 @@ class ProcessorStatus(Enum):
 @dataclass
 class Submission:
     """Tracks an in-flight submission and its response future."""
+
     request: BackendRequestModel
     execution_future: DeploymentResponse
 
@@ -91,7 +93,7 @@ class Processor:
         # READY: The model is ready to accept requests.
         # (I.e. the model is loaded and the deployment is ready with no active requests running.)
         elif self.status == ProcessorStatus.READY:
-            
+
             # If there are requests in the queue, execute the next one.
             if len(self.queue) > 0:
                 self.execute()
@@ -115,7 +117,7 @@ class Processor:
                 request,
                 result,
             )
-        # If there is an error submitting the request, respond to the user with an error.    
+        # If there is an error submitting the request, respond to the user with an error.
         except:
 
             request.create_response(
@@ -138,7 +140,7 @@ class Processor:
                 logger,
                 "Your job has been sent to the model deployment.",
             ).respond()
-            
+
             # Update the other users in the queue with their new position in the queue.
             self.reply(force=True)
 
@@ -174,7 +176,7 @@ class Processor:
         except TimeoutError:
             # If the submission is still in progress, continue polling.
             return
-    
+
         # If there is an error checking the status of the in-flight submission, respond to the user with an error.
         except:
 
@@ -188,7 +190,7 @@ class Processor:
                 logger,
                 f"{traceback.format_exc()}\nIssue checking job status.",
             ).respond()
-            
+
             # Re-raise the error to be handled by the coordinator to check for connection issues.
             raise
 
@@ -198,22 +200,27 @@ class Processor:
             self.submission = None
             self.step()
 
-    def reply(self, description: str | None = None, force: bool = False):
+    def reply(
+        self,
+        description: str | None = None,
+        force: bool = False,
+        status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
+    ):
         """
         Reply to all users with a message.
 
         Args:
-            description (str | None, optional): The message to send to users. 
+            description (str | None, optional): The message to send to users.
                 If None, a default queue position message is sent.
-            force (bool, optional): If True, force sending replies to all users 
+            force (bool, optional): If True, force sending replies to all users
                 regardless of last reply time. Defaults to False.
         """
-        
+
         if force or time.time() - self.last_reply_time > self.reply_freq_s:
 
             for i, request in enumerate(self.queue):
                 request.create_response(
-                    BackendResponseModel.JobStatus.QUEUED,
+                    status,
                     logger,
                     (
                         description
@@ -230,6 +237,6 @@ class Processor:
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
-        self.reply(message, force=True)
+        self.reply(message, force=True, status=BackendResponseModel.JobStatus.ERROR)
 
         self.queue.clear()

@@ -110,30 +110,11 @@ async def request(
         # authenticate api key
         api_key_auth(request)
         
-        try:
-            request.request = await request.request
-            
-            await redis_client.lpush("queue", pickle.dumps(request))
-                    
-        except Exception as e:
-            # Check if it's an HTTPError and if it's a 503
-            error_message = str(e)
-            status_code = None
-            if hasattr(e, "response") and e.response is not None:
-                status_code = getattr(e.response, "status_code", None)
-            if status_code == 503:
-                description = (
-                    "Queue service is not ready yet (waiting to connect to the ray backend). "
-                    "Please try again in a bit."
-                )
-            else:
-                description = "Failed to submit request to queue endpoint."
-            logger.error(f"{description} Exception: {error_message}")
-            response = request.create_response(
-                status=ResponseModel.JobStatus.ERROR,
-                description=description,
-                logger=logger,
-            )
+        request.request = await request.request
+        
+        await redis_client.lpush("queue", pickle.dumps(request))
+                
+
     except Exception as exception:
         description = f"{traceback.format_exc()}\n{str(exception)}"
 
@@ -148,34 +129,34 @@ async def request(
     return response
 
 
-@app.delete("/request/{request_id}")
-async def delete_request(request_id: str):
-    """Delete a submitted request, provided it is either queued or running"""
-    try:
-        endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
-        async with httpx.AsyncClient() as client:
-            response = await client.delete(endpoint)
-            response.raise_for_status()
-            return {"message": f"Request {request_id} successfully submitted for deletion!"}
-    except httpx.HTTPStatusError as e:
-        # Handle HTTP errors from the queue service
-        if e.response is not None and e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
-        elif e.response is not None and e.response.status_code == 500:
-            # Try to extract the error message from the queue service
-            try:
-                error_detail = e.response.json().get('detail', str(e))
-            except:
-                error_detail = str(e)
-            raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
-        else:
-            status = e.response.status_code if e.response is not None else 500
-            raise HTTPException(status_code=status, detail=str(e))
-    except httpx.RequestError as e:
-        # Handle connection errors, timeouts, etc.
-        raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+# @app.delete("/request/{request_id}")
+# async def delete_request(request_id: str):
+#     """Delete a submitted request, provided it is either queued or running"""
+#     try:
+#         endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
+#         async with httpx.AsyncClient() as client:
+#             response = await client.delete(endpoint)
+#             response.raise_for_status()
+#             return {"message": f"Request {request_id} successfully submitted for deletion!"}
+#     except httpx.HTTPStatusError as e:
+#         # Handle HTTP errors from the queue service
+#         if e.response is not None and e.response.status_code == 404:
+#             raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+#         elif e.response is not None and e.response.status_code == 500:
+#             # Try to extract the error message from the queue service
+#             try:
+#                 error_detail = e.response.json().get('detail', str(e))
+#             except:
+#                 error_detail = str(e)
+#             raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
+#         else:
+#             status = e.response.status_code if e.response is not None else 500
+#             raise HTTPException(status_code=status, detail=str(e))
+#     except httpx.RequestError as e:
+#         # Handle connection errors, timeouts, etc.
+#         raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
 
 
 @sm.on("connect")
