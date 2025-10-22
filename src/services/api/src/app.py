@@ -1,21 +1,19 @@
 import os
 import pickle
 import traceback
-from contextlib import asynccontextmanager
 from typing import Any, Dict
 
+import redis
 import socketio
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.inmemory import InMemoryBackend
+
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from prometheus_fastapi_instrumentator import Instrumentator
-import redis
 from nnsight.schema.response import ResponseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from .logging import set_logger
 
@@ -26,17 +24,15 @@ from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import (BackendRequestModel, BackendResponseModel,
                      BackendResultModel)
-from .util import verify_python_version, verify_nnsight_version
+from .util import verify_nnsight_version, verify_python_version
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    FastAPICache.init(InMemoryBackend())
-    yield
+
 
 
 # Init FastAPI app
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
+
 # Add middleware for CORS
 app.add_middleware(
     CORSMiddleware,
@@ -255,7 +251,6 @@ async def ping():
 
 
 @app.get("/status", status_code=200)
-@cache(expire=60)
 async def status():
     
     id = str(os.getpid())

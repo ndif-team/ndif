@@ -51,7 +51,7 @@ class Coordinator:
         self.status_future: Future = None
         self.status_cache = None
         self.last_status_time = 0
-        self.status_cache_freq_s = 60
+        self.status_cache_freq_s = int(os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120"))
 
         self.logger = set_logger("coordinator")
 

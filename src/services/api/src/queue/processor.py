@@ -9,6 +9,7 @@ requests targeting that model:
 """
 
 import logging
+import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -57,7 +58,9 @@ class Processor:
         self.handle: Handle = None
         self.submission: Submission = None
 
-        self.reply_freq_s = 3
+        self.reply_freq_s = int(
+            os.environ.get("COORDINATOR_PROCESSOR_REPLY_FREQ_S", "3")
+        )
 
         self.last_reply_time: float = 0
 

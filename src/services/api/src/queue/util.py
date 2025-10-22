@@ -1,7 +1,10 @@
 
 
 def patch():
-    
+    # We patch the _async_send method to avoid a nasty deadlock bug in Ray.
+    # If a seperate thread derefernces a ClientObjectRef during an async send, both are vying for the same lock.
+    # Therefore we prevent deleting the ClientObjectRef until the async send is complete.
+    # Should probably just `delay` the deletion until the async send is complete, not prevent it entirely.
     from ray.util.client import dataclient, common
     
     original_async_send = dataclient.DataClient._async_send
