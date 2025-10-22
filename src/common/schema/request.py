@@ -13,7 +13,7 @@ from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
-from ..types import API_KEY, REQUEST_ID, SESSION_ID, MODEL_KEY
+from ..types import API_KEY, REQUEST_ID
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
@@ -46,7 +46,7 @@ class BackendRequestModel(ObjectStorageMixin):
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
     model_key: Optional[str] = None
-    session_id: Optional[SESSION_ID] = None
+    session_id: Optional[str] = None
     zlib: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ''
@@ -76,8 +76,8 @@ class BackendRequestModel(ObjectStorageMixin):
         return BackendRequestModel(
             id=REQUEST_ID(request.headers.get("ndif-request_id")),
             request=request.body(),
-            model_key=headers.get("nnsight-model-key") if headers.get("nnsight-model-key") else None,
-            session_id=SESSION_ID(headers.get("ndif-session_id")) if headers.get("ndif-session_id") else None,
+            model_key=headers.get("nnsight-model-key", None),
+            session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
             last_status_time=sent,
             api_key=API_KEY(headers.get("ndif-api-key")),
