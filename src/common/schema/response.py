@@ -48,7 +48,8 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
                 else:
                     callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
                     requests.get(callback_url)
-            self.save(ObjectStoreProvider.object_store)
+            if self.status != ResponseModel.JobStatus.LOG:
+                self.save(ObjectStoreProvider.object_store)
 
         return self
 
