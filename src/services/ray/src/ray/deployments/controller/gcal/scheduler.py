@@ -256,10 +256,32 @@ class SchedulingActor:
 
             # Get the event title
             event_title = event.get("summary", model_key)
+            
+            if model_key in schedule:
+                
+                # If the event's start time minus 10 seconds is before the stored end time, update the end time.
+                existing_entry = schedule[model_key]
+                if (start_time - timedelta(seconds=10)) <= existing_entry["end_time"]:
+                    # Combine: update the end_time to the later end_time
+                    if end_time > existing_entry["end_time"]:
+                        existing_entry["end_time"] = end_time
+                    # Optionally, you may want to update the title if it is more descriptive
+                    if event_title != existing_entry["title"]:
+                        existing_entry["title"] = event_title
+                    schedule[model_key] = existing_entry
+                else:
+                    # No overlap, treat as a new entry
+                    schedule[model_key] = {
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "title": event_title,
+                    }
+                
+            else:
 
-            schedule[model_key] = {
-                "start_time": start_time,
-                "end_time": end_time,
-                "title": event_title,
-            }
+                schedule[model_key] = {
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "title": event_title,
+                }
         return schedule
