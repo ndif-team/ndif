@@ -55,11 +55,9 @@ class Processor:
         self.handle: Handle = None
         self.submission: Submission = None
 
-        self.check_freq_s = 1
         self.reply_freq_s = 3
 
         self.last_reply_time: float = 0
-        self.last_check_time: float = 0
 
     def enqueue(self, request: BackendRequestModel):
         """Add a request to the local queue and immediately update queue position for the user."""
@@ -147,14 +145,6 @@ class Processor:
     def check_deployment(self):
         """Poll deployment readiness and transition to READY when available."""
 
-        message = "Model Deploying..."
-
-        # Potentially update users that the model is still deploying.
-        if time.time() - self.last_check_time < self.check_freq_s:
-            self.last_check_time = time.time()
-            self.reply(message)
-            return
-
         # If the handle is not yet created, create it.
         if self.handle is None:
 
@@ -163,7 +153,7 @@ class Processor:
             # If there is a RayServeException, its okay and means the deployment stub hasn't been created yet.
             # Update the users that the model is still deploying.
             except serve.exceptions.RayServeException as e:
-                self.reply(message)
+                self.reply("Model Deploying...")
                 return
 
         # If the deployment is finished loading, transition to READY.
@@ -173,14 +163,10 @@ class Processor:
 
         # If the deployment is not finished loading, update the users that the model is still deploying.
         else:
-            self.reply(message)
+            self.reply("Model Deploying...")
 
     def check_submission(self):
         """Poll the in-flight submission and transition to READY when done."""
-
-        if time.time() - self.last_check_time < self.check_freq_s:
-            self.last_check_time = time.time()
-            return
 
         try:
             # Check the status of the in-flight submission.
@@ -223,7 +209,7 @@ class Processor:
                 regardless of last reply time. Defaults to False.
         """
         
-        if force or time.time() - self.last_reply_time > 3:
+        if force or time.time() - self.last_reply_time > self.reply_freq_s:
 
             for i, request in enumerate(self.queue):
                 request.create_response(
