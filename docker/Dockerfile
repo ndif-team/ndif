@@ -20,7 +20,7 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
     && conda config --set always_yes yes --set changeps1 no \
     && conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main \
     && conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r \
-    && conda env create --name service -f /tmp/environment.yml \
+    && conda env create --quiet --name service -f /tmp/environment.yml \
     && conda clean -afy \
     && rm /tmp/environment.yml
 
@@ -31,7 +31,7 @@ FROM ndif_base
 
 ARG NAME
 COPY src/services/${NAME}/environment.yml .
-RUN conda env update --name service -f environment.yml \
+RUN conda env update --quiet --name service -f environment.yml \
     && conda clean -afy \
     && find /opt/conda -type d -name "__pycache__" -exec rm -rf {} + \
     && find /opt/conda -name "*.pyc" -delete \
