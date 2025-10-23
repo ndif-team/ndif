@@ -1,3 +1,6 @@
+FROM scratch AS src_context
+COPY src /src
+
 FROM astral/uv:python3.12-trixie-slim AS ndif_base
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -34,8 +37,12 @@ RUN uv pip install --system -r /tmp/requirements.in \
     && rm -rf /tmp/* \
     && rm -rf /root/.cache
 
-COPY ./src ./src
-COPY src/services/${NAME}/start.sh ./start.sh
+# --mount=type=bind` temporarily mounts content into a `RUN` command
+# **without adding it as a layer** to the image.
+# cp -L copies symlinks in: *dereferences* them so they are copied
+RUN --mount=type=bind,from=src_context,source=/src,target=/tmp/src \
+    cp -rL /tmp/src/services/${NAME}/src / && \
+    cp /tmp/src/services/${NAME}/start.sh ./start.sh
 
 SHELL ["/bin/bash", "-c"]
 CMD bash ./start.sh
