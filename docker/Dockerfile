@@ -30,10 +30,17 @@ ENV PATH=$CONDA_DIR/envs/service/bin:$PATH
 FROM ndif_base
 
 COPY src/services/api/environment.yml .
-RUN conda env update --quiet --name service -f environment.yml \
+RUN conda env update --name service -f environment.yml \
     && conda clean -afy \
     && find /opt/conda -type d -name "__pycache__" -exec rm -rf {} + \
-    && rm -rf /opt/conda/pkgs
+    && find /opt/conda -name "*.pyc" -delete \
+    && find /opt/conda -name "*.pyo" -delete \
+    && find /opt/conda -type d -name "tests" -exec rm -rf {} + \
+    && find /opt/conda -type d -name "test" -exec rm -rf {} + \
+    && find /opt/conda -name "*.a" -delete \
+    && rm -rf /opt/conda/pkgs \
+    && rm -rf /opt/conda/envs/service/conda-meta/history \
+    && rm -rf /tmp/*
 
 COPY ./src ./src
 COPY src/services/api/start.sh ./start.sh
