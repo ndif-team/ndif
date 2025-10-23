@@ -1,0 +1,51 @@
+name: Build Images
+on:
+  push:
+    branches:
+      - dev
+      - main
+      - ci-*
+permissions:
+  id-token: write
+jobs:
+  build_images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5.0.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Copy check into each service
+        run: |
+          cp docker/helpers/check_and_update_env.sh ./
+
+      - name: Build and push base image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: ndif_base
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }}
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }}
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }},mode=max
+
+      - name: Build and push API service image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/dev/api:${{ github.sha }}
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache-${{ hashFiles('src/services/api/environment.yml', 'src/services/base/environment.yml') }}
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache-${{ hashFiles('src/services/api/environment.yml', 'src/services/base/environment.yml') }},mode=max
