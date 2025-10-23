@@ -5,8 +5,14 @@ on:
       - dev
       - main
       - ci-*
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   id-token: write
+
 jobs:
   build_images:
     runs-on: ubuntu-latest
@@ -49,7 +55,9 @@ jobs:
           build-args: |
             NAME=api
           tags: ${{ steps.login-ecr.outputs.registry }}/dev/api:${{ github.sha }}
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
 
       - name: Build and push Queue service image
@@ -61,7 +69,9 @@ jobs:
           build-args: |
             NAME=queue
           tags: ${{ steps.login-ecr.outputs.registry }}/dev/queue:${{ github.sha }}
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache,mode=max
 
       - name: Build and push Ray service image
@@ -73,5 +83,7 @@ jobs:
           build-args: |
             NAME=ray
           tags: ${{ steps.login-ecr.outputs.registry }}/dev/ray:${{ github.sha }}
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
+          cache-from: |
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache,mode=max
