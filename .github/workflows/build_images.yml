@@ -36,9 +36,9 @@ jobs:
           file: docker/Dockerfile
           target: ndif_base
           push: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }}
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }}
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache-${{ hashFiles('src/services/base/environment.yml') }},mode=max
+          tags: ${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:${{ github.sha }}
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache,mode=max
 
       - name: Build and push API service image
         uses: docker/build-push-action@v5
@@ -47,5 +47,5 @@ jobs:
           file: docker/Dockerfile
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/dev/api:${{ github.sha }}
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache-${{ hashFiles('src/services/api/environment.yml', 'src/services/base/environment.yml') }}
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache-${{ hashFiles('src/services/api/environment.yml', 'src/services/base/environment.yml') }},mode=max
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
