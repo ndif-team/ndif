@@ -1,0 +1,12 @@
+nnsight
+ray[serve]==2.47.0
+python-slugify
+# Telemetry
+prometheus_client
+python-logging-loki
+# Database
+boto3
+influxdb-client
+# Google Cal Scheduling
+google-api-python-client
+google
