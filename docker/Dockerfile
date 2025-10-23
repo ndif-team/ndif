@@ -29,7 +29,8 @@ ENV PATH=$CONDA_DIR/envs/service/bin:$PATH
 
 FROM ndif_base
 
-COPY src/services/api/environment.yml .
+ARG NAME
+COPY src/services/${NAME}/environment.yml .
 RUN conda env update --name service -f environment.yml \
     && conda clean -afy \
     && find /opt/conda -type d -name "__pycache__" -exec rm -rf {} + \
@@ -43,7 +44,7 @@ RUN conda env update --name service -f environment.yml \
     && rm -rf /tmp/*
 
 COPY ./src ./src
-COPY src/services/api/start.sh ./start.sh
+COPY src/services/${NAME}/start.sh ./start.sh
 
 SHELL ["/bin/bash", "-c"]
 CMD source activate service && bash ./start.sh
