@@ -7,7 +7,7 @@ dependencies:
   - pip:
     - pip
     - setuptools
-    - nnsight
+    - nnsight==0.5.9
     # Telemetry
     - prometheus_client
     - python-logging-loki

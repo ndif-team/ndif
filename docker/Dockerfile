@@ -1,4 +1,6 @@
-FROM python:3.12-slim-trixie
+FROM python:3.12-slim-trixie AS ndif_base
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install base utilities in single layer with cleanup
 RUN apt-get update -y \
@@ -21,6 +23,20 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86
     && conda env create --name service -f /tmp/environment.yml \
     && conda clean -afy \
     && rm /tmp/environment.yml
-# Activate environment by default
+
 ENV CONDA_DEFAULT_ENV=service
 ENV PATH=$CONDA_DIR/envs/service/bin:$PATH
+
+FROM ndif_base
+
+COPY src/services/api/environment.yml .
+RUN conda env update --quiet --name service -f environment.yml \
+    && conda clean -afy \
+    && find /opt/conda -type d -name "__pycache__" -exec rm -rf {} + \
+    && rm -rf /opt/conda/pkgs
+
+COPY ./src ./src
+COPY src/services/api/start.sh ./start.sh
+
+SHELL ["/bin/bash", "-c"]
+CMD source activate service && bash ./start.sh
