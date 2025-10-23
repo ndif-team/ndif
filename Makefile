@@ -33,7 +33,7 @@ build_conda:
 build_service:
 	cp docker/helpers/check_and_update_env.sh ./
 	tar -hczvf src.tar.gz --directory=src/services/$(NAME) src
-	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service  . 
+	docker build --no-cache --build-arg NAME=$(NAME) --build-arg TAG=$(TAG) -t $(NAME):$(TAG) -f docker/dockerfile.service  .
 	rm src.tar.gz
 	rm check_and_update_env.sh
 
@@ -59,9 +59,9 @@ build_all_service:
 build_ci:
 	docker buildx build --file docker/Dockerfile --tag ndif_base:latest --target ndif_base .
 	cp docker/helpers/check_and_update_env.sh ./
-	docker buildx build --no-cache --build-arg NAME=api -t api:latest -f docker/Dockerfile .
-	docker buildx build --no-cache --build-arg NAME=queue -t queue:latest -f docker/Dockerfile .
-	docker buildx build --no-cache --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
+	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
+	docker buildx build --build-arg NAME=queue -t queue:latest -f docker/Dockerfile .
+	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
 	rm check_and_update_env.sh
 
 build:
