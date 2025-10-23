@@ -56,6 +56,14 @@ build_all_service:
 	make build_service NAME=queue
 	make build_service NAME=ray
 
+build_ci:
+	docker buildx build --file docker/Dockerfile --tag ndif_base:latest --target ndif_base .
+	cp docker/helpers/check_and_update_env.sh ./
+	docker buildx build --no-cache --build-arg NAME=api -t api:latest -f docker/Dockerfile .
+	docker buildx build --no-cache --build-arg NAME=queue -t queue:latest -f docker/Dockerfile .
+	docker buildx build --no-cache --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
+	rm check_and_update_env.sh
+
 build:
 	$(call set_env)
 	$(call check_env,$(ENV))
