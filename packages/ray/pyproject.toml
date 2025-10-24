@@ -1,0 +1,21 @@
+[project]
+name = "ndif_ray"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.40.58",
+    "google>=3.0.0",
+    "google-api-python-client>=2.185.0",
+    "influxdb-client>=1.49.0",
+    "nnsight>=0.5.9",
+    "prometheus-client>=0.23.1",
+    "python-logging-loki>=0.3.1",
+    "python-slugify>=8.0.4",
+    "ray[serve]==2.47.0",
+    "ndif_common"
+]
+
+[tool.uv.sources]
+ndif_common = { workspace = true }

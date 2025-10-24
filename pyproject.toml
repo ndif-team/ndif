@@ -1,0 +1,15 @@
+[project]
+name = "ndif"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "nnsight==0.5.9",
+    "prometheus-client>=0.23.1",
+    "python-logging-loki>=0.3.1",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = []
