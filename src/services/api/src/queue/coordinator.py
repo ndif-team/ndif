@@ -255,14 +255,16 @@ class Coordinator:
                 return
 
             else:
+                
+                status = pickle.dumps(result)
 
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
-                    self.redis_client.lpush(id, result)
+                    self.redis_client.lpush(id, status)
 
                 self.status_future = None
                 self.last_status_time = time.time()
-                self.status_cache = result
+                self.status_cache = status
 
         elif self.redis_client.llen("status") > 0:
 
