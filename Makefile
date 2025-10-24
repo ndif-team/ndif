@@ -5,7 +5,6 @@ N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc
 build:
 	docker buildx build --file docker/Dockerfile --tag ndif_base:latest --target ndif_base .
 	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
-	docker buildx build --build-arg NAME=queue -t queue:latest -f docker/Dockerfile .
 	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
 
 up:

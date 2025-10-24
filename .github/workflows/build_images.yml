@@ -56,20 +56,6 @@ jobs:
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
 
-      - name: Build and push Queue service image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          build-args: |
-            NAME=queue
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/queue:${{ github.sha }}
-          cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache,mode=max
-
       - name: Build and push Ray service image
         uses: docker/build-push-action@v5
         with:

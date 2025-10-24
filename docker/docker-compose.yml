@@ -60,26 +60,14 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
-      QUEUE_URL: ${HOST_IP}:${DEV_QUEUE_PORT}
-
-    
-  queue:
-    image: queue:${QUEUE_VERSION}
-    ports:
-      - ${DEV_QUEUE_PORT}:${QUEUE_INTERNAL_PORT}
-    environment:
-      OBJECT_STORE_URL: ${HOST_IP}:${DEV_MINIO_PORT}
-      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
-      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
-      API_URL: http://${HOST_IP}:${DEV_API_PORT}
-      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
-      RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
-      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
-      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
-      INFLUXDB_ORG: ${INFLUXDB_ORG}
-      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
-
+      API_URL: http://localhost:${API_INTERNAL_PORT}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}

@@ -10,7 +10,7 @@ ray start --head \
     --include-dashboard=true \
     --dashboard-host=$RAY_DASHBOARD_HOST \
     --dashboard-port=$RAY_DASHBOARD_INTERNAL_PORT \
-    --dashboard-grpc-port=$RAY_DASHBOARD_GRPC_PORT \
+    --dashboard-agent-grpc-port=$RAY_DASHBOARD_GRPC_PORT \
     --metrics-export-port=$RAY_SERVE_INTERNAL_PORT
  
 serve deploy src/ray/config/ray_config.yml
