@@ -7,6 +7,7 @@ from .types import API_KEY, TIER
 
 logger = logging.getLogger("ndif")
 
+DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
 
 class AccountsDB:
     """Database class for accounts"""
@@ -63,13 +64,13 @@ class AccountsDB:
             return False
 
 
-# Initialize the database connection
-host = os.environ.get("POSTGRES_HOST", "localhost")
-port = os.environ.get("POSTGRES_PORT", "5432")
-database = os.environ.get("POSTGRES_DB", "accounts")
-user = os.environ.get("POSTGRES_USER", "postgres")
-password = os.environ.get("POSTGRES_PASSWORD", "postgres")
-
 api_key_store = None
-if host is not None:
-    api_key_store = AccountsDB(host, port, database, user, password)
+if not DEV_MODE:
+    # Initialize the database connection
+    api_key_store = AccountsDB(
+        os.environ.get("POSTGRES_HOST"),
+        os.environ.get("POSTGRES_PORT"),
+        os.environ.get("POSTGRES_DB"),
+        os.environ.get("POSTGRES_USER"),
+        os.environ.get("POSTGRES_PASSWORD")
+    )

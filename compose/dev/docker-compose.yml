@@ -64,7 +64,12 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
       API_URL: http://localhost:${API_INTERNAL_PORT}
-      DEV_MODE: true # Add environment variables for postgres if setting to false (see compose/dev/.env)
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
