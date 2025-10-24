@@ -4,9 +4,9 @@ from typing import Any, Dict, List
 import os
 
 from ray import serve
-from common.providers.ray import RayProvider
-from common.schema import BackendRequestModel
-from common.types import MODEL_KEY
+from ndif_common.providers.ray import RayProvider
+from ndif_common.schema import BackendRequestModel
+from ndif_common.types import MODEL_KEY
 
 from .base import Coordinator
 from ..processing.request_processor import RequestProcessor

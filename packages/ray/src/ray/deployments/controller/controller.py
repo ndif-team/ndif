@@ -15,11 +15,11 @@ from ray.serve.schema import (
     ServeDeploySchema,
     ServeInstanceDetails,
 )
-from common.types import MODEL_KEY, RAY_APP_NAME, NODE_ID
-from common.logging.logger import set_logger
-from common.providers.objectstore import ObjectStoreProvider
-from common.providers.socketio import SioProvider
-from common.providers.mailgun import MailgunProvider
+from ndif_common.types import MODEL_KEY, RAY_APP_NAME, NODE_ID
+from ndif_common.logging.logger import set_logger
+from ndif_common.providers.objectstore import ObjectStoreProvider
+from ndif_common.providers.socketio import SioProvider
+from ndif_common.providers.mailgun import MailgunProvider
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel

@@ -8,11 +8,11 @@ from fastapi import HTTPException
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 import logging
-from common.schema import BackendRequestModel
-from common.types import API_KEY, TIER
+from ndif_common.schema import BackendRequestModel
+from ndif_common.types import API_KEY, TIER
 
 if TYPE_CHECKING:
-    from common.schema import BackendRequestModel
+    from ndif_common.schema import BackendRequestModel
 
 logger = logging.getLogger("ndif")
 

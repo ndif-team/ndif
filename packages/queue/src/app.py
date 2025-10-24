@@ -10,10 +10,10 @@ from ray import serve
 from nnsight.schema.response import ResponseModel
 
 from .coordination.request_coordinator import RequestCoordinator
-from common.logging import set_logger
-from common.providers.objectstore import ObjectStoreProvider
-from common.providers.socketio import SioProvider
-from common.schema import BackendRequestModel
+from ndif_common.logging import set_logger
+from ndif_common.providers.objectstore import ObjectStoreProvider
+from ndif_common.providers.socketio import SioProvider
+from ndif_common.schema import BackendRequestModel
 
 logger = set_logger("Queue")
 

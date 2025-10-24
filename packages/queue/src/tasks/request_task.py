@@ -2,8 +2,8 @@ import logging
 from typing import Optional
 from .status import TaskStatus
 from .base import Task
-from common.providers.ray import RayProvider
-from common.schema import BackendRequestModel
+from ndif_common.providers.ray import RayProvider
+from ndif_common.schema import BackendRequestModel
 from nnsight.schema.response import ResponseModel
 
 logger = logging.getLogger("ndif")

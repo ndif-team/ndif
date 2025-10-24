@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any, Dict
 import ray
 
-from common.types import MODEL_KEY
+from ndif_common.types import MODEL_KEY
 
 logger = logging.getLogger("ndif")
 

@@ -20,16 +20,20 @@ from transformers.modeling_utils import _get_device_map
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
-from common.logging import set_logger
-from common.metrics import (
+from ndif_common.logging import set_logger
+from ndif_common.metrics import (
     ExecutionTimeMetric,
     GPUMemMetric,
     ModelLoadTimeMetric,
     RequestResponseSizeMetric,
 )
-from common.providers.objectstore import ObjectStoreProvider
-from common.providers.socketio import SioProvider
-from common.schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ndif_common.providers.objectstore import ObjectStoreProvider
+from ndif_common.providers.socketio import SioProvider
+from ndif_common.schema import (
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_objects import protect_model

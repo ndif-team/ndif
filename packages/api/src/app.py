@@ -19,11 +19,15 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from nnsight.schema.response import ResponseModel
 
 from .auth import api_key_auth
-from common.metrics import NetworkStatusMetric
-from common.providers.objectstore import ObjectStoreProvider
-from common.schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ndif_common.metrics import NetworkStatusMetric
+from ndif_common.providers.objectstore import ObjectStoreProvider
+from ndif_common.schema import (
+    BackendRequestModel,
+    BackendResponseModel,
+    BackendResultModel,
+)
 from .util import verify_python_version, verify_nnsight_version
-from common.logging import set_logger
+from ndif_common.logging import set_logger
 
 logger = set_logger("API")
 

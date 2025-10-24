@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Set
 
 import ray
 
-from common.types import MODEL_KEY, NODE_ID
+from ndif_common.types import MODEL_KEY, NODE_ID
 from .deployment import Deployment, DeploymentLevel
 
 logger = logging.getLogger("ndif")

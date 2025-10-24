@@ -10,8 +10,8 @@ from typing import Any, Dict
 import ray
 from ray import serve
 
-from common.logging import set_logger
-from common.schema import BackendRequestModel
+from ndif_common.logging import set_logger
+from ndif_common.schema import BackendRequestModel
 from .base import BaseModelDeployment, BaseModelDeploymentArgs
 
 

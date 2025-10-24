@@ -10,9 +10,9 @@ from typing_extensions import Self
 from nnsight.schema.response import ResponseModel
 
 from ..metrics import RequestStatusTimeMetric
-from common.providers.mailgun import MailgunProvider
-from common.providers.objectstore import ObjectStoreProvider
-from common.providers.socketio import SioProvider
+from ndif_common.providers.mailgun import MailgunProvider
+from ndif_common.providers.objectstore import ObjectStoreProvider
+from ndif_common.providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:

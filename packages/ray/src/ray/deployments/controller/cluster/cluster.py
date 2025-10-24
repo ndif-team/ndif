@@ -9,7 +9,7 @@ from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
-from common.types import MODEL_KEY
+from ndif_common.types import MODEL_KEY
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, Node, Resources
 
