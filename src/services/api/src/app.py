@@ -1,43 +1,35 @@
 import os
 import pickle
 import traceback
-from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-import requests
+import redis
 import socketio
 import uvicorn
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.inmemory import InMemoryBackend
+
 from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from prometheus_fastapi_instrumentator import Instrumentator
-
 from nnsight.schema.response import ResponseModel
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from .logging import set_logger
 
 logger = set_logger("API")
 
-from .auth import api_key_auth
+from .dependencies import validate_request
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import (BackendRequestModel, BackendResponseModel,
                      BackendResultModel)
-from .util import verify_python_version, verify_nnsight_version
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    FastAPICache.init(InMemoryBackend())
-    yield
 
 
 # Init FastAPI app
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
+
 # Add middleware for CORS
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +46,7 @@ sm = SocketManager(
     app=app,
     mount_location="/ws",
     client_manager=socketio_manager,
-    max_http_buffer_size=1000000000000000,
+    max_http_buffer_size=100_000_000,
     ping_timeout=60,
     always_connect=True,
 )
@@ -65,85 +57,47 @@ ObjectStoreProvider.connect()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
+redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
+
 
 @app.post("/request")
 async def request(
-    raw_request: Request
+    background_tasks: BackgroundTasks,
+    backend_request: BackendRequestModel = Depends(validate_request)
 ) -> BackendResponseModel:
-    """Endpoint to submit request.
+    """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
 
-    Header:
-        - api_key: user api key.
-
-    Request Body:
-        raw_request (Request): user request containing the intervention graph.
+    Args:
+        background_tasks: FastAPI background tasks manager.
+        backend_request: Validated BackendRequestModel with all headers and data populated.
 
     Returns:
-        BackendResponseModel: reponse to the user request.
+        BackendResponseModel: Response to the user request containing job status and metadata.
     """
 
     # process the request
     try:
-        
-        request: BackendRequestModel = BackendRequestModel.from_request(
-            raw_request
-        )
-
-        user_python_version = raw_request.headers.get("python-version", '')
-        user_nnsight_version = raw_request.headers.get("nnsight-version", '')
-        
-        verify_python_version(user_python_version)
-        verify_nnsight_version(user_nnsight_version)
-
-        response = request.create_response(
+        response = backend_request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting to be queued.",
             logger=logger,
         )
-                
+
         if not response.blocking:
             response.save(ObjectStoreProvider.object_store)
 
-        NetworkStatusMetric.update(request, raw_request)
+        # Run network status metric update in background
+        background_tasks.add_task(NetworkStatusMetric.update, backend_request)
 
-        # authenticate api key
-        api_key_auth(request)
-        
-        try:
-            request.request = await request.request
-    
-            logger.info(f"Sending request to queue: {os.environ.get('QUEUE_URL')}/queue")
-            queue_response = requests.post(
-                f"http://{os.environ.get('QUEUE_URL')}/queue",
-                data=pickle.dumps(request),
-            )
+        backend_request.request = await backend_request.request
 
-            queue_response.raise_for_status()
-            logger.info(f"Request sent to queue successfully: {os.environ.get('QUEUE_URL')}/queue")
-        except Exception as e:
-            # Check if it's an HTTPError and if it's a 503
-            error_message = str(e)
-            status_code = None
-            if hasattr(e, "response") and e.response is not None:
-                status_code = getattr(e.response, "status_code", None)
-            if status_code == 503:
-                description = (
-                    "Queue service is not ready yet (waiting to connect to the ray backend). "
-                    "Please try again in a bit."
-                )
-            else:
-                description = "Failed to submit request to queue endpoint."
-            logger.error(f"{description} Exception: {error_message}")
-            response = request.create_response(
-                status=ResponseModel.JobStatus.ERROR,
-                description=description,
-                logger=logger,
-            )
+        await redis_client.lpush("queue", pickle.dumps(backend_request))
+
     except Exception as exception:
         description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
-        response = request.create_response(
+        response = backend_request.create_response(
             status=ResponseModel.JobStatus.ERROR,
             description=description,
             logger=logger,
@@ -153,32 +107,34 @@ async def request(
     return response
 
 
-@app.delete("/request/{request_id}")
-async def delete_request(request_id: str):
-    """Delete a submitted request, provided it is either queued or running"""
-    try:
-        endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
-        response = requests.delete(endpoint)
-        response.raise_for_status()
-        return {"message": f"Request {request_id} successfully submitted for deletion!"}
-    except requests.exceptions.HTTPError as e:
-        # Handle HTTP errors from the queue service
-        if e.response.status_code == 404:
-            raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
-        elif e.response.status_code == 500:
-            # Try to extract the error message from the queue service
-            try:
-                error_detail = e.response.json().get('detail', str(e))
-            except:
-                error_detail = str(e)
-            raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
-        else:
-            raise HTTPException(status_code=e.response.status_code, detail=str(e))
-    except requests.exceptions.RequestException as e:
-        # Handle connection errors, timeouts, etc.
-        raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+# @app.delete("/request/{request_id}")
+# async def delete_request(request_id: str):
+#     """Delete a submitted request, provided it is either queued or running"""
+#     try:
+#         endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
+#         async with httpx.AsyncClient() as client:
+#             response = await client.delete(endpoint)
+#             response.raise_for_status()
+#             return {"message": f"Request {request_id} successfully submitted for deletion!"}
+#     except httpx.HTTPStatusError as e:
+#         # Handle HTTP errors from the queue service
+#         if e.response is not None and e.response.status_code == 404:
+#             raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
+#         elif e.response is not None and e.response.status_code == 500:
+#             # Try to extract the error message from the queue service
+#             try:
+#                 error_detail = e.response.json().get('detail', str(e))
+#             except:
+#                 error_detail = str(e)
+#             raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
+#         else:
+#             status = e.response.status_code if e.response is not None else 500
+#             raise HTTPException(status_code=status, detail=str(e))
+#     except httpx.RequestError as e:
+#         # Handle connection errors, timeouts, etc.
+#         raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
 
 
 @sm.on("connect")
@@ -277,12 +233,13 @@ async def ping():
 
 
 @app.get("/status", status_code=200)
-@cache(expire=60)
 async def status():
-    return requests.get(
-        f"http://{os.environ.get('QUEUE_URL')}/status",
-    ).json()
-
+    
+    id = str(os.getpid())
+    
+    await redis_client.lpush("status", id)
+    result = await redis_client.brpop(id)
+    return result[1]
     
 
 

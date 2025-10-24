@@ -25,27 +25,22 @@ class ProtectedObject:
         PROTECTIONS[id(self)] = obj
 
     def __getattribute__(self, name: str):
+        
+        if name in ['to']:
+            raise ValueError(f"Attribute `{name}` cannot be accessed")
 
         obj = PROTECTIONS[id(self)]
 
         value = getattr(obj, name)
-
-        if isinstance(obj, torch.nn.Module) and name in (
-            "extra_repr",
-            "_get_name",
-            "_call_impl",
-            "generate",
-            "_compiled_call_impl",
-            "parameters",
-            "forward",
-        ):
+        
+        if not isinstance(value, (torch.Tensor, list, dict)):
 
             return value
 
         value = deepcopy(value)
 
         print(
-            f" WARNING: Accessing attribute {name} of protected object {PROTECTIONS[id(self)]} will return a deepcopy of the attribute."
+            f" WARNING: Accessing attribute `{name}` of protected object `{PROTECTIONS[id(self)]}` will return a deepcopy of the attribute."
         )
 
         return value
@@ -94,6 +89,5 @@ class ProtectedCustomCloudUnpickler(serialization.CustomCloudUnpickler):
 
 
 def protect_model():
-    print("Protecting model")
 
     serialization.CustomCloudUnpickler = ProtectedCustomCloudUnpickler
