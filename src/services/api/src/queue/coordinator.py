@@ -17,11 +17,12 @@ from enum import Enum
 from typing import Optional
 
 import redis
+import ray
 from ray import serve
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
-from ..schema import BackendRequestModel
+from ..schema import BackendRequestModel, BackendResponseModel
 from .processor import Processor, ProcessorStatus
 from .util import patch
 
@@ -143,6 +144,17 @@ class Coordinator:
 
     def route(self, request: BackendRequestModel):
         """Route a request to the per-model processor, creating it if missing."""
+
+        # If user does not have hotswapping access, check that the model is dedicated.
+        if not request.hotswapping:
+            if not self.is_dedicated_model(request.model_key):
+                request.create_response(
+                    status=BackendResponseModel.JobStatus.ERROR,
+                    description=f"Model {request.model_key} is not a scheduled model and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                    logger=self.logger,
+                ).respond()
+                return
+       
         if request.model_key not in self.processors:
 
             self.processors[request.model_key] = Processor(request.model_key)
@@ -265,3 +277,16 @@ class Coordinator:
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
                     self.redis_client.lpush(id, status)
+
+
+    def is_dedicated_model(self, model_key: str) -> bool:
+        """Check if the model is dedicated."""
+        result = self.controller_handle.get_deployment.remote(model_key).result(
+                timeout_s=int(os.environ.get("COORDINATOR_HANDLE_TIMEOUT_S", "5"))
+            )
+
+        # Dedicated models are deployed automatically on startup - the absence of a deployment means it's not dedicated.
+        if result is None:
+            return False
+
+        return result.get("dedicated", False)
