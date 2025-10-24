@@ -14,17 +14,17 @@ import pickle
 import time
 from concurrent.futures import Future
 from enum import Enum
+from functools import lru_cache
 from typing import Optional
 
 import redis
-import ray
 from ray import serve
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel, BackendResponseModel
 from .processor import Processor, ProcessorStatus
-from .util import patch
+from .util import patch, cache_maintainer
 
 
 class DeploymentStatus(Enum):
@@ -278,15 +278,21 @@ class Coordinator:
                     id = self.redis_client.brpop("status")[1]
                     self.redis_client.lpush(id, status)
 
-
+    @cache_maintainer(clear_time=600)
+    @lru_cache(maxsize=1000)
     def is_dedicated_model(self, model_key: str) -> bool:
         """Check if the model is dedicated."""
-        result = self.controller_handle.get_deployment.remote(model_key).result(
+        try:
+            result = self.controller_handle.get_deployment.remote(model_key).result(
                 timeout_s=int(os.environ.get("COORDINATOR_HANDLE_TIMEOUT_S", "5"))
             )
 
-        # Dedicated models are deployed automatically on startup - the absence of a deployment means it's not dedicated.
-        if result is None:
-            return False
+            # Dedicated models are deployed automatically on startup - the absence of a deployment means it's not dedicated.
+            if result is None:
+                return False
 
-        return result.get("dedicated", False)
+            return result.get("dedicated", False)
+
+        except Exception as e:
+            self.logger.error(f"Error checking if model is dedicated: {e}")
+            return False
