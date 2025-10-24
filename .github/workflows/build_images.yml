@@ -31,10 +31,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Copy check into each service
-        run: |
-          cp docker/helpers/check_and_update_env.sh ./
-
       - name: Build and push base image
         uses: docker/build-push-action@v5
         with:
