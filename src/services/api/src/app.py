@@ -6,7 +6,7 @@ from typing import Any, Dict
 import redis
 import socketio
 import uvicorn
-from fastapi import Depends, FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -62,11 +62,13 @@ redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
 
 @app.post("/request")
 async def request(
+    background_tasks: BackgroundTasks,
     backend_request: BackendRequestModel = Depends(validate_request)
 ) -> BackendResponseModel:
     """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
 
     Args:
+        background_tasks: FastAPI background tasks manager.
         backend_request: Validated BackendRequestModel with all headers and data populated.
 
     Returns:
@@ -84,7 +86,8 @@ async def request(
         if not response.blocking:
             response.save(ObjectStoreProvider.object_store)
 
-        NetworkStatusMetric.update(backend_request)
+        # Run network status metric update in background
+        background_tasks.add_task(NetworkStatusMetric.update, backend_request)
 
         backend_request.request = await backend_request.request
 
