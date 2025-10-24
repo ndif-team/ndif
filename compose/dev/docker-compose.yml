@@ -64,6 +64,7 @@ services:
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
       API_INTERNAL_PORT: ${API_INTERNAL_PORT}
       API_URL: http://localhost:${API_INTERNAL_PORT}
+      DEV_MODE: true # Add environment variables for postgres if setting to false (see compose/dev/.env)
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
