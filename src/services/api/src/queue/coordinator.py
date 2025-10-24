@@ -15,6 +15,7 @@ import time
 import traceback
 from concurrent.futures import Future
 from enum import Enum
+from functools import lru_cache
 from typing import Optional
 
 import redis
@@ -22,9 +23,9 @@ from ray import serve
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
-from ..schema import BackendRequestModel
+from ..schema import BackendRequestModel, BackendResponseModel
 from .processor import Processor, ProcessorStatus
-from .util import patch
+from .util import patch, cache_maintainer
 
 
 class DeploymentStatus(Enum):
@@ -146,6 +147,17 @@ class Coordinator:
 
     def route(self, request: BackendRequestModel):
         """Route a request to the per-model processor, creating it if missing."""
+
+        # If user does not have hotswapping access, check that the model is dedicated.
+        if not request.hotswapping:
+            if not self.is_dedicated_model(request.model_key):
+                request.create_response(
+                    status=BackendResponseModel.JobStatus.ERROR,
+                    description=f"Model {request.model_key} is not a scheduled model and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                    logger=self.logger,
+                ).respond()
+                return
+       
         if request.model_key not in self.processors:
 
             self.processors[request.model_key] = Processor(request.model_key)
@@ -268,3 +280,22 @@ class Coordinator:
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
                     self.redis_client.lpush(id, self.status_cache)
+
+    @cache_maintainer(clear_time=600)
+    @lru_cache(maxsize=1000)
+    def is_dedicated_model(self, model_key: str) -> bool:
+        """Check if the model is dedicated."""
+        try:
+            result = self.controller_handle.get_deployment.remote(model_key).result(
+                timeout_s=int(os.environ.get("COORDINATOR_HANDLE_TIMEOUT_S", "5"))
+            )
+
+            # Dedicated models are deployed automatically on startup - the absence of a deployment means it's not dedicated.
+            if result is None:
+                return False
+
+            return result.get("dedicated", False)
+
+        except Exception as e:
+            self.logger.error(f"Error checking if model is dedicated: {e}")
+            return False

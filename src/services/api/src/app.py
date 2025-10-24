@@ -6,7 +6,7 @@ from typing import Any, Dict
 import redis
 import socketio
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -19,14 +19,11 @@ from .logging import set_logger
 
 logger = set_logger("API")
 
-from .auth import api_key_auth
+from .dependencies import validate_request
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import (BackendRequestModel, BackendResponseModel,
                      BackendResultModel)
-from .util import verify_nnsight_version, verify_python_version
-
-
 
 
 
@@ -65,57 +62,42 @@ redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
 
 @app.post("/request")
 async def request(
-    raw_request: Request
+    background_tasks: BackgroundTasks,
+    backend_request: BackendRequestModel = Depends(validate_request)
 ) -> BackendResponseModel:
-    """Endpoint to submit request.
+    """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
 
-    Header:
-        - api_key: user api key.
-
-    Request Body:
-        raw_request (Request): user request containing the intervention graph.
+    Args:
+        background_tasks: FastAPI background tasks manager.
+        backend_request: Validated BackendRequestModel with all headers and data populated.
 
     Returns:
-        BackendResponseModel: reponse to the user request.
+        BackendResponseModel: Response to the user request containing job status and metadata.
     """
 
     # process the request
     try:
-        
-        request: BackendRequestModel = BackendRequestModel.from_request(
-            raw_request
-        )
-
-        user_python_version = raw_request.headers.get("python-version", '')
-        user_nnsight_version = raw_request.headers.get("nnsight-version", '')
-        
-        # verify_python_version(user_python_version)
-        # verify_nnsight_version(user_nnsight_version)
-
-        response = request.create_response(
+        response = backend_request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting to be queued.",
             logger=logger,
         )
-                
+
         if not response.blocking:
             response.save(ObjectStoreProvider.object_store)
 
-        NetworkStatusMetric.update(request, raw_request)
+        # Run network status metric update in background
+        background_tasks.add_task(NetworkStatusMetric.update, backend_request)
 
-        # authenticate api key
-        api_key_auth(request)
-        
-        request.request = await request.request
-        
-        await redis_client.lpush("queue", pickle.dumps(request))
-                
+        backend_request.request = await backend_request.request
+
+        await redis_client.lpush("queue", pickle.dumps(backend_request))
 
     except Exception as exception:
         description = f"{traceback.format_exc()}\n{str(exception)}"
 
         # Create exception response object.
-        response = request.create_response(
+        response = backend_request.create_response(
             status=ResponseModel.JobStatus.ERROR,
             description=description,
             logger=logger,

@@ -51,6 +51,11 @@ class BackendRequestModel(ObjectStorageMixin):
     api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ''
     hotswapping: Optional[bool] = False
+    python_version: Optional[str] = ""
+    nnsight_version: Optional[str] = ""
+    content_length: Optional[int] = 0
+    ip_address: Optional[str] = ""
+    user_agent: Optional[str] = ""
     id: REQUEST_ID
 
     def deserialize(self, model: NNsight) -> RequestModel:
@@ -67,14 +72,14 @@ class BackendRequestModel(ObjectStorageMixin):
     def from_request(cls, request: Request) -> Self:
 
         headers = request.headers
-        
+
         sent = headers.get("ndif-timestamp", None)
-        
+
         if sent is not None:
             sent = float(sent)
 
         return BackendRequestModel(
-            id=REQUEST_ID(request.headers.get("ndif-request_id")),
+            id=REQUEST_ID(headers.get("ndif-request_id")),
             request=request.body(),
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),
@@ -82,6 +87,11 @@ class BackendRequestModel(ObjectStorageMixin):
             last_status_time=sent,
             api_key=API_KEY(headers.get("ndif-api-key")),
             callback=headers.get("ndif-callback", ""),
+            python_version=headers.get("python-version", ""),
+            nnsight_version=headers.get("nnsight-version", ""),
+            content_length=int(headers.get("content-length", 0)),
+            ip_address=request.client.host if request.client else "",
+            user_agent=headers.get("user-agent", ""),
         )
 
     def create_response(
