@@ -13,6 +13,9 @@ concurrency:
 permissions:
   id-token: write
 
+env:
+  ECS_REPO: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+
 jobs:
   build_images:
     runs-on: ubuntu-latest
@@ -31,6 +34,15 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Tag the base image
+        id: base
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ndif_base
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push base image
         uses: docker/build-push-action@v5
         with:
@@ -38,10 +50,19 @@ jobs:
           file: docker/Dockerfile
           target: ndif_base
           outputs: type=registry,type=docker
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:${{ github.sha }}
+          tags: ${{ steps.base.outputs.tags }}
           cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache,mode=max
-
+      
+      - name: Tag the API image
+        id: api
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/api
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push API service image
         uses: docker/build-push-action@v5
         with:
@@ -50,12 +71,21 @@ jobs:
           push: true
           build-args: |
             NAME=api
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/api:${{ github.sha }}
+          tags: ${{ steps.api.outputs.tags }}
           cache-from: |
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
 
+      - name: Tag the Queue image
+        id: queue
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/queue
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push Queue service image
         uses: docker/build-push-action@v5
         with:
@@ -64,12 +94,21 @@ jobs:
           push: true
           build-args: |
             NAME=queue
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/queue:${{ github.sha }}
+          tags: ${{ steps.queue.outputs.tags }}
           cache-from: |
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/queue:cache,mode=max
 
+      - name: Tag the Queue image
+        id: ray
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ray
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
       - name: Build and push Ray service image
         uses: docker/build-push-action@v5
         with:
@@ -78,7 +117,7 @@ jobs:
           push: true
           build-args: |
             NAME=ray
-          tags: ${{ steps.login-ecr.outputs.registry }}/dev/ray:${{ github.sha }}
+          tags: ${{ steps.ray.outputs.tags }}
           cache-from: |
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
