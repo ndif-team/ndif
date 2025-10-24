@@ -23,6 +23,7 @@ from ray import serve
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
+from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel, BackendResponseModel
 from .processor import Processor, ProcessorStatus
 from .util import patch, cache_maintainer
@@ -59,6 +60,8 @@ class Coordinator:
 
         # We patch the _async_send method to avoid a nasty deadlock bug in Ray.
         patch()
+        
+        ObjectStoreProvider.connect()
 
         # Connect to Ray initially.
         self.connect()
