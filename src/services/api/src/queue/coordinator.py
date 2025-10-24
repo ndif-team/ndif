@@ -12,6 +12,7 @@ import json
 import os
 import pickle
 import time
+import traceback
 from concurrent.futures import Future
 from enum import Enum
 from functools import lru_cache
@@ -112,6 +113,7 @@ class Coordinator:
 
                 # Step each processor to advance its state machine.
                 for processor in self.processors.values():
+                    #TODO catch exceptions and raise them only after all processors are done
                     processor.step()
 
                 # Serve controller status snapshots to waiting Redis consumers.
@@ -120,7 +122,8 @@ class Coordinator:
             # If there is an error in the coordinator loop, it might be due to a connection issue.
             # So we reconnect to Ray and try again.
             except Exception as e:
-                self.logger.error(f"Error in coordinator loop: {e}")
+                
+                self.logger.error(f"Error in coordinator loop: {e}\n{traceback.format_exc()}")
                 self.connect()
 
     def deploy(self):
@@ -138,7 +141,7 @@ class Coordinator:
         self.deployment_futures.append(handle.deploy.remote(model_keys))
         self.processors_to_deploy.clear()
 
-    def get(self):
+    def get(self) -> BackendRequestModel:
         """Pop one serialized request from Redis and deserialize it."""
         return pickle.loads(self.redis_client.brpop("queue")[1])
 
@@ -276,7 +279,7 @@ class Coordinator:
 
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
-                    self.redis_client.lpush(id, status)
+                    self.redis_client.lpush(id, self.status_cache)
 
     @cache_maintainer(clear_time=600)
     @lru_cache(maxsize=1000)
