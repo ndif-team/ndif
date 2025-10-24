@@ -92,8 +92,8 @@ async def request(
         user_python_version = raw_request.headers.get("python-version", '')
         user_nnsight_version = raw_request.headers.get("nnsight-version", '')
         
-        verify_python_version(user_python_version)
-        verify_nnsight_version(user_nnsight_version)
+        # verify_python_version(user_python_version)
+        # verify_nnsight_version(user_nnsight_version)
 
         response = request.create_response(
             status=ResponseModel.JobStatus.RECEIVED,
