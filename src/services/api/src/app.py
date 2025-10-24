@@ -239,7 +239,7 @@ async def status():
     
     await redis_client.lpush("status", id)
     result = await redis_client.brpop(id)
-    return result[1]
+    return pickle.loads(result[1])
     
 
 
