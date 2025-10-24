@@ -1,5 +1,5 @@
 nnsight
-ray[serve]==2.47.0
+ray[serve]==2.50.0
 python-slugify
 # Telemetry
 prometheus_client
