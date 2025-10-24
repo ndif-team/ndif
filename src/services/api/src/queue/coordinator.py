@@ -256,15 +256,13 @@ class Coordinator:
 
             else:
 
-                status = json.dumps(result)
-
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
-                    self.redis_client.lpush(id, status)
+                    self.redis_client.lpush(id, result)
 
                 self.status_future = None
                 self.last_status_time = time.time()
-                self.status_cache = status
+                self.status_cache = result
 
         elif self.redis_client.llen("status") > 0:
 
