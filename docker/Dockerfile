@@ -1,8 +1,6 @@
-FROM scratch AS src_context
-COPY src /src
-
 FROM astral/uv:python3.12-trixie-slim AS ndif_base
 
+# Sometimes apt-get tries to open a dialog box, this stops it
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install base utilities in single layer with cleanup
@@ -40,7 +38,7 @@ RUN uv pip install --system -r /tmp/requirements.in \
 # --mount=type=bind` temporarily mounts content into a `RUN` command
 # **without adding it as a layer** to the image.
 # cp -L copies symlinks in: *dereferences* them so they are copied
-RUN --mount=type=bind,from=src_context,source=/src,target=/tmp/src \
+RUN --mount=type=bind,source=/src,target=/tmp/src \
     cp -rL /tmp/src/services/${NAME}/src / && \
     cp /tmp/src/services/${NAME}/start.sh ./start.sh
 
