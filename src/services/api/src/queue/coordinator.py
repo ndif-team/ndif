@@ -174,7 +174,7 @@ class Coordinator:
         ready = []
         not_ready = []
 
-        for deployment_future in self.deployment_futures:
+        for i, deployment_future in enumerate(self.deployment_futures):
 
             try:
 
@@ -182,6 +182,10 @@ class Coordinator:
 
             except TimeoutError:
                 not_ready.append(deployment_future)
+                
+            # TODO inform those waiting on this deployment that it failed
+            except Exception as e:
+                pass
 
             else:
                 ready.append(result)
