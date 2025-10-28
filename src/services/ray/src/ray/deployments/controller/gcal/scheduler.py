@@ -141,7 +141,15 @@ class SchedulingActor:
             error_messages = {model_key: value for model_key, value in result.items() if value not in CandidateLevel.__members__}
 
             # Only update the stored hash if there were no errors
-            if not error_messages:
+            cant_accomodate = False
+            for model_key, value in result.items():
+                print('value: ', value)
+                if value == CandidateLevel.CANT_ACCOMMODATE.name:
+                    print('cant accomate: ', model_key)
+                    cant_accomodate = True
+                    break
+            
+            if not error_messages and not cant_accomodate:
                 self.previous_model_keys_hash = current_hash
 
         # For successful deployments, set event color to dark green if not already
@@ -230,7 +238,7 @@ class SchedulingActor:
         for event in events:
             # Sanitize the description (model key) using existing sanitize function
             model_key = self.sanitize(event["description"])
-
+            
             # Handle both all-day events and events with specific times
             if "dateTime" in event["start"]:
                 # Event with specific time
@@ -258,9 +266,9 @@ class SchedulingActor:
             event_title = event.get("summary", model_key)
             
             if model_key in schedule:
-                
                 # If the event's start time minus 10 seconds is before the stored end time, update the end time.
                 existing_entry = schedule[model_key]
+
                 if (start_time - timedelta(seconds=10)) <= existing_entry["end_time"]:
                     # Combine: update the end_time to the later end_time
                     if end_time > existing_entry["end_time"]:
