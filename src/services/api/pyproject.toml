@@ -1,5 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "api"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [tool.pytest.ini_options]
-minversion= "6.0"
-testpaths=[
-    "tests"
-]
+minversion = "6.0"
+testpaths = ["tests"]
+pythonpath = ["."]
