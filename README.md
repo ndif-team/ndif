@@ -74,6 +74,13 @@ You should expect to see a message like `Application startup complete.` in the a
 python scripts/test.py
 ```
 
+For more comprehensive testing, install pytest
+```sh
+conda activate ndif-dev
+pip install pytest
+```
+
+
 This will send a test NNsight request to the API service running in the local container.
 
 ## Additional Commands
