@@ -77,7 +77,8 @@ python scripts/test.py
 For more comprehensive testing, install pytest
 ```sh
 conda activate ndif-dev
-pip install pytest
+pip install pytest==8.4.0
+pytest
 ```
 
 
