@@ -277,13 +277,6 @@ class SchedulingActor:
                     if event_title != existing_entry["title"]:
                         existing_entry["title"] = event_title
                     schedule[model_key] = existing_entry
-                else:
-                    # No overlap, treat as a new entry
-                    schedule[model_key] = {
-                        "start_time": start_time,
-                        "end_time": end_time,
-                        "title": event_title,
-                    }
                 
             else:
 
