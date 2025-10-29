@@ -32,7 +32,7 @@ class _ControllerDeployment:
         model_import_path: str,
         execution_timeout_seconds: float,
         model_cache_percentage: float,
-        minimum_deployment_time_seconds: float = 600,
+        minimum_deployment_time_seconds: float,
     ):
 
         super().__init__()
@@ -220,7 +220,7 @@ class _ControllerDeployment:
                     ].n_params,
                 }
 
-                if self.minimum_deployment_time_seconds is not None:
+                if not deployment.dedicated and self.minimum_deployment_time_seconds is not None:
                     status[application_name]["schedule"] = {
                         "end_time": deployment.end_time(
                             self.minimum_deployment_time_seconds
@@ -312,8 +312,8 @@ class ControllerDeploymentArgs(BaseModel):
     deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
-    execution_timeout_seconds: Optional[float] = None
-    minimum_deployment_time_seconds: Optional[float] = float(os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "600"))
+    execution_timeout_seconds: Optional[float] = float(os.environ.get("NDIF_EXECUTION_TIMEOUT_SECONDS", "3600"))
+    minimum_deployment_time_seconds: Optional[float] = float(os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600"))
     model_cache_percentage: Optional[float] = float(os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9"))
 
 
