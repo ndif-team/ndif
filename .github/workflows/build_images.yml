@@ -53,7 +53,7 @@ jobs:
           tags: ${{ steps.base.outputs.tags }}
           cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache,mode=max
-      
+
       - name: Tag the API image
         id: api
         uses: docker/metadata-action@v5
