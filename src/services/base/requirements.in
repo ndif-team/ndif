@@ -1,3 +1,6 @@
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch
 nnsight==0.5.9
 # Telemetry
 prometheus_client
