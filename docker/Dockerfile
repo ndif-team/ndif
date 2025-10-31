@@ -11,6 +11,7 @@ RUN apt-get update -y \
 
 # Copy and install base requirements
 COPY src/services/base/requirements.in /tmp/requirements.in
+RUN uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
 RUN uv pip install --system -r /tmp/requirements.in \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
