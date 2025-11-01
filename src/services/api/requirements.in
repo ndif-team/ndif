@@ -28,3 +28,9 @@ torch
 python-slugify
 influxdb-client
 nnsight
+
+#dev dependencies
+pytest==8.4.0
+pytest-mock==3.14.0
+pytest-asyncio==0.25.2
+httpx==0.28.1
