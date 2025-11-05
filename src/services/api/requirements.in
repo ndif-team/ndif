@@ -1,5 +1,7 @@
---index-url https://download.pytorch.org/whl/cpu
---extra-index-url https://pypi.org/simple/
+# CPU pytorch index
+--extra-index-url https://download.pytorch.org/whl/cpu
+# default index for anything not in pytorch index
+--index-url https://pypi.org/simple/
 # API
 fastapi-cache2
 fastapi==0.108.0
