@@ -11,7 +11,7 @@ RUN apt-get update -y \
 
 ARG NAME
 COPY src/services/${NAME}/requirements.in /tmp/requirements.in
-RUN uv pip install --system -r /tmp/base_requirements.in -r /tmp/requirements.in \
+RUN uv pip install --system -r /tmp/requirements.in \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
     && find /usr/local/lib/python3.12 -name "*.pyo" -delete \
