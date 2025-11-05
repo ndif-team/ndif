@@ -1,3 +1,4 @@
+import asyncio
 import os
 from dataclasses import asdict
 from datetime import datetime
@@ -83,6 +84,8 @@ class _ControllerDeployment:
 
         if deployments and deployments != ['']:
             self.deploy(deployments, dedicated=True)
+
+        asyncio.get_event_loop().create_task(self.loop_sync())
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
         """Get the state of the controller."""
@@ -295,9 +298,18 @@ class _ControllerDeployment:
             },
         }
 
-    def sync(self):
+    async def loop_sync(self):
         """
-        Sync the cluster with the latest state of the nodes. Used to update the cluster when a worker node connects or disconnects from Ray head.
+        Loop to sync the controller with the latest state of the nodes.
+        """
+
+        while True:
+            await self.sync()
+            await asyncio.sleep(int(os.environ.get("CONTROLLER_SYNC_INTERVAL_S", "30")))
+
+    async def sync(self):
+        """
+        Sync the cluster with the latest state of the nodes. Required for situations when a worker node connects or disconnects from Ray head.
         """
 
         self.cluster.update_nodes()
