@@ -60,8 +60,6 @@ class _ControllerDeployment:
             
         asyncio.create_task(self.check_nodes())
 
-        asyncio.get_event_loop().create_task(self.loop_sync())
-
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
         """Get the state of the controller."""
 
@@ -85,9 +83,8 @@ class _ControllerDeployment:
     async def check_nodes(self):
         
         while True:
-            self.logger.info("Checking nodes...")
             self.cluster.update_nodes()
-            await asyncio.sleep(60 * 5)
+            await asyncio.sleep(int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30")))
             
     def _deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
 
@@ -324,22 +321,6 @@ class _ControllerDeployment:
                 }
             },
         }
-
-    async def loop_sync(self):
-        """
-        Loop to sync the controller with the latest state of the nodes.
-        """
-
-        while True:
-            await self.sync()
-            await asyncio.sleep(int(os.environ.get("CONTROLLER_SYNC_INTERVAL_S", "30")))
-
-    async def sync(self):
-        """
-        Sync the cluster with the latest state of the nodes. Required for situations when a worker node connects or disconnects from Ray head.
-        """
-
-        self.cluster.update_nodes()
 
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
