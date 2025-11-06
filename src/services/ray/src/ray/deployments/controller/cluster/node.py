@@ -185,8 +185,6 @@ class Node:
                         f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}"
                     )
 
-                    eviction_deployment.delete()
-
                     del self.cache[eviction_deployment.model_key]
 
                     self.resources.available_cpu_memory_bytes += (
