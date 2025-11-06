@@ -1,3 +1,7 @@
+# CPU pytorch index
+--extra-index-url https://download.pytorch.org/whl/cpu
+# default index for anything not in pytorch index
+--index-url https://pypi.org/simple/
 # API
 fastapi-cache2
 fastapi==0.108.0
@@ -27,4 +31,4 @@ requests
 torch
 python-slugify
 influxdb-client
-nnsight
+nnsight==0.5.10
