@@ -125,9 +125,15 @@ class Coordinator:
                     self.initialize()
 
                 # Step each processor to advance its state machine.
-                for processor in self.processors.values():
+                for processor in list(self.processors.values()):
                     # TODO catch exceptions and raise them only after all processors are done
-                    processor.step()
+                    try:
+                        processor.step()
+                    except LookupError as e:
+                        self.remove(
+                            processor.model_key,
+                            message="Model deployment evicted. Please try again later. Sorry for the inconvenience.",
+                        )
 
                 # Serve controller status snapshots to waiting Redis consumers.
                 self.fulfill_status()

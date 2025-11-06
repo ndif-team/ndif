@@ -33,7 +33,6 @@ class Cluster:
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
 
-        self.update_nodes()
 
     @property
     def state(self):
@@ -105,7 +104,7 @@ class Cluster:
                         gpu_memory_bytes=gpu_memory_bytes,
                         cpu_memory_bytes=cpu_memory_bytes,
                         available_cpu_memory_bytes=cpu_memory_bytes,
-                        available_gpus=total_gpus,
+                        available_gpus=list(range(int(total_gpus))),
                     ),
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
@@ -114,12 +113,15 @@ class Cluster:
                 f"=> Node {name} updated with resources: {self.nodes[id].resources}"
             )
 
-        for node in self.nodes.keys():
-            if node not in current_nodes:
+        for node_id in self.nodes.keys():
+            if node_id not in current_nodes:
 
-                del self.nodes[node]
+                node = self.nodes.pop(node_id)
+                node.purge()
+                
+                logger.info(f"=> Node {node_id} removed from cluster")
+                
 
-                logger.info(f"=> Node {node} removed from cluster")
 
     def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
         """
@@ -161,8 +163,6 @@ class Cluster:
 
             logger.info("=> Checking to evict deprecated dedicated deployments...")
             
-            cache_futures = []
-
             for node in self.nodes.values():
 
                 for model_key, deployment in list(node.deployments.items()):
@@ -175,15 +175,9 @@ class Cluster:
 
                         results['evictions'].add(model_key)
 
-                        if node.evict(model_key, exclude=set(model_keys)):
-                            cache_future = deployment.cache()
+                        node.evict(model_key, exclude=set(model_keys))
                             
-                            if cache_future is not None:
-                                cache_futures.append(cache_future)
-
                         change = True
-
-            ray.get(cache_futures)
 
         # Sort models by size in descending order (deploy biggest ones first)
         sorted_models = sorted(
@@ -262,7 +256,7 @@ class Cluster:
                 logger.info(
                     f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
                 )
-
+                
                 self.nodes[node_id].deploy(
                     model_key, candidate, size_in_bytes, dedicated=dedicated, exclude=set(model_keys)
                 )

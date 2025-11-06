@@ -85,7 +85,7 @@ class ModelEvaluator:
             model_size_bytes,
             n_params,
             meta_model._model.config,
-            getattr(meta_model._model, "revision", "main"),
+            meta_model.revision,
         )
 
         logger.info(f"=> New model evaluated: {model_key} size: {model_size_bytes}")
