@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-import time
-from typing import TYPE_CHECKING, ClassVar, Coroutine, Optional, Union
+import uuid
+from typing import ClassVar, Coroutine, Optional, Union
 
 import ray
 from fastapi import Request
@@ -13,7 +13,7 @@ from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
-from ..types import API_KEY, REQUEST_ID
+from ..types import API_KEY, MODEL_KEY, REQUEST_ID, SESSION_ID
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
 
@@ -45,8 +45,8 @@ class BackendRequestModel(ObjectStorageMixin):
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
-    model_key: Optional[str] = None
-    session_id: Optional[str] = None
+    model_key: Optional[MODEL_KEY] = None
+    session_id: Optional[SESSION_ID] = None
     zlib: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ''
@@ -79,13 +79,13 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         return BackendRequestModel(
-            id=REQUEST_ID(headers.get("ndif-request_id")),
+            id=str(headers.get("ndif-request_id")),
             request=request.body(),
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
             last_status_time=sent,
-            api_key=API_KEY(headers.get("ndif-api-key")),
+            api_key=headers.get("ndif-api-key"),
             callback=headers.get("ndif-callback", ""),
             python_version=headers.get("python-version", ""),
             nnsight_version=headers.get("nnsight-version", ""),
@@ -113,8 +113,8 @@ class BackendRequestModel(ObjectStorageMixin):
             logging_level = "exception"
 
         response = BackendResponseModel(
-            id=self.id,
-            session_id=self.session_id,
+            id=str(self.id),
+            session_id=str(self.session_id),
             status=status,
             description=description,
             data=data,

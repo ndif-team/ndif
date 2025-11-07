@@ -8,6 +8,7 @@ import ray
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from ray.serve.handle import DeploymentHandle
+from .....types import MODEL_KEY
 from .....providers.mailgun import MailgunProvider
 from ..cluster.node import CandidateLevel
 
@@ -206,12 +207,12 @@ class SchedulingActor:
                 break
    
 
-    async def get_schedule(self):
+    async def get_schedule(self) -> Dict[MODEL_KEY, Dict[str, Any]]:
         """
         Get scheduled events for the next week.
 
         Returns:
-            Dict[str, Dict]: A dictionary mapping model_keys to their schedule information
+            Dict[MODEL_KEY, Dict]: A dictionary mapping model_keys to their schedule information
                            containing start_time and end_time
         """
         # Calculate time boundaries for events (now to 1 week in the future)

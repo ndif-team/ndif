@@ -10,13 +10,14 @@ from ray.serve._private.client import *
 from ray.util.client import ray as client_ray
 from ray.util.client.common import return_refs
 
+from ..types import MODEL_KEY, RAY_APP_NAME
 from ..schema import BackendRequestModel
 
 
 class Handle:
     """Encapsulates interaction with a single model Ray Serve deployment."""
 
-    def __init__(self, model_key: str):
+    def __init__(self, model_key: MODEL_KEY):
         """Look up the deployment handle and namespace for `model_key`.
 
         Raises:
@@ -32,7 +33,7 @@ class Handle:
             raise RayServeException(f"Actor '{self.actor_name}' does not exist.")
 
     @property
-    def actor_name(self):
+    def actor_name(self) -> RAY_APP_NAME:
         """Canonical Ray actor name for the model deployment actor."""
         return f"ModelActor:{self.model_key}"
 

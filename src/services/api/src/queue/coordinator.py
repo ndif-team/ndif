@@ -22,6 +22,7 @@ import redis
 from ray import serve
 from ray.serve.handle import DeploymentResponse
 
+from ..types import MODEL_KEY
 from ..logging import set_logger
 from ..providers.objectstore import ObjectStoreProvider
 from ..providers.ray import RayProvider
@@ -44,7 +45,7 @@ class DeploymentStatus(Enum):
 @dataclass
 class DeploymentSubmission:
 
-    model_keys: list[str]
+    model_keys: list[MODEL_KEY]
     deployment_future: DeploymentResponse
 
 
@@ -54,7 +55,7 @@ class Coordinator:
     def __init__(self):
 
         self.redis_client = redis.Redis.from_url(os.environ.get("BROKER_URL"))
-        self.processors: dict[str, Processor] = {}
+        self.processors: dict[MODEL_KEY, Processor] = {}
 
         self.deployment_submissions: list[DeploymentSubmission] = []
         self.processors_to_deploy: list[Processor] = []
@@ -262,7 +263,7 @@ class Coordinator:
         for model_key in list(self.processors.keys()):
             self.remove(model_key)
 
-    def remove(self, model_key: str, message: Optional[str] = None):
+    def remove(self, model_key: MODEL_KEY, message: Optional[str] = None):
         """Remove a processor and purge its outstanding work.
 
         Args:
@@ -313,7 +314,7 @@ class Coordinator:
 
     @cache_maintainer(clear_time=6000)
     @lru_cache(maxsize=1000)
-    def is_dedicated_model(self, model_key: str) -> bool:
+    def is_dedicated_model(self, model_key: MODEL_KEY) -> bool:
         """Check if the model is dedicated."""
         try:
             result = self.controller_handle.get_deployment.remote(model_key).result(

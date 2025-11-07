@@ -15,6 +15,7 @@ from fastapi_socketio import SocketManager
 from nnsight.schema.response import ResponseModel
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from .types import REQUEST_ID, SESSION_ID
 from .logging import set_logger
 
 logger = set_logger("API")
@@ -138,7 +139,7 @@ async def request(
 
 
 @sm.on("connect")
-async def connect(session_id: str, environ: Dict):
+async def connect(session_id: SESSION_ID, environ: Dict):
     params = environ.get("QUERY_STRING")
     params = dict(x.split("=") for x in params.split("&"))
 
@@ -148,13 +149,13 @@ async def connect(session_id: str, environ: Dict):
 
 
 @sm.on("blocking_response")
-async def blocking_response(session_id: str, client_session_id: str, data: Any):
+async def blocking_response(session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any):
 
     await sm.emit("blocking_response", data=data, to=client_session_id)
 
 
 @sm.on("stream")
-async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: str):
+async def stream(session_id: SESSION_ID,  client_session_id: SESSION_ID, data: bytes, job_id: str):
     
     await sm.enter_room(session_id, job_id)
 
@@ -162,17 +163,17 @@ async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: 
 
 
 @sm.on("stream_upload")
-async def stream_upload(session_id: str, data: bytes, job_id: str):
+async def stream_upload(session_id: SESSION_ID, data: bytes, job_id: str):
 
     await sm.emit("stream_upload", data=data, room=job_id)
 
 
 @app.get("/response/{id}")
-async def response(id: str) -> BackendResponseModel:
+async def response(id: REQUEST_ID) -> BackendResponseModel:
     """Endpoint to get latest response for id.
 
     Args:
-        id (str): ID of request/response.
+        id: ID of request/response.
 
     Returns:
         BackendResponseModel: Response.
@@ -183,11 +184,11 @@ async def response(id: str) -> BackendResponseModel:
 
 
 @app.get("/result/{id}")
-async def result(id: str) -> BackendResultModel:
+async def result(id: REQUEST_ID) -> BackendResultModel:
     """Endpoint to retrieve result for id.
 
     Args:
-        id (str): ID of request/response.
+        id: ID of request/response.
 
     Returns:
         BackendResultModel: Result.

@@ -9,7 +9,7 @@ from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
-from .....types import MODEL_KEY
+from .....types import MODEL_KEY, NODE_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, Node, Resources
 
@@ -24,7 +24,7 @@ class Cluster:
         model_cache_percentage: float = 0.5,
     ):
 
-        self.nodes: Dict[str, Node] = {}
+        self.nodes: Dict[NODE_ID, Node] = {}
 
         self.evaluator = ModelEvaluator()
 

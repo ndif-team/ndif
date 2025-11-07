@@ -33,7 +33,7 @@ class Deployment:
         dedicated: bool = False,
     ):
 
-        self.model_key = MODEL_KEY(model_key)
+        self.model_key = model_key
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes

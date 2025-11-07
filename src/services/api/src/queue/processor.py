@@ -20,6 +20,7 @@ import ray
 from ray import serve
 from ray.serve.handle import DeploymentResponse
 
+from ..types import MODEL_KEY
 from ..schema import BackendRequestModel, BackendResponseModel
 from .handle import Handle
 
@@ -47,7 +48,7 @@ class Submission:
 class Processor:
     """Manages a per-model queue and talks to the Ray backend via `Handle`."""
 
-    def __init__(self, model_key: str):
+    def __init__(self, model_key: MODEL_KEY):
 
         self.model_key = model_key
 

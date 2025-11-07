@@ -19,6 +19,7 @@ from transformers.modeling_utils import _get_device_map
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
+from ....types import MODEL_KEY
 from ....logging import set_logger
 from ....metrics import (
     ExecutionTimeMetric,
@@ -44,7 +45,7 @@ class BaseModelDeployment:
 
     def __init__(
         self,
-        model_key: str,
+        model_key: MODEL_KEY,
         cuda_devices: str,
         execution_timeout: float | None,
         dispatch: bool,
@@ -453,7 +454,7 @@ class BaseModelDeploymentArgs(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model_key: str
+    model_key: MODEL_KEY
     cuda_devices: str
 
     execution_timeout: float | None = None
