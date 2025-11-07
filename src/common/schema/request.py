@@ -78,8 +78,10 @@ class BackendRequestModel(ObjectStorageMixin):
         if sent is not None:
             sent = float(sent)
 
+        request_id = uuid.uuid4() if headers.get("ndif-request_id") is None else headers.get("ndif-request_id")
+
         return BackendRequestModel(
-            id=str(headers.get("ndif-request_id")),
+            id=str(request_id),
             request=request.body(),
             model_key=headers.get("nnsight-model-key", None),
             session_id=headers.get("ndif-session_id", None),
