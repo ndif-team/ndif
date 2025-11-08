@@ -55,6 +55,7 @@ if not hasattr(ray_pkg, "kill"):
 # 2) ray._private and ray._private.state as *packages*
 rp = _ensure_pkg("ray._private")
 rp_state = _ensure_pkg("ray._private.state")
+rp_deployment = _ensure_pkg("ray.deployments")
 
 
 # Optional: add minimal symbols some code imports
