@@ -1,123 +1,129 @@
 # NDIF Ray Service
 
-The **Ray Service** provides the distributed execution layer for NDIF.  
-It manages deployments, task scheduling, and inter-service communication between NDIF’s core components (API, queue, telemetry, etc.) using [Ray](https://docs.ray.io/).
+The **Ray service** is NDIF’s distributed execution layer. It runs and scales NDIF workloads (inference, preprocessing, background jobs), exposes Ray Serve deployments, and integrates with NDIF’s telemetry stack (Prometheus/Grafana, Loki, and InfluxDB).  
 
-This service defines **controller**, **cluster**, and **node** abstractions that wrap Ray’s internal APIs into a structured, typed interface compatible with NDIF’s deployment system.
-
----
-
-## 📘 Overview
-
-The Ray service enables NDIF to:
-- Launch and manage distributed inference or compute tasks.
-- Maintain cluster state (nodes, actors, replicas).
-- Register and monitor deployments via Ray Serve.
-- Communicate with the NDIF API service through shared environment variables and telemetry hooks.
+This container typically runs alongside the NDIF **API** and **queue** services. You *can* spin it up on its own for development, but most functionality (job submission & orchestration) requires the API.
 
 ---
 
-## 📁 Directory Structure
+## How NDIF uses this service
+
+- **Cluster management**: Starts/connects to a Ray cluster (head/client), tracks nodes/resources, surfaces health and metrics.
+- **Serve deployments**: Registers and scales Ray Serve apps that execute NDIF tasks.
+- **Inter-service glue**: Uses environment variables to talk to NDIF’s API, object store (MinIO/S3), metrics (InfluxDB/Prometheus), and logs (Loki).
+- **Observability**: Exposes Prometheus metrics and ships logs/traces via configured exporters.
+
+---
+
+## Directory structure
 
 src/services/ray/
 ├── Dockerfile
-├── compose/
-│ └── dev/
-│ ├── docker-compose.yml
-│ └── .env
-├── src/
-│ └── ray/
-│ ├── init.py
-│ ├── deployments/
-│ │ ├── init.py
-│ │ └── controller/
-│ │ ├── controller.py # Main Controller class
-│ │ └── cluster/
-│ │ ├── cluster.py # Cluster abstraction
-│ │ ├── node.py # Node representation
-│ │ └── init.py
-│ ├── logutil/
-│ │ └── logger.py # Centralized Loki / stdout logging shim
-│ ├── metrics/
-│ │ └── prometheus.py # Prometheus metrics helpers
-│ ├── providers/
-│ │ └── object_store.py # Object store access utilities
-│ ├── types.py # Shared constants and enums
-│ └── main.py # Entrypoint for Ray worker process
-└── README.md
+├── environment.yml # Conda/pip environment for the Ray service
+├── start.sh # Entrypoint script invoked by Compose
+├── config/
+│ └── ray_config.yml # (mounted via compose) Ray config
+├── deployments/
+│ └── controller/
+│ ├── controller.py # Controller (Serve orchestration)
+│ └── cluster/
+│ ├── cluster.py # Cluster abstraction (lifecycle/state/scale)
+│ └── node.py # Node model (ID/resources/health)
+├── logutil/
+│ └── logger.py # Loki/stdout logging shim
+├── metrics/
+│ └── prometheus.py # Prometheus metric helpers/exporters
+├── providers/
+│ └── object_store.py # MinIO/S3 helpers (if used)
+├── types.py # Shared constants/enums/keys
+└── main.py # Optional dev entrypoint
 
-
-**Highlights:**
-- `controller.py`: orchestrates deployments, interacts with Ray Serve.
-- `cluster.py`: manages groups of nodes, scaling, and lifecycle.
-- `node.py`: encapsulates node identity, state, and resource reporting.
-- `logger.py`: handles logging (stdout + Loki when configured).
-- `metrics/`: exposes Prometheus metrics for monitoring.
-- `providers/`: supports NDIF’s provider interface (e.g., object storage).
 
 ---
 
-## 🧩 Main Classes
+## Main classes
 
-| Class | Location | Description |
-|-------|-----------|-------------|
-| **Controller** | `deployments/controller/controller.py` | Manages Ray Serve deployments, handles start/stop and configuration propagation. |
-| **Cluster** | `deployments/controller/cluster/cluster.py` | Represents the Ray cluster, including node registration and scaling logic. |
-| **Node** | `deployments/controller/cluster/node.py` | Encapsulates per-node metadata and runtime information (CPU, GPU, host ID). |
-| **ServeSubmissionClient (mocked)** | Internal Ray import | Used to submit and control deployments via Ray Dashboard (mocked for Sphinx builds). |
-
----
-
-## 📚 Dependencies
-
-Core libraries used by the Ray service:
-
-| Library | Purpose |
-|----------|----------|
-| **ray** | Distributed compute and serving framework. |
-| **pydantic** | Data validation and model definition for config and schema objects. |
-| **fastapi** | Lightweight HTTP API interface (used indirectly by Ray Serve). |
-| **prometheus_client** | Exposes metrics endpoints for Grafana/Prometheus. |
-| **opentelemetry-sdk / opentelemetry-exporter-otlp** | Tracing and observability. |
-| **logging-loki** | Optional Loki handler for centralized logging. |
-| **python-dotenv** | Loads `.env` configuration when running locally. |
-
-> ✅ When updating dependencies, also clean unused packages from  
-> `environment.yml` and verify the Ray service builds correctly via Docker Compose.
+| Class        | Location                                  | Description |
+|--------------|-------------------------------------------|-------------|
+| **Controller** | `deployments/controller/controller.py`     | Orchestrates Ray Serve deployments (create/update/scale), wires NDIF config into the app graph. |
+| **Cluster**    | `deployments/controller/cluster/cluster.py` | Abstraction over Ray cluster state (head address, nodes, resources), readiness checks & scaling helpers. |
+| **Node**       | `deployments/controller/cluster/node.py`    | Node identity and resource state (CPU/GPU/host ID) used by Cluster/Controller for placement/health. |
 
 ---
 
-## 🌍 Environment Variables
+## Dependencies (from `environment.yml`)
 
-| Variable | Defined In | Purpose |
-|-----------|-------------|----------|
-| `HOST_IP` | `.env`, `docker-compose.yml` | Advertised IP address of the host for inter-service communication. |
-| `N_DEVICES` | `.env` | Number of worker devices or Ray nodes to start. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `.env` | OpenTelemetry collector endpoint. |
-| `RAY_ADDRESS` | `docker-compose.yml` | Ray cluster head address (used for client connection). |
-| `RAY_DASHBOARD_HOST` | `docker-compose.yml` | Enables Ray Dashboard access. |
-| `SERVICE_NAME` | `docker-compose.yml` | Used by tracing/logging to tag the service (e.g., “ray”). |
-| `LOKI_URL` | `.env` | URL to Loki instance for log aggregation. |
-| `PROMETHEUS_PORT` | `.env` | Port for Prometheus metrics exporter. |
+`ndif/src/services/ray/environment.yml` (Ray-specific environment) includes:
 
-Check `compose/dev/docker-compose.yml` and `compose/dev/.env` for current values.
+- **ray[serve]==2.47.0** — distributed execution + Ray Serve.
+- **prometheus_client** — metrics exporter used by `metrics/prometheus.py`.
+- **python-logging-loki** — optional Loki handler used by `logutil/logger.py` (shimmed to stdout if Loki is unavailable).
+- **boto3** — S3/MinIO access (object store).
+- **influxdb-client** — write operational metrics/series to InfluxDB (as configured in compose).
+- **nnsight** — project-specific; keep only if workloads under Ray actually import it.
+- **python-slugify** — utility; keep if referenced by deployments/config.
+- **google-api-python-client** — Google Calendar scheduling (see env vars below for creds / calendar id).
+
+> ⚠️ `environment.yml` currently ends with `- google` (likely accidental/incomplete). Replace this with the specific Google packages you need (e.g., `google-auth`, `google-auth-oauthlib`, `google-auth-httplib2`) **or remove it** if unused.
+
+**Suggested cleanup** (only if unused in Ray service code):
+- If the Ray service does **not** import `nnsight` directly (only tasks imported at runtime do), move `nnsight` to the repo’s workload environment or keep it documented as optional.
+- Ensure the minimal set here is installable headless in the Ray image.
 
 ---
 
-## 🚀 Running the Ray Service
+## Environment variables (as used by NDIF + Ray)
 
-You can run the Ray service independently, but it **requires the NDIF API service** to communicate fully.
+These are defined in **`ndif/compose/dev/.env`** and wired in **`ndif/compose/dev/docker-compose.yml`**. The Ray container consumes the following directly (see the `ray:` service `environment:` block):
 
-###1️From Docker Compose
+| Variable | Purpose |
+|---|---|
+| `LOKI_URL` | Push URL for Loki logs (e.g., `http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push`). |
+| `OBJECT_STORE_URL` | MinIO/S3 endpoint used by workloads (e.g., `${HOST_IP}:${DEV_MINIO_PORT}`). |
+| `API_URL` | Base URL of NDIF API (e.g., `http://${HOST_IP}:${DEV_API_PORT}`). |
+| `INFLUXDB_ADDRESS` | InfluxDB HTTP endpoint (e.g., `http://${HOST_IP}:${DEV_INFLUXDB_PORT}`). |
+| `INFLUXDB_ADMIN_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET` | InfluxDB auth and target. |
+| `SCHEDULING_GOOGLE_CALENDAR_ID` | Calendar ID for scheduling. |
+| `SCHEDULING_GOOGLE_CREDS_PATH` | Path to Google API creds inside the container (mounted file). |
+
+Other **Ray-related** variables from `.env` that shape the deployment:
+
+| Variable | Purpose |
+|---|---|
+| `N_DEVICES` | Number of NVIDIA GPU devices passed through to the container (Compose `deploy.resources.reservations.devices`). |
+| `HOST_IP` | Used to construct service URLs passed into containers. |
+| `RAY_DASHBOARD_HOST` | Dashboard bind host (e.g., `0.0.0.0`). |
+| `RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS` | Interval for Ray metrics gauge export (ms). |
+| `RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S` | Deadline for Serve queue length responses. |
+
+**Ports (host ↔ container) from `.env` and Compose:**
+
+| Purpose | Host Port | Container Port |
+|---|---:|---:|
+| Ray head (redis/gcs) | `${DEV_RAY_HEAD_PORT}` (= **6380**) | `${RAY_HEAD_INTERNAL_PORT}` (= **6379**) |
+| Ray client (ray://) | `${DEV_RAY_CLIENT_PORT}` (= **9998**) | `${RAY_CLIENT_INTERNAL_PORT}` (= **10001**) |
+| Ray dashboard (HTTP) | `${DEV_RAY_DASHBOARD_PORT}` (= **8266**) | `${RAY_DASHBOARD_INTERNAL_PORT}` (= **8265**) |
+| Ray Serve HTTP | `${DEV_RAY_SERVE_PORT}` (= **8267**) | `${RAY_SERVE_INTERNAL_PORT}` (= **8267**) |
+
+> The **API** and **queue** services connect to the Ray client via:  
+> `RAY_ADDRESS=ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}` (see `docker-compose.yml`).
+
+---
+
+## Spin up the Ray service
+
+> You can start the Ray container alone, but without the **API** (and often **queue**) it won’t receive real jobs.
+
+### With Docker Compose (recommended)
 
 ```bash
-cd compose/dev
+cd ndif/compose/dev
 docker compose up ray
+# or to run the whole stack:
+docker compose up
 
-### 2 Local Python (dev only)
+## Dev shell, exec into the running container:
+
 ```bash
-# Load environment for local run
-export $(grep -v '^#' compose/dev/.env | xargs)
+docker compose exec ray bash
 
-# Start the local Ray entrypoint (adjust path if needed)
-python -m ray.src.main
