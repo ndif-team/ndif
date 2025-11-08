@@ -3,21 +3,8 @@
 requires = ["setuptools>=68", "wheel"]
 
 [project]
-name = "ndif-tests"
+name = "ndif-ray-tests"
 version = "0.0.1"
-
-[tool.pytest.ini_options]
-minversion = "8.2"
-addopts = "-ra -q"
-testpaths = ["tests"]
-pythonpath = ["src/services/ray/src"]
-markers = [
-  "raymock: uses mocked external Ray APIs (fast)",
-  "integration: requires real Ray runtime (slow)"
-]
-filterwarnings = [
-  "ignore::DeprecationWarning"
-]
 
 [tool.coverage.run]
 source = [
@@ -26,3 +13,35 @@ source = [
   "src/services/ray/src/ray/nn"
 ]
 branch = true
+
+[tool.pytest.ini_options]
+minversion = "8.2"
+#addopts = "-ra -q"
+addopts = "-ra -q --ignore=src/services/api --ignore=src/services/queue --ignore=src/services/base --ignore=src/common --ignore=src/ndif"
+
+# ✅ pytest will look only here for test files
+testpaths = ["tests"]
+
+# ✅ pytest will treat only your internal Ray tree as the import root
+pythonpath = ["src/services/ray/src"]
+
+# ✅ Ignore every other NDIF directory so tests there are never even collected
+norecursedirs = [
+  "src/common",
+  "src/ndif",
+  "src/services/api",
+  "src/services/base",
+  "src/services/queue",
+  "src/services/*/tests",
+  "node_modules",
+  ".venv",
+  "__pycache__"
+]
+
+markers = [
+  "raymock: uses mocked external Ray APIs (fast)",
+  "integration: requires real Ray runtime (slow)"
+]
+filterwarnings = [
+  "ignore::DeprecationWarning"
+]
