@@ -5,8 +5,8 @@ from enum import Enum
 from typing import Any, Dict
 import ray
 
-from .....types import MODEL_KEY
-
+#from .....types import MODEL_KEY
+from ndif_shared.types import MODEL_KEY
 logger = logging.getLogger("ndif")
 
 class DeploymentLevel(Enum):
