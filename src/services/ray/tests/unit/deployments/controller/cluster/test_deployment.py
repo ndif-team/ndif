@@ -122,12 +122,15 @@ def test_delete_logs_on_failure(module, fake_ray, fake_logger):
 
 
 def test_cache_returns_object_ref_on_success(module, fake_ray, fake_logger, mocker):
-    # Fake actor with to_cache.remote()
-    class FakeHandle:
-        def to_cache(self):
-            return self
+    # Fake Ray-style actor method proxy
+    class _ActorMethod:
         def remote(self):
             return "OBJECT_REF"
+
+    class FakeHandle:
+        def __init__(self):
+            # Ray-style: attribute that has a .remote() method
+            self.to_cache = _ActorMethod()
 
     fake_ray.get_actor.return_value = FakeHandle()
 
@@ -137,6 +140,7 @@ def test_cache_returns_object_ref_on_success(module, fake_ray, fake_logger, mock
     fake_ray.get_actor.assert_called_once_with("ModelActor:MK:k")
     assert ref == "OBJECT_REF"
     fake_logger.exception.assert_not_called()
+
 
 
 def test_cache_logs_and_returns_none_on_failure(module, fake_ray, fake_logger):
