@@ -22,6 +22,7 @@ if "logging_loki" not in sys.modules:
     logging_loki.LokiHandler = LokiHandler
     sys.modules["logging_loki"] = logging_loki
 
+'''
 # 4) Robust Ray stub: make 'ray' a *package* and add subpackages you need
 def _ensure_pkg(dotted: str) -> types.ModuleType:
     """
@@ -88,6 +89,86 @@ if not hasattr(sdk, "ServeSubmissionClient"):
     sdk.ServeSubmissionClient = _FakeClient
     
 #end of ray stub
+'''
+
+# --- Robust Ray stub for unit tests ------------------------------------------
+import sys, types
+
+def _ensure_pkg(dotted: str) -> types.ModuleType:
+    """Ensure a dotted path exists in sys.modules as a *package* at each level."""
+    parts = dotted.split(".")
+    cur = None
+    path = []
+    for seg in parts:
+        path.append(seg)
+        name = ".".join(path)
+        mod = sys.modules.get(name)
+        if mod is None:
+            mod = types.ModuleType(name)
+            mod.__path__ = []  # make it a package so children can import
+            sys.modules[name] = mod
+            if cur is not None:
+                setattr(cur, seg, mod)
+        cur = mod
+    return cur
+
+# 1) Top-level package 'ray'
+ray_pkg = _ensure_pkg("ray")
+
+# minimal functions you actually use in deployment.py
+if not hasattr(ray_pkg, "get_actor"):
+    def _default_get_actor(*a, **k):  # default: simulate "not found"
+        raise RuntimeError("actor not found (stub)")
+    ray_pkg.get_actor = _default_get_actor
+if not hasattr(ray_pkg, "kill"):
+    ray_pkg.kill = lambda *a, **k: None
+
+# 2) Private internals your code imports
+# 2a) ray._private and ray._private.services
+rp = _ensure_pkg("ray._private")
+if not hasattr(rp, "services"):
+    rp.services = types.SimpleNamespace(
+        get_node_ip_address=lambda *a, **k: "127.0.0.1",
+    )
+
+# 2b) ray._private.state.GlobalState
+rp_state = _ensure_pkg("ray._private.state")
+if not hasattr(rp_state, "GlobalState"):
+    class GlobalState:
+        def __init__(self, *a, **k): ...
+        def initialize_global_state(self, *a, **k): ...
+        def _initialize_global_state(self, *a, **k): ...
+        def disconnect(self, *a, **k): ...
+        def node_table(self, *a, **k): return []
+        def job_table(self, *a, **k): return []
+        def cluster_resources(self, *a, **k): return {}
+        def available_resources(self, *a, **k): return {}
+    rp_state.GlobalState = GlobalState
+
+# 2c) ray._raylet.GcsClientOptions
+raylet = _ensure_pkg("ray._raylet")
+if not hasattr(raylet, "GcsClientOptions"):
+    class GcsClientOptions:
+        def __init__(self, *a, **k): ...
+    raylet.GcsClientOptions = GcsClientOptions
+
+# 3) Public helpers your code imports
+# 3a) ray.util.state.list_nodes
+util_state = _ensure_pkg("ray.util.state")
+if not hasattr(util_state, "list_nodes"):
+    def list_nodes(*a, **k): return []
+    util_state.list_nodes = list_nodes
+
+# 3b) from ray import serve  (provide an empty module-like object)
+serve_mod = _ensure_pkg("ray.serve")
+# if your unit tests later need specific attributes (e.g., serve.deployment),
+# add minimal dummies here, e.g.:
+# if not hasattr(serve_mod, "deployment"):
+#     def deployment(func=None, *a, **k):
+#         def wrapper(f): return f
+#         return wrapper if func is None else func
+#     serve_mod.deployment = deployment
+
 
 # Utility fixture you already had
 @pytest.fixture
