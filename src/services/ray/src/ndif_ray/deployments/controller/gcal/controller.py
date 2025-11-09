@@ -2,7 +2,8 @@ import os
 import time
 
 from ray import ray, serve
-from .....types import MODEL_KEY, RAY_APP_NAME
+#from .....types import MODEL_KEY, RAY_APP_NAME
+from ndif_shared.types import MODEL_KEY, RAY_APP_NAME
 
 from ..controller import ControllerDeploymentArgs, _ControllerDeployment
 from .scheduler import SchedulingActor
