@@ -8,9 +8,9 @@ version = "0.0.1"
 
 [tool.coverage.run]
 source = [
-  "src/services/ray/src/ray/deployments",
-  "src/services/ray/src/ray/distributed",
-  "src/services/ray/src/ray/nn"
+  "src/services/ray/src/ndif_ray/deployments",
+  "src/services/ray/src/ndif_ray/distributed",
+  "src/services/ray/src/ndif_ray/nn"
 ]
 branch = true
 
