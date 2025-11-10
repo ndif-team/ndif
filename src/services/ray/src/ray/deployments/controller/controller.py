@@ -1,3 +1,21 @@
+"""
+Ray Serve controller for managing distributed model deployments.
+
+This module defines the `ControllerDeployment`, which orchestrates
+Serve applications across nodes in a Ray cluster. It translates
+high-level `Deployment` specifications into Ray Serve applications,
+applies updated deployment schemas, and monitors cluster state.
+
+Key components:
+    - `_ControllerDeployment`: Core logic for deployment orchestration.
+    - `ControllerDeployment`: Ray Serve deployment wrapping the controller.
+    - `ControllerDeploymentArgs`: Configuration schema for controller setup.
+    - `app()`: Entrypoint for Serve application creation.
+
+Used by the Ray head node to coordinate model deployment,
+cache management, and cluster synchronization.
+"""
+
 import os
 from dataclasses import asdict
 from datetime import datetime
@@ -26,6 +44,22 @@ from .cluster import Cluster, Deployment, DeploymentLevel
 
 
 class _ControllerDeployment:
+    """Core controller responsible for coordinating Ray Serve deployments.
+
+    Handles deploying, syncing, and monitoring Serve applications across
+    the Ray cluster. Maintains internal cluster state, caches, and resource
+    allocation per node.
+
+    Attributes:
+        model_import_path: Import path to the model application factory.
+        execution_timeout_seconds: Max model execution time per request.
+        minimum_deployment_time_seconds: Minimum duration before teardown.
+        model_cache_percentage: Fraction of GPU memory reserved for cache.
+        ray_dashboard_url: Ray dashboard URL for submission client.
+        client: ServeSubmissionClient used to deploy applications.
+        cluster: Cluster object managing deployment state and nodes.
+    """
+    
     def __init__(
         self,
         deployments: List[str],
@@ -34,7 +68,15 @@ class _ControllerDeployment:
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
     ):
+        """Initialize the controller with deployment configuration.
 
+        Args:
+            deployments: List of model keys to deploy.
+            model_import_path: Import path for model deployment app.
+            execution_timeout_seconds: Maximum execution timeout.
+            model_cache_percentage: Percentage of cache memory to use.
+            minimum_deployment_time_seconds: Minimum up-time per model.
+        """
         super().__init__()
 
         self.model_import_path = model_import_path
@@ -86,6 +128,14 @@ class _ControllerDeployment:
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
         """Get the state of the controller."""
+        """Return controller state and optionally Ray runtime info.
+
+        Args:
+            include_ray_state: Whether to include Ray runtime context.
+
+        Returns:
+            Dict[str, Any]: Controller state summary.
+        """
 
         state = {
             "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
@@ -106,7 +156,18 @@ class _ControllerDeployment:
         return state
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
+        """Deploy one or more model keys to the cluster.
 
+        Args:
+            model_keys: Model identifiers to deploy.
+            dedicated: Whether to assign each deployment to a dedicated node.
+
+        Returns:
+            Tuple[List[Any], bool]: Deployment results and change flag.
+
+        Example:
+            >>> ctrl.deploy(["meta-llama/Llama-3.1-8B"], dedicated=True)
+        """
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
@@ -119,7 +180,15 @@ class _ControllerDeployment:
     def deployment_to_application(
         self, deployment: Deployment, node_name: NODE_ID
     ) -> ServeApplicationSchema:
+        """Convert a deployment object into a Serve application schema.
 
+        Args:
+            deployment: Deployment configuration object.
+            node_name: Target node identifier.
+
+        Returns:
+            ServeApplicationSchema: Application schema ready for deployment.
+        """
         deployment_args = BaseModelDeploymentArgs(
             model_key=deployment.model_key,
             node_name=node_name,
@@ -151,7 +220,7 @@ class _ControllerDeployment:
         )
 
     def build(self):
-
+        """Build a full ServeDeploySchema from current cluster state."""
         self.state.applications = [self.state.applications[0]]
 
         for node in self.cluster.nodes.values():
@@ -165,7 +234,7 @@ class _ControllerDeployment:
                 )
 
     def apply(self):
-
+        """Apply the current state to Ray Serve via ServeSubmissionClient."""
         self.logger.info(f"Applying state: {self.state}")
 
         self.build()
@@ -174,13 +243,25 @@ class _ControllerDeployment:
 
     def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
         """Get the deployment of a model key (or None if not found)."""
+        """Get deployment metadata for a specific model.
+
+        Args:
+            model_key: Model key to look up.
+
+        Returns:
+            Optional[dict]: Deployment state if found, otherwise None.
+        """
         for node in self.cluster.nodes.values():
             if model_key in node.deployments.keys():
                 return node.deployments[model_key].get_state()
         return None
 
     def status(self):
+        """Return status of all deployments and node resources.
 
+        Returns:
+            Dict[str, Any]: Deployment and cluster-level status snapshot.
+        """
         serve_status = serve.status()
 
         status = {}
@@ -304,11 +385,12 @@ class _ControllerDeployment:
 
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment(_ControllerDeployment):
+    """Ray Serve deployment wrapper around `_ControllerDeployment`."""
     pass
 
 
 class ControllerDeploymentArgs(BaseModel):
-
+    """Pydantic model defining startup arguments for the controller."""
     deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
@@ -318,4 +400,17 @@ class ControllerDeploymentArgs(BaseModel):
 
 
 def app(args: ControllerDeploymentArgs) -> Application:
+    """Entrypoint for the Ray Serve controller application.
+
+    Args:
+        args: Configuration object defining controller parameters.
+
+    Returns:
+        Application: Bound Ray Serve application ready for deployment.
+
+    Example:
+        >>> from ray.deployments.controller.controller import app, ControllerDeploymentArgs
+        >>> args = ControllerDeploymentArgs(deployments=["meta-llama/Llama-3.1-8B"])
+        >>> serve.run(app(args))
+    """
     return ControllerDeployment.bind(**args.model_dump())
