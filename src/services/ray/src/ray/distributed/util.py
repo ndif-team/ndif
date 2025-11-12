@@ -1,6 +1,6 @@
 import json
 from functools import wraps
-from typing import Any, NamedTuple
+from typing import Any
 
 import torch
 import os
@@ -13,24 +13,17 @@ from transformers.utils.hub import cached_file
 from nnsight import util
 from nnsight.intervention.protocols import InterventionProtocol
 
-from accelerate import load_checkpoint_and_dispatch
 from accelerate.utils import modeling
 from accelerate.utils.imports import (
     is_mlu_available,
-    is_mps_available,
     is_musa_available,
     is_npu_available,
-    is_peft_available,
-    is_torch_xla_available,
     is_xpu_available,
 )
 from accelerate.utils.modeling import check_device_same, clear_device_cache
-from accelerate.utils import modeling
-from safetensors.torch import load_file
 
 
 def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
-
     model_index_filename = "model.safetensors.index.json"
     index_path = cached_file(repo_id, model_index_filename)
 
@@ -51,11 +44,13 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
         torch.distributed.barrier()
 
-        if os.environ.get('DELETE_MODEL_SHARDS', '0') == '1' and os.environ['CUDA_VISIBLE_DEVICES'][0] == '0':
+        if (
+            os.environ.get("DELETE_MODEL_SHARDS", "0") == "1"
+            and os.environ["CUDA_VISIBLE_DEVICES"][0] == "0"
+        ):
             binary_path = os.path.realpath(shard_path)
             os.remove(binary_path)
             os.remove(shard_path)
-
 
         state_dict = {key: value.cuda() for key, value in state_dict.items()}
 
@@ -65,20 +60,15 @@ def load_hf_model_from_cache(model: torch.nn.Module, repo_id: str):
 
 
 def patch_intervention_protocol() -> None:
-
     def wrap(intervene):
-
         @wraps(intervene)
         def intervene_wrapper(activations: Any, *args, **kwargs):
-
             placements = []
 
             def check_for_dtensor(tensor: torch.Tensor):
-
                 nonlocal placements
 
                 if isinstance(tensor, DTensor):
-
                     placements.append((tensor.placements, tensor.device_mesh))
 
                     return tensor.full_tensor()
@@ -87,20 +77,16 @@ def patch_intervention_protocol() -> None:
 
                 return tensor
 
-            activations = util.apply(
-                activations, check_for_dtensor, torch.Tensor
-            )
+            activations = util.apply(activations, check_for_dtensor, torch.Tensor)
 
             activations = intervene(activations, *args, **kwargs)
 
             def redistribute_tensors(tensor: torch.Tensor):
-
                 nonlocal placements
 
                 placement = placements.pop(0)
 
                 if placement is None:
-
                     return tensor
 
                 placement, device_mesh = placement
@@ -110,7 +96,6 @@ def patch_intervention_protocol() -> None:
                 ).redistribute(device_mesh=device_mesh, placements=placement)
 
             if len(placements) > 0:
-
                 activations = util.apply(
                     activations, redistribute_tensors, torch.Tensor
                 )
@@ -122,7 +107,6 @@ def patch_intervention_protocol() -> None:
 
 
 def to_full_tensor(data: Any) -> Any:
-
     return util.apply(data, lambda x: x.full_tensor(), DTensor)
 
 
@@ -168,10 +152,7 @@ def set_module_tensor_to_device(
             module = new_module
         tensor_name = splits[-1]
 
-    if (
-        tensor_name not in module._parameters
-        and tensor_name not in module._buffers
-    ):
+    if tensor_name not in module._parameters and tensor_name not in module._buffers:
         raise ValueError(
             f"{module} does not have a parameter or a buffer named {tensor_name}."
         )
@@ -186,18 +167,14 @@ def set_module_tensor_to_device(
         and value.data_ptr() in tied_params_map
         and device in tied_params_map[value.data_ptr()]
     ):
-        module._parameters[tensor_name] = tied_params_map[value.data_ptr()][
-            device
-        ]
+        module._parameters[tensor_name] = tied_params_map[value.data_ptr()][device]
         return
     elif (
         tied_params_map is not None
         and old_value.data_ptr() in tied_params_map
         and device in tied_params_map[old_value.data_ptr()]
     ):
-        module._parameters[tensor_name] = tied_params_map[old_value.data_ptr()][
-            device
-        ]
+        module._parameters[tensor_name] = tied_params_map[old_value.data_ptr()][device]
         return
 
     if (
@@ -210,19 +187,14 @@ def set_module_tensor_to_device(
         )
 
     param = (
-        module._parameters[tensor_name]
-        if tensor_name in module._parameters
-        else None
+        module._parameters[tensor_name] if tensor_name in module._parameters else None
     )
     param_cls = type(param)
 
     if value is not None:
         # We can expect mismatches when using bnb 4bit since Params4bit will reshape and pack the weights.
         # In other cases, we want to make sure we're not loading checkpoints that do not match the config.
-        if (
-            old_value.shape != value.shape
-            and param_cls.__name__ != "Params4bit"
-        ):
+        if old_value.shape != value.shape and param_cls.__name__ != "Params4bit":
             raise ValueError(
                 f'Trying to set a tensor of shape {value.shape} in "{tensor_name}" (which has shape {old_value.shape}), this looks incorrect.'
             )
@@ -230,9 +202,7 @@ def set_module_tensor_to_device(
         if dtype is None:
             # For compatibility with PyTorch load_state_dict which converts state dict dtype to existing dtype in model
             value = value.to(old_value.dtype)
-        elif not str(value.dtype).startswith(
-            ("torch.uint", "torch.int", "torch.bool")
-        ):
+        elif not str(value.dtype).startswith(("torch.uint", "torch.int", "torch.bool")):
             value = value.to(dtype)
 
     device_quantization = None
@@ -337,14 +307,8 @@ def set_module_tensor_to_device(
                     if torch.device(device).type == "cuda"
                     else None
                 )
-                if (
-                    not getattr(module.weight, "SCB", None)
-                    and device_index is not None
-                ):
-                    if (
-                        module.bias is not None
-                        and module.bias.device.type != "meta"
-                    ):
+                if not getattr(module.weight, "SCB", None) and device_index is not None:
+                    if module.bias is not None and module.bias.device.type != "meta":
                         # if a bias exists, we need to wait until the bias is set on the correct device
                         module = module.cuda(device_index)
                     elif module.bias is None:
@@ -385,15 +349,12 @@ def set_module_tensor_to_device(
         and device not in tied_params_map[value.data_ptr()]
     ):
         tied_params_map[value.data_ptr()][device] = new_value
-        
-        
+
     #### PATCH #######################################
-    
+
     for hook in module._load_state_dict_post_hooks.values():
-                
         hook(module, None)
 
 
 def patch_accelerate():
-    
     modeling.set_module_tensor_to_device = set_module_tensor_to_device

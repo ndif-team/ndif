@@ -9,15 +9,14 @@ from .....types import MODEL_KEY
 
 logger = logging.getLogger("ndif")
 
-class DeploymentLevel(Enum):
 
+class DeploymentLevel(Enum):
     HOT = "hot"
     WARM = "warm"
     COLD = "cold"
 
 
 class Deployment:
-
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -27,7 +26,6 @@ class Deployment:
         dedicated: bool = False,
         cached: bool = False,
     ):
-
         self.model_key = MODEL_KEY(model_key)
         self.deployment_level = deployment_level
         self.gpus_required = gpus_required
@@ -49,24 +47,20 @@ class Deployment:
             "deployed": self.deployed,
         }
 
-
     def end_time(self, minimim_deployment_time_seconds: int) -> datetime:
-
         return datetime.fromtimestamp(
             self.deployed + minimim_deployment_time_seconds, tz=timezone.utc
         )
 
     def delete(self):
-
         try:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
             ray.kill(actor)
         except Exception:
             logger.exception(f"Error removing actor {self.model_key} from cache.")
             pass
-        
+
     def cache(self):
-        
         try:
             actor = ray.get_actor(f"ModelActor:{self.model_key}")
             return actor.to_cache.remote()

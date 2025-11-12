@@ -10,7 +10,6 @@ logger = logging.getLogger("ndif")
 
 
 class RayProvider(Provider):
-
     ray_url: str
 
     @classmethod
@@ -43,7 +42,9 @@ class RayProvider(Provider):
             host, port = addr.split(":")
             port = int(port)
         else:
-            logger.warning(f"RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379")
+            logger.warning(
+                f"RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
+            )
             host = addr
             port = 6379  # Default Ray port if not specified
         return host, port
@@ -54,7 +55,7 @@ class RayProvider(Provider):
         try:
             host, port = cls.get_host_port()
             return verify_connection(host, port)
-        except Exception as e:
+        except Exception:
             return False
 
     @classmethod

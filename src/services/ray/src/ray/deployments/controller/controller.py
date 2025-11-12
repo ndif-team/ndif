@@ -35,7 +35,6 @@ class _ControllerDeployment:
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
     ):
-
         super().__init__()
 
         self.model_import_path = model_import_path
@@ -48,12 +47,13 @@ class _ControllerDeployment:
 
         if os.getenv("RAY_DASHBOARD_URL"):
             self.ray_dashboard_url = os.getenv("RAY_DASHBOARD_URL")
-        else:   
-            self.logger.warning("RAY_DASHBOARD_URL is not set, using default dashboard URL")
+        else:
+            self.logger.warning(
+                "RAY_DASHBOARD_URL is not set, using default dashboard URL"
+            )
             self.ray_dashboard_url = (
                 f"http://{self.runtime_context.worker.node.address_info['webui_url']}"
             )
-
 
         self.client = ServeSubmissionClient(self.ray_dashboard_url)
 
@@ -62,7 +62,6 @@ class _ControllerDeployment:
         applications = []
 
         for application_details in serve_details.applications.values():
-
             application_schema = application_details.deployed_app_config
 
             applications.append(application_schema)
@@ -82,7 +81,7 @@ class _ControllerDeployment:
             model_cache_percentage=self.model_cache_percentage,
         )
 
-        if deployments and deployments != ['']:
+        if deployments and deployments != [""]:
             self.deploy(deployments, dedicated=True)
 
         asyncio.get_event_loop().create_task(self.loop_sync())
@@ -98,18 +97,15 @@ class _ControllerDeployment:
         }
 
         if include_ray_state:
-
             state["ray_dashboard_url"] = self.ray_dashboard_url
             state["runtime_context"] = self.runtime_context.get()
             state["replica_context"] = asdict(self.replica_context)
             state["serve_details"] = self.client.get_serve_details()
-            
 
         state["datetime"] = datetime.now().isoformat()
         return state
 
     def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
-
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
@@ -122,7 +118,6 @@ class _ControllerDeployment:
     def deployment_to_application(
         self, deployment: Deployment, node_name: NODE_ID
     ) -> ServeApplicationSchema:
-
         deployment_args = BaseModelDeploymentArgs(
             model_key=deployment.model_key,
             node_name=node_name,
@@ -154,12 +149,10 @@ class _ControllerDeployment:
         )
 
     def build(self):
-
         self.state.applications = [self.state.applications[0]]
 
         for node in self.cluster.nodes.values():
             for deployment in node.deployments.values():
-
                 self.state.applications.append(
                     self.deployment_to_application(
                         deployment,
@@ -168,7 +161,6 @@ class _ControllerDeployment:
                 )
 
     def apply(self):
-
         self.logger.info(f"Applying state: {self.state}")
 
         self.build()
@@ -183,15 +175,12 @@ class _ControllerDeployment:
         return None
 
     def status(self):
-
         serve_status = serve.status()
 
         status = {}
 
         for application_name, application in serve_status.applications.items():
-
             if application_name.startswith("Model"):
-
                 status[application_name] = {
                     "application_state": application.status.value,
                 }
@@ -199,9 +188,7 @@ class _ControllerDeployment:
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
-
             for deployment in node.deployments.values():
-
                 application_name = RAY_APP_NAME(deployment.model_key)
 
                 status[application_name] = {
@@ -213,7 +200,7 @@ class _ControllerDeployment:
                         deployment.model_key
                     ].config._name_or_path,
                     "revision": self.cluster.evaluator.cache[
-                            deployment.model_key
+                        deployment.model_key
                     ].revision,
                     "config": self.cluster.evaluator.cache[
                         deployment.model_key
@@ -223,7 +210,10 @@ class _ControllerDeployment:
                     ].n_params,
                 }
 
-                if not deployment.dedicated and self.minimum_deployment_time_seconds is not None:
+                if (
+                    not deployment.dedicated
+                    and self.minimum_deployment_time_seconds is not None
+                ):
                     status[application_name]["schedule"] = {
                         "end_time": deployment.end_time(
                             self.minimum_deployment_time_seconds
@@ -237,11 +227,9 @@ class _ControllerDeployment:
                 )
 
             for cached_model_key in node.cache.keys():
-
                 application_name = RAY_APP_NAME(MODEL_KEY(cached_model_key))
 
                 if application_name not in status:
-
                     status[application_name] = {
                         "deployment_level": DeploymentLevel.WARM.name,
                         "model_key": cached_model_key,
@@ -268,9 +256,7 @@ class _ControllerDeployment:
         downloaded_models = get_downloaded_models()
 
         for repo_id in downloaded_models:
-
             if repo_id not in existing_repo_ids:
-
                 status[repo_id] = {
                     "deployment_level": DeploymentLevel.COLD.name,
                     "repo_id": repo_id,
@@ -314,19 +300,25 @@ class _ControllerDeployment:
 
         self.cluster.update_nodes()
 
+
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class ControllerDeployment(_ControllerDeployment):
     pass
 
 
 class ControllerDeploymentArgs(BaseModel):
-
     deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
-    execution_timeout_seconds: Optional[float] = float(os.environ.get("NDIF_EXECUTION_TIMEOUT_SECONDS", "3600"))
-    minimum_deployment_time_seconds: Optional[float] = float(os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600"))
-    model_cache_percentage: Optional[float] = float(os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9"))
+    execution_timeout_seconds: Optional[float] = float(
+        os.environ.get("NDIF_EXECUTION_TIMEOUT_SECONDS", "3600")
+    )
+    minimum_deployment_time_seconds: Optional[float] = float(
+        os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")
+    )
+    model_cache_percentage: Optional[float] = float(
+        os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
+    )
 
 
 def app(args: ControllerDeploymentArgs) -> Application:

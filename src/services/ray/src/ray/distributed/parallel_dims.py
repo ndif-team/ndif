@@ -22,9 +22,9 @@ class ParallelDims:
         assert dp >= 1, dp
         assert tp >= 1, tp
         assert pp >= 1, pp
-        assert (
-            dp * tp * pp == self.world_size
-        ), f"Invalid parallel dims: dp({dp}) * tp({tp}) * pp({pp}) != WORLD_SIZE({self.world_size})"
+        assert dp * tp * pp == self.world_size, (
+            f"Invalid parallel dims: dp({dp}) * tp({tp}) * pp({pp}) != WORLD_SIZE({self.world_size})"
+        )
 
     def build_mesh(self, device_type):
         dims = []

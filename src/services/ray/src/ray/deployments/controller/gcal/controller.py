@@ -8,6 +8,7 @@ from ..controller import ControllerDeploymentArgs, _ControllerDeployment
 from .scheduler import SchedulingActor
 from ..cluster.deployment import DeploymentLevel
 
+
 @serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
 class SchedulingControllerDeployment(_ControllerDeployment):
     def __init__(
@@ -18,7 +19,6 @@ class SchedulingControllerDeployment(_ControllerDeployment):
         delay_start_s: float,
         **kwargs,
     ):
-
         super().__init__(**kwargs)
 
         self.google_calendar_id = google_calendar_id
@@ -38,7 +38,6 @@ class SchedulingControllerDeployment(_ControllerDeployment):
         self.scheduler.start.remote()
 
     def status(self):
-
         status = super().status()
 
         status["calendar_id"] = self.google_calendar_id
@@ -46,21 +45,16 @@ class SchedulingControllerDeployment(_ControllerDeployment):
         schedule = ray.get(self.scheduler.get_schedule.remote())
 
         for model_key, schedule in schedule.items():
-
             application_name = RAY_APP_NAME(MODEL_KEY(model_key))
 
             if application_name in status["deployments"]:
-
                 status["deployments"][application_name]["schedule"] = schedule
 
             else:
-
                 self.cluster.evaluator(model_key)
-                
-                repo_id = self.cluster.evaluator.cache[
-                        model_key
-                    ].config._name_or_path
-                
+
+                repo_id = self.cluster.evaluator.cache[model_key].config._name_or_path
+
                 if repo_id in status["deployments"]:
                     del status["deployments"][repo_id]
 
@@ -68,23 +62,18 @@ class SchedulingControllerDeployment(_ControllerDeployment):
                     "deployment_level": DeploymentLevel.COLD.name,
                     "model_key": model_key,
                     "repo_id": repo_id,
-                    "revision": self.cluster.evaluator.cache[
-                        model_key
-                    ].revision,
+                    "revision": self.cluster.evaluator.cache[model_key].revision,
                     "config": self.cluster.evaluator.cache[
                         model_key
                     ].config.to_json_string(),
                     "schedule": schedule,
-                    "n_params": self.cluster.evaluator.cache[
-                        model_key
-                    ].n_params,
+                    "n_params": self.cluster.evaluator.cache[model_key].n_params,
                 }
 
         return status
 
 
 class SchedulingControllerDeploymentArgs(ControllerDeploymentArgs):
-
     google_credentials_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", "")
     google_calendar_id: str = os.environ.get("SCHEDULING_GOOGLE_CALENDAR_ID", "")
     check_interval_s: float = float(os.environ.get("SCHEDULING_CHECK_INTERVAL_S", "10"))
