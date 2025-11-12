@@ -3,7 +3,8 @@ name: Ruff
 on: [push]
 
 jobs:
-  build:
+  lint_format:
+    name: Lint and Format
     runs-on: ubuntu-latest
     strategy:
       matrix:
