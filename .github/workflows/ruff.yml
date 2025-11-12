@@ -17,7 +17,8 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - uses: astral-sh/ruff-action@v3
       with:
-        args: "check src"
+        src: "src"
+        args: "check"
   format:
     name: Check Format
     runs-on: ubuntu-latest
@@ -32,4 +33,5 @@ jobs:
         python-version: ${{ matrix.python-version }}
     - uses: astral-sh/ruff-action@v3
       with:
-        args: "format --check --diff src"
+        src: "src"
+        args: "format --check --diff"
