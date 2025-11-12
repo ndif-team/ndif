@@ -4,13 +4,16 @@
 `model_key`, checks readiness, and provides `execute` to submit requests.
 """
 
-import os
+import logging
 
-from ray.serve._private.client import *
+import ray
+from ray.serve._private.client import RayServeException
 from ray.util.client import ray as client_ray
 from ray.util.client.common import return_refs
 
 from ..schema import BackendRequestModel
+
+logger = logging.getLogger("ndif")
 
 
 class Handle:
@@ -28,7 +31,8 @@ class Handle:
         try:
             actor = ray.get_actor(self.actor_name, namespace="NDIF")
             self.ready_future = actor.__ray_ready__.remote()
-        except Exception:
+        except Exception as e:
+            logger.info(f"Error getting actor '{self.actor_name}': {e}")
             raise RayServeException(f"Actor '{self.actor_name}' does not exist.")
 
     @property
