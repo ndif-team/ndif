@@ -3,8 +3,8 @@ name: Ruff
 on: [push]
 
 jobs:
-  lint_format:
-    name: Lint and Format
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -18,6 +18,18 @@ jobs:
     - uses: astral-sh/ruff-action@v3
       with:
         args: "check src"
+  format:
+    name: Check Format
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
     - uses: astral-sh/ruff-action@v3
       with:
         args: "format --check --diff src"
