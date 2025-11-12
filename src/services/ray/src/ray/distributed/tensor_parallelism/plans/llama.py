@@ -1,14 +1,11 @@
-from torch.distributed._tensor import Replicate, Shard
+from torch.distributed._tensor import Replicate
 from torch.distributed.tensor.parallel import (
     ColwiseParallel,
-    PrepareModuleInput,
     RowwiseParallel,
-    SequenceParallel,
 )
 
 
 def update_attention(module, mesh):
-
     module.num_heads = module.num_heads // mesh.size()
     module.num_key_value_heads = module.num_key_value_heads // mesh.size()
 

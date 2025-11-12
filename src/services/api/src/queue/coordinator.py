@@ -43,7 +43,6 @@ class DeploymentStatus(Enum):
 
 @dataclass
 class DeploymentSubmission:
-
     model_keys: list[str]
     deployment_future: DeploymentResponse
 
@@ -52,7 +51,6 @@ class Coordinator:
     """Orchestrates request routing and model deployment lifecycle."""
 
     def __init__(self):
-
         self.redis_client = redis.Redis.from_url(os.environ.get("BROKER_URL"))
         self.processors: dict[str, Processor] = {}
 
@@ -92,14 +90,12 @@ class Coordinator:
 
         On errors, purge processors to reset local state before reconnecting.
         """
-        self.logger.info(f"Connecting to Ray")
+        self.logger.info("Connecting to Ray")
 
         while not RayProvider.connected():
-
             self.purge()
 
             try:
-
                 RayProvider.reset()
                 RayProvider.connect()
 
@@ -109,7 +105,6 @@ class Coordinator:
     def loop(self):
         """Main event loop for routing, deploying, and stepping processors."""
         while True:
-
             try:
                 # Get all requests currently in the queue and route them to the appropriate processors.
                 for _ in range(self.redis_client.llen("queue")):
@@ -135,7 +130,6 @@ class Coordinator:
             # If there is an error in the coordinator loop, it might be due to a connection issue.
             # So we reconnect to Ray and try again.
             except Exception as e:
-
                 self.logger.error(
                     f"Error in coordinator loop: {e}\n{traceback.format_exc()}"
                 )
@@ -149,7 +143,6 @@ class Coordinator:
         model_keys = []
 
         for processor in self.processors_to_deploy:
-
             model_keys.append(processor.model_key)
             processor.status = ProcessorStatus.PROVISIONING
 
@@ -176,7 +169,6 @@ class Coordinator:
                 return
 
         if request.model_key not in self.processors:
-
             self.processors[request.model_key] = Processor(request.model_key)
             self.processors_to_deploy.append(self.processors[request.model_key])
 
@@ -189,9 +181,7 @@ class Coordinator:
         not_ready = []
 
         for deployment_submission in self.deployment_submissions:
-
             try:
-
                 result = deployment_submission.deployment_future.result(timeout_s=0)
 
             except TimeoutError:
@@ -208,21 +198,17 @@ class Coordinator:
                 ready.append(result)
 
         for result in ready:
-
             deployment_statuses = result["result"]
 
             evictions = result["evictions"]
 
             for model_key, status in deployment_statuses.items():
-
                 status_str = str(status).lower()
 
                 try:
-
                     deployment_status = DeploymentStatus(status_str)
 
                 except ValueError:
-
                     self.remove(
                         model_key,
                         message=f"{status_str}\n\nThere was an error provisioning the model deployment. Please try again later. Sorry for the inconvenience.",
@@ -231,7 +217,6 @@ class Coordinator:
                     continue
 
                 if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
-
                     self.remove(
                         model_key,
                         message="Model deployment cannot be accomodated at this time. Please try again later. Sorry for the inconvenience.",
@@ -240,7 +225,6 @@ class Coordinator:
                     continue
 
                 else:
-
                     self.processors[model_key].status = ProcessorStatus.DEPLOYING
 
             for eviction in evictions:
@@ -270,16 +254,13 @@ class Coordinator:
     def fulfill_status(self):
         """Serve controller status snapshots to waiting Redis consumers."""
         if self.status_future is not None:
-
             try:
-
                 result = self.status_future.result(timeout_s=0)
 
             except TimeoutError:
                 return
 
             else:
-
                 status = pickle.dumps(result)
 
                 for _ in range(self.redis_client.llen("status")):
@@ -291,16 +272,13 @@ class Coordinator:
                 self.status_cache = status
 
         elif self.redis_client.llen("status") > 0:
-
             if (
                 self.status_cache is None
                 or time.time() - self.last_status_time > self.status_cache_freq_s
             ):
-
                 self.status_future = self.controller_handle.status.remote()
 
             else:
-
                 for _ in range(self.redis_client.llen("status")):
                     id = self.redis_client.brpop("status")[1]
                     self.redis_client.lpush(id, self.status_cache)

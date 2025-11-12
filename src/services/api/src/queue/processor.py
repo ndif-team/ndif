@@ -48,7 +48,6 @@ class Processor:
     """Manages a per-model queue and talks to the Ray backend via `Handle`."""
 
     def __init__(self, model_key: str):
-
         self.model_key = model_key
 
         self.queue: list[BackendRequestModel] = list()
@@ -96,7 +95,6 @@ class Processor:
         # READY: The model is ready to accept requests.
         # (I.e. the model is loaded and the deployment is ready with no active requests running.)
         elif self.status == ProcessorStatus.READY:
-
             # If there are requests in the queue, execute the next one.
             if len(self.queue) > 0:
                 self.execute()
@@ -113,7 +111,6 @@ class Processor:
 
         # Submit the request to the model deployment via `Handle`.
         try:
-
             result = self.handle.execute(request)
 
             self.submission = Submission(
@@ -122,7 +119,6 @@ class Processor:
             )
         # If there is an error submitting the request, respond to the user with an error.
         except:
-
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
@@ -133,7 +129,6 @@ class Processor:
             raise
 
         else:
-
             # The request was submitted successfully, so we can transition to BUSY.
             self.status = ProcessorStatus.BUSY
 
@@ -152,12 +147,11 @@ class Processor:
 
         # If the handle is not yet created, create it.
         if self.handle is None:
-
             try:
                 self.handle = Handle(self.model_key)
             # If there is a RayServeException, its okay and means the deployment stub hasn't been created yet.
             # Update the users that the model is still deploying.
-            except serve.exceptions.RayServeException as e:
+            except serve.exceptions.RayServeException:
                 self.reply("Model Deploying...")
                 return
 
@@ -182,7 +176,6 @@ class Processor:
 
         # If there is an error checking the status of the in-flight submission, respond to the user with an error.
         except:
-
             request = self.submission.request
 
             self.status = ProcessorStatus.READY
@@ -220,7 +213,6 @@ class Processor:
         """
 
         if force or time.time() - self.last_reply_time > self.reply_freq_s:
-
             for i, request in enumerate(self.queue):
                 request.create_response(
                     status,
@@ -228,7 +220,7 @@ class Processor:
                     (
                         description
                         if description is not None
-                        else f"Moved to position {i+1} in Queue."
+                        else f"Moved to position {i + 1} in Queue."
                     ),
                 ).respond()
 

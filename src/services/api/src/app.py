@@ -6,11 +6,10 @@ from typing import Any, Dict
 import redis
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
 from nnsight.schema.response import ResponseModel
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -22,9 +21,7 @@ logger = set_logger("API")
 from .dependencies import validate_request
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
-from .schema import (BackendRequestModel, BackendResponseModel,
-                     BackendResultModel)
-
+from .schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 
 
 # Init FastAPI app
@@ -63,7 +60,7 @@ redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
 @app.post("/request")
 async def request(
     background_tasks: BackgroundTasks,
-    backend_request: BackendRequestModel = Depends(validate_request)
+    backend_request: BackendRequestModel = Depends(validate_request),
 ) -> BackendResponseModel:
     """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
 
@@ -143,19 +140,16 @@ async def connect(session_id: str, environ: Dict):
     params = dict(x.split("=") for x in params.split("&"))
 
     if "job_id" in params:
-
         await sm.enter_room(session_id, params["job_id"])
 
 
 @sm.on("blocking_response")
 async def blocking_response(session_id: str, client_session_id: str, data: Any):
-
     await sm.emit("blocking_response", data=data, to=client_session_id)
 
 
 @sm.on("stream")
-async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: str):
-    
+async def stream(session_id: str, client_session_id: str, data: bytes, job_id: str):
     await sm.enter_room(session_id, job_id)
 
     await blocking_response(session_id, client_session_id, data)
@@ -163,7 +157,6 @@ async def stream(session_id: str,  client_session_id: str, data: bytes, job_id: 
 
 @sm.on("stream_upload")
 async def stream_upload(session_id: str, data: bytes, job_id: str):
-
     await sm.emit("stream_upload", data=data, room=job_id)
 
 
@@ -197,7 +190,9 @@ async def result(id: str) -> BackendResultModel:
     """
 
     # Get cursor to bytes stored in data backend.
-    object, content_length = BackendResultModel.load(ObjectStoreProvider.object_store, id, stream=True)
+    object, content_length = BackendResultModel.load(
+        ObjectStoreProvider.object_store, id, stream=True
+    )
 
     # Inform client the total size of result in bytes.
     headers = {
@@ -227,20 +222,17 @@ async def result(id: str) -> BackendResultModel:
 
 @app.get("/ping", status_code=200)
 async def ping():
-    """Endpoint to check if the server is online.
-    """
+    """Endpoint to check if the server is online."""
     return "pong"
 
 
 @app.get("/status", status_code=200)
 async def status():
-    
     id = str(os.getpid())
-    
+
     await redis_client.lpush("status", id)
     result = await redis_client.brpop(id)
     return pickle.loads(result[1])
-    
 
 
 if __name__ == "__main__":
