@@ -9,29 +9,34 @@ from typing import Any, Dict
 
 import ray
 import torch
-from accelerate import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory
+from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
 from transformers.modeling_utils import _get_device_map
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
 from ....logging import set_logger
-from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
-                         ModelLoadTimeMetric, RequestResponseSizeMetric)
+from ....metrics import (
+    ExecutionTimeMetric,
+    GPUMemMetric,
+    ModelLoadTimeMetric,
+    RequestResponseSizeMetric,
+)
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
-from ....schema import (BackendRequestModel, BackendResponseModel,
-                        BackendResultModel)
+from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_objects import protect_model
-from ...nn.security.protected_environment import WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector
+from ...nn.security.protected_environment import (
+    WHITELISTED_MODULES,
+    WHITELISTED_MODULES_DESERIALIZATION,
+    Protector,
+)
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
@@ -41,7 +46,6 @@ class BaseModelDeployment:
         self,
         model_key: str,
         cuda_devices: str,
-        app: str,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -56,14 +60,15 @@ class BaseModelDeployment:
 
         ObjectStoreProvider.connect()
 
-        self.app = app
         self.model_key = model_key
         self.execution_timeout = execution_timeout
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
 
-        self.logger = set_logger(app)
+        self.cached = False
+
+        self.logger = set_logger(model_key)
 
         self.runtime_context = ray.get_runtime_context()
 
@@ -74,7 +79,7 @@ class BaseModelDeployment:
         torch.set_default_dtype(torch.bfloat16)
 
         self.model = self.load_from_disk()
-        
+
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
         if dispatch:
@@ -88,17 +93,16 @@ class BaseModelDeployment:
 
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
-        
+
         protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
-        
 
     def load_from_disk(self):
 
         start = time.time()
         torch.cuda.synchronize()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
-        
+
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
@@ -110,11 +114,11 @@ class BaseModelDeployment:
         )
         torch.cuda.synchronize()
         load_time = time.time() - start
-        
+
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
-        
+
         devices = set()
-        
+
         for param in model._module.parameters():
             devices.add(f"{param.device.type}:{param.device.index}")
 
@@ -131,44 +135,47 @@ class BaseModelDeployment:
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
-        
+
         self.model._module = self.model._module.cpu()
         # torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
-    def from_cache(self, cuda_devices: str, app: str):
+        self.cached = True
+
+    def from_cache(self, cuda_devices: str):
 
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
-        self.app = app
         torch.cuda.synchronize()
         start = time.time()
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
         device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
-        
-        remove_accelerate_hooks(self.model._module)        
- 
+
+        remove_accelerate_hooks(self.model._module)
+
         self.model._module = dispatch_model(self.model._module, device_map)
 
         torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
 
-  
         load_time = time.time() - start
-        
+
         devices = set()
-        
+
         for param in self.model._module.parameters():
             devices.add(f"{param.device.type}:{param.device.index}")
 
-        self.logger.info(f"Model loaded from cache in {load_time} seconds on devices: {devices}")
+        self.logger.info(
+            f"Model loaded from cache in {load_time} seconds on devices: {devices}"
+        )
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
+        self.cached = False
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -181,6 +188,10 @@ class BaseModelDeployment:
         Args:
             request (BackendRequestModel): Request.
         """
+
+        if self.cached:
+
+            raise LookupError("This model is cached.")
 
         self.request = request
 
@@ -240,7 +251,7 @@ class BaseModelDeployment:
         """Logic to execute before execution."""
         with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
             request = self.request.deserialize(self.model)
-            
+
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
@@ -270,7 +281,9 @@ class BaseModelDeployment:
 
             # Execute object.
             with StdoutRedirect(self.log):
-                result = RemoteExecutionBackend(request.interventions, self.execution_protector)(request.tracer)
+                result = RemoteExecutionBackend(
+                    request.interventions, self.execution_protector
+                )(request.tracer)
 
             execution_time = time.time() - execution_time
 
@@ -296,7 +309,7 @@ class BaseModelDeployment:
 
         result = BackendResultModel(
             id=self.request.id,
-           **saves,
+            **saves,
         ).save(ObjectStoreProvider.object_store)
 
         self.respond(
@@ -363,7 +376,7 @@ class BaseModelDeployment:
         """
         self.kill_switch.clear()
         self.execution_ident = None
-        
+
         SioProvider.disconnect()
 
         self.model._model.zero_grad()
@@ -393,10 +406,14 @@ class BaseModelDeployment:
         Args:
             data (Any): The data to stream back to the client.
         """
-        
-        response = self.request.create_response(BackendResponseModel.JobStatus.STREAM, self.logger, data=data)
-        
-        SioProvider.emit("stream", data=(self.request.session_id,  response.pickle(), self.request.id))
+
+        response = self.request.create_response(
+            BackendResponseModel.JobStatus.STREAM, self.logger, data=data
+        )
+
+        SioProvider.emit(
+            "stream", data=(self.request.session_id, response.pickle(), self.request.id)
+        )
 
     def stream_receive(self, *args):
         """Receives streaming data from the client.
@@ -437,11 +454,21 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: str
-    node_name: str
-
-    cached: bool = False
+    cuda_devices: str
 
     execution_timeout: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
+
+
+@ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
+class ModelActor(BaseModelDeployment):
+    """Ray remote actor for model execution.
+
+    This actor handles the actual model inference and is managed by the
+    ModelDeployment class. It inherits from BaseModelDeployment to provide
+    the core model functionality.
+    """
+
+    pass

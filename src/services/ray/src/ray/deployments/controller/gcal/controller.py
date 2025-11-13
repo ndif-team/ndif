@@ -2,7 +2,6 @@ import os
 import time
 
 from ray import ray, serve
-from .....types import MODEL_KEY, RAY_APP_NAME
 
 from ..controller import ControllerDeploymentArgs, _ControllerDeployment
 from .scheduler import SchedulingActor
@@ -47,7 +46,7 @@ class SchedulingControllerDeployment(_ControllerDeployment):
 
         for model_key, schedule in schedule.items():
 
-            application_name = RAY_APP_NAME(MODEL_KEY(model_key))
+            application_name = f"ModelActor:{model_key}"
 
             if application_name in status["deployments"]:
 
