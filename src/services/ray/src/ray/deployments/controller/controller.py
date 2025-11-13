@@ -29,7 +29,7 @@ class DeploymentDelta:
 class _ControllerDeployment:
     def __init__(
         self,
-        deployments: List[str],
+        deployments: List[MODEL_KEY],
         model_import_path: str,
         execution_timeout_seconds: float,
         model_cache_percentage: float,
@@ -86,7 +86,7 @@ class _ControllerDeployment:
             self.cluster.update_nodes()
             await asyncio.sleep(int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30")))
             
-    def _deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
+    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
 
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
@@ -97,7 +97,7 @@ class _ControllerDeployment:
 
         return results
 
-    async def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
+    async def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
 
        return self._deploy(model_keys, dedicated=dedicated)
 
@@ -330,7 +330,7 @@ class ControllerDeployment(_ControllerDeployment):
 
 class ControllerDeploymentArgs(BaseModel):
 
-    deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
+    deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
     execution_timeout_seconds: Optional[float] = float(

@@ -6,6 +6,7 @@ from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
 from packaging.version import Version
 from nnsight import __version__
 
+from .types import API_KEY
 from .db import api_key_store
 from .schema import BackendRequestModel
 
@@ -13,7 +14,7 @@ MIN_NNSIGHT_VERSION = os.getenv('MIN_NNSIGHT_VERSION', __version__)
 DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
 
 
-async def authenticate_api_key(api_key: str) -> str:
+async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
     """Authenticate API key.
 
     Args:
@@ -102,7 +103,7 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     return nnsight_version
 
 
-async def check_hotswapping_access(api_key: str) -> bool:
+async def check_hotswapping_access(api_key: API_KEY) -> bool:
     """Check if the API key has hotswapping access.
 
     Args:
