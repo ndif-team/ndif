@@ -121,16 +121,18 @@ class Processor:
                 result,
             )
         # If there is an error submitting the request, respond to the user with an error.
-        except:
+        except Exception as e:
+
+            if isinstance(e, LookupError):
+                message = "Model deployment evicted. Please try again later. Sorry for the inconvenience."
+            else:
+                message = f"{traceback.format_exc()}\nIssue submitting job to model deployment."
 
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
-                f"{traceback.format_exc()}\nIssue submitting job to model deployment.",
+                message,
             ).respond()
-
-            # Re-raise the error to be handled by the coordinator to check for connection issues.
-            raise
 
         else:
 
@@ -181,17 +183,22 @@ class Processor:
             return
 
         # If there is an error checking the status of the in-flight submission, respond to the user with an error.
-        except:
+        except Exception as e:
 
             request = self.submission.request
 
             self.status = ProcessorStatus.READY
             self.submission = None
+            
+            if isinstance(e, LookupError):
+                message = "Model deployment evicted. Please try again later. Sorry for the inconvenience."
+            else:
+                message = f"{traceback.format_exc()}\nIssue checking job status."
 
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
-                f"{traceback.format_exc()}\nIssue checking job status.",
+                message,
             ).respond()
 
             # Re-raise the error to be handled by the coordinator to check for connection issues.
