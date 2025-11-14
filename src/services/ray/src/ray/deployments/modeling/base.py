@@ -332,19 +332,7 @@ class BaseModelDeployment:
         Args:
             exception (Exception): The exception that was raised during __call__.
         """
-        # if isinstance(exception, NNsightError):
-        #     # Remove traceback limit to get full stack trace
-        #     sys.tracebacklimit = None
-        #     self.respond(
-        #         status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
-        #         description=f"An error has occured during the execution of the intervention graph.\n{exception.traceback_content}",
-        #         data={
-        #             "err_message": exception.message,
-        #             "node_id": exception.node_id,
-        #             "traceback": exception.traceback_content,
-        #         },
-        #     )
-        # For non-NNsight errors, include full traceback
+
         description = traceback.format_exc()
         self.respond(
             status=BackendResponseModel.JobStatus.ERROR,
@@ -361,7 +349,7 @@ class BaseModelDeployment:
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        serve.get_app_handle(self.app).restart.remote()
+        ray.kill(ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"), no_restart=False)
 
     def cleanup(self):
         """Performs cleanup operations after request processing.

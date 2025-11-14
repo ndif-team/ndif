@@ -18,7 +18,6 @@ from typing import Optional
 
 import ray
 from ray import serve
-from ray.serve.handle import DeploymentResponse
 
 from ..types import MODEL_KEY
 from ..schema import BackendRequestModel, BackendResponseModel
@@ -42,7 +41,7 @@ class Submission:
     """Tracks an in-flight submission and its response future."""
 
     request: BackendRequestModel
-    execution_future: DeploymentResponse
+    execution_future: ray.ObjectRef
 
 
 class Processor:
