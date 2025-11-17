@@ -19,6 +19,7 @@ from transformers.modeling_utils import _get_device_map
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
+from ....types import MODEL_KEY
 from ....logging import set_logger
 from ....metrics import (
     ExecutionTimeMetric,
@@ -44,7 +45,7 @@ class BaseModelDeployment:
 
     def __init__(
         self,
-        model_key: str,
+        model_key: MODEL_KEY,
         cuda_devices: str,
         execution_timeout: float | None,
         dispatch: bool,
@@ -331,19 +332,7 @@ class BaseModelDeployment:
         Args:
             exception (Exception): The exception that was raised during __call__.
         """
-        # if isinstance(exception, NNsightError):
-        #     # Remove traceback limit to get full stack trace
-        #     sys.tracebacklimit = None
-        #     self.respond(
-        #         status=BackendResponseModel.JobStatus.NNSIGHT_ERROR,
-        #         description=f"An error has occured during the execution of the intervention graph.\n{exception.traceback_content}",
-        #         data={
-        #             "err_message": exception.message,
-        #             "node_id": exception.node_id,
-        #             "traceback": exception.traceback_content,
-        #         },
-        #     )
-        # For non-NNsight errors, include full traceback
+
         description = traceback.format_exc()
         self.respond(
             status=BackendResponseModel.JobStatus.ERROR,
@@ -360,7 +349,7 @@ class BaseModelDeployment:
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        serve.get_app_handle(self.app).restart.remote()
+        ray.kill(ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"), no_restart=False)
 
     def cleanup(self):
         """Performs cleanup operations after request processing.
@@ -453,7 +442,7 @@ class BaseModelDeploymentArgs(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    model_key: str
+    model_key: MODEL_KEY
     cuda_devices: str
 
     execution_timeout: float | None = None

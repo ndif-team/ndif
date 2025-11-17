@@ -1,18 +1,18 @@
 import asyncio
 import os
-import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 import ray
 from pydantic import BaseModel
-from ray import serve
-from dataclasses import dataclass
-from ray.serve import Application
 from ray.util.state import list_actors
-from ....types import MODEL_KEY
+
 from ....logging.logger import set_logger
+from ....providers.mailgun import MailgunProvider
+from ....providers.objectstore import ObjectStoreProvider
+from ....providers.socketio import SioProvider
+from ....types import MODEL_KEY
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
@@ -26,10 +26,10 @@ class DeploymentDelta:
     deployments_to_delete: List[Deployment]
 
 
-class _ControllerDeployment:
+class _ControllerActor:
     def __init__(
         self,
-        deployments: List[str],
+        deployments: List[MODEL_KEY],
         model_import_path: str,
         execution_timeout_seconds: float,
         model_cache_percentage: float,
@@ -43,21 +43,20 @@ class _ControllerDeployment:
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
         self.runtime_context = ray.get_runtime_context()
-        self.replica_context = serve.get_replica_context()
         self.logger = set_logger("Controller")
-        
+
         self.state: dict[tuple[str, str], Deployment] = dict()
 
         self.cluster = Cluster(
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
         )
-        
+
         self.cluster.update_nodes()
-        
+
         if deployments and deployments != [""]:
             self._deploy(deployments, dedicated=True)
-            
+
         asyncio.create_task(self.check_nodes())
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
@@ -79,14 +78,16 @@ class _ControllerDeployment:
 
         state["datetime"] = datetime.now().isoformat()
         return state
-    
+
     async def check_nodes(self):
-        
+
         while True:
             self.cluster.update_nodes()
-            await asyncio.sleep(int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30")))
-            
-    def _deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
+            await asyncio.sleep(
+                int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
+            )
+
+    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
 
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
@@ -97,9 +98,11 @@ class _ControllerDeployment:
 
         return results
 
-    async def deploy(self, model_keys: List[str], dedicated: Optional[bool] = False):
+    async def deploy(
+        self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False
+    ):
 
-       return self._deploy(model_keys, dedicated=dedicated)
+        return self._deploy(model_keys, dedicated=dedicated)
 
     def build(self):
 
@@ -142,7 +145,7 @@ class _ControllerDeployment:
         # For every deployment that doesn't exist in the new state, we need to delete it.
         for (id, model_key), deployment in self.state.items():
             deployments_to_delete.append(deployment)
-            
+
         # Update state.
         self.state = new_state
 
@@ -181,15 +184,14 @@ class _ControllerDeployment:
             deployment.from_cache()
 
         # Create models from disk
-        for (name, deployment) in deployment_delta.deployments_to_create:
+        for name, deployment in deployment_delta.deployments_to_create:
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
                 cuda_devices=",".join(str(gpu) for gpu in deployment.gpus),
                 execution_timeout=self.execution_timeout_seconds,
             )
-            
+
             deployment.create(name, deployment_args)
-            
 
     def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
         """Get the deployment of a model key (or None if not found)."""
@@ -207,14 +209,18 @@ class _ControllerDeployment:
         for actor_state in ray_status:
 
             if actor_state.name.startswith("ModelActor:"):
-                
-                if actor_state.state in {"DEPENDENCIES_UNREADY", "PENDING_CREATION", "RESTARTING"}:
+
+                if actor_state.state in {
+                    "DEPENDENCIES_UNREADY",
+                    "PENDING_CREATION",
+                    "RESTARTING",
+                }:
                     application_state = "DEPLOYING"
                 elif actor_state.state == "ALIVE":
                     application_state = "RUNNING"
                 elif actor_state.state == "DEAD":
                     application_state = "UNHEALTHY"
-               
+
                 status[actor_state.name] = {
                     "application_state": application_state,
                 }
@@ -323,14 +329,14 @@ class _ControllerDeployment:
         }
 
 
-@serve.deployment(ray_actor_options={"num_cpus": 1, "resources": {"head": 1}})
-class ControllerDeployment(_ControllerDeployment):
+@ray.remote(num_cpus=1, num_gpus=0, max_restarts=-1, resources={"head": 1})
+class ControllerActor(_ControllerActor):
     pass
 
 
 class ControllerDeploymentArgs(BaseModel):
 
-    deployments: List[str] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
+    deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
     execution_timeout_seconds: Optional[float] = float(
@@ -344,5 +350,17 @@ class ControllerDeploymentArgs(BaseModel):
     )
 
 
-def app(args: ControllerDeploymentArgs) -> Application:
-    return ControllerDeployment.bind(**args.model_dump())
+def app(**kwargs):
+
+    args = ControllerDeploymentArgs(**kwargs)
+
+    actor = ControllerActor.options(
+        name="Controller",
+        namespace="NDIF",
+        lifetime="detached",
+        runtime_env={
+            **SioProvider.to_env(),
+            **ObjectStoreProvider.to_env(),
+            **MailgunProvider.to_env(),
+        },
+    ).remote(**args.model_dump())

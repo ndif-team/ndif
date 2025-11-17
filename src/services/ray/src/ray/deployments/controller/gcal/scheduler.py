@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import ray
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from ray.serve.handle import DeploymentHandle
+from .....types import MODEL_KEY
 from .....providers.mailgun import MailgunProvider
 from ..cluster.node import CandidateLevel
 
@@ -27,7 +27,6 @@ class SchedulingActor:
         google_credentials_path: str,
         google_calendar_id: str,
         check_interval_s: float,
-        controller_handle: DeploymentHandle,
     ):
         """
         Initialize the SchedulingActor.
@@ -41,7 +40,7 @@ class SchedulingActor:
         self.google_credentials_path = google_credentials_path
         self.google_calendar_id = google_calendar_id
         self.check_interval_s = check_interval_s
-        self.controller_handle = controller_handle
+        self.controller_handle = ray.get_actor("Controller", namespace="NDIF")
 
         # Store the hash of previous model keys to detect changes
         self.previous_model_keys_hash = hash("")
@@ -206,12 +205,12 @@ class SchedulingActor:
                 break
    
 
-    async def get_schedule(self):
+    async def get_schedule(self) -> Dict[MODEL_KEY, Dict[str, Any]]:
         """
         Get scheduled events for the next week.
 
         Returns:
-            Dict[str, Dict]: A dictionary mapping model_keys to their schedule information
+            Dict[MODEL_KEY, Dict]: A dictionary mapping model_keys to their schedule information
                            containing start_time and end_time
         """
         # Calculate time boundaries for events (now to 1 week in the future)

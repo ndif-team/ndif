@@ -13,6 +13,6 @@ ray start --head \
     --dashboard-agent-grpc-port=$RAY_DASHBOARD_GRPC_PORT \
     --metrics-export-port=$RAY_SERVE_INTERNAL_PORT
  
-serve deploy src/ray/config/ray_config.yml
+python -m src.ray.start ${NDIF_CONTROLLER_IMPORT_PATH:-src.ray.deployments.controller.controller}
 
 tail -f /dev/null

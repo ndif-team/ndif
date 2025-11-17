@@ -1,7 +1,6 @@
 import logging
 import os
 import ray
-from ray import serve
 
 from . import Provider
 from .util import verify_connection
@@ -74,7 +73,6 @@ class RayProvider(Provider):
     @classmethod
     def reset(cls):
         ray.shutdown()
-        serve.context._set_global_client(None)
 
 
 RayProvider.from_env()

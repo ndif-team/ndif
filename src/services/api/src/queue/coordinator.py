@@ -18,14 +18,16 @@ from enum import Enum
 from functools import lru_cache
 from typing import Optional
 
+import ray
 import redis
-from ray import serve
-from ray.serve.handle import DeploymentResponse
+from ray.util.client import ray as client_ray
+from ray.util.client.common import return_refs
 
 from ..logging import set_logger
 from ..providers.objectstore import ObjectStoreProvider
 from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel, BackendResponseModel
+from ..types import MODEL_KEY
 from .processor import Processor, ProcessorStatus
 from .util import cache_maintainer, patch
 
@@ -44,8 +46,8 @@ class DeploymentStatus(Enum):
 @dataclass
 class DeploymentSubmission:
 
-    model_keys: list[str]
-    deployment_future: DeploymentResponse
+    model_keys: list[MODEL_KEY]
+    deployment_future: ray.ObjectRef
 
 
 class Coordinator:
@@ -54,7 +56,7 @@ class Coordinator:
     def __init__(self):
 
         self.redis_client = redis.Redis.from_url(os.environ.get("BROKER_URL"))
-        self.processors: dict[str, Processor] = {}
+        self.processors: dict[MODEL_KEY, Processor] = {}
 
         self.deployment_submissions: list[DeploymentSubmission] = []
         self.processors_to_deploy: list[Processor] = []
@@ -85,7 +87,7 @@ class Coordinator:
     @property
     def controller_handle(self):
         """Return Ray Serve handle to the `Controller` application."""
-        return serve.get_app_handle("Controller")
+        return ray.get_actor("Controller", namespace="NDIF")
 
     def connect(self):
         """Ensure connection to Ray, retrying until successful.
@@ -160,7 +162,7 @@ class Coordinator:
             processor.status = ProcessorStatus.PROVISIONING
 
         self.deployment_submissions.append(
-            DeploymentSubmission(model_keys, handle.deploy.remote(model_keys))
+            DeploymentSubmission(model_keys, return_refs(client_ray.call_remote(handle.deploy, model_keys)))
         )
         self.processors_to_deploy.clear()
 
@@ -198,7 +200,7 @@ class Coordinator:
 
             try:
 
-                result = deployment_submission.deployment_future.result(timeout_s=0)
+                result = ray.get(deployment_submission.deployment_future, timeout=0)
 
             except TimeoutError:
                 not_ready.append(deployment_submission)
@@ -262,7 +264,7 @@ class Coordinator:
         for model_key in list(self.processors.keys()):
             self.remove(model_key)
 
-    def remove(self, model_key: str, message: Optional[str] = None):
+    def remove(self, model_key: MODEL_KEY, message: Optional[str] = None):
         """Remove a processor and purge its outstanding work.
 
         Args:
@@ -279,7 +281,7 @@ class Coordinator:
 
             try:
 
-                result = self.status_future.result(timeout_s=0)
+                result = ray.get(self.status_future, timeout=0)
 
             except TimeoutError:
                 return
@@ -303,7 +305,7 @@ class Coordinator:
                 or time.time() - self.last_status_time > self.status_cache_freq_s
             ):
 
-                self.status_future = self.controller_handle.status.remote()
+                self.status_future = return_refs(client_ray.call_remote(self.controller_handle.status))
 
             else:
 
@@ -313,12 +315,10 @@ class Coordinator:
 
     @cache_maintainer(clear_time=6000)
     @lru_cache(maxsize=1000)
-    def is_dedicated_model(self, model_key: str) -> bool:
+    def is_dedicated_model(self, model_key: MODEL_KEY) -> bool:
         """Check if the model is dedicated."""
         try:
-            result = self.controller_handle.get_deployment.remote(model_key).result(
-                timeout_s=int(os.environ.get("COORDINATOR_HANDLE_TIMEOUT_S", "5"))
-            )
+            result = ray.get(return_refs(client_ray.call_remote(self.controller_handle.get_deployment, model_key)), timeout=int(os.environ.get("COORDINATOR_HANDLE_TIMEOUT_S", "5")))
 
             # Dedicated models are deployed automatically on startup - the absence of a deployment means it's not dedicated.
             if result is None:
