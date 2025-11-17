@@ -116,7 +116,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
         response = BackendResponseModel(
             id=str(self.id),
-            session_id=str(self.session_id),
+            session_id=str(self.session_id) if self.session_id else None,
             status=status,
             description=description,
             data=data,
