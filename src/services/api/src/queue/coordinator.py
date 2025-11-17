@@ -8,25 +8,26 @@ The coordinator:
 - Serves status snapshots to consumers via a Redis list ("status")
 """
 
-import json
 import os
 import pickle
 import time
 import traceback
 from concurrent.futures import Future
+from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from typing import Optional
 
 import redis
 from ray import serve
+from ray.serve.handle import DeploymentResponse
 
 from ..logging import set_logger
-from ..providers.ray import RayProvider
 from ..providers.objectstore import ObjectStoreProvider
+from ..providers.ray import RayProvider
 from ..schema import BackendRequestModel, BackendResponseModel
 from .processor import Processor, ProcessorStatus
-from .util import patch, cache_maintainer
+from .util import cache_maintainer, patch
 
 
 class DeploymentStatus(Enum):
@@ -40,6 +41,13 @@ class DeploymentStatus(Enum):
     CANT_ACCOMMODATE = "cant_accommodate"
 
 
+@dataclass
+class DeploymentSubmission:
+
+    model_keys: list[str]
+    deployment_future: DeploymentResponse
+
+
 class Coordinator:
     """Orchestrates request routing and model deployment lifecycle."""
 
@@ -48,19 +56,21 @@ class Coordinator:
         self.redis_client = redis.Redis.from_url(os.environ.get("BROKER_URL"))
         self.processors: dict[str, Processor] = {}
 
-        self.deployment_futures: list[Future] = []
+        self.deployment_submissions: list[DeploymentSubmission] = []
         self.processors_to_deploy: list[Processor] = []
 
         self.status_future: Future = None
         self.status_cache = None
         self.last_status_time = 0
-        self.status_cache_freq_s = int(os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120"))
+        self.status_cache_freq_s = int(
+            os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120")
+        )
 
         self.logger = set_logger("coordinator")
 
         # We patch the _async_send method to avoid a nasty deadlock bug in Ray.
         patch()
-        
+
         ObjectStoreProvider.connect()
 
         # Connect to Ray initially.
@@ -111,13 +121,19 @@ class Coordinator:
                     self.deploy()
 
                 # If there are deployments in progress, check their status.
-                if len(self.deployment_futures) > 0:
+                if len(self.deployment_submissions) > 0:
                     self.initialize()
 
                 # Step each processor to advance its state machine.
-                for processor in self.processors.values():
-                    #TODO catch exceptions and raise them only after all processors are done
-                    processor.step()
+                for processor in list(self.processors.values()):
+                    # TODO catch exceptions and raise them only after all processors are done
+                    try:
+                        processor.step()
+                    except LookupError as e:
+                        self.remove(
+                            processor.model_key,
+                            message="Model deployment evicted. Please try again later. Sorry for the inconvenience.",
+                        )
 
                 # Serve controller status snapshots to waiting Redis consumers.
                 self.fulfill_status()
@@ -125,8 +141,10 @@ class Coordinator:
             # If there is an error in the coordinator loop, it might be due to a connection issue.
             # So we reconnect to Ray and try again.
             except Exception as e:
-                
-                self.logger.error(f"Error in coordinator loop: {e}\n{traceback.format_exc()}")
+
+                self.logger.error(
+                    f"Error in coordinator loop: {e}\n{traceback.format_exc()}"
+                )
                 self.connect()
 
     def deploy(self):
@@ -141,7 +159,9 @@ class Coordinator:
             model_keys.append(processor.model_key)
             processor.status = ProcessorStatus.PROVISIONING
 
-        self.deployment_futures.append(handle.deploy.remote(model_keys))
+        self.deployment_submissions.append(
+            DeploymentSubmission(model_keys, handle.deploy.remote(model_keys))
+        )
         self.processors_to_deploy.clear()
 
     def get(self) -> BackendRequestModel:
@@ -160,7 +180,7 @@ class Coordinator:
                     logger=self.logger,
                 ).respond()
                 return
-       
+
         if request.model_key not in self.processors:
 
             self.processors[request.model_key] = Processor(request.model_key)
@@ -169,23 +189,26 @@ class Coordinator:
         self.processors[request.model_key].enqueue(request)
 
     def initialize(self):
-        """Advance deployment futures and update processor states."""
+        """Advance deployment submissions and update processor states."""
 
         ready = []
         not_ready = []
 
-        for i, deployment_future in enumerate(self.deployment_futures):
+        for deployment_submission in self.deployment_submissions:
 
             try:
 
-                result = deployment_future.result(timeout_s=0)
+                result = deployment_submission.deployment_future.result(timeout_s=0)
 
             except TimeoutError:
-                not_ready.append(deployment_future)
-                
-            # TODO inform those waiting on this deployment that it failed
+                not_ready.append(deployment_submission)
+
             except Exception as e:
-                pass
+                for model_key in deployment_submission.model_keys:
+                    self.remove(
+                        model_key,
+                        message=f"{e}\n\nThere was an error provisioning the model deployment. Please try again later. Sorry for the inconvenience.",
+                    )
 
             else:
                 ready.append(result)
@@ -208,7 +231,7 @@ class Coordinator:
 
                     self.remove(
                         model_key,
-                        message=f"{status_str}\n\nThere was an error provisioning the model deployment. Sorry for the inconvenience.",
+                        message=f"{status_str}\n\nThere was an error provisioning the model deployment. Please try again later. Sorry for the inconvenience.",
                     )
 
                     continue
@@ -232,7 +255,7 @@ class Coordinator:
                     message="Model deployment evicted. Please try again later. Sorry for the inconvenience.",
                 )
 
-        self.deployment_futures = not_ready
+        self.deployment_submissions = not_ready
 
     def purge(self):
         """Remove all processors and purge their pending work."""
@@ -262,7 +285,7 @@ class Coordinator:
                 return
 
             else:
-                
+
                 status = pickle.dumps(result)
 
                 for _ in range(self.redis_client.llen("status")):
@@ -288,7 +311,7 @@ class Coordinator:
                     id = self.redis_client.brpop("status")[1]
                     self.redis_client.lpush(id, self.status_cache)
 
-    @cache_maintainer(clear_time=600)
+    @cache_maintainer(clear_time=6000)
     @lru_cache(maxsize=1000)
     def is_dedicated_model(self, model_key: str) -> bool:
         """Check if the model is dedicated."""

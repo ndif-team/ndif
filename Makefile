@@ -3,7 +3,6 @@ IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
 
 build:
-	docker buildx build --file docker/Dockerfile --tag ndif_base:latest --target ndif_base .
 	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
 	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
 

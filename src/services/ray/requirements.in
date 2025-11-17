@@ -1,4 +1,4 @@
-nnsight
+nnsight==0.5.10
 ray[serve]==2.50.0
 python-slugify
 # Telemetry
