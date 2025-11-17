@@ -8,3 +8,8 @@ run pytests with
 ```bash 
 uv run pytest
 ```
+
+run pytests in certain file with
+```bash
+uv run pytest -k test_app 
+```
