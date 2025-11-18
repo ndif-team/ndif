@@ -2,14 +2,14 @@
 
 ## Testing
 
-install dependencies in requirements.in
+install dependencies from requirements.in, ideally in a virtual environment
 
 run pytests with 
 ```bash 
-uv run pytest
+pytest
 ```
 
 run pytests in certain file with
 ```bash
-uv run pytest -k test_app 
+pytest -k test_app 
 ```
