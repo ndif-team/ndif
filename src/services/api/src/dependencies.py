@@ -55,6 +55,10 @@ async def validate_python_version(python_version: str) -> str:
     Raises:
         HTTPException: If the Python version is missing or incompatible.
     """
+    
+    if DEV_MODE:
+        return python_version
+    
     server_python_version = '.'.join(sys.version.split('.')[0:2])  # e.g. 3.12
     user_python_version = '.'.join(python_version.split('.')[0:2])
 
@@ -85,6 +89,10 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     Raises:
         HTTPException: If the nnsight version is missing or incompatible.
     """
+    
+    if DEV_MODE:
+        return nnsight_version
+    
     if nnsight_version == '':
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
@@ -143,7 +151,7 @@ async def validate_request(raw_request: Request) -> BackendRequestModel:
     nnsight_version = raw_request.headers.get("nnsight-version", "")
     python_version = raw_request.headers.get("python-version", "")
 
-    # Validate using existing dependency functions (call them directly, not as dependencies)
+    # # Validate using existing dependency functions (call them directly, not as dependencies)
     await authenticate_api_key(api_key)
     await validate_nnsight_version(nnsight_version)
     await validate_python_version(python_version)

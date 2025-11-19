@@ -6,27 +6,22 @@ from typing import Any, Dict
 import redis
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-
-from fastapi_cache.decorator import cache
 from fastapi_socketio import SocketManager
-from nnsight.schema.response import ResponseModel
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from .types import REQUEST_ID, SESSION_ID
+from nnsight.schema.response import ResponseModel
+
 from .logging import set_logger
+from .types import REQUEST_ID, SESSION_ID
 
 logger = set_logger("API")
 
 from .dependencies import validate_request
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
-from .schema import (BackendRequestModel, BackendResponseModel,
-                     BackendResultModel)
-
-
+from .schema import BackendRequestModel, BackendResponseModel
 
 # Init FastAPI app
 app = FastAPI()
@@ -64,7 +59,7 @@ redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
 @app.post("/request")
 async def request(
     background_tasks: BackgroundTasks,
-    backend_request: BackendRequestModel = Depends(validate_request)
+    backend_request: BackendRequestModel = Depends(validate_request),
 ) -> BackendResponseModel:
     """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
 
@@ -108,36 +103,6 @@ async def request(
     return response
 
 
-# @app.delete("/request/{request_id}")
-# async def delete_request(request_id: str):
-#     """Delete a submitted request, provided it is either queued or running"""
-#     try:
-#         endpoint = f"http://{os.environ.get('QUEUE_URL')}/queue/{request_id}"
-#         async with httpx.AsyncClient() as client:
-#             response = await client.delete(endpoint)
-#             response.raise_for_status()
-#             return {"message": f"Request {request_id} successfully submitted for deletion!"}
-#     except httpx.HTTPStatusError as e:
-#         # Handle HTTP errors from the queue service
-#         if e.response is not None and e.response.status_code == 404:
-#             raise HTTPException(status_code=404, detail=f"Request {request_id} not found")
-#         elif e.response is not None and e.response.status_code == 500:
-#             # Try to extract the error message from the queue service
-#             try:
-#                 error_detail = e.response.json().get('detail', str(e))
-#             except:
-#                 error_detail = str(e)
-#             raise HTTPException(status_code=500, detail=f"Failed to delete request: {error_detail}")
-#         else:
-#             status = e.response.status_code if e.response is not None else 500
-#             raise HTTPException(status_code=status, detail=str(e))
-#     except httpx.RequestError as e:
-#         # Handle connection errors, timeouts, etc.
-#         raise HTTPException(status_code=503, detail=f"Queue service unavailable: {e}")
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
-
-
 @sm.on("connect")
 async def connect(session_id: SESSION_ID, environ: Dict):
     params = environ.get("QUERY_STRING")
@@ -149,14 +114,18 @@ async def connect(session_id: SESSION_ID, environ: Dict):
 
 
 @sm.on("blocking_response")
-async def blocking_response(session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any):
+async def blocking_response(
+    session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any
+):
 
     await sm.emit("blocking_response", data=data, to=client_session_id)
 
 
 @sm.on("stream")
-async def stream(session_id: SESSION_ID,  client_session_id: SESSION_ID, data: bytes, job_id: str):
-    
+async def stream(
+    session_id: SESSION_ID, client_session_id: SESSION_ID, data: bytes, job_id: str
+):
+
     await sm.enter_room(session_id, job_id)
 
     await blocking_response(session_id, client_session_id, data)
@@ -183,65 +152,20 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
     return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
 
 
-@app.get("/result/{id}")
-async def result(id: REQUEST_ID) -> BackendResultModel:
-    """Endpoint to retrieve result for id.
-
-    Args:
-        id: ID of request/response.
-
-    Returns:
-        BackendResultModel: Result.
-
-    Yields:
-        Iterator[BackendResultModel]: _description_
-    """
-
-    # Get cursor to bytes stored in data backend.
-    object, content_length = BackendResultModel.load(ObjectStoreProvider.object_store, id, stream=True)
-
-    # Inform client the total size of result in bytes.
-    headers = {
-        "Content-length": str(content_length),
-    }
-
-    def stream():
-        try:
-            while True:
-                data = object.read(8192)
-                if not data:
-                    break
-                yield data
-        finally:
-            object.close()
-
-            BackendResultModel.delete(ObjectStoreProvider.object_store, id)
-            BackendResponseModel.delete(ObjectStoreProvider.object_store, id)
-            BackendRequestModel.delete(ObjectStoreProvider.object_store, id)
-
-    return StreamingResponse(
-        content=stream(),
-        media_type="application/octet-stream",
-        headers=headers,
-    )
-
-
 @app.get("/ping", status_code=200)
 async def ping():
-    """Endpoint to check if the server is online.
-    """
+    """Endpoint to check if the server is online."""
     return "pong"
 
 
 @app.get("/status", status_code=200)
 async def status():
-    
+
     id = str(os.getpid())
-    
+
     await redis_client.lpush("status", id)
     result = await redis_client.brpop(id)
     return pickle.loads(result[1])
-    
 
 
 if __name__ == "__main__":

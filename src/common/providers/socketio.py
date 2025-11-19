@@ -29,7 +29,6 @@ class SioProvider(Provider):
     @classmethod
     @retry
     def connect(cls):
-        logger.info(f"Connecting to API at {cls.api_url}...")
         if cls.sio is None:
             logger.debug("Creating new socketio client")
             cls.sio = socketio.SimpleClient(reconnection_attempts=10)
@@ -42,17 +41,11 @@ class SioProvider(Provider):
         )
         # Wait for connection to be fully established
         time.sleep(0.1)
-        logger.info("Connected to API")
 
     @classmethod
     def disconnect(cls):
-        logger.debug("SioProvider.disconnect() called")
         if cls.sio is not None:
-            logger.info("Disconnecting socketio client")
             cls.sio.disconnect()
-            logger.debug("Socketio client disconnected")
-        else:
-            logger.debug("No socketio client to disconnect")
 
     @classmethod
     def connected(cls) -> bool:
