@@ -17,7 +17,7 @@ env:
   ECS_REPO: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
 jobs:
-  build_images:
+  build_and_deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,55 +29,65 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           aws-region: us-east-1
+          output-credentials: true
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+    
+      # - name: Tag the API image
+      #   id: api
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     images: |
+      #       ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/api
+      #     tags: |
+      #       type=sha
+      #       type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Tag the API image
-        id: api
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/api
-          tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+      # - name: Build and push API service image
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     context: .
+      #     file: docker/Dockerfile
+      #     push: true
+      #     build-args: |
+      #       NAME=api
+      #     tags: ${{ steps.api.outputs.tags }}
+      #     cache-from: |
+      #       type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+      #       type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
+      #     cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
 
-      - name: Build and push API service image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          build-args: |
-            NAME=api
-          tags: ${{ steps.api.outputs.tags }}
-          cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
+      # - name: Tag the Ray image
+      #   id: ray
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     images: |
+      #       ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ray
+      #     tags: |
+      #       type=sha
+      #       type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Tag the Ray image
-        id: ray
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ray
-          tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+      # - name: Build and push Ray service image
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     context: .
+      #     file: docker/Dockerfile
+      #     push: true
+      #     build-args: |
+      #       NAME=ray
+      #     tags: ${{ steps.ray.outputs.tags }}
+      #     cache-from: |
+      #       type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
+      #       type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
+      #     cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache,mode=max
 
-      - name: Build and push Ray service image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          build-args: |
-            NAME=ray
-          tags: ${{ steps.ray.outputs.tags }}
-          cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache,mode=max
+      - name: Deploy with CLI
+        run: |
+          aws ecs update-service \
+          --cluster Prod \
+          --service API \
+          --deployment-configuration minimumHealthyPercent=0,maximumPercent=100 \
+          --force-new-deployment \
+          --no-cli-pager
