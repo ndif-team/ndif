@@ -192,7 +192,7 @@ class BaseModelDeployment:
 
         if self.cached:
 
-            raise LookupError("This model is cached.")
+            raise LookupError("Failed to look up actor")
 
         self.request = request
 

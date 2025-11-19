@@ -229,9 +229,6 @@ class Processor:
     async def execute(self, request: BackendRequestModel) -> None:
         """Submit a request to the model deployment and update the user with the status."""
 
-        # Update the other users in the queue with their new position in the queue.
-        self.reply()
-
         try:
 
             # Get the handle for the model deployment.
@@ -270,7 +267,7 @@ class Processor:
                 )
                 self.status = ProcessorStatus.CANCELLED
             else:
-                # If there is another error, add it ot the error queue to be handled by the dispatcher. Ramin busy until the dispatcher has cleared the error.
+                # If there is another error, add it ot the error queue to be handled by the dispatcher. Remain busy until the dispatcher has cleared the error.
                 self.error_queue.put_nowait((self.model_key, e))
 
         # Otherwise the processor is ready to accept new requests.
@@ -297,6 +294,10 @@ class Processor:
 
         # Wait for the model deployment to be initialized.
         await self.initialize()
+        
+        # If there was a problem initializing the model deployment, return.
+        if self.status == ProcessorStatus.CANCELLED:
+            return
 
         self.status = ProcessorStatus.READY
 
@@ -314,6 +315,9 @@ class Processor:
             request = await self.queue.get()
 
             self.status = ProcessorStatus.BUSY
+            
+            # Update the other users in the queue with their new position in the queue.
+            self.reply()
 
             # Submit the request to the model deployment.
             await self.execute(request)
