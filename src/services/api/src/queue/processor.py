@@ -83,11 +83,11 @@ class Processor:
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
 
         result = await submit(handle, "get_deployment", self.model_key)
-
+        
         if result is None:
             return False
 
-        return result.get("hotswapping", False)
+        return result.get("dedicated", False)
 
     async def provision(self):
         """Provision the model deployment by contacting the Controller to create the model deployment."""
@@ -99,9 +99,9 @@ class Processor:
 
             self.dedicated = await self.check_dedicated(controller)
 
-            hotswap = False
-
             if not self.dedicated:
+                
+                hotswap = False
 
                 valid_queue = list()
 
@@ -122,15 +122,15 @@ class Processor:
                 for request in valid_queue:
                     self.queue.put_nowait(request)
 
-            if not hotswap:
-                self.eviction_queue.put_nowait(
-                    (
-                        self.model_key,
-                        "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                if not hotswap:
+                    self.eviction_queue.put_nowait(
+                        (
+                            self.model_key,
+                            "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                        )
                     )
-                )
-                self.status = ProcessorStatus.CANCELLED
-                return
+                    self.status = ProcessorStatus.CANCELLED
+                    return
 
             # Submit the request to the controller to deploy the model deployment to the controller.
             # Wait for the request to finish.

@@ -52,7 +52,7 @@ class ObjectStorageMixin(BaseModel):
         return f"{id}.{cls._file_extension}"
     
     def _url(self, client: boto3.client) -> str:
-        return client.generate_presigned_url('get_object', Params={'Bucket': self._bucket_name, 'Key': self.object_name(self.id)}, ExpiresIn=3600 * 6)
+        return client.generate_presigned_url('get_object', Params={'Bucket': self._bucket_name, 'Key': self.object_name(self.id)}, ExpiresIn=3600 * 2)
 
     def _save(self, client: boto3.client, data: BytesIO, content_type: str, bucket_name: str = None) -> None:
         bucket_name = self._bucket_name if bucket_name is None else bucket_name

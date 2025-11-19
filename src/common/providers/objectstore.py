@@ -43,7 +43,7 @@ class ObjectStoreProvider(Provider):
         logger.info(f"Connecting to object store at {cls.object_store_url}...")
         cls.object_store = boto3.client(
             cls.object_store_service,
-            endpoint_url=f"http://{cls.object_store_url}",
+            endpoint_url=cls.object_store_url,
             aws_access_key_id=cls.object_store_access_key,
             aws_secret_access_key=cls.object_store_secret_key,
             region_name=cls.object_store_region,

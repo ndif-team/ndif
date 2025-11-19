@@ -316,7 +316,7 @@ class BaseModelDeployment:
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
             description="Your job has been completed.",
-            data=result_object.url(),
+            data=(result_object.url(), result_object._size),
         )
 
         RequestResponseSizeMetric.update(self.request, result_object._size)
