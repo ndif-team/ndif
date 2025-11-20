@@ -74,11 +74,9 @@ You should expect to see a message like `Application startup complete.` in the a
 python scripts/test.py
 ```
 
-For more comprehensive testing, install pytest
-```sh
-conda activate ndif-dev
-pip install pytest
-```
+For more comprehensive testing, install [pytest](https://docs.pytest.org/en/stable/)
+
+
 Navigate to the service you wish to test
 ```sh
 cd src/services/api
