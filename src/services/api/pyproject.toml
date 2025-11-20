@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "api"
 version = "0.1.0"
-requires-python = ">=3.10"
+requires-python = "3.12"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
@@ -16,7 +16,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [dependency-groups]
-dev = [
+test = [
     "httpx>=0.28.1",
     "pytest>=8.4.0",
     "pytest-asyncio>=1.3.0",
