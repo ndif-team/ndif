@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import patch
 from src.dependencies import check_hotswapping_access, validate_nnsight_version, validate_python_version, authenticate_api_key
 import pytest
