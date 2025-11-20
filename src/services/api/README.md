@@ -2,7 +2,7 @@
 
 ## Testing
 
-install dependencies from requirements.in, ideally in a virtual environment
+install dependencies from requirements.in and pyproject.toml, ideally in a virtual environment
 
 run pytests with 
 ```bash 
