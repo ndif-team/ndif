@@ -1,22 +1,9 @@
 import time
+import ray
 
-def cache_maintainer(clear_time: int):
-    """
-    A function decorator that clears lru_cache clear_time seconds
-    :param clear_time: In seconds, how often to clear cache (only checks when called)
-    """
-    def inner(func):
-        def wrapper(*args, **kwargs):
-            if hasattr(func, 'next_clear'):
-                if time.time() > func.next_clear:
-                    func.cache_clear()
-                    func.next_clear = time.time() + clear_time
-            else:
-                func.next_clear = time.time() + clear_time
+from ray.util.client import ray as client_ray
+from ray.util.client.common import return_refs
 
-            return func(*args, **kwargs)
-        return wrapper
-    return inner
 
 def patch():
     # We patch the _async_send method to avoid a nasty deadlock bug in Ray.
@@ -39,3 +26,17 @@ def patch():
             common.ClientObjectRef.__del__ = original_ref_deletion
             
     dataclient.DataClient._async_send = _async_send
+    
+    
+    
+def submit(actor: ray.actor.ActorHandle, method: str, *args, **kwargs):
+    return return_refs(client_ray.call_remote(getattr(actor, method), *args, **kwargs))
+    
+def get_actor_handle(name: str) -> ray.actor.ActorHandle:
+    
+    return ray.get_actor(name, namespace="NDIF")
+
+
+def controller_handle():
+    
+    return get_actor_handle("Controller")

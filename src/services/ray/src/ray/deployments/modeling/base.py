@@ -192,7 +192,7 @@ class BaseModelDeployment:
 
         if self.cached:
 
-            raise LookupError("This model is cached.")
+            raise LookupError("Failed to look up actor")
 
         self.request = request
 
@@ -308,7 +308,7 @@ class BaseModelDeployment:
         gpu_mem: int = result[1]
         execution_time_s: float = result[2]
 
-        result = BackendResultModel(
+        result_object = BackendResultModel(
             id=self.request.id,
             **saves,
         ).save(ObjectStoreProvider.object_store)
@@ -316,9 +316,10 @@ class BaseModelDeployment:
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
             description="Your job has been completed.",
+            data=(result_object.url(), result_object._size),
         )
 
-        RequestResponseSizeMetric.update(self.request, result._size)
+        RequestResponseSizeMetric.update(self.request, result_object._size)
         GPUMemMetric.update(self.request, gpu_mem)
         ExecutionTimeMetric.update(self.request, execution_time_s)
 
