@@ -49,27 +49,20 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def object_name(cls, id: str):
-        return f"{id}.{cls._file_extension}"
+        return f"{cls._bucket_name}/{id}.{cls._file_extension}"
     
     def _url(self, client: boto3.client) -> str:
-        return client.generate_presigned_url('get_object', Params={'Bucket': self._bucket_name, 'Key': self.object_name(self.id)}, ExpiresIn=3600 * 2)
+        return client.generate_presigned_url('get_object', Params={'Bucket': "prod-ndif-results", 'Key': self.object_name(self.id)}, ExpiresIn=3600 * 2)
 
     def _save(self, client: boto3.client, data: BytesIO, content_type: str, bucket_name: str = None) -> None:
-        bucket_name = self._bucket_name if bucket_name is None else bucket_name
         object_name = self.object_name(self.id)
 
         data.seek(0)
 
-        # Check if bucket exists, create if it doesn't
-        try:
-            client.head_bucket(Bucket=bucket_name)
-        except client.exceptions.ClientError:
-            client.create_bucket(Bucket=bucket_name)
-
         # Upload object to S3
         client.upload_fileobj(
             Fileobj=data,
-            Bucket=bucket_name,
+            Bucket="prod-ndif-results",
             Key=object_name,
             ExtraArgs={'ContentType': content_type}
         )
@@ -78,10 +71,9 @@ class ObjectStorageMixin(BaseModel):
     def _load(
         cls, client: boto3.client, id: str, stream: bool = False
     ) -> Union[StreamingBody, bytes]:
-        bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
 
-        response = client.get_object(Bucket=bucket_name, Key=object_name)
+        response = client.get_object(Bucket="prod-ndif-results", Key=object_name)
         
         if stream:
             return response['Body'], response['ContentLength']
@@ -120,11 +112,10 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def delete(cls, client: boto3.client, id: str) -> None:
-        bucket_name = cls._bucket_name
         object_name = cls.object_name(id)
 
         try:
-            client.delete_object(Bucket=bucket_name, Key=object_name)
+            client.delete_object(Bucket="prod-ndif-results", Key=object_name)
         except:
             pass
 
