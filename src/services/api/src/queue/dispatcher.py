@@ -6,6 +6,7 @@ import redis
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
+from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel
 from .processor import Processor, ProcessorStatus
 from .util import patch, controller_handle, submit
@@ -31,6 +32,8 @@ class Dispatcher:
         patch()
 
         self.connect()
+
+        ObjectStoreProvider.connect()
 
     @classmethod
     def start(cls):
