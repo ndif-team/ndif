@@ -31,4 +31,4 @@ requests
 torch
 python-slugify
 influxdb-client
-nnsight==0.5.10
+nnsight
