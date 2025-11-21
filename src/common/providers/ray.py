@@ -61,14 +61,24 @@ class RayProvider(Provider):
         host, port = cls.get_host_port()
         if not verify_connection(host, port):
             raise ConnectionError(f"Ray is not listening on {host}:{port}")
-
-        logger.info(f"Connecting to Ray at {cls.ray_url}...")
         ray.init(logging_level="error", address=cls.ray_url)
-        logger.info("Connected to Ray")
 
     @classmethod
     def connected(cls) -> bool:
-        return ray.is_initialized() and cls.is_listening()
+        
+        connected = ray.is_initialized() and cls.is_listening()
+        
+        if connected:
+            
+            try:
+                ray.get_actor("Controller", namespace="NDIF")
+            except:
+                return False
+            else:
+                return True
+            
+        return False
+       
 
     @classmethod
     def reset(cls):
