@@ -10,7 +10,6 @@ logger = logging.getLogger("ndif")
 
 
 class MailgunProvider(Provider):
-
     domain: str
     api_key: str
 
@@ -27,12 +26,11 @@ class MailgunProvider(Provider):
             "MAILGUN_DOMAIN": cls.domain,
             "MAILGUN_API_KEY": cls.api_key,
         }
-        
-    
+
     @classmethod
     def connected(cls) -> bool:
         return cls.domain is not None and cls.api_key is not None
-    
+
     @classmethod
     def send_email(cls, to: str, subject: str, text: str):
         logger.info(f"Sending email to {to} with subject {subject} and text {text}")
@@ -43,8 +41,9 @@ class MailgunProvider(Provider):
                 "from": f"NDIF <mailgun@{cls.domain}>",
                 "to": [to],
                 "subject": subject,
-                "text": text
-            }
+                "text": text,
+            },
         )
+
 
 MailgunProvider.from_env()

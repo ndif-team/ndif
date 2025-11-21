@@ -8,7 +8,6 @@ else:
 
 
 class NetworkStatusMetric(Metric):
-
     name: str = "network_data"
 
     @classmethod
@@ -16,12 +15,11 @@ class NetworkStatusMetric(Metric):
         cls,
         request: BackendRequestModel,
     ) -> None:
-
         super().update(
             request.content_length,
             request_id=request.id,
             model_key=request.model_key,
             api_key=request.api_key,
             ip_address=request.ip_address,
-            user_agent=request.user_agent
+            user_agent=request.user_agent,
         )

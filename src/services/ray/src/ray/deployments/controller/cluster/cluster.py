@@ -17,13 +17,11 @@ logger = logging.getLogger("ndif")
 
 
 class Cluster:
-
     def __init__(
         self,
         minimum_deployment_time_seconds: float = None,
         model_cache_percentage: float = 0.5,
     ):
-
         self.nodes: Dict[NODE_ID, Node] = {}
 
         self.evaluator = ModelEvaluator()
@@ -33,12 +31,9 @@ class Cluster:
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
 
-
     @property
     def state(self):
-
         if self._state is None:
-
             address = services.canonicalize_bootstrap_address_or_die(None)
 
             state = GlobalState()
@@ -60,21 +55,18 @@ class Cluster:
         }
 
         if include_ray_state:
-
             # TODO: The choice of cluster_resources() was arbitrary, GlobalState exposes a lot of potentially useful ray cluster information
             state["ray_state"] = self.state.cluster_resources()
 
         return state
 
     def update_nodes(self):
-
         logger.info("Updating nodes...")
 
         nodes = list_nodes(detail=True)
         current_nodes = set()
 
         for node in nodes:
-
             if "GPU" not in node.resources_total:
                 # We currently only do resource management for nodes with GPUs
                 continue
@@ -85,11 +77,12 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
-
                 total_gpus = node.resources_total["GPU"]
                 gpu_type = "TEST"
                 # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (node.resources_total["cuda_memory_bytes"]) / total_gpus
+                gpu_memory_bytes = (
+                    (node.resources_total["cuda_memory_bytes"]) / total_gpus
+                )
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
@@ -115,13 +108,10 @@ class Cluster:
 
         for node_id in self.nodes.keys():
             if node_id not in current_nodes:
-
                 node = self.nodes.pop(node_id)
                 node.purge()
-                
-                logger.info(f"=> Node {node_id} removed from cluster")
-                
 
+                logger.info(f"=> Node {node_id} removed from cluster")
 
     def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
         """
@@ -139,7 +129,7 @@ class Cluster:
             f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
         )
 
-        results = {'result': {}, 'evictions': set()}
+        results = {"result": {}, "evictions": set()}
 
         change = False
 
@@ -149,34 +139,33 @@ class Cluster:
         }
 
         for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
-
             if isinstance(size_in_bytes, Exception):
-                tb = ''.join(traceback.format_exception(type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__))
+                tb = "".join(
+                    traceback.format_exception(
+                        type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__
+                    )
+                )
                 logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
 
                 del model_sizes_in_bytes[model_key]
 
-                results['result'][model_key] = f"{size_in_bytes}\n{tb}"
+                results["result"][model_key] = f"{size_in_bytes}\n{tb}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
-
             logger.info("=> Checking to evict deprecated dedicated deployments...")
-            
+
             for node in self.nodes.values():
-
                 for model_key, deployment in list(node.deployments.items()):
-
                     if deployment.dedicated and model_key not in model_sizes_in_bytes:
-
                         logger.info(
                             f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                         )
 
-                        results['evictions'].add(model_key)
+                        results["evictions"].add(model_key)
 
                         node.evict(model_key, exclude=set(model_keys))
-                            
+
                         change = True
 
         # Sort models by size in descending order (deploy biggest ones first)
@@ -186,7 +175,6 @@ class Cluster:
 
         # For each model to deploy, find the best node to deploy it on, if possible.
         for model_key, size_in_bytes in sorted_models:
-
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
             )
@@ -195,7 +183,6 @@ class Cluster:
 
             # Check each node to see if the model can be deployed on it.
             for node in self.nodes.values():
-
                 logger.info(
                     f"==> Analyzing deployment of {model_key} for node {node.name}..."
                 )
@@ -209,29 +196,24 @@ class Cluster:
 
                 # If the model is already deployed on this node, we can stop looking for nodes.
                 if candidate.candidate_level == CandidateLevel.DEPLOYED:
-
                     candidates = {node.id: candidate}
 
                     break
 
                 # If we haven't found a node yet, add this one to the candidates.
                 if len(candidates) == 0:
-
                     candidates[node.id] = candidate
 
                 # If we have found a node, we need to see if this node is better than the current best node.
                 else:
-
                     candidate_level = list(candidates.values())[0].candidate_level
 
                     # If the candidate is the same level as the current best node, we can add it to the candidates.
                     if candidate.candidate_level == candidate_level:
-
                         candidates[node.id] = candidate
 
                     # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
                     elif candidate.candidate_level < candidate_level:
-
                         candidates = {node.id: candidate}
 
             # Pick a random node from the candidates.
@@ -239,29 +221,30 @@ class Cluster:
 
             candidate_level = candidate.candidate_level
 
-            results['result'][model_key] = candidate_level.name
+            results["result"][model_key] = candidate_level.name
 
             if candidate_level == CandidateLevel.DEPLOYED:
-
                 logger.info(
                     f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
                 )
 
             elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
-
                 logger.error(f"=> {model_key} cannot be deployed on any node")
 
             else:
-
                 logger.info(
                     f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
                 )
-                
+
                 self.nodes[node_id].deploy(
-                    model_key, candidate, size_in_bytes, dedicated=dedicated, exclude=set(model_keys)
+                    model_key,
+                    candidate,
+                    size_in_bytes,
+                    dedicated=dedicated,
+                    exclude=set(model_keys),
                 )
-                
-                results['evictions'].update(candidate.evictions)
+
+                results["evictions"].update(candidate.evictions)
 
                 change = True
 
