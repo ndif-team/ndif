@@ -9,8 +9,10 @@ logger = logging.getLogger("ndif")
 
 DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
 
+
 class AccountsDB:
     """Database class for accounts"""
+
     def __init__(self, host, port, database, user, password):
         self.conn = psycopg2.connect(
             host=host,
@@ -18,7 +20,7 @@ class AccountsDB:
             database=database,
             user=user,
             password=password,
-            connect_timeout=10
+            connect_timeout=10,
         )
         self.cur = self.conn.cursor()
 
@@ -30,7 +32,9 @@ class AccountsDB:
         """Check if a key exists"""
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)", (key_id,))
+                cur.execute(
+                    "SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)", (key_id,)
+                )
                 result = cur.fetchone()
                 return result[0] if result else False
         except Exception as e:
@@ -42,7 +46,10 @@ class AccountsDB:
         """Get the tier ID from a tier name"""
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT tier_id FROM tiers WHERE name = %s", (str(name.value).lower(),))
+                cur.execute(
+                    "SELECT tier_id FROM tiers WHERE name = %s",
+                    (str(name.value).lower(),),
+                )
                 result = cur.fetchone()
                 return result[0] if result else None
         except Exception as e:
@@ -55,7 +62,10 @@ class AccountsDB:
         logger.debug(f"Checking if key {key_id} has hotswapping access")
         try:
             with self.conn.cursor() as cur:
-                cur.execute("SELECT EXISTS(SELECT 1 FROM key_tier_assignments WHERE key_id = %s AND tier_id = %s)", (key_id, self.tier_id_from_name(TIER.TIER_HOTSWAP)))
+                cur.execute(
+                    "SELECT EXISTS(SELECT 1 FROM key_tier_assignments WHERE key_id = %s AND tier_id = %s)",
+                    (key_id, self.tier_id_from_name(TIER.TIER_HOTSWAP)),
+                )
                 result = cur.fetchone()
                 return result[0] if result else False
         except Exception as e:
@@ -72,5 +82,5 @@ if not DEV_MODE:
         os.environ.get("POSTGRES_PORT"),
         os.environ.get("POSTGRES_DB"),
         os.environ.get("POSTGRES_USER"),
-        os.environ.get("POSTGRES_PASSWORD")
+        os.environ.get("POSTGRES_PASSWORD"),
     )

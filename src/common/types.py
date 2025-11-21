@@ -1,6 +1,5 @@
-import uuid
 from enum import Enum
-from typing import TypeAlias, Union
+from typing import TypeAlias
 
 HF_REPO_ID: TypeAlias = str
 """Hugging Face repository ID.
@@ -34,5 +33,6 @@ NODE_ID: TypeAlias = str
 
 class TIER(Enum):
     """Tier identifier for API keys"""
+
     TIER_405B = "405b"
     TIER_HOTSWAP = "hotswapping"

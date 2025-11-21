@@ -11,7 +11,6 @@ import ray
 import torch
 from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
-from ray import serve
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
@@ -42,7 +41,6 @@ from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate
 
 
 class BaseModelDeployment:
-
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -54,7 +52,6 @@ class BaseModelDeployment:
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
     ) -> None:
-
         super().__init__()
 
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
@@ -74,7 +71,6 @@ class BaseModelDeployment:
         self.runtime_context = ray.get_runtime_context()
 
         if isinstance(dtype, str):
-
             dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
@@ -99,7 +95,6 @@ class BaseModelDeployment:
         StreamTracer.register(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
-
         start = time.time()
         torch.cuda.synchronize()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
@@ -130,7 +125,6 @@ class BaseModelDeployment:
         return model
 
     async def to_cache(self):
-
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
         # torch.cuda.synchronize()
         await self.cancel()
@@ -145,7 +139,6 @@ class BaseModelDeployment:
         self.cached = True
 
     def from_cache(self, cuda_devices: str):
-
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         torch.cuda.synchronize()
@@ -191,13 +184,11 @@ class BaseModelDeployment:
         """
 
         if self.cached:
-
             raise LookupError("Failed to look up actor")
 
         self.request = request
 
         try:
-
             result = None
 
             inputs = self.pre()
@@ -228,11 +219,9 @@ class BaseModelDeployment:
             self.post(result)
 
         except Exception as e:
-
             self.exception(e)
 
         finally:
-
             del request
             del result
 
@@ -273,7 +262,6 @@ class BaseModelDeployment:
         self.execution_ident = threading.current_thread().ident
 
         with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-
             if torch.cuda.is_available():
                 reset_peak_memory_stats()
                 model_memory = memory_allocated()
@@ -350,7 +338,10 @@ class BaseModelDeployment:
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
-        ray.kill(ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"), no_restart=False)
+        ray.kill(
+            ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"),
+            no_restart=False,
+        )
 
     def cleanup(self):
         """Performs cleanup operations after request processing.
@@ -440,7 +431,6 @@ class BaseModelDeployment:
 
 
 class BaseModelDeploymentArgs(BaseModel):
-
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
