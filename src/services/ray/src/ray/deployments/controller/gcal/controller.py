@@ -21,7 +21,6 @@ class SchedulingControllerActor(_ControllerActor):
         delay_start_s: float,
         **kwargs,
     ):
-
         super().__init__(**kwargs)
 
         self.google_calendar_id = google_calendar_id
@@ -38,7 +37,6 @@ class SchedulingControllerActor(_ControllerActor):
         self.scheduler.start.remote()
 
     def status(self):
-
         status = super().status()
 
         status["calendar_id"] = self.google_calendar_id
@@ -46,15 +44,12 @@ class SchedulingControllerActor(_ControllerActor):
         schedule = ray.get(self.scheduler.get_schedule.remote())
 
         for model_key, schedule in schedule.items():
-
             application_name = f"ModelActor:{model_key}"
 
             if application_name in status["deployments"]:
-
                 status["deployments"][application_name]["schedule"] = schedule
 
             else:
-
                 self.cluster.evaluator(model_key)
 
                 repo_id = self.cluster.evaluator.cache[model_key].config._name_or_path
@@ -78,7 +73,6 @@ class SchedulingControllerActor(_ControllerActor):
 
 
 class SchedulingControllerActorArgs(ControllerDeploymentArgs):
-
     google_credentials_path: str = os.environ.get("SCHEDULING_GOOGLE_CREDS_PATH", "")
     google_calendar_id: str = os.environ.get("SCHEDULING_GOOGLE_CALENDAR_ID", "")
     check_interval_s: float = float(os.environ.get("SCHEDULING_CHECK_INTERVAL_S", "10"))
@@ -86,7 +80,6 @@ class SchedulingControllerActorArgs(ControllerDeploymentArgs):
 
 
 def app(**kwargs):
-
     args = SchedulingControllerActorArgs(**kwargs)
 
     actor = SchedulingControllerActor.options(

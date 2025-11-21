@@ -10,7 +10,6 @@ logger = logging.getLogger("ndif")
 
 
 class SioProvider(Provider):
-
     api_url: str
     sio: socketio.SimpleClient = None
 
