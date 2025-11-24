@@ -80,7 +80,7 @@ async def request(
         )
 
         if not response.blocking:
-            response.save(ObjectStoreProvider.object_store)
+            response.save()
 
         # Run network status metric update in background
         background_tasks.add_task(NetworkStatusMetric.update, backend_request)
@@ -109,7 +109,6 @@ async def connect(session_id: SESSION_ID, environ: Dict):
     params = dict(x.split("=") for x in params.split("&"))
 
     if "job_id" in params:
-
         await sm.enter_room(session_id, params["job_id"])
 
 
@@ -117,7 +116,6 @@ async def connect(session_id: SESSION_ID, environ: Dict):
 async def blocking_response(
     session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any
 ):
-
     await sm.emit("blocking_response", data=data, to=client_session_id)
 
 
@@ -125,7 +123,6 @@ async def blocking_response(
 async def stream(
     session_id: SESSION_ID, client_session_id: SESSION_ID, data: bytes, job_id: str
 ):
-
     await sm.enter_room(session_id, job_id)
 
     await blocking_response(session_id, client_session_id, data)
@@ -133,7 +130,6 @@ async def stream(
 
 @sm.on("stream_upload")
 async def stream_upload(session_id: SESSION_ID, data: bytes, job_id: str):
-
     await sm.emit("stream_upload", data=data, room=job_id)
 
 
@@ -149,7 +145,7 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
     """
 
     # Load response from client given id.
-    return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
+    return BackendResponseModel.load(id)
 
 
 @app.get("/ping", status_code=200)
@@ -172,7 +168,6 @@ async def state():
 
 @app.get("/status", status_code=200)
 async def status():
-
     id = str(os.getpid())
 
     await redis_client.lpush("status", id)

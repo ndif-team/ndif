@@ -1,17 +1,13 @@
-
 from typing import TYPE_CHECKING
 
 from . import Metric
 import time
 
 if TYPE_CHECKING:
-
     from ..schema import BackendRequestModel, BackendResponseModel
 
 
 class RequestStatusTimeMetric(Metric):
-
-
     name: str = "request_status_time"
 
     @classmethod
@@ -34,16 +30,14 @@ class RequestStatusTimeMetric(Metric):
         Returns:
         """
 
-        
-        
         _new_last_status_time = time.time()
         _last_status_time = request.last_status_time
-        
+
         request.last_status_time = _new_last_status_time
-        
+
         if _last_status_time is None:
             return
-        
+
         time_delta = _new_last_status_time - _last_status_time
 
         super().update(

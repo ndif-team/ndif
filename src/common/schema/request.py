@@ -37,19 +37,19 @@ class BackendRequestModel(ObjectStorageMixin):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
-    _bucket_name: ClassVar[str] = "serialized-requests"
-    _file_extension: ClassVar[str] = "json"
+    _folder_name: ClassVar[str] = "requests"
+    _file_extension: ClassVar[str] = "pickle"
 
     last_status: Optional[ResponseModel.JobStatus] = None
     last_status_time: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
-
+    
     model_key: Optional[MODEL_KEY] = None
     session_id: Optional[SESSION_ID] = None
     zlib: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
-    callback: Optional[str] = ''
+    callback: Optional[str] = ""
     hotswapping: Optional[bool] = False
     python_version: Optional[str] = ""
     nnsight_version: Optional[str] = ""
@@ -59,18 +59,15 @@ class BackendRequestModel(ObjectStorageMixin):
     id: REQUEST_ID
 
     def deserialize(self, model: NNsight) -> RequestModel:
-
         request = self.request
 
         if isinstance(self.request, ray.ObjectRef):
-
             request = ray.get(request)
 
         return RequestModel.deserialize(model, request, self.zlib)
 
     @classmethod
     def from_request(cls, request: Request) -> Self:
-
         headers = request.headers
 
         sent = headers.get("ndif-timestamp", None)
@@ -79,11 +76,16 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         request_id = uuid.uuid4() if headers.get("ndif-request_id") is None else headers.get("ndif-request_id")
+        
+        model_key = headers.get("nnsight-model-key", None)
+        
+        if model_key is not None:
+            model_key = model_key.replace("\"revision\": \"main\"", "\"revision\": null")
 
         return BackendRequestModel(
             id=str(request_id),
             request=request.body(),
-            model_key=headers.get("nnsight-model-key", None),
+            model_key=model_key,
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
             last_status_time=sent,
@@ -126,19 +128,17 @@ class BackendRequestModel(ObjectStorageMixin):
             message=log_msg,
             level=logging_level,
         )
-        
-        logger.info(f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}")
 
-        if (
-            status != self.last_status
-            and status != ResponseModel.JobStatus.LOG
-        ):
+        logger.info(
+            f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}"
+        )
+
+        if status != self.last_status and status != ResponseModel.JobStatus.LOG:
             logger.info(f"Updating last status: {status}")
             self.last_status = status
-            
+
             response.update_metric(
                 self,
             )
-            
 
         return response
