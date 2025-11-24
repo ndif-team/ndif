@@ -34,5 +34,6 @@ NODE_ID: TypeAlias = str
 
 class TIER(Enum):
     """Tier identifier for API keys"""
+
     TIER_405B = "405b"
     TIER_HOTSWAP = "hotswapping"

@@ -10,7 +10,7 @@ from .types import API_KEY
 from .db import api_key_store
 from .schema import BackendRequestModel
 
-MIN_NNSIGHT_VERSION = os.getenv('MIN_NNSIGHT_VERSION', __version__)
+MIN_NNSIGHT_VERSION = os.getenv("MIN_NNSIGHT_VERSION", __version__)
 DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
 
 
@@ -55,23 +55,23 @@ async def validate_python_version(python_version: str) -> str:
     Raises:
         HTTPException: If the Python version is missing or incompatible.
     """
-    
+
     if DEV_MODE:
         return python_version
-    
-    server_python_version = '.'.join(sys.version.split('.')[0:2])  # e.g. 3.12
-    user_python_version = '.'.join(python_version.split('.')[0:2])
 
-    if user_python_version == '':
+    server_python_version = ".".join(sys.version.split(".")[0:2])  # e.g. 3.12
+    user_python_version = ".".join(python_version.split(".")[0:2])
+
+    if user_python_version == "":
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail="Client python version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again."
+            detail="Client python version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
     if user_python_version != server_python_version:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"Client python version {user_python_version} does not match server version: {server_python_version}. Please update your python version and try again."
+            detail=f"Client python version {user_python_version} does not match server version: {server_python_version}. Please update your python version and try again.",
         )
 
     return user_python_version
@@ -89,14 +89,14 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     Raises:
         HTTPException: If the nnsight version is missing or incompatible.
     """
-    
+
     if DEV_MODE:
         return nnsight_version
-    
-    if nnsight_version == '':
+
+    if nnsight_version == "":
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail="Client nnsight version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again."
+            detail="Client nnsight version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
     min_nnsight_version = Version(MIN_NNSIGHT_VERSION)
@@ -105,7 +105,7 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     if user_nnsight_version < min_nnsight_version:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"Client nnsight version {user_nnsight_version} is incompatible with the server nnsight version. The minimum supported version is {min_nnsight_version}. Please update nnsight to the latest version: `pip install --upgrade nnsight`"
+            detail=f"Client nnsight version {user_nnsight_version} is incompatible with the server nnsight version. The minimum supported version is {min_nnsight_version}. Please update nnsight to the latest version: `pip install --upgrade nnsight`",
         )
 
     return nnsight_version

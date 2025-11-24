@@ -35,7 +35,6 @@ class _ControllerActor:
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
     ):
-
         super().__init__()
 
         self.model_import_path = model_import_path
@@ -70,7 +69,6 @@ class _ControllerActor:
         }
 
         if include_ray_state:
-
             state["ray_dashboard_url"] = self.ray_dashboard_url
             state["runtime_context"] = self.runtime_context.get()
             state["replica_context"] = asdict(self.replica_context)
@@ -80,7 +78,6 @@ class _ControllerActor:
         return state
 
     async def check_nodes(self):
-
         while True:
             self.cluster.update_nodes()
             await asyncio.sleep(
@@ -88,7 +85,6 @@ class _ControllerActor:
             )
 
     def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
-
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
@@ -101,11 +97,9 @@ class _ControllerActor:
     async def deploy(
         self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False
     ):
-
         return self._deploy(model_keys, dedicated=dedicated)
 
     def build(self):
-
         new_state = {}
 
         deployments_to_cache = []
@@ -117,7 +111,6 @@ class _ControllerActor:
         for id, node in self.cluster.nodes.items():
             # For every cached deployment
             for model_key, cached in node.cache.items():
-
                 # It will always exist in the state if its now cached.
                 existing_deployment = self.state.pop((id, model_key))
 
@@ -130,7 +123,6 @@ class _ControllerActor:
 
             # For every deployed deployment
             for model_key, deployment in node.deployments.items():
-
                 existing_deployment = self.state.pop((id, model_key), None)
 
                 # If the deployment didn't exist before, we need to create it.
@@ -157,7 +149,6 @@ class _ControllerActor:
         )
 
     def apply(self):
-
         self.logger.info(f"Applying state: {self.state}")
 
         deployment_delta = self.build()
@@ -170,7 +161,6 @@ class _ControllerActor:
 
         # Cache deployments
         for deployment in deployment_delta.deployments_to_cache:
-
             cache_future = deployment.cache()
 
             if cache_future is not None:
@@ -201,15 +191,12 @@ class _ControllerActor:
         return None
 
     def status(self):
-
         ray_status = list_actors()
 
         status = {}
 
         for actor_state in ray_status:
-
             if actor_state.name.startswith("ModelActor:"):
-
                 if actor_state.state in {
                     "DEPENDENCIES_UNREADY",
                     "PENDING_CREATION",
@@ -228,9 +215,7 @@ class _ControllerActor:
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
-
             for deployment in node.deployments.values():
-
                 application_name = deployment.name
 
                 status[application_name] = {
@@ -269,7 +254,6 @@ class _ControllerActor:
                 )
 
             for cached_deployment in node.cache.values():
-
                 application_name = cached_deployment.name
 
                 status[application_name] = {
@@ -298,9 +282,7 @@ class _ControllerActor:
         downloaded_models = get_downloaded_models()
 
         for repo_id in downloaded_models:
-
             if repo_id not in existing_repo_ids:
-
                 status[repo_id] = {
                     "deployment_level": DeploymentLevel.COLD.name,
                     "repo_id": repo_id,
@@ -335,7 +317,6 @@ class ControllerActor(_ControllerActor):
 
 
 class ControllerDeploymentArgs(BaseModel):
-
     deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
@@ -351,7 +332,6 @@ class ControllerDeploymentArgs(BaseModel):
 
 
 def app(**kwargs):
-
     args = ControllerDeploymentArgs(**kwargs)
 
     actor = ControllerActor.options(

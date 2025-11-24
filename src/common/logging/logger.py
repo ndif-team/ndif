@@ -9,21 +9,26 @@ import time
 from functools import wraps
 
 # Environment variables for Loki configuration
-LOKI_URL = os.environ.get('LOKI_URL')
-LOKI_RETRY_COUNT = int(os.environ.get('LOKI_RETRY_COUNT', '3'))  # Number of retry attempts for failed log sends
+LOKI_URL = os.environ.get("LOKI_URL")
+LOKI_RETRY_COUNT = int(
+    os.environ.get("LOKI_RETRY_COUNT", "3")
+)  # Number of retry attempts for failed log sends
 
 
 class CustomJSONFormatter(logging.Formatter):
     """
     Custom JSON formatter for structured logging.
-    
+
     Extends the standard logging.Formatter to add additional fields
     like service name, hostname, and metrics data to log records.
     """
-    def __init__(self, service_name, fmt=None, datefmt=None, style='%', *args, **kwargs):
+
+    def __init__(
+        self, service_name, fmt=None, datefmt=None, style="%", *args, **kwargs
+    ):
         """
         Initialize the formatter with service information.
-        
+
         Args:
             service_name: Name of the service generating logs
             fmt: Log format string
@@ -37,10 +42,10 @@ class CustomJSONFormatter(logging.Formatter):
     def format(self, record):
         """
         Format the log record by adding custom fields.
-        
+
         Args:
             record: The log record to format
-            
+
         Returns:
             Formatted log record as a string
         """
@@ -52,32 +57,34 @@ class CustomJSONFormatter(logging.Formatter):
         # Add code location
         record.code_file = record.pathname
         record.code_line = record.lineno
-            
+
         # Format the log record using the standard logging format
         return super().format(record)
+
 
 class RetryingLokiHandler(logging_loki.LokiHandler):
     """
     Extended Loki handler with retry capability for handling network issues.
-    
+
     Attempts to resend logs to Loki if initial attempts fail, using
     exponential backoff between retries.
     """
+
     def __init__(self, retry_count=LOKI_RETRY_COUNT, *args, **kwargs):
         """
         Initialize the handler with retry configuration.
-        
+
         Args:
             retry_count: Number of times to retry sending logs
             *args, **kwargs: Arguments passed to LokiHandler
         """
         self.retry_count = retry_count
         super().__init__(*args, **kwargs)
-        
+
     def emit(self, record):
         """
         Send the log record to Loki with retry logic.
-        
+
         Args:
             record: The log record to send
         """
@@ -87,22 +94,24 @@ class RetryingLokiHandler(logging_loki.LokiHandler):
                 return
             except Exception as e:
                 if attempt == self.retry_count - 1:
-                    sys.stderr.write(f"Failed to send log to Loki after {self.retry_count} attempts: {e}\n")
+                    sys.stderr.write(
+                        f"Failed to send log to Loki after {self.retry_count} attempts: {e}\n"
+                    )
                 else:
                     time.sleep(0.5 * (attempt + 1))  # Exponential backoff
 
-def set_logger(service_name) -> logging.Logger:
 
+def set_logger(service_name) -> logging.Logger:
     logger = logging.getLogger("ndif")
 
     if service_name is None:
         raise ValueError("Service name is required")
-    
+
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
     # JSON format for structured logging (used by Loki handler)
-    json_format = '''{
+    json_format = """{
         "timestamp": "%(asctime)s",
         "service": {
             "name": "%(service_name)s",
@@ -120,22 +129,19 @@ def set_logger(service_name) -> logging.Logger:
             "line": %(code_line)d
         },
         "message": "%(message)s"
-    }'''
-    
+    }"""
+
     # Simpler format for console output with filename and process id
-    console_format = '[%(asctime)s] [%(process)d] [%(levelname)s] [%(pathname)s:%(lineno)d] %(message)s'
+    console_format = "[%(asctime)s] [%(process)d] [%(levelname)s] [%(pathname)s:%(lineno)d] %(message)s"
     # Create formatters for different outputs
     json_formatter = CustomJSONFormatter(
-        fmt=json_format,
-        service_name=service_name,
-        datefmt="%Y-%m-%d %H:%M:%S.%f%z"
+        fmt=json_format, service_name=service_name, datefmt="%Y-%m-%d %H:%M:%S.%f%z"
     )
 
     console_formatter = logging.Formatter(
-        fmt=console_format,
-        datefmt="%Y-%m-%d %H:%M:%S"
+        fmt=console_format, datefmt="%Y-%m-%d %H:%M:%S"
     )
-    
+
     # Set up console handler for local debugging
     console_handler = logging.StreamHandler(stream=sys.stdout)
     console_handler.setFormatter(console_formatter)
@@ -153,11 +159,9 @@ def set_logger(service_name) -> logging.Logger:
             },
             auth=None,
             version="1",
-
         )
         loki_handler.setFormatter(json_formatter)
         loki_handler.setLevel(logging.INFO)  # Only send INFO and above to Loki
         logger.addHandler(loki_handler)
-
 
     return logger
