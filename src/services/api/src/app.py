@@ -158,6 +158,18 @@ async def ping():
     return "pong"
 
 
+@app.get("/state", status_code=200)
+async def state():
+    """Endpoint to get the state of the dispatcher."""
+    if os.environ.get("DEV_MODE", "false") == "true":
+        id = str(os.getpid())
+
+        await redis_client.lpush("state", id)
+        result = await redis_client.brpop(id)
+        return pickle.loads(result[1])
+
+
+
 @app.get("/status", status_code=200)
 async def status():
 
