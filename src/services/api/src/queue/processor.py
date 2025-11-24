@@ -261,8 +261,6 @@ class Processor:
             # Wait for the request to be completed
             result = await result
 
-            #self.dispatched_requests.remove(request.id)
-
         # If there was an error submitting the request...
         except Exception as e:
 
