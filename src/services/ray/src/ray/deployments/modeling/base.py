@@ -311,7 +311,7 @@ class BaseModelDeployment:
         result_object = BackendResultModel(
             id=self.request.id,
             **saves,
-        ).save(ObjectStoreProvider.object_store)
+        ).save()
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
@@ -435,8 +435,11 @@ class BaseModelDeployment:
                 - description: Human-readable status description
                 - data: Optional additional data
         """
-
-        self.request.create_response(**kwargs, logger=self.logger).respond()
+        
+        try:
+            self.request.create_response(**kwargs, logger=self.logger).respond()
+        except:
+            self.logger.exception("Error responding to client")
 
 
 class BaseModelDeploymentArgs(BaseModel):

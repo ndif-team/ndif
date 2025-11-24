@@ -84,6 +84,7 @@ WHITELISTED_MODULES = [
     WhitelistedModule(name="_operator", strict=True),
     WhitelistedModule(name="operator", strict=True),
     WhitelistedModule(name="pandas", strict = False),
+    WhitelistedModule(name="enum", strict = False),
 ]
 
 # Modules allowed during deserialization

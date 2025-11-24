@@ -37,8 +37,8 @@ class BackendRequestModel(ObjectStorageMixin):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
 
-    _bucket_name: ClassVar[str] = "serialized-requests"
-    _file_extension: ClassVar[str] = "json"
+    _folder_name: ClassVar[str] = "requests"
+    _file_extension: ClassVar[str] = "pickle"
 
     last_status: Optional[ResponseModel.JobStatus] = None
     last_status_time: Optional[float] = None
@@ -79,11 +79,16 @@ class BackendRequestModel(ObjectStorageMixin):
             sent = float(sent)
 
         request_id = uuid.uuid4() if headers.get("ndif-request_id") is None else headers.get("ndif-request_id")
+        
+        model_key = headers.get("nnsight-model-key", None)
+        
+        if model_key is not None:
+            model_key = model_key.replace("\"revision\": \"main\"", "\"revision\": null")
 
         return BackendRequestModel(
             id=str(request_id),
             request=request.body(),
-            model_key=headers.get("nnsight-model-key", None),
+            model_key=model_key,
             session_id=headers.get("ndif-session_id", None),
             zlib=headers.get("nnsight-zlib", True),
             last_status_time=sent,

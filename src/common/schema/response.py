@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 import requests
 from pydantic import field_serializer
@@ -11,7 +11,6 @@ from nnsight.schema.response import ResponseModel
 
 from ..metrics import RequestStatusTimeMetric
 from ..providers.mailgun import MailgunProvider
-from ..providers.objectstore import ObjectStoreProvider
 from ..providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
@@ -24,7 +23,7 @@ def is_email(s):
 
 class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
-    _bucket_name: ClassVar[str] = "responses"
+    _folder_name: ClassVar[str] = "responses"
     
     callback: Optional[str] = ''
 
@@ -36,10 +35,13 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
         return self.session_id is not None
 
     def respond(self) -> ResponseModel:
-
         if self.blocking:
             # Emit to socket manager - it will forward to the client (i.e. the user)
-            SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
+            
+            if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
+                SioProvider.call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+            else:
+                SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
         else:
             if self.callback != '':
                 if is_email(self.callback):
@@ -49,7 +51,7 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
                     callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
                     requests.get(callback_url)
             if self.status != ResponseModel.JobStatus.LOG:
-                self.save(ObjectStoreProvider.object_store)
+                self.save()
 
         return self
 

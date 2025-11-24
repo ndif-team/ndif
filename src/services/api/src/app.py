@@ -80,7 +80,7 @@ async def request(
         )
 
         if not response.blocking:
-            response.save(ObjectStoreProvider.object_store)
+            response.save()
 
         # Run network status metric update in background
         background_tasks.add_task(NetworkStatusMetric.update, backend_request)
@@ -149,7 +149,7 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
     """
 
     # Load response from client given id.
-    return BackendResponseModel.load(ObjectStoreProvider.object_store, id)
+    return BackendResponseModel.load(id)
 
 
 @app.get("/ping", status_code=200)
