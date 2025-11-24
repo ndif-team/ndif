@@ -16,14 +16,12 @@ logger = logging.getLogger("ndif")
 
 
 class DeploymentLevel(Enum):
-
     HOT = "hot"
     WARM = "warm"
     COLD = "cold"
 
 
 class Deployment:
-
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -32,14 +30,13 @@ class Deployment:
         size_bytes: int,
         dedicated: bool = False,
     ):
-
         self.model_key = model_key
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
         self.dedicated = dedicated
         self.deployed = time.time()
-        
+
     @property
     def name(self):
         return f"ModelActor:{self.model_key}"
@@ -61,13 +58,11 @@ class Deployment:
         }
 
     def end_time(self, minimim_deployment_time_seconds: int) -> datetime:
-
         return datetime.fromtimestamp(
             self.deployed + minimim_deployment_time_seconds, tz=timezone.utc
         )
 
     def delete(self):
-
         try:
             actor = self.actor
             ray.kill(actor, no_restart=True)
@@ -76,7 +71,6 @@ class Deployment:
             pass
 
     def restart(self):
-
         try:
             actor = self.actor
             ray.kill(actor, no_restart=False)
@@ -85,7 +79,6 @@ class Deployment:
             pass
 
     def cache(self):
-
         try:
             actor = self.actor
             return actor.to_cache.remote()
@@ -94,7 +87,6 @@ class Deployment:
             return None
 
     def from_cache(self):
-
         try:
             actor = self.actor
             return actor.from_cache.remote(",".join(str(gpu) for gpu in self.gpus))
@@ -103,9 +95,7 @@ class Deployment:
             return None
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
-
         try:
-
             actor = ModelActor.options(
                 name=self.name,
                 resources={f"node:{node_name}": 0.01},

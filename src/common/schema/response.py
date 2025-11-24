@@ -16,16 +16,17 @@ from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
     from . import BackendRequestModel
-    
+
+
 def is_email(s):
-    pattern = r'^[\w\.-]+@[\w\.-]+\.\w{2,}$'
+    pattern = r"^[\w\.-]+@[\w\.-]+\.\w{2,}$"
     return re.match(pattern, s) is not None
 
-class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
+class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     _folder_name: ClassVar[str] = "responses"
-    
-    callback: Optional[str] = ''
+
+    callback: Optional[str] = ""
 
     def __str__(self) -> str:
         return f"{self.id} - {self.status.name}: {self.description}"
@@ -43,12 +44,23 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
             else:
                 SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
         else:
-            if self.callback != '':
+            if self.callback != "":
                 if is_email(self.callback):
                     if MailgunProvider.connected():
-                        MailgunProvider.send_email(self.callback, f"NDIF Update For Job ID: {self.id}", self.model_dump_json(exclude_none=True, exclude_unset=True, exclude_defaults=True, exclude=["value"]))
+                        MailgunProvider.send_email(
+                            self.callback,
+                            f"NDIF Update For Job ID: {self.id}",
+                            self.model_dump_json(
+                                exclude_none=True,
+                                exclude_unset=True,
+                                exclude_defaults=True,
+                                exclude=["value"],
+                            ),
+                        )
                 else:
-                    callback_url = f"{self.callback}?status={self.status.value}&id={self.id}"
+                    callback_url = (
+                        f"{self.callback}?status={self.status.value}&id={self.id}"
+                    )
                     requests.get(callback_url)
             if self.status != ResponseModel.JobStatus.LOG:
                 self.save()

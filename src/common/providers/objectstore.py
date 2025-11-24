@@ -6,8 +6,8 @@ from . import Provider
 
 logger = logging.getLogger("ndif")
 
-class ObjectStoreProvider(Provider):
 
+class ObjectStoreProvider(Provider):
     object_store_service: str
     object_store_url: str
     object_store_bucket: str
@@ -16,7 +16,7 @@ class ObjectStoreProvider(Provider):
     object_store_region: str
     object_store_verify: bool
     object_store: boto3.client
-    
+
     @classmethod
     def from_env(cls):
         super().from_env()
@@ -27,8 +27,8 @@ class ObjectStoreProvider(Provider):
         cls.object_store_secret_key = os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin")
         cls.object_store_region = os.environ.get("OBJECT_STORE_REGION", "us-east-1")
         cls.object_store_verify = os.environ.get("OBJECT_STORE_VERIFY", False)
-    
-    @classmethod 
+
+    @classmethod
     def to_env(cls):
         return {
             **super().to_env(),
@@ -40,7 +40,7 @@ class ObjectStoreProvider(Provider):
             "OBJECT_STORE_REGION": cls.object_store_region,
             "OBJECT_STORE_VERIFY": cls.object_store_verify,
         }
-    
+
     @classmethod
     def connect(cls):
         logger.info(f"Connecting to object store at {cls.object_store_url}...")
@@ -53,5 +53,6 @@ class ObjectStoreProvider(Provider):
             verify=cls.object_store_verify,
         )
         logger.info("Connected to object store")
+
 
 ObjectStoreProvider.from_env()

@@ -62,7 +62,6 @@ class Processor:
         """Add a request to the queue and update the user with their position in the queue."""
 
         if self.dedicated is False and not request.hotswapping:
-
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
@@ -81,9 +80,8 @@ class Processor:
         ).respond()
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
-
         result = await submit(handle, "get_deployment", self.model_key)
-        
+
         if result is None:
             return False
 
@@ -93,14 +91,12 @@ class Processor:
         """Provision the model deployment by contacting the Controller to create the model deployment."""
 
         try:
-
             # Get the controller handle.
             controller = controller_handle()
 
             self.dedicated = await self.check_dedicated(controller)
 
             if not self.dedicated:
-                
                 hotswap = False
 
                 valid_queue = list()
@@ -164,17 +160,14 @@ class Processor:
             )
 
         for model_key, status in deployment_statuses.items():
-
             status_str = str(status).lower()
 
             try:
-
                 deployment_status = DeploymentStatus(status_str)
 
             # If the status is not a valid deployment status, there was an issue evaluating the model on the Controller.
             # Evict and cancel the processor.
             except ValueError:
-
                 self.eviction_queue.put_nowait(
                     (
                         model_key,
@@ -187,7 +180,6 @@ class Processor:
 
             # If the model deployment cannot be accommodated, evict and cancel the processor.
             if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
-
                 self.eviction_queue.put_nowait(
                     (
                         model_key,
@@ -203,7 +195,6 @@ class Processor:
 
         # Loop until the model deployment is initialized.
         while True:
-
             try:
                 # Try and get the handle for the model deployment. It might not be created yet.
                 handle = self.handle
@@ -230,7 +221,6 @@ class Processor:
         """Submit a request to the model deployment and update the user with the status."""
 
         try:
-
             # Get the handle for the model deployment.
             handle = self.handle
 
@@ -249,7 +239,6 @@ class Processor:
 
         # If there was an error submitting the request...
         except Exception as e:
-
             # Respond to the dispatched user with an error.
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
@@ -272,7 +261,6 @@ class Processor:
 
         # Otherwise the processor is ready to accept new requests.
         else:
-
             self.status = ProcessorStatus.READY
 
     async def processor_worker(self) -> None:
@@ -294,7 +282,7 @@ class Processor:
 
         # Wait for the model deployment to be initialized.
         await self.initialize()
-        
+
         # If there was a problem initializing the model deployment, return.
         if self.status == ProcessorStatus.CANCELLED:
             return
@@ -303,10 +291,8 @@ class Processor:
 
         # Loop until the model deployment is cancelled.
         while self.status != ProcessorStatus.CANCELLED:
-
             # If there was previously an error executing, wait for the dispatcher to check and clear the error.
             if self.status == ProcessorStatus.BUSY:
-
                 await asyncio.sleep(1)
 
                 continue
@@ -315,7 +301,7 @@ class Processor:
             request = await self.queue.get()
 
             self.status = ProcessorStatus.BUSY
-            
+
             # Update the other users in the queue with their new position in the queue.
             self.reply()
 
@@ -332,7 +318,6 @@ class Processor:
             self.status != ProcessorStatus.READY
             and self.status != ProcessorStatus.CANCELLED
         ):
-
             if self.status == ProcessorStatus.PROVISIONING:
                 self.reply("Model Provisioning...")
             elif self.status == ProcessorStatus.DEPLOYING:
@@ -360,12 +345,11 @@ class Processor:
                 (
                     description
                     if description is not None
-                    else f"Moved to position {i+1} in Queue."
+                    else f"Moved to position {i + 1} in Queue."
                 ),
             ).respond()
 
     def purge(self, message: Optional[str] = None):
-
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
