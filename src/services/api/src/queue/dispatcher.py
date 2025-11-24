@@ -92,8 +92,13 @@ class Dispatcher:
             
     def handle_evictions(self):
         while not self.eviction_queue.empty():
+            
             model_key, reason = self.eviction_queue.get_nowait()
-            self.remove(model_key, reason)
+            
+            try:
+                self.remove(model_key, reason)
+            except:
+                self.logger.exception(f"Error handling eviction for `{model_key}`")
 
     def handle_errors(self):
         
