@@ -13,6 +13,7 @@ from ..cluster.node import CandidateLevel
 
 logger = logging.getLogger("ndif")
 
+
 @ray.remote(num_cpus=1)
 class SchedulingActor:
     """
@@ -67,7 +68,6 @@ class SchedulingActor:
         logger.info("Starting scheduler...")
 
         while True:
-
             try:
                 await self.check_calendar()
             except Exception as e:
@@ -123,8 +123,12 @@ class SchedulingActor:
 
         events = events_result.get("items", [])
 
-        model_keys_to_event = {self.sanitize(event["description"]): event for event in events}
-        model_keys_to_event = dict(sorted(model_keys_to_event.items(), key=lambda item: item[0]))
+        model_keys_to_event = {
+            self.sanitize(event["description"]): event for event in events
+        }
+        model_keys_to_event = dict(
+            sorted(model_keys_to_event.items(), key=lambda item: item[0])
+        )
 
         # Generate a hash of the model keys to check for changes
         current_hash = hash("".join(model_keys_to_event.keys()))
@@ -135,25 +139,33 @@ class SchedulingActor:
                 "Change in model deployment state. Sending deployment request to Controller..."
             )
             # Update the controller with new model keys
-            result: Dict[str, str] = await self.controller_handle.deploy.remote(list(model_keys_to_event.keys()), dedicated=True)
-            result = result['result']
-            error_messages = {model_key: value for model_key, value in result.items() if value not in CandidateLevel.__members__}
+            result: Dict[str, str] = await self.controller_handle.deploy.remote(
+                list(model_keys_to_event.keys()), dedicated=True
+            )
+            result = result["result"]
+            error_messages = {
+                model_key: value
+                for model_key, value in result.items()
+                if value not in CandidateLevel.__members__
+            }
 
             # Only update the stored hash if there were no errors
             cant_accomodate = False
             for model_key, value in result.items():
-                print('value: ', value)
+                print("value: ", value)
                 if value == CandidateLevel.CANT_ACCOMMODATE.name:
-                    print('cant accomate: ', model_key)
+                    print("cant accomate: ", model_key)
                     cant_accomodate = True
                     break
-            
+
             if not error_messages and not cant_accomodate:
                 self.previous_model_keys_hash = current_hash
 
-        # For successful deployments, set event color to dark green if not already
+            # For successful deployments, set event color to dark green if not already
             DARK_GREEN_COLOR_ID = "10"  # Google Calendar 'Basil' (dark green)
-            successful_model_keys = [k for k in model_keys_to_event.keys() if k not in error_messages]
+            successful_model_keys = [
+                k for k in model_keys_to_event.keys() if k not in error_messages
+            ]
             for model_key in successful_model_keys:
                 event = model_keys_to_event[model_key]
                 event_id = event["id"]
@@ -168,34 +180,38 @@ class SchedulingActor:
                         sendUpdates="all",
                     ).execute()
                     logger.info(f"Updated event {event_id} to dark green.")
-   
+
             # Loop through error messages and update the corresponding calendar event
             for model_key, error_message in error_messages.items():
                 # Find the event with the matching sanitized description
-                logger.error(f"Model key '{model_key}' encountered error: {error_message}")
+                logger.error(
+                    f"Model key '{model_key}' encountered error: {error_message}"
+                )
                 event = model_keys_to_event[model_key]
                 event_id = event["id"]
                 # Prepend "ERROR:" to the event summary/title
-                summary = event.get('summary', '')
+                summary = event.get("summary", "")
                 if not summary.startswith("ERROR:"):
                     summary = f"ERROR: {summary}"
                 else:
                     summary = summary
                 # Update the event with the error message in the description and new summary
                 try:
-                   
-
                     # Ensure the creator is an attendee
                     creator_email = event.get("creator", {}).get("email", None)
                     if creator_email and MailgunProvider.connected():
-                        MailgunProvider.send_email(creator_email, f"NDIF Scheduling Error for {summary}", error_message)
+                        MailgunProvider.send_email(
+                            creator_email,
+                            f"NDIF Scheduling Error for {summary}",
+                            error_message,
+                        )
 
                     self.service.events().patch(
                         calendarId=self.google_calendar_id,
                         eventId=event_id,
                         body={
-                            "summary": summary.removeprefix("ERROR: "), 
-                            "colorId": "11",             
+                            "summary": summary.removeprefix("ERROR: "),
+                            "colorId": "11",
                         },
                         sendUpdates="all",
                     ).execute()
@@ -203,7 +219,6 @@ class SchedulingActor:
                 except Exception as e:
                     logger.error(f"Failed to update event {event_id} with error: {e}")
                 break
-   
 
     async def get_schedule(self) -> Dict[MODEL_KEY, Dict[str, Any]]:
         """
@@ -237,7 +252,7 @@ class SchedulingActor:
         for event in events:
             # Sanitize the description (model key) using existing sanitize function
             model_key = self.sanitize(event["description"])
-            
+
             # Handle both all-day events and events with specific times
             if "dateTime" in event["start"]:
                 # Event with specific time
@@ -263,7 +278,7 @@ class SchedulingActor:
 
             # Get the event title
             event_title = event.get("summary", model_key)
-            
+
             if model_key in schedule:
                 # If the event's start time minus 10 seconds is before the stored end time, update the end time.
                 existing_entry = schedule[model_key]
@@ -276,9 +291,8 @@ class SchedulingActor:
                     if event_title != existing_entry["title"]:
                         existing_entry["title"] = event_title
                     schedule[model_key] = existing_entry
-                
-            else:
 
+            else:
                 schedule[model_key] = {
                     "start_time": start_time,
                     "end_time": end_time,

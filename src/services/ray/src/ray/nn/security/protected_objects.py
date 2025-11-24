@@ -14,27 +14,22 @@ PROTECTIONS = {}
 
 
 def protected(obj: Any):
-
     return id(obj) in PROTECTIONS
 
 
 class ProtectedObject:
-
     def __init__(self, obj: Any):
-
         PROTECTIONS[id(self)] = obj
 
     def __getattribute__(self, name: str):
-        
-        if name in ['to']:
+        if name in ["to"]:
             raise ValueError(f"Attribute `{name}` cannot be accessed")
 
         obj = PROTECTIONS[id(self)]
 
         value = getattr(obj, name)
-        
-        if not isinstance(value, (torch.Tensor, list, dict)):
 
+        if not isinstance(value, (torch.Tensor, list, dict)):
             return value
 
         value = deepcopy(value)
@@ -46,7 +41,6 @@ class ProtectedObject:
         return value
 
     def __setattr__(self, name: str, value: Any):
-
         if not protected(self):
             object.__setattr__(self, name, value)
         else:
@@ -66,11 +60,8 @@ original_setstate = Envoy.__setstate__
 
 
 class ProtectedCustomCloudUnpickler(serialization.CustomCloudUnpickler):
-
     def load(self):
-
         def inject(_self, state):
-
             original_setstate(_self, state)
 
             envoy = self.root.get(_self.path.removeprefix("model"))
@@ -89,5 +80,4 @@ class ProtectedCustomCloudUnpickler(serialization.CustomCloudUnpickler):
 
 
 def protect_model():
-
     serialization.CustomCloudUnpickler = ProtectedCustomCloudUnpickler

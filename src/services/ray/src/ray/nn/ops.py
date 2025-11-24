@@ -3,7 +3,6 @@ from typing import Callable
 
 
 class StdoutRedirect:
-
     def __init__(self, fn: Callable):
         self.fn = fn
         self.stdout = sys.stdout
