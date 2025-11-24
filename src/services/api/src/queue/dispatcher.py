@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import os
 import pickle
 import time
@@ -33,6 +34,17 @@ class Dispatcher:
         self.connect()
 
         ObjectStoreProvider.connect()
+
+    def get_state(self) -> dict:
+        """Get the state of the dispatcher."""
+
+        return {
+            "datetime": datetime.now().isoformat(),
+            "processors": [processor.get_state() for processor in self.processors.values()],
+            "error_queue": [request.id for request in self.error_queue._queue],
+            "eviction_queue": [request.id for request in self.eviction_queue._queue],
+            "last_status": time.time() - self.last_status_time,
+        }
 
     @classmethod
     def start(cls):
@@ -116,7 +128,8 @@ class Dispatcher:
         """Main asyncio task for monitoring the dispatch queue and routing requests to the appropriate processors."""
 
         asyncio.create_task(self.status_worker())
-
+        asyncio.create_task(self.state_worker())
+        
         while True:
             # Get the next request from the queue.
             request = await self.get()
@@ -127,6 +140,13 @@ class Dispatcher:
             # Handle any evictions or errors that may have been added by the processors.
             self.handle_evictions()
             self.handle_errors()
+            
+    async def state_worker(self) -> None:
+        """Asyncio task for responding to requests for cluster state
+        """
+        while True:
+            id = (await self.redis_client.brpop("state"))[1]
+            await self.redis_client.lpush(id, pickle.dumps(self.get_state()))
 
     async def status_worker(self) -> None:
         """Asyncio task for responding to requests for cluster status"""

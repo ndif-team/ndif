@@ -52,11 +52,25 @@ class Processor:
         self.status = ProcessorStatus.UNINITIALIZED
 
         self.dedicated = None
+        self.dispatched_requests = []
 
     @property
     def handle(self) -> ray.actor.ActorHandle:
         """Get the handle for the model deployment."""
         return get_actor_handle(f"ModelActor:{self.model_key}")
+
+    def get_state(self) -> dict:
+        """Get the state of the model deployment."""
+
+        return {
+            "id": self.model_key,
+            "status": self.status.value,
+            "dedicated": self.dedicated,
+            "queue": [request.id for request in self.queue._queue],
+            "eviction_queue": [request.id for request in self.eviction_queue._queue],
+            "error_queue": [request.id for request in self.error_queue._queue],
+            "dispatched_requests": self.dispatched_requests,
+        }
 
     def enqueue(self, request: BackendRequestModel):
         """Add a request to the queue and update the user with their position in the queue."""
@@ -256,7 +270,7 @@ class Processor:
                 )
                 self.status = ProcessorStatus.CANCELLED
             else:
-                # If there is another error, add it ot the error queue to be handled by the dispatcher. Remain busy until the dispatcher has cleared the error.
+                # If there is another error, add it to the error queue to be handled by the dispatcher. Remain busy until the dispatcher has cleared the error.
                 self.error_queue.put_nowait((self.model_key, e))
 
         # Otherwise the processor is ready to accept new requests.
@@ -305,8 +319,12 @@ class Processor:
             # Update the other users in the queue with their new position in the queue.
             self.reply()
 
+            self.dispatched_requests.append(request.id)
+
             # Submit the request to the model deployment.
             await self.execute(request)
+
+            self.dispatched_requests.remove(request.id)
 
     async def reply_worker(self) -> None:
         """Asyncio task for replying to users with status of model deploymentevery N seconds."""
