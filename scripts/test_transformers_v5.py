@@ -24,19 +24,23 @@ tokenized_datasets = dataset.map(lambda x: tokenizer(x["question"]), batched=Tru
 simple_batch_inputs = [item["input_ids"] for item in tokenized_datasets]
 
 generation_config = GenerationConfig(
-    max_new_tokens=32,
-    use_cuda_graph=False,  # Not supported for simple version
+    max_new_tokens=128,
     eos_token_id=tokenizer.eos_token_id,
     pad_token_id=tokenizer.pad_token_id,
     do_sample=False,
     max_batch_tokens=512,  # max number of tokens in a batch, this is just a default value you should tune based on your hardware
 )
 
-batch_outputs = model.generate_batch(
-    inputs=simple_batch_inputs,
-    generation_config=generation_config,
-)
+manager = model.init_continuous_batching(generation_config=generation_config)
 
-for request_id, output in batch_outputs.items():
-    generated_text = tokenizer.decode(output.generated_tokens, skip_special_tokens=True)
-    print(f"Request {request_id} output: {generated_text}")
+# start the background thread
+manager.start()
+
+# this is for demonstration purposes only, in practice this is most useful to do concurrently
+for i, input in enumerate(simple_batch_inputs):
+    request_id = manager.add_request(input_ids=input, request_id=f"request_{i}")  # if you do not specify a request_id, one will be generated for you
+
+# Can be done in another thread
+for id, request in manager.get_result():
+    generated_text = tokenizer.decode(request.generated_tokens, skip_special_tokens=True)
+    print(f"Request {id} output: {generated_text}")
