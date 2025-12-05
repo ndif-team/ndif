@@ -11,7 +11,7 @@ NUM_SAMPLES=10
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
-    attn_implementation="spda_paged",
+    attn_implementation="paged|sdpa",
     device_map="cuda",  # if you need cuda
     dtype=torch.bfloat16,
 )
