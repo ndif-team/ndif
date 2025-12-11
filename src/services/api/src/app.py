@@ -24,6 +24,7 @@ logger = set_logger("API")
 from .config import SYSTEM_INFO_PACKAGE_FILTER
 from .dependencies import validate_request
 from .metadata.capture_package_info import get_package_versions
+from .metadata.capture_system_info import get_service_metadata, get_system_metadata
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
 from .schema import BackendRequestModel, BackendResponseModel
@@ -172,7 +173,8 @@ async def system_info() -> Dict[str, Any]:
     """Endpoint to get system information including git commit, build date, and runtime info.
 
     Returns:
-        Dict containing git information, build metadata, runtime environment details, and package versions.
+        Dict containing git information, build metadata, service info, system info,
+        runtime environment details, and package versions.
     """
     git_info_path = Path("/git-info.json")
 
@@ -185,6 +187,12 @@ async def system_info() -> Dict[str, Any]:
             "git": {"error": "git-info.json not found"},
             "build": {},
         }
+
+    # Add service metadata
+    info["service"] = get_service_metadata("api")
+
+    # Add system metadata
+    info["system"] = get_system_metadata()
 
     # Add runtime information
     info["runtime"] = {
