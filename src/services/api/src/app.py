@@ -1,6 +1,9 @@
+import json
 import os
 import pickle
+import sys
 import traceback
+from pathlib import Path
 from typing import Any, Dict
 
 import redis
@@ -162,6 +165,36 @@ async def status():
     result = await redis_client.brpop(id)
     return pickle.loads(result[1])
 
+@app.get("/system_info")
+async def system_info() -> Dict[str, Any]:
+    """Endpoint to get system information including git commit, build date, and runtime info.
+
+    Returns:
+        Dict containing git information, build metadata, and runtime environment details.
+    """
+    git_info_path = Path("/git-info.json")
+
+    # Read git info captured at build time
+    if git_info_path.exists():
+        with open(git_info_path) as f:
+            info = json.load(f)
+    else:
+        info = {
+            "git": {"error": "git-info.json not found"},
+            "build": {},
+        }
+
+    # Add runtime information
+    info["runtime"] = {
+        "python_version": sys.version,
+        "python_version_info": {
+            "major": sys.version_info.major,
+            "minor": sys.version_info.minor,
+            "micro": sys.version_info.micro,
+        },
+    }
+
+    return info
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001, workers=1)
