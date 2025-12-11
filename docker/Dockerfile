@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install base utilities in single layer with cleanup
 RUN apt-get update -y \
-    && apt-get install -y build-essential \
+    && apt-get install -y build-essential git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,6 +27,9 @@ RUN uv pip install --system -r /tmp/requirements.in \
 RUN --mount=type=bind,source=/src,target=/tmp/src \
     cp -rL /tmp/src/services/${NAME}/src / && \
     cp /tmp/src/services/${NAME}/start.sh ./start.sh
+
+# Copy git info generated on host at build time
+COPY git-info.json /git-info.json
 
 SHELL ["/bin/bash", "-c"]
 CMD bash ./start.sh
