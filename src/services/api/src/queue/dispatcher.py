@@ -14,7 +14,9 @@ from .util import patch, controller_handle, submit
 
 class Dispatcher:
     def __init__(self):
-        self.redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
+        self.redis_client: redis.asyncio.Redis = redis.asyncio.Redis.from_url(
+            os.environ.get("BROKER_URL")
+        )
         self.processors: dict[str, Processor] = {}
 
         self.error_queue = asyncio.Queue()
@@ -37,6 +39,7 @@ class Dispatcher:
     @classmethod
     def start(cls):
         dispatcher = cls()
+        dispatcher.logger.info(f"Starting dispatcher with PID {os.getpid()}")
         asyncio.run(dispatcher.dispatch_worker())
 
     def connect(self):
@@ -118,35 +121,44 @@ class Dispatcher:
         asyncio.create_task(self.status_worker())
 
         while True:
-            # Get the next request from the queue.
-            request = await self.get()
-            if request is not None:
-                # Dispatch the request to the appropriate processor.
-                self.dispatch(request)
 
-            # Handle any evictions or errors that may have been added by the processors.
-            self.handle_evictions()
-            self.handle_errors()
+            try:
+                # Get the next request from the queue.
+                request = await self.get()
+                if request is not None:
+                    # Dispatch the request to the appropriate processor.
+                    self.dispatch(request)
+
+                # Handle any evictions or errors that may have been added by the processors.
+                self.handle_evictions()
+                self.handle_errors()
+            except Exception as e:
+                self.logger.exception(f"Error in dispatch worker: {e}")
+                continue
 
     async def status_worker(self) -> None:
         """Asyncio task for responding to requests for cluster status"""
         while True:
-            id = (await self.redis_client.brpop("status"))[1]
 
-            if time.time() - self.last_status_time > self.status_cache_freq_s:
-                try:
+            try:
+                id = await self.redis_client.brpop("status", timeout=1)
+                
+                if id is not None:
+                    id = id[1]
+                else:
+                    continue
+
+                if time.time() - self.last_status_time > self.status_cache_freq_s:
+
                     handle = controller_handle()
 
                     self.cached_status = await submit(handle, "status")
 
-                except Exception as e:
-                    self.logger.error(f"Error getting status: {e}")
-
-                    continue
-
-                else:
                     self.cached_status = pickle.dumps(self.cached_status)
 
                     self.last_status_time = time.time()
 
-            await self.redis_client.lpush(id, self.cached_status)
+                await self.redis_client.lpush(id, self.cached_status)
+
+            except Exception as e:
+                self.logger.exception(f"Error getting status: {e}")
