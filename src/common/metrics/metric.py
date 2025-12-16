@@ -17,7 +17,7 @@ class Metric:
     @classmethod
     def update(cls, measurement: Union[Any, Point], **tags):
         try:
-            if Metric.client is None:
+            if Metric.client is None and os.getenv("INFLUXDB_ADDRESS") is not None:
                 Metric.client = InfluxDBClient(
                     url=os.getenv("INFLUXDB_ADDRESS"),
                     token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
