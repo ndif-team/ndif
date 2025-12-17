@@ -2,11 +2,11 @@
 
 import click
 
-from ndif.commands import start, stop
+from cli.commands import start, stop
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name="ndif")
 def cli():
     """NDIF - National Deep Inference Fabric
 

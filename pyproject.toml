@@ -35,11 +35,11 @@ dependencies = [
 ]
 
 [project.scripts]
-ndif = "ndif.cli:cli"
+ndif = "cli.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ndif*"]
+include = ["cli*"]
 exclude = ["src*", "docker*", "scripts*", "tests*"]
 
 [dependency-groups]
