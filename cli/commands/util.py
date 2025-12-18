@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import ray
 
 def get_repo_root() -> Path:
     """Get the repository root directory"""
@@ -44,3 +45,17 @@ def is_process_running(pid: int) -> bool:
         return True
     except (OSError, ProcessLookupError):
         return False
+
+# Ray utilities
+
+def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.ActorHandle:
+    """Get a Ray actor handle by model key and namespace.
+
+    Args:
+        model_key: Model key
+        namespace: Ray namespace (default: "NDIF")
+
+    Returns:
+        Ray actor handle
+    """
+    return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)

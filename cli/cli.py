@@ -2,7 +2,7 @@
 
 import click
 
-from cli.commands import start, stop
+from cli.commands import start, stop, restart
 
 
 @click.group()
@@ -18,6 +18,7 @@ def cli():
 # Register commands
 cli.add_command(start)
 cli.add_command(stop)
+cli.add_command(restart)
 
 
 if __name__ == "__main__":
