@@ -51,6 +51,3 @@ def restart(checkpoint: str, revision: str, ray_address: str):
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)
         raise click.Abort()
-    finally:
-        # Disconnect from Ray
-        ray.shutdown()
