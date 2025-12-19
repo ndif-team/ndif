@@ -2,8 +2,7 @@
 
 import click
 
-from cli.commands import start, stop, restart
-
+from cli.commands import start, stop, restart, deploy
 
 @click.group()
 @click.version_option(package_name="ndif")
@@ -19,6 +18,7 @@ def cli():
 cli.add_command(start)
 cli.add_command(stop)
 cli.add_command(restart)
+cli.add_command(deploy)
 
 
 if __name__ == "__main__":

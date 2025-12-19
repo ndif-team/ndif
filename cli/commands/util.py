@@ -48,6 +48,10 @@ def is_process_running(pid: int) -> bool:
 
 # Ray utilities
 
+def get_controller_actor_handle(namespace: str = "NDIF") -> ray.actor.ActorHandle:
+    """Get a Ray actor handle for the controller actor."""
+    return ray.get_actor("Controller", namespace=namespace)
+
 def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.ActorHandle:
     """Get a Ray actor handle by model key and namespace.
 
@@ -59,3 +63,11 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.Actor
         Ray actor handle
     """
     return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
+
+
+def get_model_key(checkpoint: str, revision: str = "main") -> str:
+
+    # TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
+    from nnsight import LanguageModel
+    model = LanguageModel(checkpoint, revision=None, dispatch=False)
+    return model.to_model_key()
