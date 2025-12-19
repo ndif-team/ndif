@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import click
-from .util import get_repo_root, save_pid, clear_pid
+from .util import get_repo_root, save_pid, clear_pid, get_pid, is_process_running
 
 
 @click.command()
@@ -40,12 +40,26 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
 
     # Start requested service(s)
     if service in ('all', 'api'):
+        # Check if API is already running
+        api_pid = get_pid('api')
+        if api_pid and is_process_running(api_pid):
+            click.echo(f"Error: API service is already running (PID: {api_pid})", err=True)
+            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
+            sys.exit(1)
+
         proc_api = start_api(repo_root, host, port, workers, redis_url, minio_url, ray_address)
         if proc_api:
             processes.append(('api', proc_api))
             save_pid('api', proc_api.pid)
 
     if service in ('all', 'ray'):
+        # Check if Ray is already running
+        ray_pid = get_pid('ray')
+        if ray_pid and is_process_running(ray_pid):
+            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
+            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
+            sys.exit(1)
+
         proc_ray = start_ray(repo_root, minio_url)
         if proc_ray:
             processes.append(('ray', proc_ray))
