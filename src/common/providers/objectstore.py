@@ -22,9 +22,15 @@ class ObjectStoreProvider(Provider):
         super().from_env()
         cls.object_store_service = os.environ.get("OBJECT_STORE_SERVICE", "s3")
         cls.object_store_url = os.environ.get("OBJECT_STORE_URL", None)
-        cls.object_store_bucket = os.environ.get("OBJECT_STORE_BUCKET", "prod-ndif-results")
-        cls.object_store_access_key = os.environ.get("OBJECT_STORE_ACCESS_KEY", "minioadmin")
-        cls.object_store_secret_key = os.environ.get("OBJECT_STORE_SECRET_KEY", "minioadmin")
+        cls.object_store_bucket = os.environ.get(
+            "OBJECT_STORE_BUCKET", "prod-ndif-results"
+        )
+        cls.object_store_access_key = os.environ.get(
+            "OBJECT_STORE_ACCESS_KEY", "minioadmin"
+        )
+        cls.object_store_secret_key = os.environ.get(
+            "OBJECT_STORE_SECRET_KEY", "minioadmin"
+        )
         cls.object_store_region = os.environ.get("OBJECT_STORE_REGION", "us-east-1")
         cls.object_store_verify = os.environ.get("OBJECT_STORE_VERIFY", False)
 
