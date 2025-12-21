@@ -10,6 +10,7 @@ python-socketio==5.13.0
 redis
 #firebase-admin
 psycopg2-binary
+psutil
 # Telemetry
 asgiref
 opentelemetry-api
