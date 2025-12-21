@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "influxdb>=5.3.2",
     "influxdb-client>=1.49.0",
+    "python-logging-loki>=0.3.1",
     "requests>=2.32.5",
 ]
 [tool.setuptools.packages.find]
