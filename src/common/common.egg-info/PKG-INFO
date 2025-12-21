@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: common
+Version: 0.1.0
+Requires-Python: >=3.12
+Requires-Dist: influxdb>=5.3.2
+Requires-Dist: influxdb-client>=1.49.0
+Requires-Dist: requests>=2.32.5
