@@ -1,6 +1,8 @@
 from typing import ClassVar
 from pydantic import ConfigDict
 from .mixins import ObjectStorageMixin
+
+
 class BackendResultModel(ObjectStorageMixin):
     model_config = ConfigDict(
         extra="allow",
@@ -13,4 +15,3 @@ class BackendResultModel(ObjectStorageMixin):
 
     _folder_name: ClassVar[str] = "results"
     _file_extension: ClassVar[str] = "pt"
-

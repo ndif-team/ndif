@@ -44,7 +44,7 @@ class BackendRequestModel(ObjectStorageMixin):
     last_status_time: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
-    
+
     model_key: Optional[MODEL_KEY] = None
     session_id: Optional[SESSION_ID] = None
     zlib: Optional[bool] = True
@@ -75,12 +75,16 @@ class BackendRequestModel(ObjectStorageMixin):
         if sent is not None:
             sent = float(sent)
 
-        request_id = uuid.uuid4() if headers.get("ndif-request_id") is None else headers.get("ndif-request_id")
-        
+        request_id = (
+            uuid.uuid4()
+            if headers.get("ndif-request_id") is None
+            else headers.get("ndif-request_id")
+        )
+
         model_key = headers.get("nnsight-model-key", None)
-        
+
         if model_key is not None:
-            model_key = model_key.replace("\"revision\": \"main\"", "\"revision\": null")
+            model_key = model_key.replace('"revision": "main"', '"revision": null')
 
         return BackendRequestModel(
             id=str(request_id),
