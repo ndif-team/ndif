@@ -40,7 +40,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
         controller = get_controller_actor_handle()
 
         click.echo(f"Deploying {model_key}...")
-        results = controller.deploy.remote(model_keys=[model_key], dedicated=dedicated)
+        results = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated)
         click.echo(f"Deployment results: {results}")
 
         click.echo("✓ Deployment successful!")
