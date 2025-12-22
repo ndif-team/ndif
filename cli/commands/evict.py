@@ -1,12 +1,9 @@
-"""Evict command for NDIF - evict (remove) a model actor."""
+"""Evict command for NDIF - evict (remove) a model deployment."""
 
 import click
 import ray
 
-# TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
-from nnsight import LanguageModel
-
-from .util import get_actor_handle
+from .util import get_controller_actor_handle, get_model_key
 
 
 @click.command()
@@ -30,20 +27,20 @@ def evict(checkpoint: str, revision: str, ray_address: str):
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
 
         # TODO: revision bug ("main" is not always the default revision)
-        model = LanguageModel(checkpoint, revision=None, dispatch=False)
-        model_key = model.to_model_key()
+        model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
         # Connect to Ray
         click.echo(f"Connecting to Ray at {ray_address}...")
         ray.init(address=ray_address, ignore_reinit_error=True)
 
-        # Get deployment actor handle and delete it
-        click.echo(f"Getting actor handle for {model_key}...")
-        actor = get_actor_handle(model_key)
+        # Get controller actor handle and evict the model
+        click.echo(f"Getting controller handle...")
+        controller = get_controller_actor_handle()
 
-        click.echo(f"Evicting deployment for {model_key}...")
-        ray.kill(actor, no_restart=True)
+        click.echo(f"Evicting {model_key}...")
+        results = controller.evict.remote(model_keys=[model_key])
+        click.echo(f"Eviction results: {results}")
 
         click.echo("✓ Eviction successful!")
 
