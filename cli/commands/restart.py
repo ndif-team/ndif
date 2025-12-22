@@ -10,11 +10,13 @@ from .util import get_actor_handle
 
 
 @click.command()
-@click.option('--checkpoint', required=True, help='Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")')
+@click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 def restart(checkpoint: str, revision: str, ray_address: str):
     """Restart a model deployment.
+
+    CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
 
     This command restarts a running model deployment, useful for:
     - Clearing cached state
@@ -22,9 +24,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
     - Recovering from errors
 
     Examples:
-        ndif restart --checkpoint gpt2
-        ndif restart --checkpoint meta-llama/Llama-2-7b-hf --revision main
-        ndif restart --checkpoint gpt2 --ray-address ray://localhost:10001
+        ndif restart gpt2
+        ndif restart meta-llama/Llama-2-7b-hf --revision main
+        ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
     try:
         # Generate model_key using nnsight (loads to meta device, no actual model loading)

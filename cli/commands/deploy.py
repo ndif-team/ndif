@@ -8,17 +8,19 @@ from .util import get_controller_actor_handle, get_model_key
 
 
 @click.command()
-@click.option('--checkpoint', required=True, help='Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")')
+@click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
     """Deploy a model without requiring to submit a request.
-    
+
+    CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
+
     Examples:
-        ndif deploy --checkpoint gpt2
-        ndif deploy --checkpoint meta-llama/Llama-2-7b-hf --revision main
-        ndif deploy --checkpoint gpt2 --dedicated --ray-address ray://localhost:10001
+        ndif deploy gpt2
+        ndif deploy meta-llama/Llama-2-7b-hf --revision main
+        ndif deploy openai-community/gpt2 --dedicated --ray-address ray://localhost:10001
     """
     
     try:
