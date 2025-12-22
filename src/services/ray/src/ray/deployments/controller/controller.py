@@ -99,6 +99,15 @@ class _ControllerActor:
     ):
         return self._deploy(model_keys, dedicated=dedicated)
 
+    def evict(self, model_keys: List[MODEL_KEY]):
+        """Evict models from the cluster."""
+        results, change = self.cluster.evict(model_keys)
+
+        if change:
+            self.apply()
+
+        return results
+
     def build(self):
         new_state = {}
 

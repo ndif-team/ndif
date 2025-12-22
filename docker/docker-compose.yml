@@ -1,18 +1,21 @@
 services:
   message_broker:
     image: redis:${REDIS_VERSION}
+    profiles: ["dependencies"]
     ports:
       - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
 
   minio:
     image: minio/minio:${MINIO_VERSION}
     command: server /data
+    profiles: ["dependencies"]
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
   ray:
     image: ray:${RAY_VERSION}
     shm_size: '15gb'
+    profiles: ["core"]
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
             - ray-data:/tmp/ray/
@@ -49,6 +52,7 @@ services:
     image: api:${API_VERSION}
     ports:
       - ${DEV_API_PORT}:${API_INTERNAL_PORT}
+    profiles: ["core"]
     environment:
       OBJECT_STORE_URL: http://${HOST_IP}:${DEV_MINIO_PORT}
       BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
@@ -72,6 +76,7 @@ services:
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
     network_mode: "host"
+    profiles: ["telemetry"]
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
@@ -86,6 +91,7 @@ services:
   influxdb:
     image: influxdb:${INFLUXDB_VERSION}
     network_mode: "host"
+    profiles: ["telemetry"]
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
@@ -100,6 +106,7 @@ services:
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
     network_mode: "host"
+    profiles: ["telemetry"]
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -115,6 +122,7 @@ services:
   loki:
     image: grafana/loki:${LOKI_VERSION}
     network_mode: "host"
+    profiles: ["telemetry"]
     volumes:
       - loki-data:/loki
 
