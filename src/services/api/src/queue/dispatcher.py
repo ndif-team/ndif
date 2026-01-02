@@ -3,6 +3,7 @@ import os
 import pickle
 import time
 import redis
+import traceback
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
@@ -51,7 +52,7 @@ class Dispatcher:
                 RayProvider.connect()
 
             except Exception as e:
-                self.logger.error(f"Error connecting to Ray: {e}")
+                self.logger.exception("Error connecting to Ray")
 
                 time.sleep(1)
 
@@ -109,7 +110,10 @@ class Dispatcher:
 
             while not self.error_queue.empty():
                 model_key, error = self.error_queue.get_nowait()
-                self.logger.error(f"Error in model {model_key}: {error}")
+                tb_str = "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+                self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
 
                 if model_key in self.processors:
                     processor = self.processors[model_key]
@@ -142,7 +146,7 @@ class Dispatcher:
 
             try:
                 id = await self.redis_client.brpop("status", timeout=1)
-                
+
                 if id is not None:
                     id = id[1]
                 else:
@@ -152,7 +156,9 @@ class Dispatcher:
 
                     handle = controller_handle()
 
-                    self.cached_status = await submit(handle, "status")
+                    self.cached_status = await asyncio.wait_for(
+                        submit(handle, "status"), timeout=60
+                    )
 
                     self.cached_status = pickle.dumps(self.cached_status)
 

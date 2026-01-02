@@ -1,12 +1,13 @@
 import os
 import pickle
 import traceback
+import uuid
 from typing import Any, Dict
 
 import redis
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -156,10 +157,12 @@ async def ping():
 
 @app.get("/status", status_code=200)
 async def status():
-    id = str(os.getpid())
+    id = str(uuid.uuid4())
 
     await redis_client.lpush("status", id)
-    result = await redis_client.brpop(id)
+    result = await redis_client.brpop(id, timeout=30)
+    if result is None:
+        raise HTTPException(status_code=503, detail="Status request timed out")
     return pickle.loads(result[1])
 
 
