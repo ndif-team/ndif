@@ -3,6 +3,7 @@ import os
 import pickle
 import time
 import redis
+import traceback
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
@@ -22,8 +23,6 @@ class Dispatcher:
         self.error_queue = asyncio.Queue()
         self.eviction_queue = asyncio.Queue()
 
-        self.cached_status = None
-        self.last_status_time = 0
         self.status_cache_freq_s = int(
             os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120")
         )
@@ -51,7 +50,7 @@ class Dispatcher:
                 RayProvider.connect()
 
             except Exception as e:
-                self.logger.error(f"Error connecting to Ray: {e}")
+                self.logger.exception("Error connecting to Ray")
 
                 time.sleep(1)
 
@@ -109,7 +108,10 @@ class Dispatcher:
 
             while not self.error_queue.empty():
                 model_key, error = self.error_queue.get_nowait()
-                self.logger.error(f"Error in model {model_key}: {error}")
+                tb_str = "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+                self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
 
                 if model_key in self.processors:
                     processor = self.processors[model_key]
@@ -138,27 +140,42 @@ class Dispatcher:
 
     async def status_worker(self) -> None:
         """Asyncio task for responding to requests for cluster status"""
+
+        last_id = "$"
+
+        got_status = True
+
         while True:
 
             try:
-                id = await self.redis_client.brpop("status", timeout=1)
-                
-                if id is not None:
-                    id = id[1]
-                else:
-                    continue
+                if got_status:
+                    message = await self.redis_client.xread(
+                        {"status:trigger": last_id}, count=1, block=0
+                    )
 
-                if time.time() - self.last_status_time > self.status_cache_freq_s:
+                    self.logger.info(f"Status trigger received")
 
-                    handle = controller_handle()
+                    _, entries = message[0]
+                    entry_id, _ = entries[0]
 
-                    self.cached_status = await submit(handle, "status")
+                    got_status = False
 
-                    self.cached_status = pickle.dumps(self.cached_status)
+                    last_id = entry_id
 
-                    self.last_status_time = time.time()
+                handle = controller_handle()
 
-                await self.redis_client.lpush(id, self.cached_status)
+                status = await asyncio.wait_for(submit(handle, "status"), timeout=60)
+                status = pickle.dumps(status)
+
+                await self.redis_client.publish("status:event", status)
+
+                await self.redis_client.set(
+                    "status", status, ex=self.status_cache_freq_s
+                )
+
+                await self.redis_client.delete("status:requested")
+
+                got_status = True
 
             except Exception as e:
                 self.logger.exception(f"Error getting status: {e}")
