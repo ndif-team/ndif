@@ -23,8 +23,6 @@ class Dispatcher:
         self.error_queue = asyncio.Queue()
         self.eviction_queue = asyncio.Queue()
 
-        self.cached_status = None
-        self.last_status_time = 0
         self.status_cache_freq_s = int(
             os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120")
         )
@@ -142,29 +140,42 @@ class Dispatcher:
 
     async def status_worker(self) -> None:
         """Asyncio task for responding to requests for cluster status"""
+
+        last_id = "$"
+
+        got_status = True
+
         while True:
 
             try:
-                id = await self.redis_client.brpop("status", timeout=1)
-
-                if id is not None:
-                    id = id[1]
-                else:
-                    continue
-
-                if time.time() - self.last_status_time > self.status_cache_freq_s:
-
-                    handle = controller_handle()
-
-                    self.cached_status = await asyncio.wait_for(
-                        submit(handle, "status"), timeout=60
+                if got_status:
+                    message = await self.redis_client.xread(
+                        {"status:trigger": last_id}, count=1, block=0
                     )
 
-                    self.cached_status = pickle.dumps(self.cached_status)
+                    self.logger.info(f"Status trigger received")
 
-                    self.last_status_time = time.time()
+                    _, entries = message[0]
+                    entry_id, _ = entries[0]
 
-                await self.redis_client.lpush(id, self.cached_status)
+                    got_status = False
+
+                    last_id = entry_id
+
+                handle = controller_handle()
+
+                status = await asyncio.wait_for(submit(handle, "status"), timeout=60)
+                status = pickle.dumps(status)
+
+                await self.redis_client.publish("status:event", status)
+
+                await self.redis_client.set(
+                    "status", status, ex=self.status_cache_freq_s
+                )
+
+                await self.redis_client.delete("status:requested")
+
+                got_status = True
 
             except Exception as e:
                 self.logger.exception(f"Error getting status: {e}")

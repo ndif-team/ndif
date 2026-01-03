@@ -157,13 +157,40 @@ async def ping():
 
 @app.get("/status", status_code=200)
 async def status():
-    id = str(uuid.uuid4())
 
-    await redis_client.lpush("status", id)
-    result = await redis_client.brpop(id, timeout=30)
-    if result is None:
-        raise HTTPException(status_code=503, detail="Status request timed out")
-    return pickle.loads(result[1])
+    status = await redis_client.get("status")
+
+    if status is not None:
+        return pickle.loads(status)
+
+    pubsub = redis_client.pubsub()
+
+    await pubsub.subscribe("status:event")
+
+    if await redis_client.set("status:requested", "1", nx=True):
+
+        await redis_client.xadd("status:trigger", {"reason": "requested"})
+
+    status = await redis_client.get("status")
+
+    if status is not None:
+
+        await pubsub.unsubscribe("status:event")
+        await pubsub.aclose()
+
+        return pickle.loads(status)
+
+    async for message in pubsub.listen():
+
+        if message["type"] != "message":
+            continue
+
+        status = message["data"]
+
+        await pubsub.unsubscribe("status:event")
+        await pubsub.aclose()
+
+        return pickle.loads(status)
 
 
 if __name__ == "__main__":
