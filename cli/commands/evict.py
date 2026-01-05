@@ -39,10 +39,13 @@ def evict(checkpoint: str, revision: str, ray_address: str):
         controller = get_controller_actor_handle()
 
         click.echo(f"Evicting {model_key}...")
-        results = controller.evict.remote(model_keys=[model_key])
-        click.echo(f"Eviction results: {results}")
+        object_ref = controller.evict.remote(model_keys=[model_key])
+        results = ray.get(object_ref)
 
-        click.echo("✓ Eviction successful!")
+        if results[model_key]["status"] == "not_found":
+            click.echo(f"✗ Error: {model_key} not found!")
+        else:
+            click.echo(f"✓ Eviction successful!\nGPUs freed: {results[model_key]['freed_gpus']}\nMemory freed: {round(results[model_key]['freed_memory_gbs'], 4)} GB")
 
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)

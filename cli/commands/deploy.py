@@ -40,10 +40,21 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
         controller = get_controller_actor_handle()
 
         click.echo(f"Deploying {model_key}...")
-        results = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated)
-        click.echo(f"Deployment results: {results}")
+        object_ref = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated)
+        results = ray.get(object_ref)
+        result_status = results["result"][model_key]
 
-        click.echo("✓ Deployment successful!")
+        if result_status == "CANT_ACCOMMODATE":
+            click.echo(f"✗ Error: {model_key} cannot be deployed on any node. Check the ray controller logs for more details.")
+            
+        elif result_status == "DEPLOYED":
+            click.echo(f"✓ {model_key} already deployed!")
+        else:
+            click.echo("✓ Deployment successful!")
+            if results["evictions"]:
+                click.echo("• Evictions:")
+                for eviction in results["evictions"]:
+                    click.echo(f"  - {eviction}")
 
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)

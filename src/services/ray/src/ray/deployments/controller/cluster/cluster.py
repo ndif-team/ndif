@@ -276,7 +276,7 @@ class Cluster:
                         "status": "evicted",
                         "node": node.name,
                         "freed_gpus": len(deployment.gpus),
-                        "freed_memory_bytes": deployment.size_bytes
+                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
                     }
                     change = True
                     found = True
