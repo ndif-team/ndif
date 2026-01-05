@@ -3,6 +3,7 @@
 import click
 
 from cli.commands import start, stop, restart, deploy, evict
+from cli.commands.status import status
 
 @click.group()
 @click.version_option(package_name="ndif")
@@ -20,7 +21,7 @@ cli.add_command(stop)
 cli.add_command(restart)
 cli.add_command(deploy)
 cli.add_command(evict)
-
+cli.add_command(status)
 
 if __name__ == "__main__":
     cli()
