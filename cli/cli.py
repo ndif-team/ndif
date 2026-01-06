@@ -2,7 +2,7 @@
 
 import click
 
-from cli.commands import start, stop, restart, deploy, evict
+from cli.commands import start, stop, restart, deploy, evict, queue
 from cli.commands.status import status
 
 @click.group()
@@ -22,6 +22,7 @@ cli.add_command(restart)
 cli.add_command(deploy)
 cli.add_command(evict)
 cli.add_command(status)
+cli.add_command(queue)
 
 if __name__ == "__main__":
     cli()

@@ -6,3 +6,4 @@ from .restart import restart
 from .deploy import deploy
 from .evict import evict
 from .status import status
+from .queue import queue

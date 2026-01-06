@@ -112,10 +112,23 @@ class Dispatcher:
                     processor = self.processors[model_key]
                     processor.status = ProcessorStatus.READY
 
+    def get_state(self) -> dict:
+        """Get the current state of the dispatcher and all processors.
+        """
+        processors_state = {
+            model_key: processor.get_state()
+            for model_key, processor in self.processors.items()
+        }
+
+        return {
+            "processors": processors_state,
+        }
+
     async def dispatch_worker(self):
         """Main asyncio task for monitoring the dispatch queue and routing requests to the appropriate processors."""
 
         asyncio.create_task(self.status_worker())
+        asyncio.create_task(self.queue_state_worker())
 
         while True:
             # Get the next request from the queue.
@@ -150,3 +163,22 @@ class Dispatcher:
                     self.last_status_time = time.time()
 
             await self.redis_client.lpush(id, self.cached_status)
+
+    async def queue_state_worker(self) -> None:
+        """Asyncio task for responding to requests for queue state"""
+        while True:
+            id = (await self.redis_client.brpop("queue_state"))[1]
+
+            try:
+                queue_state = self.get_state()
+                queue_state_bytes = pickle.dumps(queue_state)
+
+                await self.redis_client.lpush(id, queue_state_bytes)
+
+            except Exception as e:
+                self.logger.error(f"Error getting queue state: {e}")
+
+                # Return error state
+                error_state = {"error": str(e)}
+                await self.redis_client.lpush(id, pickle.dumps(error_state))
+
