@@ -36,9 +36,18 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
             # Watch mode - loop forever
             try:
                 while True:
-                    # Clear screen
+                    # Fetch data BEFORE clearing screen to reduce flicker
+                    controller = get_controller_actor_handle()
+                    if verbose:
+                        state_ref = controller.get_state.remote()
+                        data = ray.get(state_ref)
+                    else:
+                        status_ref = controller.status.remote()
+                        data = ray.get(status_ref)
+
+                    # Now clear and display atomically
                     click.clear()
-                    _display_status(json_flag, verbose, show_cold)
+                    _render_status(data, json_flag, verbose, show_cold)
                     click.echo("\n(Press Ctrl+C to exit watch mode)")
                     time.sleep(2)
             except KeyboardInterrupt:
@@ -54,27 +63,29 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
 
 
 def _display_status(json_flag: bool, verbose: bool, show_cold: bool):
-    """Display status with appropriate formatting."""
+    """Fetch and display status with appropriate formatting."""
     controller = get_controller_actor_handle()
 
     if verbose:
         # Get detailed cluster state
         state_ref = controller.get_state.remote()
-        state = ray.get(state_ref)
-
-        if json_flag:
-            click.echo(json.dumps(state, indent=2, default=str))
-        else:
-            format_state_verbose(state)
+        data = ray.get(state_ref)
     else:
         # Get high-level status
         status_ref = controller.status.remote()
-        status_data = ray.get(status_ref)
+        data = ray.get(status_ref)
 
-        if json_flag:
-            click.echo(json.dumps(status_data, indent=2, default=str))
-        else:
-            format_status_simple(status_data, show_cold)
+    _render_status(data, json_flag, verbose, show_cold)
+
+
+def _render_status(data: dict, json_flag: bool, verbose: bool, show_cold: bool):
+    """Render status data with appropriate formatting (no fetching)."""
+    if json_flag:
+        click.echo(json.dumps(data, indent=2, default=str))
+    elif verbose:
+        format_state_verbose(data)
+    else:
+        format_status_simple(data, show_cold)
 
 
 def format_status_simple(status_data: dict, show_cold: bool):
@@ -109,7 +120,7 @@ def format_status_simple(status_data: dict, show_cold: bool):
     deployments = status_data.get('deployments', {})
     by_level = defaultdict(list)
 
-    for actor_name, deployment_info in deployments.items():
+    for deployment_info in deployments.values():
         level = deployment_info.get('deployment_level', 'UNKNOWN')
         by_level[level].append(deployment_info)
 

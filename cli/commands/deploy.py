@@ -2,9 +2,9 @@
 
 import click
 import ray
+import asyncio
 
-
-from .util import get_controller_actor_handle, get_model_key
+from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
 
 
 @click.command()
@@ -12,7 +12,8 @@ from .util import get_controller_actor_handle, get_model_key
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
-def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
+@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
+def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, redis_url: str):
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -46,7 +47,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
 
         if result_status == "CANT_ACCOMMODATE":
             click.echo(f"✗ Error: {model_key} cannot be deployed on any node. Check the ray controller logs for more details.")
-            
+
         elif result_status == "DEPLOYED":
             click.echo(f"✓ {model_key} already deployed!")
         else:
@@ -55,6 +56,10 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str):
                 click.echo("• Evictions:")
                 for eviction in results["evictions"]:
                     click.echo(f"  - {eviction}")
+                    asyncio.run(notify_dispatcher(redis_url, "evict", eviction))
+
+            # Notify dispatcher about deployment
+            asyncio.run(notify_dispatcher(redis_url, "deploy", model_key))
 
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)

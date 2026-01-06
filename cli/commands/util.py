@@ -1,6 +1,10 @@
 import os
+import pickle
+import time
 from pathlib import Path
 import ray
+import redis.asyncio as redis
+
 
 def get_repo_root() -> Path:
     """Get the repository root directory"""
@@ -71,3 +75,19 @@ def get_model_key(checkpoint: str, revision: str = "main") -> str:
     from nnsight import LanguageModel
     model = LanguageModel(checkpoint, revision=None, dispatch=False)
     return model.to_model_key()
+
+
+async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
+    """Notify dispatcher of deployment changes via Redis.
+
+    Args:
+        redis_url: Redis connection URL
+        event_type: Type of event ("deploy" or "evict")
+        model_key: Model key affected by the event
+    """
+    redis_client = redis.Redis.from_url(redis_url)
+    try:
+        event = {"type": event_type, "model_key": model_key, "timestamp": time.time()}
+        await redis_client.lpush("deployment_events", pickle.dumps(event))
+    finally:
+        await redis_client.aclose()

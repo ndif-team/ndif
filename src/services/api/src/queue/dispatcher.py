@@ -129,6 +129,7 @@ class Dispatcher:
 
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.queue_state_worker())
+        asyncio.create_task(self.deployment_events_worker())
 
         while True:
             # Get the next request from the queue.
@@ -182,3 +183,36 @@ class Dispatcher:
                 error_state = {"error": str(e)}
                 await self.redis_client.lpush(id, pickle.dumps(error_state))
 
+    async def deployment_events_worker(self) -> None:
+        """Asyncio task for listening to deployment lifecycle events from the 'controller'."""
+        while True:
+            try:
+                event = await self.redis_client.brpop("deployment_events", timeout=1)
+
+                if event is None:
+                    continue
+
+                event_data = pickle.loads(event[1])
+                event_type = event_data.get("type")
+                model_key = event_data.get("model_key")
+
+                self.logger.info(f"Received deployment event: {event_type} for {model_key}")
+
+                if event_type == "evict":
+                    # Remove processor if it exists
+                    if model_key in self.processors:
+                        self.remove(model_key, "Model evicted by external command")
+                        self.logger.info(f"Removed processor for {model_key} due to eviction event")
+
+                elif event_type == "deploy":
+                    # Create processor if it doesn't exist so it shows up in queue status
+                    if model_key not in self.processors:
+                        processor = Processor(
+                            model_key, self.eviction_queue, self.error_queue
+                        )
+                        self.processors[model_key] = processor
+                        asyncio.create_task(processor.processor_worker(provision=False))
+                        self.logger.info(f"Created processor for {model_key} due to deployment event")
+
+            except Exception as e:
+                self.logger.exception(f"Error handling deployment event: {e}")

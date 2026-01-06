@@ -297,7 +297,10 @@ class Processor:
         asyncio.create_task(self.reply_worker())
 
         # Provision and deploy the model deployment.
-        await self.provision()
+        if provision:
+            await self.provision()
+        else:
+            self.status = ProcessorStatus.READY
 
         # If there was a problem provisioning the model deployment, return.
         if self.status == ProcessorStatus.CANCELLED:
