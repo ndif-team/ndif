@@ -1,12 +1,13 @@
 import os
 import pickle
 import traceback
+import uuid
 from typing import Any, Dict
 
 import redis
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -156,11 +157,40 @@ async def ping():
 
 @app.get("/status", status_code=200)
 async def status():
-    id = str(os.getpid())
 
-    await redis_client.lpush("status", id)
-    result = await redis_client.brpop(id)
-    return pickle.loads(result[1])
+    status = await redis_client.get("status")
+
+    if status is not None:
+        return pickle.loads(status)
+
+    pubsub = redis_client.pubsub()
+
+    await pubsub.subscribe("status:event")
+
+    if await redis_client.set("status:requested", "1", nx=True):
+
+        await redis_client.xadd("status:trigger", {"reason": "requested"})
+
+    status = await redis_client.get("status")
+
+    if status is not None:
+
+        await pubsub.unsubscribe("status:event")
+        await pubsub.aclose()
+
+        return pickle.loads(status)
+
+    async for message in pubsub.listen():
+
+        if message["type"] != "message":
+            continue
+
+        status = message["data"]
+
+        await pubsub.unsubscribe("status:event")
+        await pubsub.aclose()
+
+        return pickle.loads(status)
 
 
 if __name__ == "__main__":
