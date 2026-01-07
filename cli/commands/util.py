@@ -7,10 +7,25 @@ import redis.asyncio as redis
 
 
 def get_repo_root() -> Path:
-    """Get the repository root directory"""
+    """Get the repository root directory
+
+    Works in both development (repo) and installed (site-packages) modes.
+    Finds the parent directory containing both 'cli' and 'src'.
+    """
     current_file = Path(__file__).resolve()
-    # Go up from ndif/commands/start.py -> ndif/ -> repo_root/
-    return current_file.parent.parent.parent
+
+    # Start from current file and walk up to find directory containing both 'cli' and 'src'
+    # In dev mode: .../ndif/cli/commands/util.py -> .../ndif/
+    # In installed mode: .../site-packages/cli/commands/util.py -> .../site-packages/
+    for parent in [current_file.parent] + list(current_file.parents):
+        if (parent / "cli").exists() and (parent / "src").exists():
+            return parent
+
+    # If not found, raise an error
+    raise RuntimeError(
+        "Could not find NDIF package root. "
+        "Expected to find a directory containing both 'cli' and 'src' subdirectories."
+    )
 
 def get_pid_dir() -> Path:
     """Get directory for storing PIDs"""

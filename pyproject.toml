@@ -39,8 +39,12 @@ ndif = "cli.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cli*"]
-exclude = ["src*", "docker*", "scripts*", "tests*"]
+include = ["cli*", "src*"]
+exclude = ["docker*", "scripts*", "tests*"]
+
+[tool.setuptools.package-data]
+"src.services.api" = ["start.sh"]
+"src.services.ray" = ["start.sh"]
 
 [dependency-groups]
 dev = [
