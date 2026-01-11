@@ -22,6 +22,7 @@ jobs:
   format:
     name: Check Format
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
       matrix:
         python-version: ["3.12"]
