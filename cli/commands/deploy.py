@@ -32,9 +32,9 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
-        # Connect to Ray
+        # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         # Get controller actor handle and deploy the model
         click.echo(f"Getting actor handle for {model_key}...")

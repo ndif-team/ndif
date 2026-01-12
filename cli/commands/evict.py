@@ -32,9 +32,9 @@ def evict(checkpoint: str, revision: str, ray_address: str, redis_url: str):
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
-        # Connect to Ray
+        # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         # Get controller actor handle and evict the model
         click.echo(f"Getting controller handle...")

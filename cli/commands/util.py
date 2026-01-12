@@ -1,5 +1,4 @@
 import os
-import pickle
 import time
 from pathlib import Path
 import ray
@@ -31,6 +30,33 @@ def get_pid_dir() -> Path:
     """Get directory for storing PIDs"""
     pid_dir = Path.home() / ".ndif" / "pids"
     return pid_dir
+
+
+def get_log_dir() -> Path:
+    """Get base directory for storing logs"""
+    return Path("/tmp/ndif")
+
+
+def get_session_log_dir(service: str) -> Path:
+    """Create and return a new session log directory for a service
+
+    Creates a timestamped session directory.
+    Returns the path and ensures it exists.
+    """
+    from datetime import datetime
+
+    base_dir = get_log_dir() / service
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    session_dir = base_dir / f"session_{timestamp}_{os.getpid()}"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a 'latest' symlink pointing to this session
+    latest_link = base_dir / "latest"
+    if latest_link.is_symlink() or latest_link.exists():
+        latest_link.unlink()
+    latest_link.symlink_to(session_dir)
+
+    return session_dir
 
 
 def get_pid(service: str) -> int:
@@ -93,7 +119,7 @@ def get_model_key(checkpoint: str, revision: str = "main") -> str:
 
 
 async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
-    """Notify dispatcher of deployment changes via Redis.
+    """Notify dispatcher of deployment changes via Redis streams.
 
     Args:
         redis_url: Redis connection URL
@@ -102,7 +128,14 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """
     redis_client = redis.Redis.from_url(redis_url)
     try:
-        event = {"type": event_type, "model_key": model_key, "timestamp": time.time()}
-        await redis_client.lpush("deployment_events", pickle.dumps(event))
+        # Send event to dispatcher events stream
+        await redis_client.xadd(
+            "dispatcher:events",
+            {
+                "event_type": event_type,
+                "model_key": model_key,
+                "timestamp": str(time.time()),
+            }
+        )
     finally:
         await redis_client.aclose()

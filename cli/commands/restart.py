@@ -37,9 +37,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         model_key = model.to_model_key()
         click.echo(f"Model key: {model_key}")
 
-        # Connect to Ray
+        # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         # Get deployment actor handle and restart it
         click.echo(f"Getting actor handle for {model_key}...")
