@@ -7,7 +7,7 @@ National Deep Inference Fabric
 </h3>
 
 <p align="center">
-| <a href="https://ndif.us"><b>Website</b></a> | <a href="https://github.com/ndif-team/ndif"><b>GitHub</b></a> | <a href="https://discord.gg/6uFJmCSwW7"><b>Discord</b></a> | <a href="https://discuss.ndif.us/"><b>Forum</b></a> | <a href="https://x.com/ndif_team"><b>Twitter</b></a> | <a href="https://arxiv.org/abs/2407.14561"><b>Paper</b></a> |
+<a href="https://ndif.us"><b>Website</b></a> | <a href="https://github.com/ndif-team/ndif"><b>GitHub</b></a> | <a href="https://discord.gg/6uFJmCSwW7"><b>Discord</b></a> | <a href="https://discuss.ndif.us/"><b>Forum</b></a> | <a href="https://x.com/ndif_team"><b>Twitter</b></a> | <a href="https://arxiv.org/abs/2407.14561"><b>Paper</b></a>
 </p>
 
 ---

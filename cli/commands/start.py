@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import click
-from .util import get_repo_root, save_pid, clear_pid, get_pid, is_process_running
+from .util import get_repo_root, save_pid, clear_pid, get_pid, is_process_running, print_logo
 
 
 @click.command()
@@ -35,6 +35,7 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
         ndif start api --port 5000              # Start API on port 5000
         ndif start ray --minio-url http://...   # Use custom MinIO URL
     """
+    print_logo()
     repo_root = get_repo_root()
     processes = []
 
