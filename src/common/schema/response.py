@@ -38,11 +38,20 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     def respond(self) -> ResponseModel:
         if self.blocking:
             # Emit to socket manager - it will forward to the client (i.e. the user)
-            
-            if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
-                SioProvider.call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+
+            if (
+                self.status == ResponseModel.JobStatus.COMPLETED
+                or self.status == ResponseModel.JobStatus.ERROR
+            ):
+                SioProvider.call(
+                    "blocking_response",
+                    data=(self.session_id, self.pickle()),
+                    timeout=1,
+                )
             else:
-                SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
+                SioProvider.emit(
+                    "blocking_response", data=(self.session_id, self.pickle())
+                )
         else:
             if self.callback != "":
                 if is_email(self.callback):

@@ -3,9 +3,19 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "api"
+name = "common"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.42.14",
+    "fastapi>=0.126.0",
+    "influxdb>=5.3.2",
+    "influxdb-client>=1.49.0",
+    "nnsight>=0.5.13",
+    "python-logging-loki>=0.3.1",
+    "ray>=2.53.0",
+    "requests>=2.32.5",
+]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
@@ -13,9 +23,12 @@ include = ["src*"]
 [tool.pytest.ini_options]
 minversion = "6.0"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".","../"]
 
 [dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
 test = [
     "httpx>=0.28.1",
     "pytest>=8.4.0",

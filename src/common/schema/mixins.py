@@ -50,9 +50,8 @@ class ObjectStorageMixin(BaseModel):
         return f"{cls._folder_name}/{id}.{cls._file_extension}"
 
     def url(self) -> str:
-        
         client = ObjectStoreProvider.object_store
-        
+
         return client.generate_presigned_url(
             "get_object",
             Params={
@@ -63,7 +62,6 @@ class ObjectStorageMixin(BaseModel):
         )
 
     def _save(self, data: BytesIO, content_type: str) -> None:
-
         client = ObjectStoreProvider.object_store
 
         object_name = self.object_name(self.id)
@@ -86,7 +84,6 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def _load(cls, id: str, stream: bool = False) -> Union[StreamingBody, bytes]:
-
         client = ObjectStoreProvider.object_store
 
         object_name = cls.object_name(id)
@@ -120,7 +117,6 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def load(cls, id: str, stream: bool = False) -> Union[StreamingBody, Self]:
-
         object_data = cls._load(id, stream=stream)
 
         if stream:
@@ -135,7 +131,6 @@ class ObjectStorageMixin(BaseModel):
 
     @classmethod
     def delete(cls, id: str) -> None:
-
         client = ObjectStoreProvider.object_store
 
         object_name = cls.object_name(id)
