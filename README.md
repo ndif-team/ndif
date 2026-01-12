@@ -1,4 +1,32 @@
-# NDIF Development Guide
+<p align="center">
+  <img src="./NDIF_Acr_color.png" alt="NDIF" width="300">
+</p>
+
+<h3 align="center">
+National Deep Inference Fabric
+</h3>
+
+<p align="center">
+| <a href="https://ndif.us"><b>Website</b></a> | <a href="https://github.com/ndif-team/ndif"><b>GitHub</b></a> | <a href="https://discord.gg/6uFJmCSwW7"><b>Discord</b></a> | <a href="https://discuss.ndif.us/"><b>Forum</b></a> | <a href="https://x.com/ndif_team"><b>Twitter</b></a> | <a href="https://arxiv.org/abs/2407.14561"><b>Paper</b></a> |
+</p>
+
+---
+
+## About
+
+**NDIF** (National Deep Inference Fabric) is a research computing project that enables scientists and students to perform transparent and reproducible experiments on large-scale AI systems. NDIF provides a unique nationwide research computing fabric designed to support scientific experiments on running AI models, advancing our understanding of the capabilities and limitations of large-scale AI.
+
+NDIF works seamlessly with [nnsight](https://github.com/ndif-team/nnsight), allowing researchers to interpret and manipulate the internals of deep learning models running on remote infrastructure.
+
+## Installation
+
+```bash
+pip install ndif
+```
+
+---
+
+# Development Guide
 
 This guide explains how to set up a development environment, install dependencies, and get started with contributing to the `NDIF` project.
 
@@ -120,3 +148,21 @@ For most users, only the development environment is necessary. The production en
 ### Note
 
 The Makefile includes configurations for both development and production environments. As an end user or developer, you'll primarily interact with the development environment. The production environment settings are managed separately and are not typically needed for local development work.
+
+---
+
+## Citation
+
+If you use `NDIF` in your research, please cite:
+
+```bibtex
+@article{fiottokaufman2024nnsightndifdemocratizingaccess,
+      title={NNsight and NDIF: Democratizing Access to Foundation Model Internals}, 
+      author={Jaden Fiotto-Kaufman and Alexander R Loftus and Eric Todd and Jannik Brinkmann and Caden Juang and Koyena Pal and Can Rager and Aaron Mueller and Samuel Marks and Arnab Sen Sharma and Francesca Lucchetti and Michael Ripa and Adam Belfki and Nikhil Prakash and Sumeet Multani and Carla Brodley and Arjun Guha and Jonathan Bell and Byron Wallace and David Bau},
+      year={2024},
+      eprint={2407.14561},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2407.14561}, 
+}
+```

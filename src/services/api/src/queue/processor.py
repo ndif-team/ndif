@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from enum import Enum
 from typing import Optional
 
@@ -49,9 +50,24 @@ class Processor:
         self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
         self.eviction_queue = eviction_queue
         self.error_queue = error_queue
-        self.status = ProcessorStatus.UNINITIALIZED
+        self._status = ProcessorStatus.UNINITIALIZED
+        self.status_changed_at: float = 0  # Timestamp of last status change
 
         self.dedicated = None
+        self.current_request_id: Optional[str] = None
+        self.current_request_started_at: Optional[float] = None  # When current request started executing
+
+    @property
+    def status(self) -> ProcessorStatus:
+        """Get the current status."""
+        return self._status
+
+    @status.setter
+    def status(self, value: ProcessorStatus):
+        """Set status and update timestamp."""
+        import time
+        self._status = value
+        self.status_changed_at = time.time()
 
     @property
     def handle(self) -> ray.actor.ActorHandle:
@@ -220,6 +236,10 @@ class Processor:
     async def execute(self, request: BackendRequestModel) -> None:
         """Submit a request to the model deployment and update the user with the status."""
 
+        # Track the currently executing request
+        self.current_request_id = request.id
+        self.current_request_started_at = time.time()
+
         try:
             # Get the handle for the model deployment.
             handle = self.handle
@@ -263,7 +283,12 @@ class Processor:
         else:
             self.status = ProcessorStatus.READY
 
-    async def processor_worker(self) -> None:
+        # Clear the current request tracking when done (success or error)
+        finally:
+            self.current_request_id = None
+            self.current_request_started_at = None
+
+    async def processor_worker(self, provision: bool = True) -> None:
         """Main asyncio task for creating, monitoring and submitting requests to the a model deployment."""
 
         self.status = ProcessorStatus.PROVISIONING
@@ -272,7 +297,10 @@ class Processor:
         asyncio.create_task(self.reply_worker())
 
         # Provision and deploy the model deployment.
-        await self.provision()
+        if provision:
+            await self.provision()
+        else:
+            self.status = ProcessorStatus.READY
 
         # If there was a problem provisioning the model deployment, return.
         if self.status == ProcessorStatus.CANCELLED:
@@ -354,3 +382,22 @@ class Processor:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
         self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
+
+    def get_state(self) -> dict:
+        """Get the current state of this processor.
+
+        Returns:
+            dict with processor state information including request IDs and timestamps
+        """
+        # Extract request IDs from queue
+        request_ids = [req.id for req in self.queue._queue]
+
+        return {
+            "model_key": self.model_key,
+            "status": self.status.value,
+            "status_changed_at": self.status_changed_at,
+            "request_ids": request_ids,
+            "current_request_id": self.current_request_id,
+            "current_request_started_at": self.current_request_started_at,
+            "dedicated": self.dedicated,
+        }

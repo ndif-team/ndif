@@ -249,3 +249,40 @@ class Cluster:
                 change = True
 
         return results, change
+
+    def evict(self, model_keys: List[MODEL_KEY]):
+        """Evict models from the cluster.
+
+        Returns:
+            (results, change) tuple where:
+            - results: dict mapping model_key to status
+            - change: bool indicating if cluster state changed
+        """
+        change = False
+        results = {}
+
+        for model_key in model_keys:
+            found = False
+
+            # Search for deployment across all nodes
+            for node_id, node in self.nodes.items():
+                if model_key in node.deployments:
+                    deployment = node.deployments[model_key]
+
+                    # Evict from node (updates resources, removes from deployments)
+                    node.evict(model_key)
+
+                    results[model_key] = {
+                        "status": "evicted",
+                        "node": node.name,
+                        "freed_gpus": len(deployment.gpus),
+                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
+                    }
+                    change = True
+                    found = True
+                    break
+
+            if not found:
+                results[model_key] = {"status": "not_found"}
+
+        return results, change
