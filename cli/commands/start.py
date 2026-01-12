@@ -42,6 +42,19 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
     repo_root = get_repo_root()
     processes = []
 
+    if service in ('all', 'ray'):
+        # Check if Ray is already running
+        ray_pid = get_pid('ray')
+        if ray_pid and is_process_running(ray_pid):
+            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
+            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
+            sys.exit(1)
+
+        proc_ray = start_ray(repo_root, minio_url, verbose)
+        if proc_ray:
+            processes.append(('ray', proc_ray))
+            save_pid('ray', proc_ray.pid)
+
     # Start requested service(s)
     if service in ('all', 'api'):
         # Check if API is already running
@@ -56,18 +69,6 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
             processes.append(('api', proc_api))
             save_pid('api', proc_api.pid)
 
-    if service in ('all', 'ray'):
-        # Check if Ray is already running
-        ray_pid = get_pid('ray')
-        if ray_pid and is_process_running(ray_pid):
-            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
-            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
-            sys.exit(1)
-
-        proc_ray = start_ray(repo_root, minio_url, verbose)
-        if proc_ray:
-            processes.append(('ray', proc_ray))
-            save_pid('ray', proc_ray.pid)
 
     # In verbose mode, wait for all processes (blocking)
     if verbose and processes:
