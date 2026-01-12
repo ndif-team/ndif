@@ -7,6 +7,7 @@ services:
   minio:
     image: minio/minio:${MINIO_VERSION}
     command: server /data
+    profiles: ["dependencies"]
     ports:
       - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
 
@@ -15,7 +16,7 @@ services:
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
-            - ray-data:/tmp/ray/
+      - ray-data:/tmp/ray/
 
     ports:
       - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}

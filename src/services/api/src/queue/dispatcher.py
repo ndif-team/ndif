@@ -117,10 +117,24 @@ class Dispatcher:
                     processor = self.processors[model_key]
                     processor.status = ProcessorStatus.READY
 
+    def get_state(self) -> dict:
+        """Get the current state of the dispatcher and all processors.
+        """
+        processors_state = {
+            model_key: processor.get_state()
+            for model_key, processor in self.processors.items()
+        }
+
+        return {
+            "processors": processors_state,
+        }
+
     async def dispatch_worker(self):
         """Main asyncio task for monitoring the dispatch queue and routing requests to the appropriate processors."""
 
         asyncio.create_task(self.status_worker())
+        asyncio.create_task(self.queue_state_worker())
+        asyncio.create_task(self.deployment_events_worker())
 
         while True:
 
@@ -179,3 +193,55 @@ class Dispatcher:
 
             except Exception as e:
                 self.logger.exception(f"Error getting status: {e}")
+
+    async def queue_state_worker(self) -> None:
+        """Asyncio task for responding to requests for queue state"""
+        while True:
+            id = (await self.redis_client.brpop("queue_state"))[1]
+
+            try:
+                queue_state = self.get_state()
+                queue_state_bytes = pickle.dumps(queue_state)
+
+                await self.redis_client.lpush(id, queue_state_bytes)
+
+            except Exception as e:
+                self.logger.error(f"Error getting queue state: {e}")
+
+                # Return error state
+                error_state = {"error": str(e)}
+                await self.redis_client.lpush(id, pickle.dumps(error_state))
+
+    async def deployment_events_worker(self) -> None:
+        """Asyncio task for listening to deployment lifecycle events from the 'controller'."""
+        while True:
+            try:
+                event = await self.redis_client.brpop("deployment_events", timeout=1)
+
+                if event is None:
+                    continue
+
+                event_data = pickle.loads(event[1])
+                event_type = event_data.get("type")
+                model_key = event_data.get("model_key")
+
+                self.logger.info(f"Received deployment event: {event_type} for {model_key}")
+
+                if event_type == "evict":
+                    # Remove processor if it exists
+                    if model_key in self.processors:
+                        self.remove(model_key, "Model evicted by external command")
+                        self.logger.info(f"Removed processor for {model_key} due to eviction event")
+
+                elif event_type == "deploy":
+                    # Create processor if it doesn't exist so it shows up in queue status
+                    if model_key not in self.processors:
+                        processor = Processor(
+                            model_key, self.eviction_queue, self.error_queue
+                        )
+                        self.processors[model_key] = processor
+                        asyncio.create_task(processor.processor_worker(provision=False))
+                        self.logger.info(f"Created processor for {model_key} due to deployment event")
+
+            except Exception as e:
+                self.logger.exception(f"Error handling deployment event: {e}")
