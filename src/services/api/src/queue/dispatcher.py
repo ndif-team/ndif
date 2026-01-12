@@ -290,8 +290,35 @@ class Dispatcher:
             self.logger.info(f"Removed processor for {model_key} due to eviction event")
 
     async def _handle_kill_request(self, event_data: dict) -> None:
-        """Handle KILL_REQUEST event (future implementation)"""
+        """Handle KILL_REQUEST event"""
         request_id = event_data.get(b"request_id", b"").decode("utf-8")
+        response_key = event_data.get(b"response_key", b"").decode("utf-8")
+
         self.logger.info(f"Kill request received for request_id: {request_id}")
-        # TODO: Implement request killing logic
-        pass
+
+        try:
+            # Try killing the request in each processor until found
+            for processor in self.processors.values():
+                result = await processor.kill_request(request_id)
+
+                # If found in this processor, return the result
+                if result["status"] != "not_found":
+                    result_bytes = pickle.dumps(result)
+                    await self.redis_client.lpush(response_key, result_bytes)
+                    self.logger.info(f"Kill request completed: {result['status']}")
+                    return
+
+            # Not found in any processor
+            result = {
+                "status": "not_found",
+                "message": f"Request {request_id} not found in any processor",
+            }
+            await self.redis_client.lpush(response_key, pickle.dumps(result))
+
+        except Exception as e:
+            self.logger.error(f"Error handling kill request: {e}")
+            error_result = {
+                "status": "error",
+                "message": f"Error handling kill request: {str(e)}",
+            }
+            await self.redis_client.lpush(response_key, pickle.dumps(error_result))
