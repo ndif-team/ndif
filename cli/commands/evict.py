@@ -4,7 +4,7 @@ import click
 import ray
 import asyncio
 
-from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
+from .util import get_controller_actor_handle, get_model_key, notify_dispatcher, check_prerequisites
 
 
 @click.command()
@@ -28,6 +28,9 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, red
         ndif evict openai-community/gpt2 --ray-address ray://localhost:10001
     """
     try:
+        # Check prerequisites silently
+        check_prerequisites(redis_url=redis_url)
+
         # Validate arguments
         if not evict_all and not checkpoint:
             click.echo("✗ Error: Must provide either CHECKPOINT or --all flag", err=True)

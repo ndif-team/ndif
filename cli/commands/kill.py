@@ -7,6 +7,8 @@ import click
 import redis.asyncio as redis
 import asyncio
 
+from .util import check_prerequisites
+
 
 @click.command()
 @click.argument('request_id')
@@ -25,6 +27,9 @@ def kill(request_id: str, redis_url: str):
         ndif kill abc123 --redis-url redis://... # Use custom Redis URL
     """
     try:
+        # Check prerequisites silently
+        check_prerequisites(redis_url=redis_url)
+
         result = asyncio.run(_kill_request(redis_url, request_id))
 
         # Display result based on status

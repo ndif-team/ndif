@@ -7,6 +7,8 @@ import click
 import redis.asyncio as redis
 import asyncio
 
+from .util import check_prerequisites
+
 
 @click.command()
 @click.option('--json-output', 'json_flag', is_flag=True, help='Output raw JSON')
@@ -24,6 +26,9 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
         ndif queue --watch            # Real-time monitoring
     """
     try:
+        # Check prerequisites silently
+        check_prerequisites(redis_url=redis_url)
+
         if watch:
             # Watch mode - loop forever
             try:

@@ -6,7 +6,10 @@ import sys
 from pathlib import Path
 
 import click
-from .util import get_repo_root, save_pid, clear_pid, get_pid, is_process_running, print_logo, get_session_log_dir
+from .util import (
+    get_repo_root, save_pid, clear_pid, get_pid, is_process_running,
+    print_logo, get_session_log_dir, check_prerequisites
+)
 
 
 @click.command()
@@ -41,6 +44,9 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
     print_logo()
     repo_root = get_repo_root()
     processes = []
+
+    # Check prerequisites (verbose mode shows checking messages)
+    check_prerequisites(redis_url=redis_url, minio_url=minio_url, verbose=True)
 
     if service in ('all', 'ray'):
         # Check if Ray is already running
