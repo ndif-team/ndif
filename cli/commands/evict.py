@@ -29,7 +29,7 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, red
     """
     try:
         # Check prerequisites silently
-        check_prerequisites(redis_url=redis_url)
+        check_prerequisites(redis_url=redis_url, ray_address=ray_address)
 
         # Validate arguments
         if not evict_all and not checkpoint:

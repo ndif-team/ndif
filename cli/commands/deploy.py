@@ -26,7 +26,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
 
     try:
         # Check prerequisites silently
-        check_prerequisites(redis_url=redis_url)
+        check_prerequisites(redis_url=redis_url, ray_address=ray_address)
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
         

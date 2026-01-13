@@ -6,7 +6,7 @@ import ray
 # TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
 from nnsight import LanguageModel
 
-from .util import get_actor_handle
+from .util import get_actor_handle, check_prerequisites
 
 
 @click.command()
@@ -29,6 +29,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
     try:
+        # Check prerequisites silently
+        check_prerequisites(ray_address=ray_address)
+
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
         
