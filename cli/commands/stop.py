@@ -3,14 +3,17 @@
 import os
 import signal
 import subprocess
+import time
+from urllib.parse import urlparse
 
 import click
-from .util import get_pid, is_process_running, clear_pid
+from .util import get_pid, is_process_running, clear_pid, cleanup_zombie_processes, get_processes_on_port
 
 
 @click.command()
 @click.argument('service', type=click.Choice(['api', 'ray', 'all'], case_sensitive=False), default='all')
-def stop(service: str):
+@click.option('--api-url', default='http://localhost:8001', help='API URL (used to check for zombie processes)')
+def stop(service: str, api_url: str):
     """Stop NDIF services
 
     SERVICE: Which service to stop (api, ray, or all). Default: all
@@ -19,6 +22,7 @@ def stop(service: str):
         ndif stop              # Stop all services
         ndif stop api          # Stop only API
         ndif stop ray          # Stop only Ray
+        ndif stop --api-url http://localhost:5000  # Stop with custom API URL
     """
     services_to_stop = []
 
@@ -49,7 +53,6 @@ def stop(service: str):
             os.killpg(os.getpgid(pid), signal.SIGTERM)
 
             # Wait a moment for graceful shutdown
-            import time
             time.sleep(2)
 
             # Check if still running
@@ -64,6 +67,30 @@ def stop(service: str):
         except (OSError, ProcessLookupError) as e:
             click.echo(f"Error stopping {svc} service: {e}", err=True)
             clear_pid(svc)
+
+    # Failsafe: Check for zombie API processes on the port
+    if 'api' in services_to_stop:
+        # Parse port from API URL
+        parsed = urlparse(api_url)
+        api_port = parsed.port or 8001
+
+        # Give processes a moment to fully release the port
+        time.sleep(0.5)
+
+        remaining_pids = get_processes_on_port(api_port)
+        if remaining_pids:
+            click.echo(f"\nWarning: Port {api_port} still in use by {len(remaining_pids)} process(es)")
+            click.echo("  Checking for zombie NDIF processes...")
+
+            if cleanup_zombie_processes(api_port, "API"):
+                click.echo(f"  ✓ Cleaned up zombie processes on port {api_port}")
+                # Check again
+                time.sleep(0.5)
+                still_remaining = get_processes_on_port(api_port)
+                if still_remaining:
+                    click.echo(f"  Warning: Port {api_port} still in use by non-NDIF processes", err=True)
+            else:
+                click.echo(f"  Warning: Port {api_port} in use by non-NDIF processes", err=True)
 
     # If Ray was stopped, also call `ray stop` to clean up the cluster
     if 'ray' in services_to_stop:

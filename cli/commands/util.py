@@ -125,6 +125,92 @@ def is_process_running(pid: int) -> bool:
         return False
 
 
+def get_processes_on_port(port: int) -> list[int]:
+    """Get list of PIDs using a specific port.
+
+    Args:
+        port: Port number to check
+
+    Returns:
+        List of PIDs using the port
+    """
+    import subprocess
+
+    try:
+        # Use lsof to find processes listening on the port
+        result = subprocess.run(
+            ['lsof', '-ti', f':{port}'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            # Parse PIDs from output
+            pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
+            return pids
+
+        return []
+
+    except (FileNotFoundError, ValueError):
+        # lsof not available or parsing failed
+        return []
+
+
+def is_ndif_process(pid: int) -> bool:
+    """Check if a process is an NDIF-related process (gunicorn/uvicorn).
+
+    Args:
+        pid: Process ID to check
+
+    Returns:
+        True if process appears to be NDIF-related
+    """
+    try:
+        # Read process command line
+        with open(f'/proc/{pid}/cmdline', 'r') as f:
+            cmdline = f.read().replace('\0', ' ')
+
+        # Check if it's a gunicorn/uvicorn process related to NDIF
+        ndif_indicators = ['gunicorn', 'uvicorn', 'ndif', 'src.services.api']
+
+        return any(indicator in cmdline.lower() for indicator in ndif_indicators)
+
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
+
+
+def cleanup_zombie_processes(port: int, service_name: str = "API") -> bool:
+    """Clean up zombie processes still using a port.
+
+    Args:
+        port: Port to check and clean up
+        service_name: Name of the service for logging
+
+    Returns:
+        True if any processes were killed
+    """
+    import signal
+
+    pids = get_processes_on_port(port)
+
+    if not pids:
+        return False
+
+    killed_any = False
+
+    for pid in pids:
+        if is_ndif_process(pid):
+            try:
+                # Kill the zombie process
+                os.kill(pid, signal.SIGKILL)
+                killed_any = True
+            except (OSError, ProcessLookupError):
+                pass
+
+    return killed_any
+
+
 # Ray utilities
 
 
