@@ -1,13 +1,17 @@
 import os
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from influxdb_client import InfluxDBClient, WriteApi
-from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client import Point
 
 import logging
 
-logger = logging.getLogger("ndif")
+if os.getenv("INFLUXDB_ADDRESS") is not None:
+    from influxdb_client import InfluxDBClient, WriteApi
+    from influxdb_client.client.write_api import SYNCHRONOUS
+    from influxdb_client import Point
+else:
+    WriteApi = Any
+    Point = Any
+    InfluxDBClient = Any
 
 
 class Metric:

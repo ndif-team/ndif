@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
-from prometheus_fastapi_instrumentator import Instrumentator
+
 
 from nnsight.schema.response import ResponseModel
 
@@ -26,6 +26,15 @@ from .schema import BackendRequestModel, BackendResponseModel
 
 # Init FastAPI app
 app = FastAPI()
+
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    # Prometheus instrumentation (for metrics)
+    Instrumentator().instrument(app).expose(app)
+except ImportError as e:
+    pass
+
 
 # Add middleware for CORS
 app.add_middleware(
@@ -51,8 +60,6 @@ sm = SocketManager(
 # Init object_store connection
 ObjectStoreProvider.connect()
 
-# Prometheus instrumentation (for metrics)
-Instrumentator().instrument(app).expose(app)
 
 redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
 
