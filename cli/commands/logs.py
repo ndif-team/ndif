@@ -9,13 +9,13 @@ from .util import get_log_dir
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'redis', 'minio'], case_sensitive=False))
+@click.argument('service', type=click.Choice(['api', 'redis', 'object-store'], case_sensitive=False))
 @click.option('-f', '--follow', is_flag=True, help='Follow log output (like tail -f)')
 @click.option('-n', '--lines', type=int, default=100, help='Number of lines to show (default: 100)')
 def logs(service: str, follow: bool, lines: int):
     """View logs for NDIF services
 
-    SERVICE: Which service logs to view (api, redis, minio)
+    SERVICE: Which service logs to view (api, redis, object-store)
 
     By default, shows the last 100 lines of the most recent log session.
     Use --follow to continuously stream new log entries.
@@ -23,6 +23,7 @@ def logs(service: str, follow: bool, lines: int):
     Examples:
         ndif logs api              # Show last 100 lines of API logs
         ndif logs redis            # Show Redis logs
+        ndif logs object-store     # Show object store logs
         ndif logs api -n 500       # Show last 500 lines
         ndif logs api --follow     # Follow logs in real-time
         ndif logs api -f -n 50     # Follow, starting from last 50 lines

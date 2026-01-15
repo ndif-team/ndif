@@ -12,38 +12,38 @@ from .util import (
     print_logo, get_session_log_dir
 )
 from .checks import check_prerequisites, check_redis, check_minio
-from .deps import start_redis as util_start_redis, start_minio as util_start_minio
+from .deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'minio', 'all'], case_sensitive=False), default='all')
+@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'object-store', 'all'], case_sensitive=False), default='all')
 @click.option('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
 @click.option('--port', default=8001, type=int, help='Port to bind to (API default: 8001)')
 @click.option('--workers', default=1, type=int, help='Number of workers for API (default: 1)')
 @click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-@click.option('--minio-url', default='http://localhost:27018', help='MinIO URL (default: http://localhost:27018)')
+@click.option('--object-store-url', default='http://localhost:27018', help='Object store URL (default: http://localhost:27018)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
 def start(service: str, host: str, port: int, workers: int, redis_url: str,
-          minio_url: str, ray_address: str, verbose: bool):
+          object_store_url: str, ray_address: str, verbose: bool):
     """Start NDIF services on bare metal
 
-    SERVICE: Which service to start (api, ray, redis, minio, or all). Default: all
+    SERVICE: Which service to start (api, ray, redis, object-store, or all). Default: all
 
     By default, services run in the background with logs redirected to /tmp/ndif/.
     Use --verbose to run in foreground with logs visible.
 
-    When starting 'all', Redis and MinIO will be started automatically if not already
-    running. They can also be started individually with 'ndif start redis' or 'ndif start minio'.
+    When starting 'all', Redis and object store (MinIO) will be started automatically if not
+    already running. They can also be started individually.
 
     Examples:
-        ndif start                              # Start all services in background
-        ndif start api                          # Start API only
-        ndif start redis                        # Start Redis only
-        ndif start minio                        # Start MinIO only
-        ndif start --verbose                    # Start with logs visible
-        ndif start api --port 5000              # Start API on port 5000
-        ndif start ray --minio-url http://...   # Use custom MinIO URL
+        ndif start                                    # Start all services in background
+        ndif start api                                # Start API only
+        ndif start redis                              # Start Redis only
+        ndif start object-store                       # Start object store (MinIO) only
+        ndif start --verbose                          # Start with logs visible
+        ndif start api --port 5000                    # Start API on port 5000
+        ndif start ray --object-store-url http://...  # Use custom object store URL
     """
     print_logo()
     repo_root = get_repo_root()
@@ -52,8 +52,8 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
     # Parse ports from URLs for starting services
     redis_parsed = urlparse(redis_url)
     redis_port = redis_parsed.port or 6379
-    minio_parsed = urlparse(minio_url)
-    minio_port = minio_parsed.port or 27018
+    object_store_parsed = urlparse(object_store_url)
+    object_store_port = object_store_parsed.port or 27018
 
     # Start Redis if requested or if starting 'all' and Redis is not running
     if service == 'redis' or (service == 'all' and not check_redis(redis_url)):
@@ -71,31 +71,31 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
                 sys.exit(1)
         click.echo()
 
-    # Start MinIO if requested or if starting 'all' and MinIO is not running
-    if service == 'minio' or (service == 'all' and not check_minio(minio_url)):
-        click.echo("Starting MinIO...")
-        success, pid, message = util_start_minio(port=minio_port, verbose=verbose)
+    # Start object store if requested or if starting 'all' and it's not running
+    if service == 'object-store' or (service == 'all' and not check_minio(object_store_url)):
+        click.echo("Starting object store (MinIO)...")
+        success, pid, message = util_start_object_store(port=object_store_port, verbose=verbose)
         if success:
             if pid:
-                save_pid('minio', pid)
+                save_pid('object-store', pid)
                 click.echo(f"  ✓ {message} (PID: {pid})")
             else:
                 click.echo(f"  ✓ {message}")
         else:
             click.echo(f"  ✗ {message}", err=True)
-            if service == 'minio':
+            if service == 'object-store':
                 sys.exit(1)
         click.echo()
 
-    # If only starting redis or minio, we're done
-    if service in ('redis', 'minio'):
+    # If only starting redis or object-store, we're done
+    if service in ('redis', 'object-store'):
         click.echo("✓ Service started successfully.")
         click.echo(f"\nTo view logs: ndif logs {service}")
         click.echo("To stop: ndif stop")
         return
 
     # Check prerequisites for api/ray (verbose mode shows checking messages)
-    check_prerequisites(redis_url=redis_url, minio_url=minio_url, verbose=True)
+    check_prerequisites(redis_url=redis_url, minio_url=object_store_url, verbose=True)
 
     if service in ('all', 'ray'):
         # Check if Ray is already running
@@ -105,7 +105,7 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
             click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
             sys.exit(1)
 
-        proc_ray = start_ray(repo_root, minio_url, verbose)
+        proc_ray = start_ray(repo_root, object_store_url, verbose)
         if proc_ray:
             processes.append(('ray', proc_ray))
             save_pid('ray', proc_ray.pid)
@@ -119,7 +119,7 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
             click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
             sys.exit(1)
 
-        proc_api = start_api(repo_root, host, port, workers, redis_url, minio_url, ray_address, verbose)
+        proc_api = start_api(repo_root, host, port, workers, redis_url, object_store_url, ray_address, verbose)
         if proc_api:
             processes.append(('api', proc_api))
             save_pid('api', proc_api.pid)
@@ -155,7 +155,7 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
 
 
 def start_api(repo_root: Path, host: str, port: int, workers: int,
-              redis_url: str, minio_url: str, ray_address: str, verbose: bool):
+              redis_url: str, object_store_url: str, ray_address: str, verbose: bool):
     """Start the API service using the existing start.sh script
 
     Returns:
@@ -176,7 +176,7 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
     click.echo(f"  Host: {host}:{port}")
     click.echo(f"  Workers: {workers}")
     click.echo(f"  Redis: {redis_url}")
-    click.echo(f"  MinIO: {minio_url}")
+    click.echo(f"  Object Store: {object_store_url}")
     click.echo(f"  Ray: {ray_address}")
 
     # Set up log files
@@ -190,7 +190,7 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
     # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': minio_url,
+        'OBJECT_STORE_URL': object_store_url,
         'BROKER_URL': redis_url,
         'WORKERS': str(workers),
         'RAY_ADDRESS': ray_address,
@@ -226,7 +226,7 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
         sys.exit(1)
 
 
-def start_ray(repo_root: Path, minio_url: str, verbose: bool):
+def start_ray(repo_root: Path, object_store_url: str, verbose: bool):
     """Start the Ray service using the existing start.sh script
 
     Returns:
@@ -245,7 +245,7 @@ def start_ray(repo_root: Path, minio_url: str, verbose: bool):
 
     api_url = os.environ.get('API_URL', 'http://localhost:8001')
     click.echo("Starting NDIF Ray service...")
-    click.echo(f"  MinIO: {minio_url}")
+    click.echo(f"  Object Store: {object_store_url}")
     click.echo(f"  API: {api_url}")
 
     # Set up log files
@@ -259,7 +259,7 @@ def start_ray(repo_root: Path, minio_url: str, verbose: bool):
     # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': minio_url,
+        'OBJECT_STORE_URL': object_store_url,
         'API_URL': api_url,
 
         # Ray ports (defaults from docker/.env)

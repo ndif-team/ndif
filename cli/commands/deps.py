@@ -18,7 +18,7 @@ NDIF_ENV_NAME = "ndif-deps"
 
 # Data directories for services
 REDIS_DATA_DIR = Path.home() / ".ndif" / "data" / "redis"
-MINIO_DATA_DIR = Path.home() / ".ndif" / "data" / "minio"
+OBJECT_STORE_DATA_DIR = Path.home() / ".ndif" / "data" / "object-store"
 
 
 # =============================================================================
@@ -311,19 +311,19 @@ def start_redis(port: int = 6379, verbose: bool = False) -> tuple:
 
 
 # =============================================================================
-# MinIO management
+# Object Store management (MinIO)
 # =============================================================================
 
 
-def ensure_minio() -> bool:
-    """Ensure MinIO server is available."""
+def ensure_object_store() -> bool:
+    """Ensure object store (MinIO) server is available."""
     # conda-forge package 'minio-server' provides the 'minio' binary
     return ensure_package("minio", "minio-server")
 
 
-def start_minio(port: int = 27018, console_port: int = 27019,
-                verbose: bool = False) -> tuple:
-    """Start MinIO server.
+def start_object_store(port: int = 27018, console_port: int = 27019,
+                       verbose: bool = False) -> tuple:
+    """Start object store (MinIO) server.
 
     Args:
         port: S3 API port
@@ -334,15 +334,15 @@ def start_minio(port: int = 27018, console_port: int = 27019,
         Tuple of (success: bool, pid: int or None, message: str)
     """
     # Ensure MinIO is available
-    if not ensure_minio():
-        return False, None, "Failed to install MinIO"
+    if not ensure_object_store():
+        return False, None, "Failed to install object store (MinIO)"
 
     # Create data directory
-    MINIO_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    OBJECT_STORE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     # Check if already running on this port
     if check_minio(f"http://localhost:{port}"):
-        return True, None, f"MinIO already running on port {port}"
+        return True, None, f"Object store already running on port {port}"
 
     # Get MinIO binary path (system PATH or micromamba)
     minio_bin = get_binary_path("minio")
@@ -353,13 +353,13 @@ def start_minio(port: int = 27018, console_port: int = 27019,
     env["MINIO_ROOT_PASSWORD"] = env.get("MINIO_ROOT_PASSWORD", "minioadmin")
 
     cmd_args = [
-        "server", str(MINIO_DATA_DIR),
+        "server", str(OBJECT_STORE_DATA_DIR),
         "--address", f":{port}",
         "--console-address", f":{console_port}"
     ]
 
     # Set up output handling
-    log_dir = get_session_log_dir("minio")
+    log_dir = get_session_log_dir("object-store")
     log_file = log_dir / "output.log"
 
     if verbose:
@@ -391,7 +391,7 @@ def start_minio(port: int = 27018, console_port: int = 27019,
     # Wait a moment and check if it started
     time.sleep(1)
     if proc.poll() is not None:
-        return False, None, "MinIO failed to start"
+        return False, None, "Object store failed to start"
 
     # Verify it's responding (give it a bit more time)
     for _ in range(5):
@@ -400,6 +400,6 @@ def start_minio(port: int = 27018, console_port: int = 27019,
             break
     else:
         proc.terminate()
-        return False, None, "MinIO started but not responding"
+        return False, None, "Object store started but not responding"
 
-    return True, proc.pid, f"MinIO started on port {port}"
+    return True, proc.pid, f"Object store started on port {port}"

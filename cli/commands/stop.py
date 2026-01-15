@@ -11,26 +11,26 @@ from .util import get_pid, is_process_running, clear_pid, cleanup_zombie_process
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'minio', 'all'], case_sensitive=False), default='all')
+@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'object-store', 'all'], case_sensitive=False), default='all')
 @click.option('--api-url', default='http://localhost:8001', help='API URL (used to check for zombie processes)')
 def stop(service: str, api_url: str):
     """Stop NDIF services
 
-    SERVICE: Which service to stop (api, ray, redis, minio, or all). Default: all
+    SERVICE: Which service to stop (api, ray, redis, object-store, or all). Default: all
 
     Examples:
         ndif stop              # Stop all services
         ndif stop api          # Stop only API
         ndif stop ray          # Stop only Ray
         ndif stop redis        # Stop only Redis
-        ndif stop minio        # Stop only MinIO
+        ndif stop object-store # Stop only object store
         ndif stop --api-url http://localhost:5000  # Stop with custom API URL
     """
     services_to_stop = []
 
     if service == 'all':
         # Stop in reverse order: api, ray, then dependencies
-        services_to_stop = ['api', 'ray', 'redis', 'minio']
+        services_to_stop = ['api', 'ray', 'redis', 'object-store']
     else:
         services_to_stop = [service]
 
