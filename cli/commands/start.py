@@ -4,16 +4,19 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 from .util import (
     get_repo_root, save_pid, clear_pid, get_pid, is_process_running,
-    print_logo, get_session_log_dir, check_prerequisites
+    print_logo, get_session_log_dir
 )
+from .checks import check_prerequisites, check_redis, check_minio
+from .deps import start_redis as util_start_redis, start_minio as util_start_minio
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'all'], case_sensitive=False), default='all')
+@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'minio', 'all'], case_sensitive=False), default='all')
 @click.option('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
 @click.option('--port', default=8001, type=int, help='Port to bind to (API default: 8001)')
 @click.option('--workers', default=1, type=int, help='Number of workers for API (default: 1)')
@@ -25,18 +28,19 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
           minio_url: str, ray_address: str, verbose: bool):
     """Start NDIF services on bare metal
 
-    SERVICE: Which service to start (api, ray, or all). Default: all
+    SERVICE: Which service to start (api, ray, redis, minio, or all). Default: all
 
     By default, services run in the background with logs redirected to /tmp/ndif/.
     Use --verbose to run in foreground with logs visible.
 
-    Prerequisites:
-        - Redis running at localhost:6379 (or specify --redis-url)
-        - MinIO running at localhost:27018 (or specify --minio-url)
+    When starting 'all', Redis and MinIO will be started automatically if not already
+    running. They can also be started individually with 'ndif start redis' or 'ndif start minio'.
 
     Examples:
         ndif start                              # Start all services in background
         ndif start api                          # Start API only
+        ndif start redis                        # Start Redis only
+        ndif start minio                        # Start MinIO only
         ndif start --verbose                    # Start with logs visible
         ndif start api --port 5000              # Start API on port 5000
         ndif start ray --minio-url http://...   # Use custom MinIO URL
@@ -45,7 +49,52 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
     repo_root = get_repo_root()
     processes = []
 
-    # Check prerequisites (verbose mode shows checking messages)
+    # Parse ports from URLs for starting services
+    redis_parsed = urlparse(redis_url)
+    redis_port = redis_parsed.port or 6379
+    minio_parsed = urlparse(minio_url)
+    minio_port = minio_parsed.port or 27018
+
+    # Start Redis if requested or if starting 'all' and Redis is not running
+    if service == 'redis' or (service == 'all' and not check_redis(redis_url)):
+        click.echo("Starting Redis...")
+        success, pid, message = util_start_redis(port=redis_port, verbose=verbose)
+        if success:
+            if pid:
+                save_pid('redis', pid)
+                click.echo(f"  ✓ {message} (PID: {pid})")
+            else:
+                click.echo(f"  ✓ {message}")
+        else:
+            click.echo(f"  ✗ {message}", err=True)
+            if service == 'redis':
+                sys.exit(1)
+        click.echo()
+
+    # Start MinIO if requested or if starting 'all' and MinIO is not running
+    if service == 'minio' or (service == 'all' and not check_minio(minio_url)):
+        click.echo("Starting MinIO...")
+        success, pid, message = util_start_minio(port=minio_port, verbose=verbose)
+        if success:
+            if pid:
+                save_pid('minio', pid)
+                click.echo(f"  ✓ {message} (PID: {pid})")
+            else:
+                click.echo(f"  ✓ {message}")
+        else:
+            click.echo(f"  ✗ {message}", err=True)
+            if service == 'minio':
+                sys.exit(1)
+        click.echo()
+
+    # If only starting redis or minio, we're done
+    if service in ('redis', 'minio'):
+        click.echo("✓ Service started successfully.")
+        click.echo(f"\nTo view logs: ndif logs {service}")
+        click.echo("To stop: ndif stop")
+        return
+
+    # Check prerequisites for api/ray (verbose mode shows checking messages)
     check_prerequisites(redis_url=redis_url, minio_url=minio_url, verbose=True)
 
     if service in ('all', 'ray'):

@@ -6,7 +6,8 @@ import ray
 # TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
 from nnsight import LanguageModel
 
-from .util import get_actor_handle, check_prerequisites
+from .util import get_actor_handle
+from .checks import check_prerequisites
 
 
 @click.command()

@@ -7,7 +7,7 @@ import click
 import redis.asyncio as redis
 import asyncio
 
-from .util import check_prerequisites
+from .checks import check_prerequisites
 
 
 @click.command()

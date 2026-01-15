@@ -6,7 +6,8 @@ import click
 import ray
 from collections import defaultdict
 
-from .util import get_controller_actor_handle, check_prerequisites
+from .util import get_controller_actor_handle
+from .checks import check_prerequisites
 
 
 @click.command()
