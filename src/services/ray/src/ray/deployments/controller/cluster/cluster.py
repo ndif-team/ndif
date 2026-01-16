@@ -69,6 +69,13 @@ class Cluster:
 
         return state
 
+
+    def get_node_by_name(self, name: str) -> Node | None:
+        for node in self.nodes.values():
+            if node.name == name:
+                return node
+        return None
+
     def update_nodes(self):
         """
         Update the nodes in the cluster. Periodically tries to add new or remove old nodes from the cluster

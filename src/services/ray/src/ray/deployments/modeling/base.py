@@ -77,7 +77,7 @@ class BaseModelDeployment:
 
         torch.set_default_dtype(torch.bfloat16)
 
-        self.model = self.load_from_disk(cuda_devices)
+        self.model = self.load_from_disk()
 
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
@@ -96,11 +96,12 @@ class BaseModelDeployment:
         protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
 
-    def load_from_disk(self, device_map: str):
+    def load_from_disk(self):
         start = time.time()
         self._cuda_sync()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
 
+        device_map = "auto" if not self.cpu else "cpu"
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
