@@ -1,6 +1,6 @@
 #!/bin/bash
 
-resources=`python -m src.ray.resources --head --enable-cpu-deployments`
+resources=`python -m src.ray.resources --head`
 
 # Start Ray with environment variables from env_file
 ray start --head \

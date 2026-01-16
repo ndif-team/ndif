@@ -93,7 +93,7 @@ class Cluster:
 
         for node in nodes:
             has_gpu = "GPU" in node.resources_total
-            cpu_enabled = node.resources_total.get("enable_cpu_deployments", 0) > 0
+            cpu_enabled = node.resources_total.get("enable_cpu_deployments", 0) == 1
 
             if not has_gpu and not cpu_enabled:
                 continue
