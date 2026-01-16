@@ -23,8 +23,8 @@ class Candidate:
     def __init__(
         self,
         candidate_level: CandidateLevel,
-        gpus_required: Optional[int] = None,
-        evictions: Optional[List[MODEL_KEY]] = None,
+        gpus_required: int | None = None,
+        evictions: List[MODEL_KEY] | None = None,
     ):
         self.candidate_level = candidate_level
         self.gpus_required = gpus_required
@@ -43,13 +43,20 @@ class Resources:
     available_cpu_memory_bytes: int
     available_gpus: list[int]
 
-    def gpus_required(self, model_size_in_bytes: int) -> int:
+    def get_num_gpus_required(self, model_size_in_bytes: int) -> int:
+        if self.gpu_type == "CPU":
+            return 0
+
         if self.gpu_memory_bytes == 0:
             raise ValueError("GPU memory bytes is 0")
 
         return int(model_size_in_bytes // self.gpu_memory_bytes + 1)
 
     def assign(self, gpus_required: int) -> list[int]:
+        if gpus_required == 0:
+            # CPU-only deployment: no GPUs to assign
+            return []
+            
         if gpus_required > len(self.available_gpus):
             raise ValueError(
                 f"Not enough GPUs available to assign {gpus_required} GPUs"
@@ -80,7 +87,7 @@ class Node:
         id: NODE_ID,
         name: str,
         resources: Resources,
-        minimum_deployment_time_seconds: float = None,
+        minimum_deployment_time_seconds: float | None = None,
     ):
         self.id = id
         self.name = name
@@ -226,8 +233,9 @@ class Node:
 
         cached = model_key in self.cache
 
-        gpus_required = self.resources.gpus_required(model_size_in_bytes)
+        gpus_required = self.resources.get_num_gpus_required(model_size_in_bytes)
 
+        # This will always return True for CPU-only nodes
         if gpus_required <= len(self.resources.available_gpus):
             return Candidate(
                 candidate_level=(

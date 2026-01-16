@@ -16,7 +16,12 @@ from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
 def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, redis_url: str):
     """Deploy a model without requiring to submit a request.
 
-    CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
+    Args:
+        checkpoint (str): Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
+        revision (str): Model revision/branch (default: main)
+        dedicated (bool): Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)
+        ray-address (str): Ray address (default: ray://localhost:10001)
+        redis-url (str): Redis URL (default: redis://localhost:6379/)
 
     Examples:
         ndif deploy gpt2

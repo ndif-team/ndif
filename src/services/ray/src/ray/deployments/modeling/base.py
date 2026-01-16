@@ -10,8 +10,7 @@ from typing import Any, Dict
 import ray
 import torch
 from accelerate import dispatch_model
-from pydantic import BaseModel, ConfigDict
-from ray import serve
+from pydantic import BaseModel, ConfigDict, field_validator
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
@@ -49,6 +48,7 @@ class BaseModelDeployment:
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
+        device_map: str,
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -76,14 +76,15 @@ class BaseModelDeployment:
 
         torch.set_default_dtype(torch.bfloat16)
 
-        self.model = self.load_from_disk()
+        self.model = self.load_from_disk(cuda_devices)
 
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
         if dispatch:
             self.model._module.requires_grad_(False)
 
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
 
@@ -95,21 +96,23 @@ class BaseModelDeployment:
         protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
 
-    def load_from_disk(self):
+    def load_from_disk(self, device_map: str):
         start = time.time()
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
 
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
-                device_map="auto",
+                device_map=device_map,
                 dispatch=self.dispatch,
                 torch_dtype=self.dtype,
                 **self.extra_kwargs,
             )
         )
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         load_time = time.time() - start
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
@@ -127,35 +130,39 @@ class BaseModelDeployment:
 
     async def to_cache(self):
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-        # torch.cuda.synchronize()
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = self.model._module.cpu()
-        # torch.cuda.synchronize()
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self.cached = True
 
     def from_cache(self, cuda_devices: str):
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+        if not self.mock:
+            os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start = time.time()
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
+        device_map = "cpu" if self.mock else "auto"
+        device_map = _get_device_map(self.model._module, device_map, None, None, None, None)
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = dispatch_model(self.model._module, device_map)
 
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         load_time = time.time() - start
 
@@ -262,7 +269,10 @@ class BaseModelDeployment:
 
         self.execution_ident = threading.current_thread().ident
 
-        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+        # Use appropriate device type for autocast
+        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        with autocast(device_type=device_type, dtype=torch.get_default_dtype(), enabled=torch.cuda.is_available()):
             if torch.cuda.is_available():
                 reset_peak_memory_stats()
                 model_memory = memory_allocated()
@@ -364,7 +374,8 @@ class BaseModelDeployment:
         self.model._model.zero_grad()
         self.request = None
         gc.collect()
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def log(self, *data):
         """Logs data during model execution.
@@ -444,6 +455,20 @@ class BaseModelDeploymentArgs(BaseModel):
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
+
+    @field_validator("cuda_devices")
+    @classmethod
+    def validate_cuda_devices(cls, v: str) -> str:
+        v = v.strip()
+        
+        parts = v.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part.isdigit():
+                raise ValueError(
+                    f"Invalid CUDA devices: '{v}'. Must be comma-separated GPU indices (e.g., '0', '0,1', '0,1,2')"
+                )
+        return v
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
