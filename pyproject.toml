@@ -11,22 +11,19 @@ requires-python = ">=3.12"
 dependencies = [
     # CLI
     "click>=8.0.0",
-
     # Core API dependencies
-    "fastapi==0.108.0", # Note: pinned version for Socket.IO compatibility
+    "fastapi==0.108.0",          # Note: pinned version for Socket.IO compatibility
     "fastapi-cache2",
     "fastapi-socketio",
-    "python-socketio==5.13.0", # Note: pinned version for Socket.IO compatibility
+    "python-socketio==5.13.0",   # Note: pinned version for Socket.IO compatibility
     "redis",
     "psycopg2-binary",
     "uvicorn[standard]==0.24.0",
     "gunicorn",
     "eventlet",
-
     # Ray dependencies
     "ray[serve]>=2.50.0",
     "nnsight",
-
     # Storage and utilities
     "boto3",
     "torch",
@@ -36,6 +33,11 @@ dependencies = [
 
 [project.scripts]
 ndif = "cli.cli:cli"
+
+[project.optional-dependencies]
+dev = [
+    "docformatter>=1.7.7",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

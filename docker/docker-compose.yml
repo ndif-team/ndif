@@ -25,12 +25,12 @@ services:
       - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
     deploy:
       replicas: 1
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${N_DEVICES}
-              capabilities: [ gpu ]
+      # resources:
+      #   reservations:
+      #     devices:
+      #       - driver: nvidia
+      #         count: ${N_DEVICES}
+      #         capabilities: [ gpu ]
     environment:
       - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       - OBJECT_STORE_URL=http://${HOST_IP}:${DEV_MINIO_PORT}
@@ -73,7 +73,8 @@ services:
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_PROMETHEUS_PORT}:${PROMETHEUS_INTERNAL_PORT}
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
@@ -87,7 +88,8 @@ services:
 
   influxdb:
     image: influxdb:${INFLUXDB_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_INFLUXDB_PORT}:${INFLUXDB_INTERNAL_PORT}
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
@@ -101,7 +103,8 @@ services:
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_GRAFANA_PORT}:${GRAFANA_INTERNAL_PORT}
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -116,7 +119,8 @@ services:
 
   loki:
     image: grafana/loki:${LOKI_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_LOKI_PORT}:${LOKI_INTERNAL_PORT}
     volumes:
       - loki-data:/loki
 
