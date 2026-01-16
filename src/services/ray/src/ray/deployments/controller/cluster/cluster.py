@@ -89,7 +89,6 @@ class Cluster:
             cpu_enabled = node.resources_total.get("enable_cpu_deployments", 0) > 0
 
             if not has_gpu and not cpu_enabled:
-                # Skip nodes with neither real nor mock GPUs
                 continue
 
             id = node.node_id
@@ -98,16 +97,15 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
+                total_gpus = 0
+                gpu_type = "CPU"
+                gpu_memory_bytes = 0
+
                 if has_gpu:
                     # Real GPU node
                     total_gpus = node.resources_total["GPU"]
                     gpu_type = node.resources_total.get("GPU_TYPE", "UNKNOWN")
                     gpu_memory_bytes = node.resources_total["cuda_memory_bytes"] / total_gpus
-                else:
-                    # Mock GPU node for development
-                    total_gpus = node.resources_total.get("GPU", 1)
-                    gpu_type = "CPU"
-                    gpu_memory_bytes = node.resources_total.get("cpu_memory_bytes", 16 * 1024**3)
 
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
