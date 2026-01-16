@@ -10,7 +10,7 @@ from typing import Any, Dict
 import ray
 import torch
 from accelerate import dispatch_model
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 
@@ -84,8 +84,7 @@ class BaseModelDeployment:
         if dispatch:
             self.model._module.requires_grad_(False)
 
-        if self.cpu:
-            torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         self.request: BackendRequestModel
 
@@ -99,8 +98,7 @@ class BaseModelDeployment:
 
     def load_from_disk(self, device_map: str):
         start = time.time()
-        if not self.cpu:
-            torch.cuda.synchronize()
+        self._cuda_sync()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
 
         model = load_with_cache_deletion_retry(
@@ -112,8 +110,7 @@ class BaseModelDeployment:
                 **self.extra_kwargs,
             )
         )
-        if not self.cpu:
-            torch.cuda.synchronize()
+        self._cuda_sync()
         load_time = time.time() - start
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
@@ -137,8 +134,7 @@ class BaseModelDeployment:
 
         self.model._module = self.model._module.cpu()
         gc.collect()
-        if not self.cpu:
-            torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         self.cached = True
 
@@ -146,8 +142,7 @@ class BaseModelDeployment:
         if not self.cpu:
             os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
-        if not self.cpu:
-            torch.cuda.synchronize()
+        self._cuda_sync()
         start = time.time()
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
@@ -158,11 +153,9 @@ class BaseModelDeployment:
 
         self.model._module = dispatch_model(self.model._module, device_map)
 
-        if not self.cpu:
-            torch.cuda.synchronize()
+        self._cuda_sync()
         gc.collect()
-        if not self.cpu:
-            torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         load_time = time.time() - start
 
@@ -243,6 +236,14 @@ class BaseModelDeployment:
     def check_health(self):
         pass
 
+    def _cuda_sync(self):
+        if not self.cpu:
+            torch.cuda.synchronize()
+
+    def _cuda_empty_cache(self):
+        if not self.cpu:
+            torch.cuda.empty_cache()
+
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
@@ -288,10 +289,9 @@ class BaseModelDeployment:
             execution_time = time.time() - execution_time
 
             # Compute GPU memory usage
+            gpu_mem = 0
             if not self.cpu:
                 gpu_mem = max_memory_allocated() - model_memory
-            else:
-                gpu_mem = 0
 
         return result, gpu_mem, execution_time
 
@@ -374,8 +374,7 @@ class BaseModelDeployment:
         self.model._model.zero_grad()
         self.request = None
         gc.collect()
-        if not self.cpu:
-            torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
     def log(self, *data):
         """Logs data during model execution.
@@ -455,20 +454,6 @@ class BaseModelDeploymentArgs(BaseModel):
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
-
-    @field_validator("cuda_devices")
-    @classmethod
-    def validate_cuda_devices(cls, v: str) -> str:
-        v = v.strip()
-        
-        parts = v.split(",")
-        for part in parts:
-            part = part.strip()
-            if not part.isdigit():
-                raise ValueError(
-                    f"Invalid CUDA devices: '{v}'. Must be comma-separated GPU indices (e.g., '0', '0,1', '0,1,2')"
-                )
-        return v
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
