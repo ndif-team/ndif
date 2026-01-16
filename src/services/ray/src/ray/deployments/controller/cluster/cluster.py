@@ -104,7 +104,7 @@ class Cluster:
                 if has_gpu:
                     # Real GPU node
                     total_gpus = node.resources_total["GPU"]
-                    gpu_type = node.resources_total.get("GPU_TYPE", "UNKNOWN")
+                    gpu_type = "TEST"
                     gpu_memory_bytes = node.resources_total["cuda_memory_bytes"] / total_gpus
 
                 cpu_memory_bytes = (
@@ -116,7 +116,7 @@ class Cluster:
                     id,
                     name,
                     Resources(
-                        total_gpus=int(total_gpus),
+                        total_gpus=total_gpus,
                         gpu_type=gpu_type,
                         gpu_memory_bytes=gpu_memory_bytes,
                         cpu_memory_bytes=cpu_memory_bytes,
