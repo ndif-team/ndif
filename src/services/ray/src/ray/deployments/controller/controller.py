@@ -184,10 +184,15 @@ class _ControllerActor:
 
         # Create models from disk
         for name, deployment in deployment_delta.deployments_to_create:
+            # Find node by name (dict is keyed by node ID, not name)
+            node = self.cluster.get_node_by_name(name)
+            cpu_enabled = node.resources.gpu_type == "CPU" if node else False
+            
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
-                cuda_devices=",".join(str(gpu) for gpu in deployment.gpus),
+                cuda_devices=",".join(str(gpu) for gpu in deployment.gpus) if deployment.gpus else "",
                 execution_timeout=self.execution_timeout_seconds,
+                device_map="cpu" if cpu_enabled else "auto",
             )
 
             deployment.create(name, deployment_args)
