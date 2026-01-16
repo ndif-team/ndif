@@ -64,6 +64,7 @@ class BaseModelDeployment:
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
+        self.cpu: bool = device_map == "cpu"
 
         self.cached = False
 
@@ -83,7 +84,7 @@ class BaseModelDeployment:
         if dispatch:
             self.model._module.requires_grad_(False)
 
-        if torch.cuda.is_available():
+        if self.cpu:
             torch.cuda.empty_cache()
 
         self.request: BackendRequestModel
@@ -98,7 +99,7 @@ class BaseModelDeployment:
 
     def load_from_disk(self, device_map: str):
         start = time.time()
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.synchronize()
         self.logger.info(f"Loading model from disk for model key {self.model_key}...")
 
@@ -111,7 +112,7 @@ class BaseModelDeployment:
                 **self.extra_kwargs,
             )
         )
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.synchronize()
         load_time = time.time() - start
 
@@ -136,32 +137,31 @@ class BaseModelDeployment:
 
         self.model._module = self.model._module.cpu()
         gc.collect()
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.empty_cache()
 
         self.cached = True
 
     def from_cache(self, cuda_devices: str):
-        if not self.mock:
+        if not self.cpu:
             os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.synchronize()
         start = time.time()
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        device_map = "cpu" if self.mock else "auto"
-        device_map = _get_device_map(self.model._module, device_map, None, None, None, None)
+        device_map = _get_device_map(self.model._module, "auto" if not self.cpu else "cpu", None, None, None, None)
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = dispatch_model(self.model._module, device_map)
 
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.synchronize()
         gc.collect()
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.empty_cache()
 
         load_time = time.time() - start
@@ -270,10 +270,10 @@ class BaseModelDeployment:
         self.execution_ident = threading.current_thread().ident
 
         # Use appropriate device type for autocast
-        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+        device_type = "cuda" if not self.cpu else "cpu"
         
-        with autocast(device_type=device_type, dtype=torch.get_default_dtype(), enabled=torch.cuda.is_available()):
-            if torch.cuda.is_available():
+        with autocast(device_type=device_type, dtype=torch.get_default_dtype(), enabled=not self.cpu):
+            if not self.cpu:
                 reset_peak_memory_stats()
                 model_memory = memory_allocated()
 
@@ -288,7 +288,7 @@ class BaseModelDeployment:
             execution_time = time.time() - execution_time
 
             # Compute GPU memory usage
-            if torch.cuda.is_available():
+            if not self.cpu:
                 gpu_mem = max_memory_allocated() - model_memory
             else:
                 gpu_mem = 0
@@ -374,7 +374,7 @@ class BaseModelDeployment:
         self.model._model.zero_grad()
         self.request = None
         gc.collect()
-        if torch.cuda.is_available():
+        if not self.cpu:
             torch.cuda.empty_cache()
 
     def log(self, *data):
