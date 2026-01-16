@@ -184,8 +184,8 @@ class _ControllerActor:
 
         # Create models from disk
         for name, deployment in deployment_delta.deployments_to_create:
-            # Get the node to check if it's mock
-            node = self.cluster.nodes.get(name)
+            # Find node by name (dict is keyed by node ID, not name)
+            node = self.cluster.get_node_by_name(name)
             cpu_enabled = node.resources.gpu_type == "CPU" if node else False
             
             deployment_args = BaseModelDeploymentArgs(
