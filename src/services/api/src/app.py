@@ -1,6 +1,7 @@
 import asyncio
 import pickle
 import traceback
+import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
@@ -276,6 +277,63 @@ async def status() -> Dict[str, Any]:
         # Always cleanup pubsub resources
         await pubsub.unsubscribe("status:event")
         await pubsub.aclose()
+
+
+@app.get("/env", status_code=200)
+async def env() -> Dict[str, Any]:
+    """Get the Python environment information from the Ray cluster.
+
+    Returns cached env info if available, otherwise sends a request to the
+    Dispatcher which queries the Controller for the environment details.
+
+    Returns:
+        Dictionary containing Python version and installed pip packages.
+
+    Raises:
+        HTTPException: If the request times out (504 Gateway Timeout).
+    """
+    # Check for cached env first
+    cached_env = await redis_client.get("env")
+    if cached_env is not None:
+        return pickle.loads(cached_env)
+
+    # No cached env, send event to dispatcher
+    response_key = f"env:response:{uuid.uuid4()}"
+
+    try:
+        # Send ENV event to dispatcher
+        await redis_client.xadd(
+            "dispatcher:events",
+            {
+                "event_type": "env",
+                "response_key": response_key,
+            },
+        )
+
+        # Wait for response with timeout
+        result = await redis_client.brpop(
+            response_key, timeout=AppConfig.status_request_timeout_s
+        )
+
+        if result is None:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Env request timed out after {AppConfig.status_request_timeout_s} seconds",
+            )
+
+        env_data = pickle.loads(result[1])
+
+        if "error" in env_data:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Error getting env info: {env_data['error']}",
+            )
+
+        return env_data
+
+    finally:
+        # Clean up the response key
+        await redis_client.delete(response_key)
 
 
 if __name__ == "__main__":

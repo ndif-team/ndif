@@ -48,6 +48,7 @@ class DispatcherEvent(str, Enum):
     DEPLOY = "deploy"
     EVICT = "evict"
     KILL_REQUEST = "kill_request"
+    ENV = "env"
 
 
 class Dispatcher:
@@ -245,11 +246,12 @@ class Dispatcher:
             except Exception:
                 self.logger.exception(f"Error handling eviction for `{model_key}`")
 
-    def handle_errors(self) -> None:
+    async def handle_errors(self) -> None:
         """Process all pending error events from Processors.
 
         Drains the error_queue and handles each error:
             - If Ray is disconnected, purges all Processors and reconnects
+            - Clears the env cache (since it comes from the Ray cluster)
             - Logs the full traceback for each error
             - Resets affected Processors to READY status to resume processing
 
@@ -262,6 +264,9 @@ class Dispatcher:
                 self.purge(
                     "Critical server error occurred. Please try again later. Sorry for the inconvenience."
                 )
+
+                # Clear env cache since it comes from the Ray cluster
+                await self.redis_client.delete("env")
 
                 self.connect()
 
@@ -322,7 +327,7 @@ class Dispatcher:
                     self.dispatch(request)
 
                 self.handle_evictions()
-                self.handle_errors()
+                await self.handle_errors()
             except Exception as e:
                 self.logger.exception(f"Error in dispatch worker: {e}")
                 continue
@@ -431,6 +436,9 @@ class Dispatcher:
                     elif event_type == DispatcherEvent.KILL_REQUEST:
                         await self._handle_kill_request(event_data)
 
+                    elif event_type == DispatcherEvent.ENV:
+                        await self._handle_env_event(event_data)
+
                     else:
                         self.logger.warning(f"Unknown event type: {event_type}")
 
@@ -503,4 +511,31 @@ class Dispatcher:
                 "status": "error",
                 "message": f"Error handling kill request: {str(e)}",
             }
+            await self.redis_client.lpush(response_key, pickle.dumps(error_result))
+
+    async def _handle_env_event(self, event_data: dict) -> None:
+        """Handle ENV event - get Python environment info from controller"""
+        response_key = event_data.get(b"response_key", b"").decode("utf-8")
+
+        try:
+            # Check cache first
+            cached_env = await self.redis_client.get("env")
+            if cached_env is not None:
+                await self.redis_client.lpush(response_key, cached_env)
+                return
+
+            # Get env info from controller
+            handle = controller_handle()
+            env_info = await asyncio.wait_for(submit(handle, "env"), timeout=60)
+            env_bytes = pickle.dumps(env_info)
+
+            # Cache the result (no expiration)
+            await self.redis_client.set("env", env_bytes)
+
+            # Send response
+            await self.redis_client.lpush(response_key, env_bytes)
+
+        except Exception as e:
+            self.logger.error(f"Error getting env info: {e}")
+            error_result = {"error": str(e)}
             await self.redis_client.lpush(response_key, pickle.dumps(error_result))

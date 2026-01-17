@@ -1,8 +1,10 @@
 import asyncio
 import os
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from importlib.metadata import distributions
+from typing import Any, Dict, List, Optional
 
 import ray
 from pydantic import BaseModel
@@ -198,6 +200,21 @@ class _ControllerActor:
             if model_key in node.deployments.keys():
                 return node.deployments[model_key].get_state()
         return None
+
+    def env(self) -> Dict[str, Any]:
+        """Get the Python environment information.
+
+        Returns:
+            Dictionary containing Python version and installed pip packages.
+        """
+        packages = {}
+        for dist in distributions():
+            packages[dist.metadata["Name"]] = dist.version
+
+        return {
+            "python_version": sys.version,
+            "packages": packages,
+        }
 
     def status(self):
         ray_status = list_actors()
