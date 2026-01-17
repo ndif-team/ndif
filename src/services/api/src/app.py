@@ -1,8 +1,8 @@
-import os
+import asyncio
 import pickle
 import traceback
-import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from urllib.parse import parse_qs
 
 import redis
 import socketio
@@ -19,6 +19,7 @@ from .types import REQUEST_ID, SESSION_ID
 
 logger = set_logger("API")
 
+from .config import AppConfig
 from .dependencies import validate_request
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
@@ -37,14 +38,14 @@ app.add_middleware(
 )
 
 # Init async manager for communication between socketio servers
-socketio_manager = socketio.AsyncRedisManager(url=os.environ.get("BROKER_URL"))
+socketio_manager = socketio.AsyncRedisManager(url=AppConfig.broker_url)
 # Init socketio manager app
 sm = SocketManager(
     app=app,
     mount_location="/ws",
     client_manager=socketio_manager,
-    max_http_buffer_size=100_000_000,
-    ping_timeout=60,
+    max_http_buffer_size=AppConfig.socketio_max_http_buffer_size,
+    ping_timeout=AppConfig.socketio_ping_timeout,
     always_connect=True,
 )
 
@@ -54,7 +55,7 @@ ObjectStoreProvider.connect()
 # Prometheus instrumentation (for metrics)
 Instrumentator().instrument(app).expose(app)
 
-redis_client = redis.asyncio.Redis.from_url(os.environ.get("BROKER_URL"))
+redis_client = redis.asyncio.Redis.from_url(AppConfig.broker_url)
 
 
 @app.post("/request")
@@ -105,32 +106,78 @@ async def request(
 
 
 @sm.on("connect")
-async def connect(session_id: SESSION_ID, environ: Dict):
-    params = environ.get("QUERY_STRING")
-    params = dict(x.split("=") for x in params.split("&"))
+async def connect(session_id: SESSION_ID, environ: Dict[str, Any]) -> None:
+    """Handle new SocketIO client connections.
 
-    if "job_id" in params:
-        await sm.enter_room(session_id, params["job_id"])
+    Parses the query string from the connection request and adds the client
+    to a room based on their job_id if provided. This allows targeted message
+    delivery to specific job subscribers.
+
+    Args:
+        session_id: Unique identifier for this SocketIO session.
+        environ: WSGI environ dict containing connection metadata including
+            QUERY_STRING with optional job_id parameter.
+    """
+    query_string = environ.get("QUERY_STRING", "")
+    params = parse_qs(query_string)
+
+    # parse_qs returns lists, get first value if present
+    job_id = params.get("job_id", [None])[0]
+
+    if job_id:
+        await sm.enter_room(session_id, job_id)
 
 
 @sm.on("blocking_response")
 async def blocking_response(
     session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any
-):
+) -> None:
+    """Forward a blocking response to a specific client session.
+
+    Used internally to relay response data from the backend to the waiting
+    client. This is the final step in the blocking request flow.
+
+    Args:
+        session_id: The sender's SocketIO session ID.
+        client_session_id: The target client's SocketIO session ID to receive
+            the response.
+        data: The response data to forward (typically pickled BackendResponseModel).
+    """
     await sm.emit("blocking_response", data=data, to=client_session_id)
 
 
 @sm.on("stream")
 async def stream(
     session_id: SESSION_ID, client_session_id: SESSION_ID, data: bytes, job_id: str
-):
+) -> None:
+    """Handle streaming response initiation.
+
+    Registers the sender in the job's room for future streaming updates,
+    then forwards the initial response data to the client.
+
+    Args:
+        session_id: The sender's SocketIO session ID.
+        client_session_id: The target client's SocketIO session ID.
+        data: Initial response data to forward.
+        job_id: The job identifier used as the room name for streaming.
+    """
     await sm.enter_room(session_id, job_id)
 
     await blocking_response(session_id, client_session_id, data)
 
 
 @sm.on("stream_upload")
-async def stream_upload(session_id: SESSION_ID, data: bytes, job_id: str):
+async def stream_upload(session_id: SESSION_ID, data: bytes, job_id: str) -> None:
+    """Broadcast streaming data to all subscribers of a job.
+
+    Emits data to all clients in the job's room, enabling real-time
+    streaming of intermediate results or progress updates.
+
+    Args:
+        session_id: The sender's SocketIO session ID.
+        data: The streaming data to broadcast.
+        job_id: The job identifier (room name) to broadcast to.
+    """
     await sm.emit("stream_upload", data=data, room=job_id)
 
 
@@ -156,41 +203,72 @@ async def ping():
 
 
 @app.get("/status", status_code=200)
-async def status():
+async def status() -> Dict[str, Any]:
+    """Get the current cluster status.
 
-    status = await redis_client.get("status")
+    Returns cached status if available, otherwise triggers a status request
+    to the Controller and waits for the response via Redis pub/sub.
 
-    if status is not None:
-        return pickle.loads(status)
+    Returns:
+        Dictionary containing cluster status information including deployed
+        models, resource usage, and availability.
 
+    Raises:
+        HTTPException: If status request times out (504 Gateway Timeout).
+
+    See Also:
+        AppConfig.status_request_timeout_s: Configures the timeout duration.
+    """
+    # Check for cached status first
+    cached_status = await redis_client.get("status")
+    if cached_status is not None:
+        return pickle.loads(cached_status)
+
+    # No cached status, need to request and wait for it
     pubsub = redis_client.pubsub()
 
-    await pubsub.subscribe("status:event")
+    try:
+        await pubsub.subscribe("status:event")
 
-    if await redis_client.set("status:requested", "1", nx=True):
+        # Trigger status request if not already requested
+        if await redis_client.set("status:requested", "1", nx=True):
+            await redis_client.xadd("status:trigger", {"reason": "requested"})
 
-        await redis_client.xadd("status:trigger", {"reason": "requested"})
+        # Check again in case status was cached while we were setting up
+        cached_status = await redis_client.get("status")
+        if cached_status is not None:
+            return pickle.loads(cached_status)
 
-    status = await redis_client.get("status")
+        # Wait for status event with timeout
+        async def wait_for_status() -> Optional[bytes]:
+            """Wait for status message from pub/sub."""
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                return message["data"]
+            return None
 
-    if status is not None:
+        try:
+            status_data = await asyncio.wait_for(
+                wait_for_status(), timeout=AppConfig.status_request_timeout_s
+            )
+            if status_data is not None:
+                return pickle.loads(status_data)
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Status unavailable: pub/sub stream ended unexpectedly",
+                )
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Status request timed out after {AppConfig.status_request_timeout_s} seconds",
+            )
 
+    finally:
+        # Always cleanup pubsub resources
         await pubsub.unsubscribe("status:event")
         await pubsub.aclose()
-
-        return pickle.loads(status)
-
-    async for message in pubsub.listen():
-
-        if message["type"] != "message":
-            continue
-
-        status = message["data"]
-
-        await pubsub.unsubscribe("status:event")
-        await pubsub.aclose()
-
-        return pickle.loads(status)
 
 
 if __name__ == "__main__":
