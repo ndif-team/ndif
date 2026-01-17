@@ -116,8 +116,6 @@ class BackendRequestModel(ObjectStorageMixin):
 
         if status == ResponseModel.JobStatus.ERROR:
             logging_level = "exception"
-        elif status == ResponseModel.JobStatus.NNSIGHT_ERROR:
-            logging_level = "exception"
 
         response = BackendResponseModel(
             id=str(self.id),
