@@ -586,3 +586,59 @@ class Processor:
             "current_request_started_at": self.current_request_started_at,
             "dedicated": self.dedicated,
         }
+
+    async def kill_request(self, request_id: str) -> dict:
+        """Kill a specific request by ID.
+
+        Args:
+            request_id: The ID of the request to kill
+
+        Returns:
+            dict with status: "not_found", "removed_from_queue", or "cancelled_execution"
+        """
+        # Check if it's the currently executing request
+        if self.current_request_id == request_id:
+            try:
+                handle = self.handle
+                await submit(handle, "cancel")
+                return {
+                    "status": "cancelled_execution",
+                    "message": f"Cancelled executing request {request_id}",
+                }
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "message": f"Error cancelling request: {str(e)}",
+                }
+
+        # Check if it's in the queue
+        found_request = None
+        for request in self.queue._queue:
+            if request.id == request_id:
+                found_request = request
+                break
+
+        if found_request:
+            # Remove from queue
+            self.queue._queue.remove(found_request)
+
+            # Notify the user their request was cancelled
+            found_request.create_response(
+                BackendResponseModel.JobStatus.ERROR,
+                logger,
+                "Request cancelled.",
+            ).respond()
+
+            # Update remaining requests in queue about new positions
+            self.reply()
+
+            return {
+                "status": "removed_from_queue",
+                "message": f"Removed request {request_id} from queue",
+            }
+
+        # Not found
+        return {
+            "status": "not_found",
+            "message": f"Request {request_id} not found in processor {self.model_key}",
+        }

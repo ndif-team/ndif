@@ -5,6 +5,7 @@ import ray
 import asyncio
 
 from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
+from .checks import check_prerequisites
 
 
 @click.command()
@@ -23,8 +24,10 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
         ndif deploy meta-llama/Llama-2-7b-hf --revision main
         ndif deploy openai-community/gpt2 --dedicated --ray-address ray://localhost:10001
     """
-    
+
     try:
+        # Check prerequisites silently
+        check_prerequisites(redis_url=redis_url, ray_address=ray_address)
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
         
@@ -32,9 +35,9 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
-        # Connect to Ray
+        # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         # Get controller actor handle and deploy the model
         click.echo(f"Getting actor handle for {model_key}...")

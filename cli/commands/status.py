@@ -7,6 +7,7 @@ import ray
 from collections import defaultdict
 
 from .util import get_controller_actor_handle
+from .checks import check_prerequisites
 
 
 @click.command()
@@ -29,8 +30,11 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
         ndif status --watch            # Real-time monitoring
     """
     try:
-        # Connect to Ray
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        # Check prerequisites silently
+        check_prerequisites(ray_address=ray_address)
+
+        # Connect to Ray (suppress verbose output)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         if watch:
             # Watch mode - loop forever

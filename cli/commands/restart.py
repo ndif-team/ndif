@@ -7,6 +7,7 @@ import ray
 from nnsight import LanguageModel
 
 from .util import get_actor_handle
+from .checks import check_prerequisites
 
 
 @click.command()
@@ -29,6 +30,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
     try:
+        # Check prerequisites silently
+        check_prerequisites(ray_address=ray_address)
+
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
         
@@ -37,9 +41,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         model_key = model.to_model_key()
         click.echo(f"Model key: {model_key}")
 
-        # Connect to Ray
+        # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         # Get deployment actor handle and restart it
         click.echo(f"Getting actor handle for {model_key}...")

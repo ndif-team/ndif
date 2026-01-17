@@ -1,13 +1,17 @@
 import os
 from typing import TYPE_CHECKING, Any, Optional, Union
 
-from influxdb_client import InfluxDBClient, WriteApi
-from influxdb_client.client.write_api import SYNCHRONOUS
-from influxdb_client import Point
 
 import logging
 
-logger = logging.getLogger("ndif")
+if os.getenv("INFLUXDB_ADDRESS") is not None:
+    from influxdb_client import InfluxDBClient, WriteApi
+    from influxdb_client.client.write_api import SYNCHRONOUS
+    from influxdb_client import Point
+else:
+    WriteApi = Any
+    Point = Any
+    InfluxDBClient = Any
 
 
 class Metric:
@@ -17,11 +21,16 @@ class Metric:
     @classmethod
     def update(cls, measurement: Union[Any, Point], **tags):
         try:
+            # Initialize client if needed
             if Metric.client is None and os.getenv("INFLUXDB_ADDRESS") is not None:
                 Metric.client = InfluxDBClient(
                     url=os.getenv("INFLUXDB_ADDRESS"),
                     token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
                 ).write_api(write_options=SYNCHRONOUS)
+
+            # Early return if metrics not configured
+            if Metric.client is None:
+                return
 
             # If youre providing a Point directly, use it as is
             if isinstance(measurement, Point):

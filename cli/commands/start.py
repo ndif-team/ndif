@@ -4,40 +4,111 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
-from .util import get_repo_root, save_pid, clear_pid, get_pid, is_process_running, print_logo
+from .util import (
+    get_repo_root, save_pid, clear_pid, get_pid, is_process_running,
+    print_logo, get_session_log_dir
+)
+from .checks import check_prerequisites, check_redis, check_minio
+from .deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'all'], case_sensitive=False), default='all')
+@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'object-store', 'all'], case_sensitive=False), default='all')
 @click.option('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
 @click.option('--port', default=8001, type=int, help='Port to bind to (API default: 8001)')
 @click.option('--workers', default=1, type=int, help='Number of workers for API (default: 1)')
 @click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-@click.option('--minio-url', default='http://localhost:27018', help='MinIO URL (default: http://localhost:27018)')
+@click.option('--object-store-url', default='http://localhost:27018', help='Object store URL (default: http://localhost:27018)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
 def start(service: str, host: str, port: int, workers: int, redis_url: str,
-          minio_url: str, ray_address: str):
-    """Start NDIF services on bare metal (blocking, with visible logs)
+          object_store_url: str, ray_address: str, verbose: bool):
+    """Start NDIF services on bare metal
 
-    SERVICE: Which service to start (api, ray, or all). Default: all
+    SERVICE: Which service to start (api, ray, redis, object-store, or all). Default: all
 
-    All services run in blocking mode with logs visible. Press Ctrl+C to stop.
+    By default, services run in the background with logs redirected to /tmp/ndif/.
+    Use --verbose to run in foreground with logs visible.
 
-    Prerequisites:
-        - Redis running at localhost:6379 (or specify --redis-url)
-        - MinIO running at localhost:27018 (or specify --minio-url)
+    When starting 'all', Redis and object store (MinIO) will be started automatically if not
+    already running. They can also be started individually.
 
     Examples:
-        ndif start                              # Start all services (logs interleaved)
-        ndif start api                          # Start API only
-        ndif start api --port 5000              # Start API on port 5000
-        ndif start ray --minio-url http://...   # Use custom MinIO URL
+        ndif start                                    # Start all services in background
+        ndif start api                                # Start API only
+        ndif start redis                              # Start Redis only
+        ndif start object-store                       # Start object store (MinIO) only
+        ndif start --verbose                          # Start with logs visible
+        ndif start api --port 5000                    # Start API on port 5000
+        ndif start ray --object-store-url http://...  # Use custom object store URL
     """
     print_logo()
     repo_root = get_repo_root()
     processes = []
+
+    # Parse ports from URLs for starting services
+    redis_parsed = urlparse(redis_url)
+    redis_port = redis_parsed.port or 6379
+    object_store_parsed = urlparse(object_store_url)
+    object_store_port = object_store_parsed.port or 27018
+
+    # Start Redis if requested or if starting 'all' and Redis is not running
+    if service == 'redis' or (service == 'all' and not check_redis(redis_url)):
+        click.echo("Starting Redis...")
+        success, pid, message = util_start_redis(port=redis_port, verbose=verbose)
+        if success:
+            if pid:
+                save_pid('redis', pid)
+                click.echo(f"  ✓ {message} (PID: {pid})")
+            else:
+                click.echo(f"  ✓ {message}")
+        else:
+            click.echo(f"  ✗ {message}", err=True)
+            if service == 'redis':
+                sys.exit(1)
+        click.echo()
+
+    # Start object store if requested or if starting 'all' and it's not running
+    if service == 'object-store' or (service == 'all' and not check_minio(object_store_url)):
+        click.echo("Starting object store (MinIO)...")
+        success, pid, message = util_start_object_store(port=object_store_port, verbose=verbose)
+        if success:
+            if pid:
+                save_pid('object-store', pid)
+                click.echo(f"  ✓ {message} (PID: {pid})")
+            else:
+                click.echo(f"  ✓ {message}")
+        else:
+            click.echo(f"  ✗ {message}", err=True)
+            if service == 'object-store':
+                sys.exit(1)
+        click.echo()
+
+    # If only starting redis or object-store, we're done
+    if service in ('redis', 'object-store'):
+        click.echo("✓ Service started successfully.")
+        click.echo(f"\nTo view logs: ndif logs {service}")
+        click.echo("To stop: ndif stop")
+        return
+
+    # Check prerequisites for api/ray (verbose mode shows checking messages)
+    check_prerequisites(redis_url=redis_url, minio_url=object_store_url, verbose=True)
+
+    if service in ('all', 'ray'):
+        # Check if Ray is already running
+        ray_pid = get_pid('ray')
+        if ray_pid and is_process_running(ray_pid):
+            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
+            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
+            sys.exit(1)
+
+        proc_ray = start_ray(repo_root, object_store_url, verbose)
+        if proc_ray:
+            processes.append(('ray', proc_ray))
+            save_pid('ray', proc_ray.pid)
 
     # Start requested service(s)
     if service in ('all', 'api'):
@@ -48,27 +119,15 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
             click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
             sys.exit(1)
 
-        proc_api = start_api(repo_root, host, port, workers, redis_url, minio_url, ray_address)
+        proc_api = start_api(repo_root, host, port, workers, redis_url, object_store_url, ray_address, verbose)
         if proc_api:
             processes.append(('api', proc_api))
             save_pid('api', proc_api.pid)
 
-    if service in ('all', 'ray'):
-        # Check if Ray is already running
-        ray_pid = get_pid('ray')
-        if ray_pid and is_process_running(ray_pid):
-            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
-            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
-            sys.exit(1)
 
-        proc_ray = start_ray(repo_root, minio_url)
-        if proc_ray:
-            processes.append(('ray', proc_ray))
-            save_pid('ray', proc_ray.pid)
-
-    # Wait for all processes
-    if processes:
-        click.echo("\n✓ Services started. Press Ctrl+C to stop.")
+    # In verbose mode, wait for all processes (blocking)
+    if verbose and processes:
+        click.echo("\n✓ Services started in verbose mode. Press Ctrl+C to stop.")
         click.echo("=" * 60)
         try:
             for _, proc in processes:
@@ -85,10 +144,18 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
                 subprocess.run(['ray', 'stop'], check=False)
 
             sys.exit(0)
+    elif processes:
+        # Non-verbose mode - just confirm and exit
+        click.echo("\n✓ Services started successfully.")
+        click.echo("\nTo view logs:")
+        for name, _ in processes:
+            click.echo(f"  ndif logs {name}")
+        click.echo("\nTo stop services:")
+        click.echo("  ndif stop")
 
 
 def start_api(repo_root: Path, host: str, port: int, workers: int,
-              redis_url: str, minio_url: str, ray_address: str):
+              redis_url: str, object_store_url: str, ray_address: str, verbose: bool):
     """Start the API service using the existing start.sh script
 
     Returns:
@@ -109,14 +176,21 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
     click.echo(f"  Host: {host}:{port}")
     click.echo(f"  Workers: {workers}")
     click.echo(f"  Redis: {redis_url}")
-    click.echo(f"  MinIO: {minio_url}")
+    click.echo(f"  Object Store: {object_store_url}")
     click.echo(f"  Ray: {ray_address}")
+
+    # Set up log files
+    if not verbose:
+        log_dir = get_session_log_dir('api')
+        log_file = log_dir / "output.log"
+        click.echo(f"  Logs: {log_file}")
+
     click.echo()
 
     # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': minio_url,
+        'OBJECT_STORE_URL': object_store_url,
         'BROKER_URL': redis_url,
         'WORKERS': str(workers),
         'RAY_ADDRESS': ray_address,
@@ -126,13 +200,24 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
     })
 
     try:
-        # Start service - logs will be visible
-        proc = subprocess.Popen(
-            ['bash', str(start_script)],
-            env=env,
-            cwd=api_service_dir
-            # stdout and stderr go to terminal (visible logs)
-        )
+        if verbose:
+            # Verbose mode - logs visible in terminal
+            proc = subprocess.Popen(
+                ['bash', str(start_script)],
+                env=env,
+                cwd=api_service_dir
+            )
+        else:
+            # Non-verbose mode - redirect logs to file
+            log_file_handle = open(log_file, 'w')
+            proc = subprocess.Popen(
+                ['bash', str(start_script)],
+                env=env,
+                cwd=api_service_dir,
+                stdout=log_file_handle,
+                stderr=subprocess.STDOUT
+            )
+
         return proc
 
     except FileNotFoundError as e:
@@ -141,7 +226,7 @@ def start_api(repo_root: Path, host: str, port: int, workers: int,
         sys.exit(1)
 
 
-def start_ray(repo_root: Path, minio_url: str):
+def start_ray(repo_root: Path, object_store_url: str, verbose: bool):
     """Start the Ray service using the existing start.sh script
 
     Returns:
@@ -160,14 +245,21 @@ def start_ray(repo_root: Path, minio_url: str):
 
     api_url = os.environ.get('API_URL', 'http://localhost:8001')
     click.echo("Starting NDIF Ray service...")
-    click.echo(f"  MinIO: {minio_url}")
+    click.echo(f"  Object Store: {object_store_url}")
     click.echo(f"  API: {api_url}")
+
+    # Set up log files
+    if not verbose:
+        log_dir = get_session_log_dir('ray')
+        log_file = log_dir / "output.log"
+        click.echo(f"  Logs: {log_file}")
+
     click.echo()
 
     # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': minio_url,
+        'OBJECT_STORE_URL': object_store_url,
         'API_URL': api_url,
 
         # Ray ports (defaults from docker/.env)
@@ -189,13 +281,24 @@ def start_ray(repo_root: Path, minio_url: str):
     })
 
     try:
-        # Start service - logs will be visible
-        proc = subprocess.Popen(
-            ['bash', str(start_script)],
-            env=env,
-            cwd=ray_service_dir
-            # stdout and stderr go to terminal (visible logs)
-        )
+        if verbose:
+            # Verbose mode - logs visible in terminal
+            proc = subprocess.Popen(
+                ['bash', str(start_script)],
+                env=env,
+                cwd=ray_service_dir
+            )
+        else:
+            # Non-verbose mode - redirect logs to file
+            log_file_handle = open(log_file, 'w')
+            proc = subprocess.Popen(
+                ['bash', str(start_script)],
+                env=env,
+                cwd=ray_service_dir,
+                stdout=log_file_handle,
+                stderr=subprocess.STDOUT
+            )
+
         return proc
 
     except FileNotFoundError as e:

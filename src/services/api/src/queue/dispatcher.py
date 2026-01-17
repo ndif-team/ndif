@@ -30,6 +30,7 @@ import traceback
 from typing import Optional
 
 import redis
+from enum import Enum
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
@@ -38,6 +39,15 @@ from ..schema import BackendRequestModel
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 from .util import patch, controller_handle, submit
+
+
+class DispatcherEvent(str, Enum):
+    """Event types for the unified dispatcher events stream"""
+
+    QUEUE_STATE_REQUEST = "queue_state_request"
+    DEPLOY = "deploy"
+    EVICT = "evict"
+    KILL_REQUEST = "kill_request"
 
 
 class Dispatcher:
@@ -302,8 +312,7 @@ class Dispatcher:
             but do not terminate the dispatcher; it continues processing.
         """
         asyncio.create_task(self.status_worker())
-        asyncio.create_task(self.queue_state_worker())
-        asyncio.create_task(self.deployment_events_worker())
+        asyncio.create_task(self.events_worker())
 
         while True:
 
@@ -375,90 +384,123 @@ class Dispatcher:
             except Exception as e:
                 self.logger.exception(f"Error getting status: {e}")
 
-    async def queue_state_worker(self) -> None:
-        """Asyncio task for responding to queue state requests.
+    async def events_worker(self) -> None:
+        """Unified asyncio task for handling all dispatcher events via Redis streams.
 
-        Listens for requests on the Redis "queue_state" list. When a request
-        arrives (containing a response key), fetches the current dispatcher
-        state and pushes the pickled result to the provided response key.
-
-        This enables external monitoring tools to query the current state of
-        all Processors and their queues.
-
-        Note:
-            On error, an error state dict is returned instead of the normal
-            state to inform the requester of the failure.
+        Handles:
+        - QUEUE_STATE_REQUEST: Respond with current queue state
+        - DEPLOY: Create processor for newly deployed model
+        - EVICT: Remove processor for evicted model
+        - KILL_REQUEST: Cancel a specific request (future)
         """
-        while True:
-            id = (await self.redis_client.brpop("queue_state"))[1]
+        last_id = "$"  # Start from new messages
 
-            try:
-                queue_state = self.get_state()
-                queue_state_bytes = pickle.dumps(queue_state)
-
-                await self.redis_client.lpush(id, queue_state_bytes)
-
-            except Exception as e:
-                self.logger.error(f"Error getting queue state: {e}")
-
-                error_state = {"error": str(e)}
-                await self.redis_client.lpush(id, pickle.dumps(error_state))
-
-    async def deployment_events_worker(self) -> None:
-        """Asyncio task for handling external deployment lifecycle events.
-
-        Listens for events on the Redis "deployment_events" list. These events
-        are typically sent by the Controller or admin tools to trigger
-        deployment actions without a user request.
-
-        Supported event types:
-            - "evict": Removes the Processor for the specified model_key,
-                notifying queued users that the model was evicted.
-            - "deploy": Creates a Processor for a model that was deployed
-                externally (skips provisioning since model is already up).
-
-        Event format:
-            {
-                "type": "evict" | "deploy",
-                "model_key": "<model identifier>"
-            }
-
-        Note:
-            Uses a 1-second timeout on brpop to allow the loop to remain
-            responsive. Errors are logged but do not terminate the worker.
-        """
         while True:
             try:
-                event = await self.redis_client.brpop("deployment_events", timeout=1)
-
-                if event is None:
-                    continue
-
-                event_data = pickle.loads(event[1])
-                event_type = event_data.get("type")
-                model_key = event_data.get("model_key")
-
-                self.logger.info(
-                    f"Received deployment event: {event_type} for {model_key}"
+                # Read from the dispatcher events stream
+                messages = await self.redis_client.xread(
+                    {"dispatcher:events": last_id},
+                    count=1,
+                    block=1000,  # Block for 1 second
                 )
 
-                if event_type == "evict":
-                    if model_key in self.processors:
-                        self.remove(model_key, "Model evicted by external command")
-                        self.logger.info(
-                            f"Removed processor for {model_key} due to eviction event"
-                        )
+                if not messages:
+                    continue
 
-                elif event_type == "deploy":
-                    if model_key not in self.processors:
-                        processor = Processor(
-                            model_key, self.eviction_queue, self.error_queue
-                        )
-                        self.processors[model_key] = processor
-                        asyncio.create_task(processor.processor_worker(provision=False))
-                        self.logger.info(
-                            f"Created processor for {model_key} due to deployment event"
-                        )
+                # Extract stream data
+                _, entries = messages[0]
+
+                for entry_id, event_data in entries:
+                    last_id = entry_id
+
+                    # Get event type
+                    event_type = event_data.get(b"event_type", b"").decode("utf-8")
+
+                    self.logger.info(f"Received event: {event_type}")
+
+                    # Handle different event types
+                    if event_type == DispatcherEvent.QUEUE_STATE_REQUEST:
+                        await self._handle_queue_state_request(event_data)
+
+                    elif event_type == DispatcherEvent.DEPLOY:
+                        await self._handle_deploy_event(event_data)
+
+                    elif event_type == DispatcherEvent.EVICT:
+                        await self._handle_evict_event(event_data)
+
+                    elif event_type == DispatcherEvent.KILL_REQUEST:
+                        await self._handle_kill_request(event_data)
+
+                    else:
+                        self.logger.warning(f"Unknown event type: {event_type}")
 
             except Exception as e:
-                self.logger.exception(f"Error handling deployment event: {e}")
+                self.logger.exception(f"Error in events worker: {e}")
+
+    async def _handle_queue_state_request(self, event_data: dict) -> None:
+        """Handle QUEUE_STATE_REQUEST event"""
+        response_key = event_data.get(b"response_key", b"").decode("utf-8")
+
+        try:
+            queue_state = self.get_state()
+            queue_state_bytes = pickle.dumps(queue_state)
+            await self.redis_client.lpush(response_key, queue_state_bytes)
+
+        except Exception as e:
+            self.logger.error(f"Error getting queue state: {e}")
+            error_state = {"error": str(e)}
+            await self.redis_client.lpush(response_key, pickle.dumps(error_state))
+
+    async def _handle_deploy_event(self, event_data: dict) -> None:
+        """Handle DEPLOY event"""
+        model_key = event_data.get(b"model_key", b"").decode("utf-8")
+
+        if model_key not in self.processors:
+            processor = Processor(model_key, self.eviction_queue, self.error_queue)
+            self.processors[model_key] = processor
+            asyncio.create_task(processor.processor_worker(provision=False))
+            self.logger.info(
+                f"Created processor for {model_key} due to deployment event"
+            )
+
+    async def _handle_evict_event(self, event_data: dict) -> None:
+        """Handle EVICT event"""
+        model_key = event_data.get(b"model_key", b"").decode("utf-8")
+
+        if model_key in self.processors:
+            self.remove(model_key, "Model evicted by external command")
+            self.logger.info(f"Removed processor for {model_key} due to eviction event")
+
+    async def _handle_kill_request(self, event_data: dict) -> None:
+        """Handle KILL_REQUEST event"""
+        request_id = event_data.get(b"request_id", b"").decode("utf-8")
+        response_key = event_data.get(b"response_key", b"").decode("utf-8")
+
+        self.logger.info(f"Kill request received for request_id: {request_id}")
+
+        try:
+            # Try killing the request in each processor until found
+            for processor in self.processors.values():
+                result = await processor.kill_request(request_id)
+
+                # If found in this processor, return the result
+                if result["status"] != "not_found":
+                    result_bytes = pickle.dumps(result)
+                    await self.redis_client.lpush(response_key, result_bytes)
+                    self.logger.info(f"Kill request completed: {result['status']}")
+                    return
+
+            # Not found in any processor
+            result = {
+                "status": "not_found",
+                "message": f"Request {request_id} not found in any processor",
+            }
+            await self.redis_client.lpush(response_key, pickle.dumps(result))
+
+        except Exception as e:
+            self.logger.error(f"Error handling kill request: {e}")
+            error_result = {
+                "status": "error",
+                "message": f"Error handling kill request: {str(e)}",
+            }
+            await self.redis_client.lpush(response_key, pickle.dumps(error_result))
