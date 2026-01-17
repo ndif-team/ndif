@@ -1,6 +1,27 @@
+"""Processor module for managing per-model request queues and deployment lifecycle.
+
+This module provides the Processor class which orchestrates the lifecycle of model
+deployments, including provisioning, initialization, request queuing, and execution.
+Each Processor instance manages requests for a single model and communicates with
+the Ray-based backend infrastructure.
+
+Typical usage:
+    The Processor is created and managed by the Dispatcher when a new model
+    request arrives. The Dispatcher creates a Processor for each unique model_key
+    and delegates request handling to it.
+
+Example:
+    >>> processor = Processor(
+    ...     model_key="meta-llama/Llama-2-7b",
+    ...     eviction_queue=eviction_queue,
+    ...     error_queue=error_queue
+    ... )
+    >>> asyncio.create_task(processor.processor_worker())
+    >>> processor.enqueue(request)
+"""
+
 import asyncio
 import logging
-import os
 import time
 from enum import Enum
 from typing import Optional
@@ -9,12 +30,27 @@ import ray
 
 from ..schema import BackendRequestModel, BackendResponseModel
 
+from .config import QueueConfig
 from .util import controller_handle, get_actor_handle, submit
 
 logger = logging.getLogger("ndif")
 
 
 class ProcessorStatus(Enum):
+    """Enumeration of possible processor states.
+
+    The processor transitions through these states during its lifecycle:
+    UNINITIALIZED -> PROVISIONING -> DEPLOYING -> READY <-> BUSY -> CANCELLED
+
+    Attributes:
+        UNINITIALIZED: Initial state before any operations have begun.
+        PROVISIONING: Requesting the Controller to create/allocate the model deployment.
+        DEPLOYING: Waiting for the model actor to complete initialization.
+        READY: Model is loaded and ready to accept requests.
+        BUSY: Currently executing a request or waiting for error resolution.
+        CANCELLED: Terminal state indicating the processor has been evicted or failed.
+    """
+
     UNINITIALIZED = "uninitialized"
     PROVISIONING = "provisioning"
     DEPLOYING = "deploying"
@@ -24,7 +60,20 @@ class ProcessorStatus(Enum):
 
 
 class DeploymentStatus(Enum):
-    """Deployment states reported by the controller."""
+    """Enumeration of deployment states reported by the Controller.
+
+    These states indicate the result of a deployment request to the Controller
+    and determine whether the Processor can proceed with initialization.
+
+    Attributes:
+        DEPLOYED: Model was successfully deployed and is ready.
+        CACHED_AND_FREE: Model is cached in memory and has available capacity.
+        FREE: Model slot is available for deployment.
+        CACHED_AND_FULL: Model is cached but has no available capacity.
+        FULL: No capacity available for this model.
+        CANT_ACCOMMODATE: Controller cannot accommodate this model at all
+            (e.g., insufficient resources, unsupported model).
+    """
 
     DEPLOYED = "deployed"
     CACHED_AND_FREE = "cached_and_free"
@@ -35,48 +84,116 @@ class DeploymentStatus(Enum):
 
 
 class Processor:
-    """
-    Orchestrates per-model request queues, deployment lifecycle, and communication with backend model actors.
+    """Orchestrates per-model request queues, deployment lifecycle, and backend communication.
 
-    The Processor manages a queue of inference requests for a specific model, handles deployment
-    provisioning, monitors readiness and status, and relays requests to the model actor. It reports
-    errors and eviction events to the Dispatcher via shared queues.
+    The Processor is responsible for managing the complete lifecycle of a model deployment,
+    from initial provisioning through request execution. Each Processor instance handles
+    requests for exactly one model, maintaining its own request queue and coordinating
+    with the Ray-based Controller and ModelActor.
+
+    The processor follows this lifecycle:
+        1. Created by Dispatcher when first request for a model arrives
+        2. Provisions the model deployment via the Controller
+        3. Waits for the ModelActor to initialize
+        4. Processes requests from its queue sequentially
+        5. Reports errors/evictions back to Dispatcher via shared queues
+
+    Attributes:
+        model_key: Unique identifier for the model (e.g., "meta-llama/Llama-2-7b").
+        queue: Async queue holding pending BackendRequestModel instances.
+        eviction_queue: Shared queue for reporting eviction events to Dispatcher.
+        error_queue: Shared queue for reporting errors to Dispatcher.
+        status: Current ProcessorStatus state.
+        status_changed_at: Unix timestamp of the last status transition.
+        dedicated: Whether this is a dedicated (scheduled) model deployment.
+            None if not yet determined, True/False after check_dedicated().
+        current_request_id: ID of the request currently being executed, or None.
+        current_request_started_at: Unix timestamp when current request started, or None.
+
+    Example:
+        >>> eviction_queue = asyncio.Queue()
+        >>> error_queue = asyncio.Queue()
+        >>> processor = Processor("gpt2", eviction_queue, error_queue)
+        >>> asyncio.create_task(processor.processor_worker())
+        >>> processor.enqueue(request)
     """
 
     def __init__(
-        self, model_key: str, eviction_queue: asyncio.Queue, error_queue: asyncio.Queue
-    ):
+        self,
+        model_key: str,
+        eviction_queue: asyncio.Queue[tuple[str, str]],
+        error_queue: asyncio.Queue[tuple[str, Exception]],
+    ) -> None:
+        """Initialize a new Processor for a specific model.
+
+        Args:
+            model_key: Unique identifier for the model to manage.
+            eviction_queue: Shared async queue for reporting eviction events.
+                Tuples of (model_key, reason_message) are placed here.
+            error_queue: Shared async queue for reporting errors.
+                Tuples of (model_key, exception) are placed here.
+        """
         self.model_key = model_key
         self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
         self.eviction_queue = eviction_queue
         self.error_queue = error_queue
         self._status = ProcessorStatus.UNINITIALIZED
-        self.status_changed_at: float = 0  # Timestamp of last status change
+        self.status_changed_at: float = 0
 
-        self.dedicated = None
+        self.dedicated: Optional[bool] = None
         self.current_request_id: Optional[str] = None
-        self.current_request_started_at: Optional[float] = None  # When current request started executing
+        self.current_request_started_at: Optional[float] = None
 
     @property
     def status(self) -> ProcessorStatus:
-        """Get the current status."""
+        """Get the current processor status.
+
+        Returns:
+            The current ProcessorStatus enum value.
+        """
         return self._status
 
     @status.setter
-    def status(self, value: ProcessorStatus):
-        """Set status and update timestamp."""
-        import time
+    def status(self, value: ProcessorStatus) -> None:
+        """Set the processor status and update the timestamp.
+
+        Automatically records the time of the status change for monitoring
+        and debugging purposes.
+
+        Args:
+            value: The new ProcessorStatus to set.
+        """
         self._status = value
         self.status_changed_at = time.time()
 
     @property
     def handle(self) -> ray.actor.ActorHandle:
-        """Get the handle for the model deployment."""
+        """Get the Ray actor handle for this model's deployment.
+
+        Returns:
+            The Ray ActorHandle for the ModelActor serving this model.
+
+        Raises:
+            Exception: If the actor cannot be found (e.g., not yet deployed
+                or has been evicted).
+        """
         return get_actor_handle(f"ModelActor:{self.model_key}")
 
-    def enqueue(self, request: BackendRequestModel):
-        """Add a request to the queue and update the user with their position in the queue."""
+    def enqueue(self, request: BackendRequestModel) -> None:
+        """Add a request to the processing queue.
 
+        Validates that the request can be processed (either the model is dedicated
+        or the request has hotswapping enabled), adds it to the queue, and notifies
+        the user of their queue position.
+
+        Args:
+            request: The inference request to enqueue.
+
+        Note:
+            If the model is not dedicated and the request doesn't have hotswapping
+            enabled, the request is immediately rejected with an error response
+            and not added to the queue.
+        """
         if self.dedicated is False and not request.hotswapping:
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
@@ -88,7 +205,6 @@ class Processor:
 
         self.queue.put_nowait(request)
 
-        # Update the user with their new position in the queue.
         request.create_response(
             BackendResponseModel.JobStatus.QUEUED,
             logger,
@@ -96,6 +212,19 @@ class Processor:
         ).respond()
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
+        """Check if this model has a dedicated (scheduled) deployment.
+
+        Queries the Controller to determine if the model is scheduled for
+        dedicated deployment, which affects whether non-hotswapping requests
+        can be processed.
+
+        Args:
+            handle: Ray actor handle for the Controller.
+
+        Returns:
+            True if the model has a dedicated deployment, False otherwise.
+            Returns False if the deployment information cannot be retrieved.
+        """
         result = await submit(handle, "get_deployment", self.model_key)
 
         if result is None:
@@ -103,11 +232,30 @@ class Processor:
 
         return result.get("dedicated", False)
 
-    async def provision(self):
-        """Provision the model deployment by contacting the Controller to create the model deployment."""
+    async def provision(self) -> None:
+        """Provision the model deployment via the Controller.
 
+        This method handles the complete provisioning workflow:
+            1. Checks if the model is a dedicated deployment
+            2. Filters queue to remove invalid requests (non-hotswap on non-dedicated)
+            3. Requests the Controller to deploy the model
+            4. Processes deployment results and handles evictions
+
+        The method sets the processor status to CANCELLED if:
+            - No valid requests remain after filtering
+            - An exception occurs during provisioning
+            - The Controller returns an invalid status
+            - The Controller cannot accommodate the model
+
+        Raises:
+            No exceptions are raised; errors are reported via the error_queue
+            and the processor status is set to CANCELLED.
+
+        Note:
+            Any models evicted by the Controller to make room for this deployment
+            are reported to the eviction_queue for the Dispatcher to handle.
+        """
         try:
-            # Get the controller handle.
             controller = controller_handle()
 
             self.dedicated = await self.check_dedicated(controller)
@@ -144,12 +292,8 @@ class Processor:
                     self.status = ProcessorStatus.CANCELLED
                     return
 
-            # Submit the request to the controller to deploy the model deployment to the controller.
-            # Wait for the request to finish.
             result = await submit(controller, "deploy", [self.model_key])
 
-        # If there was an error provisioning the model deployment, evict and cancel the processor.
-        # Add the error to the error queue to be handled by the dispatcher.
         except Exception as e:
             self.eviction_queue.put_nowait(
                 (
@@ -166,7 +310,6 @@ class Processor:
 
         evictions = result["evictions"]
 
-        # Add any evictions to the eviction queue to be handled by the dispatcher.
         for model_key in evictions:
             self.eviction_queue.put_nowait(
                 (
@@ -181,8 +324,6 @@ class Processor:
             try:
                 deployment_status = DeploymentStatus(status_str)
 
-            # If the status is not a valid deployment status, there was an issue evaluating the model on the Controller.
-            # Evict and cancel the processor.
             except ValueError:
                 self.eviction_queue.put_nowait(
                     (
@@ -194,7 +335,6 @@ class Processor:
 
                 return
 
-            # If the model deployment cannot be accommodated, evict and cancel the processor.
             if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
                 self.eviction_queue.put_nowait(
                     (
@@ -207,22 +347,29 @@ class Processor:
                 return
 
     async def initialize(self) -> None:
-        """Wait for the model deployment to complete initialization."""
+        """Wait for the model deployment to complete initialization.
 
-        # Loop until the model deployment is initialized.
+        Polls the ModelActor until it reports ready via the __ray_ready__ method.
+        This method blocks until the model is fully loaded and ready to accept
+        inference requests.
+
+        The method handles two cases:
+            - Actor not yet created: Continues polling until it appears
+            - Other errors: Reports to error_queue and cancels the processor
+
+        Raises:
+            No exceptions are raised; errors are reported via the error_queue
+            and the processor status is set to CANCELLED.
+        """
         while True:
             try:
-                # Try and get the handle for the model deployment. It might not be created yet.
                 handle = self.handle
 
-                # Wait for the model deployment to be initialized.
                 await submit(handle, "__ray_ready__")
 
                 break
 
             except Exception as e:
-                # If the error is not becuase the model deployment hasnt been created yet, its a critical error,
-                # Cancel the processor and let the dispatcher handle the error.
                 if not str(e).startswith("Failed to look up actor"):
                     self.eviction_queue.put_nowait(
                         (
@@ -234,39 +381,47 @@ class Processor:
                     self.status = ProcessorStatus.CANCELLED
 
     async def execute(self, request: BackendRequestModel) -> None:
-        """Submit a request to the model deployment and update the user with the status."""
+        """Execute a single inference request on the model deployment.
 
-        # Track the currently executing request
+        Submits the request to the ModelActor, notifies the user of dispatch,
+        waits for completion, and handles any errors that occur during execution.
+
+        Args:
+            request: The inference request to execute.
+
+        Note:
+            This method updates the processor's current_request_id and
+            current_request_started_at for monitoring purposes. These are
+            cleared in the finally block regardless of success or failure.
+
+            On success, the processor transitions to READY status.
+            On actor lookup failure, the processor is cancelled and evicted.
+            On other errors, the error is reported but the processor remains
+            BUSY until the Dispatcher clears the error.
+        """
         self.current_request_id = request.id
         self.current_request_started_at = time.time()
 
         try:
-            # Get the handle for the model deployment.
             handle = self.handle
 
-            # Submit the request to the model deployment.
             result = submit(handle, "__call__", request)
 
-            # Update the user their request has been dispatched.
             request.create_response(
                 BackendResponseModel.JobStatus.DISPATCHED,
                 logger,
                 "Your job has been sent to the model deployment.",
             ).respond()
 
-            # Wait for the request to be completed
             result = await result
 
-        # If there was an error submitting the request...
         except Exception as e:
-            # Respond to the dispatched user with an error.
             request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
                 "Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.",
             ).respond()
 
-            # If the error is because the model deployment was evicted / cached, evict and cancel the processor.
             if str(e).startswith("Failed to look up actor"):
                 self.eviction_queue.put_nowait(
                     (
@@ -276,71 +431,82 @@ class Processor:
                 )
                 self.status = ProcessorStatus.CANCELLED
             else:
-                # If there is another error, add it ot the error queue to be handled by the dispatcher. Remain busy until the dispatcher has cleared the error.
                 self.error_queue.put_nowait((self.model_key, e))
 
-        # Otherwise the processor is ready to accept new requests.
         else:
             self.status = ProcessorStatus.READY
 
-        # Clear the current request tracking when done (success or error)
         finally:
             self.current_request_id = None
             self.current_request_started_at = None
 
     async def processor_worker(self, provision: bool = True) -> None:
-        """Main asyncio task for creating, monitoring and submitting requests to the a model deployment."""
+        """Main asyncio task managing the processor lifecycle and request loop.
 
+        This is the primary entry point for processor operation. It handles:
+            1. Spawning the reply_worker for status updates
+            2. Provisioning the model deployment (if requested)
+            3. Waiting for model initialization
+            4. Processing requests from the queue sequentially
+
+        Args:
+            provision: If True, request a new deployment from the Controller.
+                If False, assume the model is already deployed (used when
+                responding to external deployment events).
+
+        Note:
+            This method runs indefinitely until the processor status becomes
+            CANCELLED. It should be run as an asyncio task via create_task().
+
+            When in BUSY status after an error, the method waits for the
+            Dispatcher to clear the error before processing new requests.
+        """
         self.status = ProcessorStatus.PROVISIONING
 
-        # Create a task to reply to users with statts of model deployment.
         asyncio.create_task(self.reply_worker())
 
-        # Provision and deploy the model deployment.
         if provision:
             await self.provision()
         else:
             self.status = ProcessorStatus.READY
 
-        # If there was a problem provisioning the model deployment, return.
         if self.status == ProcessorStatus.CANCELLED:
             return
 
         self.status = ProcessorStatus.DEPLOYING
 
-        # Wait for the model deployment to be initialized.
         await self.initialize()
 
-        # If there was a problem initializing the model deployment, return.
         if self.status == ProcessorStatus.CANCELLED:
             return
 
         self.status = ProcessorStatus.READY
 
-        # Loop until the model deployment is cancelled.
         while self.status != ProcessorStatus.CANCELLED:
-            # If there was previously an error executing, wait for the dispatcher to check and clear the error.
             if self.status == ProcessorStatus.BUSY:
                 await asyncio.sleep(1)
 
                 continue
 
-            # Get the next request from the queue.
             request = await self.queue.get()
 
             self.status = ProcessorStatus.BUSY
 
-            # Update the other users in the queue with their new position in the queue.
             self.reply()
 
-            # Submit the request to the model deployment.
             await self.execute(request)
 
     async def reply_worker(self) -> None:
-        """Asyncio task for replying to users with status of model deploymentevery N seconds."""
+        """Asyncio task that sends periodic status updates to queued users.
 
-        # Set the frequency to reply to users.
-        reply_freq_s = int(os.environ.get("COORDINATOR_PROCESSOR_REPLY_FREQ_S", "3"))
+        Runs during the PROVISIONING and DEPLOYING phases, sending status
+        messages to all users in the queue at a configurable interval.
+        Exits once the processor reaches READY or CANCELLED status.
+
+        See Also:
+            QueueConfig.processor_reply_freq_s: Configures the update interval.
+        """
+        reply_freq_s = QueueConfig.processor_reply_freq_s
 
         while (
             self.status != ProcessorStatus.READY
@@ -355,17 +521,19 @@ class Processor:
 
     def reply(
         self,
-        description: str | None = None,
+        description: Optional[str] = None,
         status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
     ) -> None:
-        """
-        Reply to all users with a message.
+        """Send a status message to all users currently in the queue.
+
+        Iterates through all pending requests and sends a response with either
+        the provided description or a default queue position message.
 
         Args:
-            description (str | None, optional): The message to send to users.
-                If None, a default queue position message is sent.
+            description: Custom message to send to all users. If None, each user
+                receives their current queue position (e.g., "Moved to position 2 in Queue.").
+            status: The job status to report. Defaults to QUEUED.
         """
-
         for i, request in enumerate(self.queue._queue):
             request.create_response(
                 status,
@@ -377,19 +545,36 @@ class Processor:
                 ),
             ).respond()
 
-    def purge(self, message: Optional[str] = None):
+    def purge(self, message: Optional[str] = None) -> None:
+        """Send an error message to all queued users and clear the queue.
+
+        Used during processor shutdown or critical errors to notify all
+        pending users that their requests cannot be processed.
+
+        Args:
+            message: Error message to send to all users. If None, a default
+                critical server error message is used.
+        """
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
         self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
 
-    def get_state(self) -> dict:
-        """Get the current state of this processor.
+    def get_state(self) -> dict[str, object]:
+        """Get a snapshot of the current processor state.
 
         Returns:
-            dict with processor state information including request IDs and timestamps
+            A dictionary containing:
+                - model_key: The model identifier string.
+                - status: Current ProcessorStatus value as string.
+                - status_changed_at: Unix timestamp of last status change.
+                - request_ids: List of request IDs currently in the queue.
+                - current_request_id: ID of request being executed, or None.
+                - current_request_started_at: Unix timestamp when current
+                    request started, or None.
+                - dedicated: Whether this is a dedicated deployment
+                    (True/False/None).
         """
-        # Extract request IDs from queue
         request_ids = [req.id for req in self.queue._queue]
 
         return {
