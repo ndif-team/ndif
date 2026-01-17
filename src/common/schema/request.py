@@ -9,7 +9,6 @@ from fastapi import Request
 from pydantic import ConfigDict
 from typing_extensions import Self
 
-from nnsight import NNsight
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
@@ -44,10 +43,10 @@ class BackendRequestModel(ObjectStorageMixin):
     last_status_time: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
-    
+
     model_key: Optional[MODEL_KEY] = None
     session_id: Optional[SESSION_ID] = None
-    zlib: Optional[bool] = True
+    compress: Optional[bool] = True
     api_key: Optional[API_KEY] = ""
     callback: Optional[str] = ""
     hotswapping: Optional[bool] = False
@@ -58,13 +57,13 @@ class BackendRequestModel(ObjectStorageMixin):
     user_agent: Optional[str] = ""
     id: REQUEST_ID
 
-    def deserialize(self, model: NNsight) -> RequestModel:
+    def deserialize(self, persistent_objects: dict = None) -> RequestModel:
         request = self.request
 
         if isinstance(self.request, ray.ObjectRef):
             request = ray.get(request)
 
-        return RequestModel.deserialize(model, request, self.zlib)
+        return RequestModel.deserialize(request, persistent_objects, self.compress)
 
     @classmethod
     def from_request(cls, request: Request) -> Self:
@@ -75,19 +74,23 @@ class BackendRequestModel(ObjectStorageMixin):
         if sent is not None:
             sent = float(sent)
 
-        request_id = uuid.uuid4() if headers.get("ndif-request_id") is None else headers.get("ndif-request_id")
-        
+        request_id = (
+            uuid.uuid4()
+            if headers.get("ndif-request_id") is None
+            else headers.get("ndif-request_id")
+        )
+
         model_key = headers.get("nnsight-model-key", None)
-        
+
         if model_key is not None:
-            model_key = model_key.replace("\"revision\": \"main\"", "\"revision\": null")
+            model_key = model_key.replace('"revision": "main"', '"revision": null')
 
         return BackendRequestModel(
             id=str(request_id),
             request=request.body(),
             model_key=model_key,
             session_id=headers.get("ndif-session_id", None),
-            zlib=headers.get("nnsight-zlib", True),
+            compress=headers.get("nnsight-compress", True),
             last_status_time=sent,
             api_key=headers.get("ndif-api-key"),
             callback=headers.get("ndif-callback", ""),

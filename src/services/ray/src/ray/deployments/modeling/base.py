@@ -32,7 +32,7 @@ from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_objects import protect_model
+from ...nn.security.protected_objects import protect
 from ...nn.security.protected_environment import (
     WHITELISTED_MODULES,
     WHITELISTED_MODULES_DESERIALIZATION,
@@ -78,6 +78,12 @@ class BaseModelDeployment:
 
         self.model = self.load_from_disk()
 
+        self.persistent_objects = self.model._remoteable_persistent_objects()
+
+        for key, value in self.persistent_objects.items():
+            if isinstance(value, torch.nn.Module):
+                self.persistent_objects[key] = protect(value)
+
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
         if dispatch:
@@ -92,7 +98,6 @@ class BaseModelDeployment:
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
 
-        protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
@@ -300,7 +305,7 @@ class BaseModelDeployment:
         result_object = BackendResultModel(
             id=self.request.id,
             **saves,
-        ).save()
+        ).save(compress=self.request.compress)
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
@@ -427,7 +432,7 @@ class BaseModelDeployment:
                 - description: Human-readable status description
                 - data: Optional additional data
         """
-        
+
         try:
             self.request.create_response(**kwargs, logger=self.logger).respond()
         except:
