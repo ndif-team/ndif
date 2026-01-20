@@ -405,13 +405,13 @@ class Processor:
         try:
             handle = self.handle
 
-            result = submit(handle, "__call__", request)
-
             request.create_response(
                 BackendResponseModel.JobStatus.DISPATCHED,
                 logger,
                 "Your job has been sent to the model deployment.",
             ).respond()
+
+            result = submit(handle, "__call__", request)
 
             result = await result
 
