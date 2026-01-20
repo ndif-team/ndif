@@ -58,6 +58,7 @@ class BaseModelDeployment:
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         ObjectStoreProvider.connect()
+        SioProvider.connect()
 
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -244,14 +245,14 @@ class BaseModelDeployment:
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
-        """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
-            request = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
+
+        """Logic to execute before execution."""
+        request = self.request.deserialize(self.persistent_objects)
 
         return request
 
@@ -363,8 +364,6 @@ class BaseModelDeployment:
         """
         self.kill_switch.clear()
         self.execution_ident = None
-
-        SioProvider.disconnect()
 
         self.model._model.zero_grad()
         self.request = None
