@@ -329,10 +329,9 @@ class BaseModelDeployment:
             exception (Exception): The exception that was raised during __call__.
         """
 
-        description = traceback.format_exc()
         self.respond(
             status=BackendResponseModel.JobStatus.ERROR,
-            description=f"{description}\n{str(exception)}",
+            description=str(exception),
         )
 
         # Special handling for CUDA device-side assertion errors
