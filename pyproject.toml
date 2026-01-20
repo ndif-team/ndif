@@ -7,7 +7,7 @@ name = "ndif"
 version = "0.0.1"
 description = "The NDIF server, which performs deep inference and serves nnsight requests remotely"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     # CLI
     "click>=8.0.0",
