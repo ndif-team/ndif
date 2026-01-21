@@ -1,0 +1,59 @@
+# All-in-one Dockerfile for building an image for docker hub
+
+FROM astral/uv:python3.12-trixie-slim
+
+# Sometimes apt-get tries to open a dialog box, this stops it
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install base utilities, Redis, and dependencies in single layer with cleanup
+RUN apt-get update -y \
+    && apt-get install -y build-essential redis-server wget \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install MinIO binary
+RUN wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /usr/local/bin/minio \
+    && chmod +x /usr/local/bin/minio
+
+# Create data directories for MinIO and Redis
+RUN mkdir -p /data/minio /data/redis
+
+COPY src/services/base/requirements.in /tmp/base_requirements.in
+COPY src/services/api/requirements.in /tmp/api_requirements.in
+COPY src/services/ray/requirements.in /tmp/ray_requirements.in
+RUN uv pip install --system -r /tmp/ray_requirements.in  \
+&& uv pip install --system -r /tmp/base_requirements.in -r /tmp/api_requirements.in \
+    && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
+    && find /usr/local/lib/python3.12 -name "*.pyo" -delete \
+    && find /usr/local/lib/python3.12 -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -type d -name "test" -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -name "*.a" -delete \
+    && rm -rf /tmp/* \
+    && rm -rf /root/.cache
+
+
+COPY docker/.env /.env
+
+# Set working directory
+WORKDIR /
+
+# --mount=type=bind` temporarily mounts content into a `RUN` command
+# **without adding it as a layer** to the image.
+# cp -L copies symlinks in: *dereferences* them so they are copied
+RUN --mount=type=bind,source=/src,target=/tmp/src/ \
+    cp -rL /tmp/src/services/api/src / && \
+    cp -rL /tmp/src/services/ray/src / && \
+    cp /tmp/src/services/api/start.sh /start_api.sh && \
+    cp /tmp/src/services/ray/start.sh /start_ray.sh
+
+# Set PYTHONPATH so Ray workers can find the src module
+ENV PYTHONPATH=/
+
+# Copy and set up entrypoint script
+COPY docker/entrypoint_hub.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+SHELL ["/bin/bash", "-c"]
+CMD ["/entrypoint.sh"]
+

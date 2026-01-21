@@ -1,0 +1,35 @@
+services:
+
+  ndif:
+    image: ndif:latest
+    shm_size: '15gb'
+    deploy:
+      replicas: 1
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${N_DEVICES}
+              capabilities: [ gpu ]
+    environment:
+      # Override for all-in-one deployment - all services on localhost
+      - HOST_IP=${HOST_IP}
+      - BROKER_URL=redis://localhost:6380/
+      - OBJECT_STORE_URL=http://${HOST_IP}:9000
+      - RAY_ADDRESS=ray://${HOST_IP}:10001
+      - API_URL=http://${HOST_IP}:80
+      - WORKERS=${API_WORKERS:-1}
+      # GPU configuration
+      - N_DEVICES=${N_DEVICES}
+    ports:
+      - 80:80
+      - 8265:8265
+      - 6379:6379
+      - 6380:6380
+      - 9000:9000
+      - 10001:10001
+    env_file:
+      - .env
+
+volumes:
+  ray-data:
