@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from importlib.metadata import distributions
+from importlib.metadata import distributions, packages_distributions
 from typing import Any, Dict, List, Optional
 
 import ray
@@ -207,9 +207,28 @@ class _ControllerActor:
         Returns:
             Dictionary containing Python version and installed pip packages.
         """
+        pd_map = packages_distributions()
+        dist_to_imports = {}
+        for import_name, dist_names in pd_map.items():
+            for dist_name in dist_names:
+                if dist_name not in dist_to_imports:
+                    dist_to_imports[dist_name] = []
+                dist_to_imports[dist_name].append(import_name)
+
         packages = {}
         for dist in distributions():
-            packages[dist.metadata["Name"]] = dist.version
+            dist_name = dist.metadata["Name"]
+            version = dist.version
+
+            # Get import names from packages_distributions mapping
+            import_names = dist_to_imports.get(dist_name, [])
+
+            if import_names:
+                for imp_name in import_names:
+                    packages[imp_name] = version
+            else:
+                # Fallback to distribution name if no import mapping found
+                packages[dist_name] = version
 
         return {
             "python_version": sys.version,
