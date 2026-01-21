@@ -32,7 +32,7 @@ from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_objects import protect_model
+from ...nn.security.protected_objects import protect
 from ...nn.security.protected_environment import (
     WHITELISTED_MODULES,
     WHITELISTED_MODULES_DESERIALIZATION,
@@ -58,6 +58,7 @@ class BaseModelDeployment:
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         ObjectStoreProvider.connect()
+        SioProvider.connect()
 
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -78,6 +79,12 @@ class BaseModelDeployment:
 
         self.model = self.load_from_disk()
 
+        self.persistent_objects = self.model._remoteable_persistent_objects()
+
+        for key, value in self.persistent_objects.items():
+            if isinstance(value, torch.nn.Module):
+                self.persistent_objects[key] = protect(value)
+
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
         if dispatch:
@@ -92,7 +99,6 @@ class BaseModelDeployment:
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
 
-        protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
@@ -239,14 +245,14 @@ class BaseModelDeployment:
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
-        """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
-            request = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
+
+        """Logic to execute before execution."""
+        request = self.request.deserialize(self.persistent_objects)
 
         return request
 
@@ -300,7 +306,7 @@ class BaseModelDeployment:
         result_object = BackendResultModel(
             id=self.request.id,
             **saves,
-        ).save()
+        ).save(compress=self.request.compress)
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
@@ -323,10 +329,9 @@ class BaseModelDeployment:
             exception (Exception): The exception that was raised during __call__.
         """
 
-        description = traceback.format_exc()
         self.respond(
             status=BackendResponseModel.JobStatus.ERROR,
-            description=f"{description}\n{str(exception)}",
+            description=str(exception),
         )
 
         # Special handling for CUDA device-side assertion errors
@@ -358,8 +363,6 @@ class BaseModelDeployment:
         """
         self.kill_switch.clear()
         self.execution_ident = None
-
-        SioProvider.disconnect()
 
         self.model._model.zero_grad()
         self.request = None
@@ -427,7 +430,7 @@ class BaseModelDeployment:
                 - description: Human-readable status description
                 - data: Optional additional data
         """
-        
+
         try:
             self.request.create_response(**kwargs, logger=self.logger).respond()
         except:
