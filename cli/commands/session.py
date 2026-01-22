@@ -25,44 +25,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-
-# =============================================================================
-# Environment Variable Definitions
-# =============================================================================
-
-# All canonical NDIF environment variables with their defaults
-ENV_VARS = {
-    # Session management
-    "NDIF_SESSION_ROOT": os.path.expanduser("~/.ndif"),
-
-    # Service URLs/addresses
-    "NDIF_BROKER_URL": "redis://localhost:6389/",
-    "NDIF_OBJECT_STORE_URL": "http://localhost:27019",
-    "NDIF_API_URL": "http://localhost:8001",
-    "NDIF_RAY_ADDRESS": "ray://localhost:10001",
-
-    # Ports (derived from URLs by default, but can be overridden)
-    "NDIF_BROKER_PORT": "6389",
-    "NDIF_OBJECT_STORE_PORT": "27019",
-    "NDIF_API_PORT": "8001",
-    "NDIF_API_HOST": "0.0.0.0",
-
-    # Ray configuration
-    "NDIF_RAY_TEMP_DIR": "/tmp/mripa/ray",
-    "NDIF_RAY_HEAD_PORT": "6385",
-    "NDIF_RAY_DASHBOARD_PORT": "8265",
-    "NDIF_RAY_DASHBOARD_HOST": "0.0.0.0",
-    "NDIF_RAY_SERVE_PORT": "8262", # 8267
-    "NDIF_RAY_OBJECT_MANAGER_PORT": "8076",
-    "NDIF_RAY_DASHBOARD_GRPC_PORT": "8268",
-
-    # Controller configuration
-    "NDIF_CONTROLLER_IMPORT_PATH": "src.ray.deployments.controller.controller",
-    "NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS": "0",
-
-    # API configuration
-    "NDIF_API_WORKERS": "1",
-}
+from ..config import ENV_VARS
 
 
 def get_env(name: str, default: str = None) -> str:
@@ -493,8 +456,6 @@ def kill_processes_on_port(port: int, signal_num: int = 15) -> list[int]:
     Returns:
         List of PIDs that were signaled
     """
-    import signal
-
     pids = get_pids_on_port(port)
     killed = []
 
