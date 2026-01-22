@@ -32,6 +32,9 @@ from RestrictedPython.Eval import (
 from nnsight.util import Patch, Patcher
 from nnsight.modeling.mixins.remoteable import StreamTracer
 
+import ast
+setattr(ast, 'compile', compile)
+
 # =============================================================================
 # WHITELIST CONFIGURATION LOADING
 # =============================================================================
