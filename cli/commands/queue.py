@@ -16,8 +16,6 @@ from .session import get_env
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
 def queue(json_flag: bool, watch: bool, broker_url: str):
-    # Use session default if not provided
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     """View queue and processor status.
 
     Shows current queue state including active processors,
@@ -28,6 +26,8 @@ def queue(json_flag: bool, watch: bool, broker_url: str):
         ndif queue --json-output      # Raw JSON output
         ndif queue --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
         # Check prerequisites silently
         check_prerequisites(broker_url=broker_url)

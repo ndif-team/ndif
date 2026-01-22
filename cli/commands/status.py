@@ -18,8 +18,6 @@ from .session import get_env
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_address: str):
-    # Use session default if not provided
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     """View cluster and deployment status.
 
     Shows current deployments grouped by level (HOT/WARM/COLD),
@@ -32,6 +30,8 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
         ndif status --json-output      # Raw JSON output
         ndif status --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     try:
         # Check prerequisites silently
         check_prerequisites(ray_address=ray_address)

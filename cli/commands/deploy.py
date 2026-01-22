@@ -16,9 +16,6 @@ from .session import get_env
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
 def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str):
-    # Use session defaults if not provided
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -28,6 +25,10 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         ndif deploy meta-llama/Llama-2-7b-hf --revision main
         ndif deploy openai-community/gpt2 --dedicated --ray-address ray://localhost:10001
     """
+
+    # Use session defaults if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
 
     try:
         # Check prerequisites silently

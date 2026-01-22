@@ -16,9 +16,6 @@ from .session import get_env
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
 def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str):
-    # Use session defaults if not provided
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     """Evict (remove) a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -32,6 +29,10 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         ndif evict --all                               # Evict all deployments
         ndif evict openai-community/gpt2 --ray-address ray://localhost:10001
     """
+    # Use session defaults if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
+
     try:
         # Check prerequisites silently
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)

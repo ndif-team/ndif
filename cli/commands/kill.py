@@ -15,8 +15,6 @@ from .session import get_env
 @click.argument('request_id')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
 def kill(request_id: str, broker_url: str):
-    # Use session default if not provided
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     """Cancel a specific request by ID.
 
     REQUEST_ID: The ID of the request to cancel
@@ -29,6 +27,8 @@ def kill(request_id: str, broker_url: str):
         ndif kill abc123                     # Cancel request abc123
         ndif kill abc123 --redis-url redis://... # Use custom Redis URL
     """
+    # Use session default if not provided
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
         # Check prerequisites silently
         check_prerequisites(broker_url=broker_url)

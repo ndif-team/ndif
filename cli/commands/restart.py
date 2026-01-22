@@ -16,8 +16,6 @@ from .session import get_env
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def restart(checkpoint: str, revision: str, ray_address: str):
-    # Use session default if not provided
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -32,6 +30,8 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         ndif restart meta-llama/Llama-2-7b-hf --revision main
         ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     try:
         # Check prerequisites silently
         check_prerequisites(ray_address=ray_address)
