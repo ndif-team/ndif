@@ -32,6 +32,10 @@ dependencies = [
     "torch",
     "python-slugify",
     "requests",
+
+    # Security
+    "RestrictedPython>=7.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -45,6 +49,7 @@ exclude = ["docker*", "scripts*", "tests*"]
 [tool.setuptools.package-data]
 "src.services.api" = ["start.sh"]
 "src.services.ray" = ["start.sh"]
+"src.services.ray.src.ray.nn.security" = ["whitelist.yaml"]
 
 [dependency-groups]
 dev = [

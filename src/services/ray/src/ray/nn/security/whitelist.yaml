@@ -1,0 +1,353 @@
+# Security whitelist configuration for the NDIF sandbox environment.
+# This file defines what builtins, modules, and attributes are allowed
+# when executing user-submitted code.
+
+# =============================================================================
+# BUILTINS
+# =============================================================================
+# Built-in functions and types that are allowed to be used.
+# Dangerous builtins like `open`, `exec`, `compile` are NOT included.
+
+builtins:
+  # Built-in exceptions
+  - BaseExceptionGroup
+  - ArithmeticError
+  - AssertionError
+  - AttributeError
+  - BaseException
+  - BlockingIOError
+  - BrokenPipeError
+  - BufferError
+  - BytesWarning
+  - ChildProcessError
+  - ConnectionAbortedError
+  - ConnectionError
+  - ConnectionRefusedError
+  - ConnectionResetError
+  - DeprecationWarning
+  - EOFError
+  - Ellipsis
+  - EncodingWarning
+  - EnvironmentError
+  - Exception
+  - "False"
+  - FileExistsError
+  - FileNotFoundError
+  - FloatingPointError
+  - FutureWarning
+  - GeneratorExit
+  - IOError
+  - ImportError
+  - ImportWarning
+  - IndentationError
+  - IndexError
+  - InterruptedError
+  - IsADirectoryError
+  - KeyError
+  - KeyboardInterrupt
+  - LookupError
+  - MemoryError
+  - ModuleNotFoundError
+  - NameError
+  - "None"
+  - NotADirectoryError
+  - NotImplemented
+  - NotImplementedError
+  - OSError
+  - OverflowError
+  - PendingDeprecationWarning
+  - PermissionError
+  - ProcessLookupError
+  - RecursionError
+  - ReferenceError
+  - ResourceWarning
+  - RuntimeError
+  - RuntimeWarning
+  - StopAsyncIteration
+  - StopIteration
+  - SyntaxError
+  - SyntaxWarning
+  - SystemError
+  - SystemExit
+  - TabError
+  - TimeoutError
+  - "True"
+  - TypeError
+  - UnboundLocalError
+  - UnicodeDecodeError
+  - UnicodeEncodeError
+  - UnicodeError
+  - UnicodeTranslateError
+  - UnicodeWarning
+  - UserWarning
+  - ValueError
+  - Warning
+  - ZeroDivisionError
+
+  # Built-in special attributes
+  - __doc__
+  - __import__
+  - __loader__
+  - __name__
+  - __package__
+  - __spec__
+  - __build_class__
+
+  # Built-in functions
+  - abs
+  - aiter
+  - all
+  - anext
+  - any
+  - ascii
+  - bool
+  - bytearray
+  - bytes
+  - callable
+  - chr
+  - classmethod
+  - complex
+  - copyright
+  - credits
+  - delattr
+  - dict
+  - dir
+  - divmod
+  - enumerate
+  - filter
+  - float
+  - format
+  - frozenset
+  - getattr
+  - hasattr
+  - hash
+  - hex
+  - id
+  - int
+  - isinstance
+  - issubclass
+  - iter
+  - len
+  - list
+  - map
+  - max
+  - min
+  - next
+  - object
+  - oct
+  - ord
+  - pow
+  - print
+  - property
+  - range
+  - repr
+  - reversed
+  - round
+  - set
+  - setattr
+  - slice
+  - sorted
+  - staticmethod
+  - str
+  - sum
+  - super
+  - tuple
+  - type
+  - vars
+  - zip
+  - memoryview
+  - globals
+  - eval
+
+# =============================================================================
+# MODULES
+# =============================================================================
+# Modules that are allowed to be imported during execution.
+# - strict: true  = only exact module name matches
+# - strict: false = module and all submodules match (e.g., torch.nn)
+
+modules:
+  - name: builtins
+    strict: true
+
+  - name: torch
+    strict: false
+
+  - name: collections
+    strict: false
+
+  - name: nnsight.intervention.envoy
+    strict: false
+
+  - name: time
+    strict: false
+
+  - name: numpy
+    strict: false
+
+  - name: sympy
+    strict: false
+
+  - name: nnterp
+    strict: false
+
+  - name: math
+    strict: false
+
+  - name: einops
+    strict: false
+
+  - name: urllib3
+    strict: false
+
+  - name: typing
+    strict: false
+
+  - name: _operator
+    strict: true
+
+  - name: operator
+    strict: true
+
+  - name: pandas
+    strict: false
+
+  - name: enum
+    strict: false
+
+# =============================================================================
+# DESERIALIZATION MODULES
+# =============================================================================
+# Additional modules allowed during deserialization (unpickling).
+# These are needed for reconstructing serialized objects but should NOT
+# be available during normal user code execution.
+
+deserialization_modules:
+  - name: pickle
+    strict: false
+
+  - name: cloudpickle
+    strict: false
+
+  - name: copyreg
+    strict: false
+
+  - name: nnsight.schema.request
+    strict: true
+
+  - name: nnsight.modeling.mixins.remoteable
+    strict: true
+
+  - name: nnsight.intervention.tracing.base
+    strict: true
+
+  - name: nnsight.intervention.interleaver
+    strict: true
+
+  - name: nnsight.intervention.batching
+    strict: true
+
+  - name: nnsight.intervention.serialization
+    strict: true
+
+  - name: nnsight.modeling
+    strict: false
+
+# =============================================================================
+# DUNDER ATTRIBUTES
+# =============================================================================
+# Control which dunder (__xyz__) attributes can be accessed.
+
+blocked_dunder_attrs:
+  # These can be used to escape the sandbox
+  - __class__
+  - __bases__
+  - __mro__
+  - __subclasses__
+  - __globals__
+  - __code__
+  - __closure__
+  - __func__
+  - __self__
+  - __dict__
+  - __delattr__
+  - __setattr__
+  - __getattribute__
+  - __reduce__
+  - __reduce_ex__
+  - __getstate__
+  - __setstate__
+  - __init_subclass__
+  - __set_name__
+  - __builtins__
+
+allowed_dunder_attrs:
+  # Safe dunders needed for normal operations
+  - __name__
+  - __doc__
+  - __module__
+  - __qualname__
+  - __annotations__
+  - __len__
+  - __iter__
+  - __next__
+  - __getitem__
+  - __setitem__
+  - __contains__
+  - __enter__
+  - __exit__
+  - __call__
+  - __repr__
+  - __str__
+  - __bool__
+  - __hash__
+  - __eq__
+  - __ne__
+  - __lt__
+  - __le__
+  - __gt__
+  - __ge__
+  # Arithmetic
+  - __add__
+  - __sub__
+  - __mul__
+  - __truediv__
+  - __floordiv__
+  - __mod__
+  - __pow__
+  - __neg__
+  - __pos__
+  - __abs__
+  - __invert__
+  # Bitwise
+  - __and__
+  - __or__
+  - __xor__
+  - __lshift__
+  - __rshift__
+  # Reflected arithmetic
+  - __radd__
+  - __rsub__
+  - __rmul__
+  - __rtruediv__
+  - __rfloordiv__
+  - __rmod__
+  - __rpow__
+  - __rand__
+  - __ror__
+  - __rxor__
+  # In-place arithmetic
+  - __iadd__
+  - __isub__
+  - __imul__
+  - __itruediv__
+  - __ifloordiv__
+  - __imod__
+  - __ipow__
+  - __iand__
+  - __ior__
+  - __ixor__
+  # Matrix multiplication
+  - __matmul__
+  - __rmatmul__
+  - __imatmul__

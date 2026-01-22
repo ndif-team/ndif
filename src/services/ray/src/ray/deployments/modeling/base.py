@@ -13,32 +13,29 @@ from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 from ray import serve
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
-
+from torch.cuda import (max_memory_allocated, memory_allocated,
+                        reset_peak_memory_stats)
 from transformers.modeling_utils import _get_device_map
+
 from nnsight.modeling.mixins import RemoteableMixin
-from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
-from ....types import MODEL_KEY
+from nnsight.schema.request import RequestModel
+
 from ....logging import set_logger
-from ....metrics import (
-    ExecutionTimeMetric,
-    GPUMemMetric,
-    ModelLoadTimeMetric,
-    RequestResponseSizeMetric,
-)
+from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
+                         ModelLoadTimeMetric, RequestResponseSizeMetric)
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
-from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ....schema import (BackendRequestModel, BackendResponseModel,
+                        BackendResultModel)
+from ....types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_objects import protect
 from ...nn.security.protected_environment import (
-    WHITELISTED_MODULES,
-    WHITELISTED_MODULES_DESERIALIZATION,
-    Protector,
-)
-from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
+    WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector)
+from ...nn.security.protected_objects import protect
+from .util import (kill_thread, load_with_cache_deletion_retry,
+                   remove_accelerate_hooks)
 
 
 class BaseModelDeployment:
@@ -252,7 +249,8 @@ class BaseModelDeployment:
         )
 
         """Logic to execute before execution."""
-        request = self.request.deserialize(self.persistent_objects)
+        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+            request = self.request.deserialize(self.persistent_objects)
 
         return request
 

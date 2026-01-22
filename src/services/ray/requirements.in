@@ -10,3 +10,6 @@ influxdb-client
 # Google Cal Scheduling
 google-api-python-client
 google
+
+# Security
+RestrictedPython>=7.0
