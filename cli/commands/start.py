@@ -4,128 +4,174 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
 
 import click
-from .util import (
-    get_repo_root, save_pid, clear_pid, get_pid, is_process_running,
-    print_logo, get_session_log_dir
+
+from .util import get_repo_root, print_logo
+from .session import (
+    Session,
+    SessionConfig,
+    get_current_session,
+    get_session_root,
+    is_port_in_use,
+    kill_processes_on_port,
 )
-from .checks import check_prerequisites, check_redis, check_minio
+from .checks import (
+    check_redis,
+    check_minio,
+    preflight_check_api,
+    preflight_check_ray,
+    preflight_check_broker,
+    preflight_check_object_store,
+    run_preflight_checks,
+)
 from .deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'redis', 'object-store', 'all'], case_sensitive=False), default='all')
-@click.option('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
-@click.option('--port', default=8001, type=int, help='Port to bind to (API default: 8001)')
-@click.option('--workers', default=1, type=int, help='Number of workers for API (default: 1)')
-@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-@click.option('--object-store-url', default='http://localhost:27018', help='Object store URL (default: http://localhost:27018)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.argument('service', type=click.Choice(
+    ['api', 'ray', 'broker', 'object-store', 'all'],
+    case_sensitive=False
+), default='all')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
-def start(service: str, host: str, port: int, workers: int, redis_url: str,
-          object_store_url: str, ray_address: str, verbose: bool):
-    """Start NDIF services on bare metal
+def start(service: str, verbose: bool):
+    """Start NDIF services.
 
-    SERVICE: Which service to start (api, ray, redis, object-store, or all). Default: all
+    SERVICE: Which service to start (api, ray, broker, object-store, or all). Default: all
 
-    By default, services run in the background with logs redirected to /tmp/ndif/.
-    Use --verbose to run in foreground with logs visible.
-
-    When starting 'all', Redis and object store (MinIO) will be started automatically if not
-    already running. They can also be started individually.
+    All pre-flight checks run before any services start. If any check fails,
+    nothing is started. If a service fails to start, all started services are
+    stopped and the session is removed.
 
     Examples:
-        ndif start                                    # Start all services in background
-        ndif start api                                # Start API only
-        ndif start redis                              # Start Redis only
-        ndif start object-store                       # Start object store (MinIO) only
-        ndif start --verbose                          # Start with logs visible
-        ndif start api --port 5000                    # Start API on port 5000
-        ndif start ray --object-store-url http://...  # Use custom object store URL
+        ndif start                              # Start all services
+        ndif start api                          # Start API only
+        ndif start broker                       # Start broker (Redis) only
+        ndif start --verbose                    # Start with logs visible
+
+    Key Environment Variables:
+        NDIF_BROKER_URL          - Broker URL (default: redis://localhost:6379/)
+        NDIF_OBJECT_STORE_URL    - Object store URL (default: http://localhost:27017)
+        NDIF_API_PORT            - API port (default: 8001)
+        NDIF_RAY_TEMP_DIR        - Ray temp directory (default: /tmp/ray)
+        NDIF_SESSION_ROOT        - Session directory (default: ~/.ndif)
     """
     print_logo()
+
     repo_root = get_repo_root()
-    processes = []
 
-    # Parse ports from URLs for starting services
-    redis_parsed = urlparse(redis_url)
-    redis_port = redis_parsed.port or 6379
-    object_store_parsed = urlparse(object_store_url)
-    object_store_port = object_store_parsed.port or 27018
-
-    # Start Redis if requested or if starting 'all' and Redis is not running
-    if service == 'redis' or (service == 'all' and not check_redis(redis_url)):
-        click.echo("Starting Redis...")
-        success, pid, message = util_start_redis(port=redis_port, verbose=verbose)
-        if success:
-            if pid:
-                save_pid('redis', pid)
-                click.echo(f"  ✓ {message} (PID: {pid})")
-            else:
-                click.echo(f"  ✓ {message}")
-        else:
-            click.echo(f"  ✗ {message}", err=True)
-            if service == 'redis':
-                sys.exit(1)
+    # Check if there's already an active session
+    existing_session = get_current_session()
+    if existing_session:
+        click.echo(f"Existing session: {existing_session.config.session_id}")
         click.echo()
 
-    # Start object store if requested or if starting 'all' and it's not running
-    if service == 'object-store' or (service == 'all' and not check_minio(object_store_url)):
-        click.echo("Starting object store (MinIO)...")
-        success, pid, message = util_start_object_store(port=object_store_port, verbose=verbose)
-        if success:
-            if pid:
-                save_pid('object-store', pid)
-                click.echo(f"  ✓ {message} (PID: {pid})")
-            else:
-                click.echo(f"  ✓ {message}")
-        else:
-            click.echo(f"  ✗ {message}", err=True)
-            if service == 'object-store':
-                sys.exit(1)
-        click.echo()
+    # Build config from environment (don't create session yet)
+    config = SessionConfig.from_environment()
 
-    # If only starting redis or object-store, we're done
-    if service in ('redis', 'object-store'):
-        click.echo("✓ Service started successfully.")
-        click.echo(f"\nTo view logs: ndif logs {service}")
-        click.echo("To stop: ndif stop")
+    # Determine which services need to start
+    services_to_start = _determine_services_to_start(service, config, existing_session)
+
+    if not services_to_start:
+        click.echo("All requested services are already running.")
+        click.echo("\nUse 'ndif info' to see session status.")
         return
 
-    # Check prerequisites for api/ray (verbose mode shows checking messages)
-    check_prerequisites(redis_url=redis_url, minio_url=object_store_url, verbose=True)
+    click.echo(f"Services to start: {', '.join(services_to_start)}")
+    click.echo()
 
-    if service in ('all', 'ray'):
-        # Check if Ray is already running
-        ray_pid = get_pid('ray')
-        if ray_pid and is_process_running(ray_pid):
-            click.echo(f"Error: Ray service is already running (PID: {ray_pid})", err=True)
-            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
-            sys.exit(1)
+    # Run ALL pre-flight checks before creating session
+    click.echo("Running pre-flight checks...")
+    all_checks = []
 
-        proc_ray = start_ray(repo_root, object_store_url, verbose)
-        if proc_ray:
-            processes.append(('ray', proc_ray))
-            save_pid('ray', proc_ray.pid)
+    if 'broker' in services_to_start:
+        click.echo("  Broker:")
+        checks = preflight_check_broker(config.broker_port)
+        all_checks.extend(checks)
+        if not run_preflight_checks(checks):
+            _preflight_failed()
 
-    # Start requested service(s)
-    if service in ('all', 'api'):
-        # Check if API is already running
-        api_pid = get_pid('api')
-        if api_pid and is_process_running(api_pid):
-            click.echo(f"Error: API service is already running (PID: {api_pid})", err=True)
-            click.echo("Run 'ndif stop' to stop all services before starting again.", err=True)
-            sys.exit(1)
+    if 'object-store' in services_to_start:
+        click.echo("  Object store:")
+        checks = preflight_check_object_store(config.object_store_port)
+        all_checks.extend(checks)
+        if not run_preflight_checks(checks):
+            _preflight_failed()
 
-        proc_api = start_api(repo_root, host, port, workers, redis_url, object_store_url, ray_address, verbose)
-        if proc_api:
-            processes.append(('api', proc_api))
-            save_pid('api', proc_api.pid)
+    if 'ray' in services_to_start:
+        click.echo("  Ray:")
+        checks = preflight_check_ray(
+            config.ray_temp_dir,
+            config.object_store_url,
+            config.ray_head_port,
+            config.ray_dashboard_port,
+            config.ray_object_manager_port,
+            config.ray_dashboard_grpc_port,
+            config.ray_serve_port,
+            skip_object_store_check='object-store' in services_to_start,
+        )
+        all_checks.extend(checks)
+        if not run_preflight_checks(checks):
+            _preflight_failed()
 
+    if 'api' in services_to_start:
+        click.echo("  API:")
+        checks = preflight_check_api(
+            config.api_host,
+            config.api_port,
+            config.broker_url,
+            config.object_store_url,
+            skip_broker_check='broker' in services_to_start,
+            skip_object_store_check='object-store' in services_to_start,
+        )
+        all_checks.extend(checks)
+        if not run_preflight_checks(checks):
+            _preflight_failed()
 
-    # In verbose mode, wait for all processes (blocking)
+    click.echo("\n✓ All pre-flight checks passed")
+    click.echo()
+
+    # Now create or reuse session
+    if existing_session:
+        session = existing_session
+    else:
+        session = Session.create()
+        click.echo(f"Session: {session.config.session_id}")
+        click.echo(f"  Logs: {session.logs_dir}")
+        click.echo()
+
+    # Track what we've started for rollback
+    started_services = []
+    processes = []
+
+    try:
+        # Start services in order
+        if 'broker' in services_to_start:
+            _start_broker(session, verbose)
+            started_services.append('broker')
+
+        if 'object-store' in services_to_start:
+            _start_object_store(session, verbose)
+            started_services.append('object-store')
+
+        if 'ray' in services_to_start:
+            proc = _start_ray(session, repo_root, verbose)
+            if proc:
+                processes.append(('ray', proc))
+                started_services.append('ray')
+
+        if 'api' in services_to_start:
+            proc = _start_api(session, repo_root, verbose)
+            if proc:
+                processes.append(('api', proc))
+                started_services.append('api')
+
+    except Exception as e:
+        click.echo(f"\n✗ Failed to start services: {e}", err=True)
+        _rollback(session, started_services, processes, existing_session is None)
+        sys.exit(1)
+
+    # Handle verbose mode (blocking) vs background mode
     if verbose and processes:
         click.echo("\n✓ Services started in verbose mode. Press Ctrl+C to stop.")
         click.echo("=" * 60)
@@ -134,174 +180,269 @@ def start(service: str, host: str, port: int, workers: int, redis_url: str,
                 proc.wait()
         except KeyboardInterrupt:
             click.echo("\n\nStopping services...")
-            for name, proc in processes:
-                proc.terminate()
-                clear_pid(name)
-
-            # If Ray was running, call ray stop
-            if any(name == 'ray' for name, _ in processes):
-                click.echo("Stopping Ray cluster...")
-                subprocess.run(['ray', 'stop'], check=False)
-
+            _rollback(session, started_services, processes, existing_session is None)
             sys.exit(0)
-    elif processes:
-        # Non-verbose mode - just confirm and exit
+    else:
         click.echo("\n✓ Services started successfully.")
         click.echo("\nTo view logs:")
-        for name, _ in processes:
-            click.echo(f"  ndif logs {name}")
-        click.echo("\nTo stop services:")
-        click.echo("  ndif stop")
+        for name in started_services:
+            if name in ('api', 'ray'):
+                click.echo(f"  ndif logs {name}")
+        click.echo("\nTo view session info: ndif info")
+        click.echo("To stop services: ndif stop")
 
 
-def start_api(repo_root: Path, host: str, port: int, workers: int,
-              redis_url: str, object_store_url: str, ray_address: str, verbose: bool):
-    """Start the API service using the existing start.sh script
+def _determine_services_to_start(service: str, config: SessionConfig, existing_session) -> list[str]:
+    """Determine which services need to be started."""
+    services = []
 
-    Returns:
-        Process object for the running service
-    """
+    if service == 'all':
+        # Check what's not already running
+        if not check_redis(config.broker_url):
+            services.append('broker')
+        if not check_minio(config.object_store_url):
+            services.append('object-store')
+        if existing_session:
+            if not existing_session.is_service_running('ray') or not is_port_in_use(config.ray_head_port):
+                services.append('ray')
+            if not existing_session.is_service_running('api') or not is_port_in_use(config.api_port):
+                services.append('api')
+        else:
+            services.append('ray')
+            services.append('api')
+    elif service == 'broker':
+        if not check_redis(config.broker_url):
+            services.append('broker')
+    elif service == 'object-store':
+        if not check_minio(config.object_store_url):
+            services.append('object-store')
+    elif service == 'ray':
+        if existing_session:
+            if not existing_session.is_service_running('ray') or not is_port_in_use(config.ray_head_port):
+                services.append('ray')
+        else:
+            services.append('ray')
+    elif service == 'api':
+        if existing_session:
+            if not existing_session.is_service_running('api') or not is_port_in_use(config.api_port):
+                services.append('api')
+        else:
+            services.append('api')
+
+    return services
+
+
+def _preflight_failed():
+    """Exit after pre-flight check failure."""
+    click.echo("\n✗ Pre-flight checks failed. Fix the issues above and try again.", err=True)
+    sys.exit(1)
+
+
+def _rollback(session: Session, started_services: list[str], processes: list, delete_session: bool):
+    """Roll back after a failure - stop all started services."""
+    click.echo("Rolling back...")
+
+    # Terminate processes
+    for name, proc in processes:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    # Stop Ray cluster if it was started
+    if 'ray' in started_services:
+        try:
+            subprocess.run(['ray', 'stop'], capture_output=True, check=False)
+        except Exception:
+            pass
+
+    # Kill processes on ports for services we started
+    for svc in started_services:
+        port = _get_service_port(session, svc)
+        if port and is_port_in_use(port):
+            kill_processes_on_port(port)
+
+    # Mark services as not running
+    for svc in started_services:
+        session.mark_service_running(svc, False)
+
+    # Delete session if we created it
+    if delete_session:
+        try:
+            current_link = get_session_root() / "current"
+            if current_link.is_symlink():
+                current_link.unlink()
+            click.echo("Session removed due to startup failure.")
+        except Exception:
+            pass
+
+
+def _get_service_port(session: Session, service: str) -> int:
+    """Get the port for a service."""
+    port_map = {
+        'api': session.config.api_port,
+        'ray': session.config.ray_head_port,
+        'broker': session.config.broker_port,
+        'object-store': session.config.object_store_port,
+    }
+    return port_map.get(service)
+
+
+def _start_broker(session: Session, verbose: bool):
+    """Start the broker (Redis) service."""
+    click.echo("Starting broker (Redis)...")
+
+    success, pid, message = util_start_redis(
+        port=session.config.broker_port,
+        verbose=verbose
+    )
+
+    if success:
+        session.mark_service_running('broker', True)
+        if pid:
+            click.echo(f"  ✓ {message} (PID: {pid})")
+        else:
+            click.echo(f"  ✓ {message}")
+    else:
+        raise RuntimeError(f"Failed to start broker: {message}")
+
+    click.echo()
+
+
+def _start_object_store(session: Session, verbose: bool):
+    """Start the object store (MinIO) service."""
+    click.echo("Starting object store (MinIO)...")
+
+    success, pid, message = util_start_object_store(
+        port=session.config.object_store_port,
+        verbose=verbose
+    )
+
+    if success:
+        session.mark_service_running('object-store', True)
+        if pid:
+            click.echo(f"  ✓ {message} (PID: {pid})")
+        else:
+            click.echo(f"  ✓ {message}")
+    else:
+        raise RuntimeError(f"Failed to start object store: {message}")
+
+    click.echo()
+
+
+def _start_api(session: Session, repo_root: Path, verbose: bool):
+    """Start the API service."""
     api_service_dir = repo_root / "src" / "services" / "api"
     start_script = api_service_dir / "start.sh"
 
-    if not api_service_dir.exists():
-        click.echo(f"Error: API service directory not found at {api_service_dir}", err=True)
-        sys.exit(1)
-
     if not start_script.exists():
-        click.echo(f"Error: start.sh script not found at {start_script}", err=True)
-        sys.exit(1)
+        raise RuntimeError(f"start.sh not found at {start_script}")
 
     click.echo("Starting NDIF API service...")
-    click.echo(f"  Host: {host}:{port}")
-    click.echo(f"  Workers: {workers}")
-    click.echo(f"  Redis: {redis_url}")
-    click.echo(f"  Object Store: {object_store_url}")
-    click.echo(f"  Ray: {ray_address}")
+    click.echo(f"  Host: {session.config.api_host}:{session.config.api_port}")
+    click.echo(f"  Workers: {session.config.api_workers}")
+    click.echo(f"  Broker: {session.config.broker_url}")
+    click.echo(f"  Object Store: {session.config.object_store_url}")
+    click.echo(f"  Ray: {session.config.ray_address}")
 
-    # Set up log files
+    log_dir = session.get_service_log_dir('api')
+    log_file = log_dir / "output.log"
     if not verbose:
-        log_dir = get_session_log_dir('api')
-        log_file = log_dir / "output.log"
         click.echo(f"  Logs: {log_file}")
-
     click.echo()
 
-    # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': object_store_url,
-        'BROKER_URL': redis_url,
-        'WORKERS': str(workers),
-        'RAY_ADDRESS': ray_address,
-        'API_INTERNAL_PORT': str(port),
-        'API_URL': f'http://localhost:{port}',
+        'OBJECT_STORE_URL': session.config.object_store_url,
+        'BROKER_URL': session.config.broker_url,
+        'WORKERS': str(session.config.api_workers),
+        'RAY_ADDRESS': session.config.ray_address,
+        'API_INTERNAL_PORT': str(session.config.api_port),
+        'API_URL': session.config.api_url,
         'DEV_MODE': 'true',
     })
 
-    try:
-        if verbose:
-            # Verbose mode - logs visible in terminal
-            proc = subprocess.Popen(
-                ['bash', str(start_script)],
-                env=env,
-                cwd=api_service_dir
-            )
-        else:
-            # Non-verbose mode - redirect logs to file
-            log_file_handle = open(log_file, 'w')
-            proc = subprocess.Popen(
-                ['bash', str(start_script)],
-                env=env,
-                cwd=api_service_dir,
-                stdout=log_file_handle,
-                stderr=subprocess.STDOUT
-            )
+    if verbose:
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=api_service_dir,
+            start_new_session=True
+        )
+    else:
+        log_handle = open(log_file, 'w')
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=api_service_dir,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
 
-        return proc
-
-    except FileNotFoundError as e:
-        click.echo(f"\nError: {e}", err=True)
-        click.echo("\nMake sure you're running from the NDIF repository root.", err=True)
-        sys.exit(1)
+    session.mark_service_running('api', True)
+    return proc
 
 
-def start_ray(repo_root: Path, object_store_url: str, verbose: bool):
-    """Start the Ray service using the existing start.sh script
-
-    Returns:
-        Process object for the running service
-    """
+def _start_ray(session: Session, repo_root: Path, verbose: bool):
+    """Start the Ray service."""
     ray_service_dir = repo_root / "src" / "services" / "ray"
-    start_script = ray_service_dir / "start.sh"
-
-    if not ray_service_dir.exists():
-        click.echo(f"Error: Ray service directory not found at {ray_service_dir}", err=True)
-        sys.exit(1)
+    start_script = ray_service_dir / "start-cli.sh"
 
     if not start_script.exists():
-        click.echo(f"Error: start.sh script not found at {start_script}", err=True)
-        sys.exit(1)
+        raise RuntimeError(f"start-cli.sh not found at {start_script}")
 
-    api_url = os.environ.get('API_URL', 'http://localhost:8001')
     click.echo("Starting NDIF Ray service...")
-    click.echo(f"  Object Store: {object_store_url}")
-    click.echo(f"  API: {api_url}")
+    click.echo(f"  Object Store: {session.config.object_store_url}")
+    click.echo(f"  API: {session.config.api_url}")
+    click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
+    click.echo(f"  Head Port: {session.config.ray_head_port}")
+    click.echo(f"  Dashboard: {session.config.ray_dashboard_host}:{session.config.ray_dashboard_port}")
 
-    # Set up log files
+    log_dir = session.get_service_log_dir('ray')
+    log_file = log_dir / "output.log"
     if not verbose:
-        log_dir = get_session_log_dir('ray')
-        log_file = log_dir / "output.log"
         click.echo(f"  Logs: {log_file}")
-
     click.echo()
 
-    # Set up environment variables for start.sh
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': object_store_url,
-        'API_URL': api_url,
-
-        # Ray ports (defaults from docker/.env)
-        'RAY_HEAD_INTERNAL_PORT': os.environ.get('RAY_HEAD_INTERNAL_PORT', '6380'),
-        'OBJECT_MANAGER_PORT': os.environ.get('OBJECT_MANAGER_PORT', '8076'),
-        'RAY_DASHBOARD_HOST': os.environ.get('RAY_DASHBOARD_HOST', '0.0.0.0'),
-        'RAY_DASHBOARD_INTERNAL_PORT': os.environ.get('RAY_DASHBOARD_INTERNAL_PORT', '8265'),
-        'RAY_DASHBOARD_GRPC_PORT': os.environ.get('RAY_DASHBOARD_GRPC_PORT', '8268'),
-        'RAY_SERVE_INTERNAL_PORT': os.environ.get('RAY_SERVE_INTERNAL_PORT', '8267'),
-
-        # Controller configuration
-        'NDIF_CONTROLLER_IMPORT_PATH': os.environ.get('NDIF_CONTROLLER_IMPORT_PATH',
-                                                      'src.ray.deployments.controller.controller'),
-        'NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS': os.environ.get('NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS', '0'),
-
-        # Ray metrics
-        'RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS': os.environ.get('RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS', '1000'),
+        'OBJECT_STORE_URL': session.config.object_store_url,
+        'API_URL': session.config.api_url,
+        'NDIF_RAY_TEMP_DIR': session.config.ray_temp_dir,
+        'NDIF_RAY_HEAD_PORT': str(session.config.ray_head_port),
+        'NDIF_RAY_OBJECT_MANAGER_PORT': str(session.config.ray_object_manager_port),
+        'NDIF_RAY_DASHBOARD_HOST': session.config.ray_dashboard_host,
+        'NDIF_RAY_DASHBOARD_PORT': str(session.config.ray_dashboard_port),
+        'NDIF_RAY_DASHBOARD_GRPC_PORT': str(session.config.ray_dashboard_grpc_port),
+        'NDIF_RAY_SERVE_PORT': str(session.config.ray_serve_port),
+        'NDIF_CONTROLLER_IMPORT_PATH': session.config.controller_import_path,
+        'NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS': str(session.config.minimum_deployment_time_seconds),
+        'RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS': '1000',
         'RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S': '10',
     })
 
-    try:
-        if verbose:
-            # Verbose mode - logs visible in terminal
-            proc = subprocess.Popen(
-                ['bash', str(start_script)],
-                env=env,
-                cwd=ray_service_dir
-            )
-        else:
-            # Non-verbose mode - redirect logs to file
-            log_file_handle = open(log_file, 'w')
-            proc = subprocess.Popen(
-                ['bash', str(start_script)],
-                env=env,
-                cwd=ray_service_dir,
-                stdout=log_file_handle,
-                stderr=subprocess.STDOUT
-            )
+    if verbose:
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=ray_service_dir,
+            start_new_session=True
+        )
+    else:
+        log_handle = open(log_file, 'w')
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=ray_service_dir,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
 
-        return proc
-
-    except FileNotFoundError as e:
-        click.echo(f"\nError: {e}", err=True)
-        click.echo("\nMake sure you're running from the NDIF repository root.", err=True)
-        sys.exit(1)
+    session.mark_service_running('ray', True)
+    return proc

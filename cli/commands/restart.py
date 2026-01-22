@@ -8,13 +8,16 @@ from nnsight import LanguageModel
 
 from .util import get_actor_handle
 from .checks import check_prerequisites
+from .session import get_env
 
 
 @click.command()
 @click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def restart(checkpoint: str, revision: str, ray_address: str):
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")

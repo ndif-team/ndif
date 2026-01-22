@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from .checks import check_redis, check_minio
-from .util import get_session_log_dir
+from .session import get_or_create_session
 
 
 # Micromamba configuration
@@ -269,7 +269,8 @@ def start_redis(port: int = 6379, verbose: bool = False) -> tuple:
         cmd = ["redis-server", "--port", str(port), "--dir", str(REDIS_DATA_DIR)]
 
     # Set up output handling
-    log_dir = get_session_log_dir("redis")
+    session = get_or_create_session()
+    log_dir = session.get_service_log_dir("broker")
     log_file = log_dir / "output.log"
 
     if verbose:
@@ -321,18 +322,21 @@ def ensure_object_store() -> bool:
     return ensure_package("minio", "minio-server")
 
 
-def start_object_store(port: int = 27018, console_port: int = 27019,
+def start_object_store(port: int = 27018, console_port: int = None,
                        verbose: bool = False) -> tuple:
     """Start object store (MinIO) server.
 
     Args:
         port: S3 API port
-        console_port: Web console port
+        console_port: Web console port (defaults to port + 1)
         verbose: If True, show output
 
     Returns:
         Tuple of (success: bool, pid: int or None, message: str)
     """
+    # Default console port to API port + 1 to avoid conflicts
+    if console_port is None:
+        console_port = port + 1
     # Ensure MinIO is available
     if not ensure_object_store():
         return False, None, "Failed to install object store (MinIO)"
@@ -359,7 +363,8 @@ def start_object_store(port: int = 27018, console_port: int = 27019,
     ]
 
     # Set up output handling
-    log_dir = get_session_log_dir("object-store")
+    session = get_or_create_session()
+    log_dir = session.get_service_log_dir("object-store")
     log_file = log_dir / "output.log"
 
     if verbose:

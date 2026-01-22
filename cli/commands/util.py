@@ -1,6 +1,8 @@
-import os
+"""Utility functions for NDIF CLI"""
+
 import time
 from pathlib import Path
+
 import ray
 import redis.asyncio as redis
 
@@ -37,181 +39,26 @@ def print_logo():
 
 
 def get_repo_root() -> Path:
-    """Get the repository root directory
+    """Get the repository root directory.
 
     Works in both development (repo) and installed (site-packages) modes.
     Finds the parent directory containing both 'cli' and 'src'.
     """
     current_file = Path(__file__).resolve()
 
-    # Start from current file and walk up to find directory containing both 'cli' and 'src'
-    # In dev mode: .../ndif/cli/commands/util.py -> .../ndif/
-    # In installed mode: .../site-packages/cli/commands/util.py -> .../site-packages/
     for parent in [current_file.parent] + list(current_file.parents):
         if (parent / "cli").exists() and (parent / "src").exists():
             return parent
 
-    # If not found, raise an error
     raise RuntimeError(
         "Could not find NDIF package root. "
         "Expected to find a directory containing both 'cli' and 'src' subdirectories."
     )
 
 
-def get_pid_dir() -> Path:
-    """Get directory for storing PIDs"""
-    pid_dir = Path.home() / ".ndif" / "pids"
-    pid_dir.mkdir(parents=True, exist_ok=True)
-    return pid_dir
-
-
-def get_log_dir() -> Path:
-    """Get base directory for storing logs"""
-    return Path("/tmp/ndif")
-
-
-def get_session_log_dir(service: str) -> Path:
-    """Create and return a new session log directory for a service
-
-    Creates a timestamped session directory.
-    Returns the path and ensures it exists.
-    """
-    from datetime import datetime
-
-    base_dir = get_log_dir() / service
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    session_dir = base_dir / f"session_{timestamp}_{os.getpid()}"
-    session_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create a 'latest' symlink pointing to this session
-    latest_link = base_dir / "latest"
-    if latest_link.is_symlink() or latest_link.exists():
-        latest_link.unlink()
-    latest_link.symlink_to(session_dir)
-
-    return session_dir
-
-
-def get_pid(service: str) -> int:
-    """Get saved PID for a service"""
-    pid_file = get_pid_dir() / f"{service}.pid"
-    if pid_file.exists():
-        try:
-            return int(pid_file.read_text().strip())
-        except (ValueError, OSError):
-            return None
-    return None
-
-
-def save_pid(service: str, pid: int):
-    """Save a service PID to file"""
-    pid_file = get_pid_dir() / f"{service}.pid"
-    pid_file.write_text(str(pid))
-
-
-def clear_pid(service: str):
-    """Remove saved PID file"""
-    pid_file = get_pid_dir() / f"{service}.pid"
-    if pid_file.exists():
-        pid_file.unlink()
-
-
-def is_process_running(pid: int) -> bool:
-    """Check if a process with given PID is running"""
-    try:
-        os.kill(pid, 0)  # Signal 0 doesn't kill, just checks if process exists
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def get_processes_on_port(port: int) -> list[int]:
-    """Get list of PIDs using a specific port.
-
-    Args:
-        port: Port number to check
-
-    Returns:
-        List of PIDs using the port
-    """
-    import subprocess
-
-    try:
-        # Use lsof to find processes listening on the port
-        result = subprocess.run(
-            ['lsof', '-ti', f':{port}'],
-            capture_output=True,
-            text=True,
-            check=False
-        )
-
-        if result.returncode == 0 and result.stdout.strip():
-            # Parse PIDs from output
-            pids = [int(pid.strip()) for pid in result.stdout.strip().split('\n') if pid.strip().isdigit()]
-            return pids
-
-        return []
-
-    except (FileNotFoundError, ValueError):
-        # lsof not available or parsing failed
-        return []
-
-
-def is_ndif_process(pid: int) -> bool:
-    """Check if a process is an NDIF-related process (gunicorn/uvicorn).
-
-    Args:
-        pid: Process ID to check
-
-    Returns:
-        True if process appears to be NDIF-related
-    """
-    try:
-        # Read process command line
-        with open(f'/proc/{pid}/cmdline', 'r') as f:
-            cmdline = f.read().replace('\0', ' ')
-
-        # Check if it's a gunicorn/uvicorn process related to NDIF
-        ndif_indicators = ['gunicorn', 'uvicorn', 'ndif', 'src.services.api']
-
-        return any(indicator in cmdline.lower() for indicator in ndif_indicators)
-
-    except (FileNotFoundError, PermissionError, OSError):
-        return False
-
-
-def cleanup_zombie_processes(port: int, service_name: str = "API") -> bool:
-    """Clean up zombie processes still using a port.
-
-    Args:
-        port: Port to check and clean up
-        service_name: Name of the service for logging
-
-    Returns:
-        True if any processes were killed
-    """
-    import signal
-
-    pids = get_processes_on_port(port)
-
-    if not pids:
-        return False
-
-    killed_any = False
-
-    for pid in pids:
-        if is_ndif_process(pid):
-            try:
-                # Kill the zombie process
-                os.kill(pid, signal.SIGKILL)
-                killed_any = True
-            except (OSError, ProcessLookupError):
-                pass
-
-    return killed_any
-
-
+# =============================================================================
 # Ray utilities
+# =============================================================================
 
 
 def get_controller_actor_handle(namespace: str = "NDIF") -> ray.actor.ActorHandle:
@@ -233,8 +80,17 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.Actor
 
 
 def get_model_key(checkpoint: str, revision: str = "main") -> str:
+    """Get the model key for a checkpoint.
 
-    # TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
+    Args:
+        checkpoint: Model checkpoint/repo ID
+        revision: Model revision (default: "main")
+
+    Returns:
+        Model key string
+    """
+    # TODO: This is a temporary workaround to get the model key.
+    # There should be a more lightweight way to do this.
     from nnsight import LanguageModel
 
     model = LanguageModel(checkpoint, revision=None, dispatch=False)
@@ -251,7 +107,6 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """
     redis_client = redis.Redis.from_url(redis_url)
     try:
-        # Send event to dispatcher events stream
         await redis_client.xadd(
             "dispatcher:events",
             {

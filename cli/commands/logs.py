@@ -2,46 +2,46 @@
 
 import subprocess
 import sys
-from pathlib import Path
 
 import click
-from .util import get_log_dir
+
+from .session import get_current_session, get_session_root
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'redis', 'object-store'], case_sensitive=False))
+@click.argument('service', type=click.Choice(['api', 'ray', 'broker', 'object-store'], case_sensitive=False))
 @click.option('-f', '--follow', is_flag=True, help='Follow log output (like tail -f)')
 @click.option('-n', '--lines', type=int, default=100, help='Number of lines to show (default: 100)')
 def logs(service: str, follow: bool, lines: int):
-    """View logs for NDIF services
+    """View logs for NDIF services.
 
-    SERVICE: Which service logs to view (api, redis, object-store)
+    SERVICE: Which service logs to view (api, ray, broker, object-store)
 
-    By default, shows the last 100 lines of the most recent log session.
+    By default, shows the last 100 lines of the current session's logs.
     Use --follow to continuously stream new log entries.
 
     Examples:
         ndif logs api              # Show last 100 lines of API logs
-        ndif logs redis            # Show Redis logs
+        ndif logs broker           # Show broker (Redis) logs
         ndif logs object-store     # Show object store logs
+        ndif logs ray              # Show Ray logs
         ndif logs api -n 500       # Show last 500 lines
         ndif logs api --follow     # Follow logs in real-time
-        ndif logs api -f -n 50     # Follow, starting from last 50 lines
     """
-    log_dir = get_log_dir() / service
-    latest_link = log_dir / "latest"
+    session = get_current_session()
 
-    # Check if logs exist
-    if not latest_link.exists():
-        click.echo(f"No logs found for {service} service.", err=True)
-        click.echo(f"\nExpected log directory: {log_dir}", err=True)
-        click.echo(f"\nMake sure the service has been started at least once with 'ndif start {service}'", err=True)
+    if session is None:
+        click.echo("No active session found.", err=True)
+        click.echo("\nStart services with 'ndif start' first.", err=True)
         sys.exit(1)
 
-    log_file = latest_link / "output.log"
+    log_dir = session.logs_dir / service
+    log_file = log_dir / "output.log"
 
     if not log_file.exists():
-        click.echo(f"Log file not found: {log_file}", err=True)
+        click.echo(f"No logs found for {service} service.", err=True)
+        click.echo(f"\nExpected: {log_file}", err=True)
+        click.echo(f"\nMake sure the service has been started with 'ndif start {service}'", err=True)
         sys.exit(1)
 
     # Build tail command
@@ -51,10 +51,8 @@ def logs(service: str, follow: bool, lines: int):
     tail_cmd.extend(['-n', str(lines), str(log_file)])
 
     try:
-        # Run tail command - output goes directly to terminal
         subprocess.run(tail_cmd)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C when following logs
         click.echo("\nStopped following logs.")
         sys.exit(0)
     except FileNotFoundError:

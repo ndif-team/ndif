@@ -6,15 +6,19 @@ import asyncio
 
 from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from .checks import check_prerequisites
+from .session import get_env
 
 
 @click.command()
 @click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
-@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, redis_url: str):
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str):
+    # Use session defaults if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -27,7 +31,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
 
     try:
         # Check prerequisites silently
-        check_prerequisites(redis_url=redis_url, ray_address=ray_address)
+        check_prerequisites(broker_url=broker_url, ray_address=ray_address)
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
         
@@ -59,10 +63,10 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
                 click.echo("• Evictions:")
                 for eviction in results["evictions"]:
                     click.echo(f"  - {eviction}")
-                    asyncio.run(notify_dispatcher(redis_url, "evict", eviction))
+                    asyncio.run(notify_dispatcher(broker_url, "evict", eviction))
 
             # Notify dispatcher about deployment
-            asyncio.run(notify_dispatcher(redis_url, "deploy", model_key))
+            asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
 
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)

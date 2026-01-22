@@ -8,6 +8,7 @@ from collections import defaultdict
 
 from .util import get_controller_actor_handle
 from .checks import check_prerequisites
+from .session import get_env
 
 
 @click.command()
@@ -15,8 +16,10 @@ from .checks import check_prerequisites
 @click.option('--verbose', is_flag=True, help='Show detailed cluster state')
 @click.option('--show-cold', is_flag=True, help='List all COLD deployments')
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_address: str):
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     """View cluster and deployment status.
 
     Shows current deployments grouped by level (HOT/WARM/COLD),
