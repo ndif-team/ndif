@@ -1,7 +1,6 @@
 """Main CLI entry point for NDIF"""
 
 import click
-
 from cli.commands import start, stop, restart, deploy, evict, queue
 from cli.commands.status import status
 from cli.commands.logs import logs

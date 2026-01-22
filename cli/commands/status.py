@@ -6,9 +6,9 @@ import click
 import ray
 from collections import defaultdict
 
-from .util import get_controller_actor_handle
-from .checks import check_prerequisites
-from .session import get_env
+from ..lib.util import get_controller_actor_handle
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()

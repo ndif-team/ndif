@@ -7,8 +7,8 @@ import click
 import redis.asyncio as redis
 import asyncio
 
-from .checks import check_prerequisites
-from .session import get_env
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()

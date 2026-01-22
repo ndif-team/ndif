@@ -3,14 +3,14 @@
 import json
 import click
 
-from .session import (
+from ..lib.session import (
     get_current_session,
     get_session_root,
     get_env,
     ENV_VARS,
     is_port_in_use,
 )
-from .checks import check_redis, check_minio, check_api, check_ray
+from ..lib.checks import check_redis, check_minio, check_api, check_ray
 
 
 @click.command()

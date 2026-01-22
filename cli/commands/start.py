@@ -7,8 +7,8 @@ from pathlib import Path
 
 import click
 
-from .util import get_repo_root, print_logo
-from .session import (
+from ..lib.util import get_repo_root, print_logo
+from ..lib.session import (
     Session,
     SessionConfig,
     get_current_session,
@@ -16,7 +16,7 @@ from .session import (
     is_port_in_use,
     kill_processes_on_port,
 )
-from .checks import (
+from ..lib.checks import (
     check_redis,
     check_minio,
     preflight_check_api,
@@ -25,7 +25,7 @@ from .checks import (
     preflight_check_object_store,
     run_preflight_checks,
 )
-from .deps import start_redis as util_start_redis, start_object_store as util_start_object_store
+from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
 
 @click.command()

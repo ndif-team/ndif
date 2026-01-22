@@ -7,7 +7,7 @@ import time
 
 import click
 
-from .session import (
+from ..lib.session import (
     get_current_session,
     end_session,
     get_pids_on_port,

@@ -4,9 +4,9 @@ import click
 import ray
 import asyncio
 
-from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
-from .checks import check_prerequisites
-from .session import get_env
+from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()

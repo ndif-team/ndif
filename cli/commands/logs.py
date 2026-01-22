@@ -5,7 +5,7 @@ import sys
 
 import click
 
-from .session import get_current_session, get_session_root
+from ..lib.session import get_current_session, get_session_root
 
 
 @click.command()
