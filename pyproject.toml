@@ -22,6 +22,7 @@ dependencies = [
     "uvicorn[standard]==0.24.0",
     "gunicorn",
     "eventlet",
+    "zstandard",
 
     # Ray dependencies
     "ray[serve]>=2.50.0",
