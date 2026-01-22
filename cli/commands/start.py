@@ -33,8 +33,9 @@ from ..lib.deps import start_redis as util_start_redis, start_object_store as ut
     ['api', 'ray', 'broker', 'object-store', 'all'],
     case_sensitive=False
 ), default='all')
+@click.option('--worker', is_flag=True, help='Start as Ray worker node (connects to existing head)')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
-def start(service: str, verbose: bool):
+def start(service: str, worker: bool, verbose: bool):
     """Start NDIF services.
 
     SERVICE: Which service to start (api, ray, broker, object-store, or all). Default: all
@@ -44,21 +45,28 @@ def start(service: str, verbose: bool):
     stopped and the session is removed.
 
     Examples:
-        ndif start                              # Start all services
+        ndif start                              # Start all services (head node)
         ndif start api                          # Start API only
         ndif start broker                       # Start broker (Redis) only
         ndif start --verbose                    # Start with logs visible
+        ndif start --worker                     # Start as Ray worker node
 
     Key Environment Variables:
         NDIF_BROKER_URL          - Broker URL (default: redis://localhost:6379/)
         NDIF_OBJECT_STORE_URL    - Object store URL (default: http://localhost:27017)
         NDIF_API_PORT            - API port (default: 8001)
         NDIF_RAY_TEMP_DIR        - Ray temp directory (default: /tmp/ray)
+        NDIF_RAY_ADDRESS         - Ray head address for workers (default: ray://localhost:10001)
         NDIF_SESSION_ROOT        - Session directory (default: ~/.ndif)
     """
     print_logo()
 
     repo_root = get_repo_root()
+
+    # Handle worker mode
+    if worker:
+        _start_worker_mode(repo_root, verbose)
+        return
 
     # Check if there's already an active session
     existing_session = get_current_session()
@@ -445,4 +453,129 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         )
 
     session.mark_service_running('ray', True)
+    return proc
+
+
+def _start_worker_mode(repo_root: Path, verbose: bool):
+    """Handle starting as a Ray worker node."""
+    from ..lib.checks import preflight_check_worker
+
+    # Check for existing session
+    existing_session = get_current_session()
+    if existing_session:
+        if existing_session.config.node_type == "head":
+            click.echo("Error: A head node session already exists on this machine.", err=True)
+            click.echo("Cannot run both head and worker on the same machine.", err=True)
+            click.echo("\nUse 'ndif stop' to stop the head node first.", err=True)
+            sys.exit(1)
+        elif existing_session.config.node_type == "worker":
+            if existing_session.is_service_running("ray-worker"):
+                click.echo("Error: A worker session is already running.", err=True)
+                sys.exit(1)
+
+    # Build config to get ray_address and temp_dir
+    config = SessionConfig.from_environment(node_type="worker")
+
+    click.echo("Starting Ray worker node...")
+    click.echo(f"  Connecting to: {config.ray_address}")
+    click.echo(f"  Temp dir: {config.ray_temp_dir}")
+    click.echo()
+
+    # Run pre-flight checks
+    click.echo("Running pre-flight checks...")
+    checks = preflight_check_worker(config.ray_temp_dir, config.ray_address)
+    if not run_preflight_checks(checks):
+        _preflight_failed()
+
+    click.echo("\n✓ All pre-flight checks passed")
+    click.echo()
+
+    # Create worker session
+    session = Session.create(node_type="worker")
+    click.echo(f"Session: {session.config.session_id}")
+    click.echo(f"  Logs: {session.logs_dir}")
+    click.echo()
+
+    # Start the worker
+    try:
+        proc = _start_ray_worker(session, repo_root, verbose)
+    except Exception as e:
+        click.echo(f"\n✗ Failed to start worker: {e}", err=True)
+        # Clean up session
+        try:
+            current_link = get_session_root() / "current"
+            if current_link.is_symlink():
+                current_link.unlink()
+        except Exception:
+            pass
+        sys.exit(1)
+
+    # Handle verbose mode
+    if verbose and proc:
+        click.echo("\n✓ Worker started in verbose mode. Press Ctrl+C to stop.")
+        click.echo("=" * 60)
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            click.echo("\n\nStopping worker...")
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            subprocess.run(['ray', 'stop'], capture_output=True, check=False)
+            session.mark_service_running('ray-worker', False)
+            try:
+                current_link = get_session_root() / "current"
+                if current_link.is_symlink():
+                    current_link.unlink()
+            except Exception:
+                pass
+            sys.exit(0)
+    else:
+        click.echo("\n✓ Worker started successfully.")
+        click.echo("\nTo view logs:")
+        click.echo("  ndif logs ray")
+        click.echo("\nTo stop: ndif stop")
+
+
+def _start_ray_worker(session: Session, repo_root: Path, verbose: bool):
+    """Start the Ray worker service."""
+    ray_service_dir = repo_root / "src" / "services" / "ray"
+    start_script = ray_service_dir / "start-worker.sh"
+
+    if not start_script.exists():
+        raise RuntimeError(f"start-worker.sh not found at {start_script}")
+
+    log_dir = session.get_service_log_dir('ray')
+    log_file = log_dir / "output.log"
+    if not verbose:
+        click.echo(f"  Logs: {log_file}")
+    click.echo()
+
+    env = os.environ.copy()
+    env.update({
+        'NDIF_RAY_TEMP_DIR': session.config.ray_temp_dir,
+        'NDIF_RAY_ADDRESS': session.config.ray_address,
+    })
+
+    if verbose:
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=ray_service_dir,
+            start_new_session=True
+        )
+    else:
+        log_handle = open(log_file, 'w')
+        proc = subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=ray_service_dir,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
+
+    session.mark_service_running('ray-worker', True)
     return proc

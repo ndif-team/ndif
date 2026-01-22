@@ -520,6 +520,37 @@ def preflight_check_object_store(port: int) -> list[CheckResult]:
     return results
 
 
+def preflight_check_worker(temp_dir: str, ray_address: str) -> list[CheckResult]:
+    """Run pre-flight checks before starting a Ray worker node.
+
+    Args:
+        temp_dir: Ray temp directory
+        ray_address: Ray head address to connect to
+
+    Returns:
+        List of CheckResults (all must pass)
+    """
+    results = []
+
+    # Check temp directory
+    results.append(check_ray_temp_dir(temp_dir))
+
+    # Check ray command is available
+    results.append(check_command_available("ray"))
+
+    # Check Ray head is reachable
+    if check_ray(ray_address):
+        results.append(CheckResult(success=True, message=f"Ray head reachable at {ray_address}"))
+    else:
+        results.append(CheckResult(
+            success=False,
+            message=f"Cannot reach Ray head at {ray_address}",
+            suggestion="Ensure the head node is running and NDIF_RAY_ADDRESS is correct"
+        ))
+
+    return results
+
+
 def run_preflight_checks(checks: list[CheckResult], verbose: bool = True) -> bool:
     """Run a list of pre-flight checks and report results.
 

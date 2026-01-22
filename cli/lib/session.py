@@ -134,6 +134,9 @@ class SessionConfig:
     controller_import_path: str
     minimum_deployment_time_seconds: int
 
+    # Node type: "head" (full NDIF) or "worker" (Ray worker only)
+    node_type: str = "head"
+
     # Service states
     services: dict = field(default_factory=dict)
 
@@ -158,11 +161,12 @@ class SessionConfig:
         return config
 
     @classmethod
-    def from_environment(cls, session_id: str = None) -> "SessionConfig":
+    def from_environment(cls, session_id: str = None, node_type: str = "head") -> "SessionConfig":
         """Create a SessionConfig from current environment variables.
 
         Args:
             session_id: Optional session ID (generated if not provided)
+            node_type: "head" (default) for full NDIF deployment, "worker" for Ray worker only
 
         Returns:
             New SessionConfig with values from environment
@@ -180,9 +184,23 @@ class SessionConfig:
         object_store_port = urlparse(object_store_url).port or int(get_env("NDIF_OBJECT_STORE_PORT"))
         api_port = urlparse(api_url).port or int(get_env("NDIF_API_PORT"))
 
+        # Initialize services based on node type
+        if node_type == "worker":
+            services = {
+                "ray-worker": ServiceConfig(name="ray-worker", port=0, managed=True, running=False),
+            }
+        else:
+            services = {
+                "api": ServiceConfig(name="api", port=api_port, managed=True, running=False),
+                "ray": ServiceConfig(name="ray", port=int(get_env("NDIF_RAY_HEAD_PORT")), managed=True, running=False),
+                "broker": ServiceConfig(name="broker", port=broker_port, managed=True, running=False),
+                "object-store": ServiceConfig(name="object-store", port=object_store_port, managed=True, running=False),
+            }
+
         config = cls(
             session_id=session_id,
             created_at=datetime.now().isoformat(),
+            node_type=node_type,
 
             # URLs
             broker_url=broker_url,
@@ -212,13 +230,8 @@ class SessionConfig:
             controller_import_path=get_env("NDIF_CONTROLLER_IMPORT_PATH"),
             minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS")),
 
-            # Initialize services as managed but not running
-            services={
-                "api": ServiceConfig(name="api", port=api_port, managed=True, running=False),
-                "ray": ServiceConfig(name="ray", port=int(get_env("NDIF_RAY_HEAD_PORT")), managed=True, running=False),
-                "broker": ServiceConfig(name="broker", port=broker_port, managed=True, running=False),
-                "object-store": ServiceConfig(name="object-store", port=object_store_port, managed=True, running=False),
-            },
+            # Services
+            services=services,
         )
 
         return config
@@ -300,16 +313,17 @@ class Session:
             return None
 
     @classmethod
-    def create(cls, session_id: str = None) -> "Session":
+    def create(cls, session_id: str = None, node_type: str = "head") -> "Session":
         """Create a new session.
 
         Args:
             session_id: Optional session ID (generated if not provided)
+            node_type: "head" (default) for full NDIF deployment, "worker" for Ray worker only
 
         Returns:
             New Session object
         """
-        config = SessionConfig.from_environment(session_id)
+        config = SessionConfig.from_environment(session_id, node_type=node_type)
         root = get_session_root()
         path = root / config.session_id
         path.mkdir(parents=True, exist_ok=True)

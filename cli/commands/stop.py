@@ -43,6 +43,11 @@ def stop(service: str, force: bool):
         click.echo("If services are running, you may need to stop them manually.")
         return
 
+    # Handle worker node differently
+    if getattr(session.config, 'node_type', 'head') == "worker":
+        click.echo("This is a worker node. Stop the cluster from the head node.")
+        return
+
     click.echo(f"Session: {session.config.session_id}")
     click.echo()
 
