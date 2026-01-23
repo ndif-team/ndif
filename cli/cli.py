@@ -6,6 +6,7 @@ from cli.commands.status import status
 from cli.commands.logs import logs
 from cli.commands.kill import kill
 from cli.commands.info import info
+from cli.commands.env import env
 
 @click.group()
 @click.version_option(package_name="ndif")
@@ -28,6 +29,7 @@ cli.add_command(queue)
 cli.add_command(logs)
 cli.add_command(kill)
 cli.add_command(info)
+cli.add_command(env)
 
 if __name__ == "__main__":
     cli()
