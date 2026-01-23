@@ -123,6 +123,10 @@ def format_status_simple(status_data: dict, show_cold: bool):
         click.echo(f"  GPU Memory: {total_gpu_memory / (1024**3):.1f} GB per GPU")
     click.echo()
 
+    # Show Ray nodes directly
+    _show_ray_nodes_summary()
+    click.echo()
+
     # Group deployments by level
     deployments = status_data.get('deployments', {})
     by_level = defaultdict(list)
@@ -304,3 +308,28 @@ def _extract_repo_id_from_model_key(model_key: str) -> str:
     except (ValueError, IndexError):
         pass
     return model_key
+
+
+def _show_ray_nodes_summary():
+    """Show summary of Ray cluster nodes."""
+    try:
+        nodes = ray.nodes()
+        alive_nodes = [n for n in nodes if n.get('Alive', False)]
+
+        if alive_nodes:
+            click.echo("Connected Nodes:")
+            for node in alive_nodes:
+                node_id = node.get('NodeID', 'unknown')[:8]
+                node_ip = node.get('NodeManagerAddress', 'unknown')
+                resources = node.get('Resources', {})
+                cpus = resources.get('CPU', 0)
+                gpus = resources.get('GPU', 0)
+
+                # Determine node type from resources or default
+                is_head = 'node:__internal_head__' in resources
+                node_type_str = "head" if is_head else "worker"
+
+                gpu_str = f", {int(gpus)} GPU" if gpus else ""
+                click.echo(f"  {node_id}... ({node_type_str}) - {node_ip} ({int(cpus)} CPU{gpu_str})")
+    except Exception:
+        pass

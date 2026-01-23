@@ -80,9 +80,11 @@ def _output_human(session, show_env: bool):
 
     # Session info
     if session:
+        node_type = getattr(session.config, 'node_type', 'head')
         click.echo(f"Active Session: {session.config.session_id}")
         click.echo(f"  Path: {session.path}")
         click.echo(f"  Created: {session.config.created_at}")
+        click.echo(f"  Node Type: {node_type}")
         click.echo()
 
         # Service status
@@ -171,5 +173,36 @@ def _output_human(session, show_env: bool):
 
     if check_ray(ray_address):
         click.echo(f"  ✓ Ray reachable at {ray_address}")
+        # Show Ray cluster nodes if this is a head node
+        node_type = getattr(session.config, 'node_type', 'head') if session else 'head'
+        if node_type == 'head':
+            _show_ray_nodes()
     else:
         click.echo(f"  ✗ Ray not reachable at {ray_address}")
+
+
+def _show_ray_nodes():
+    """Show Ray cluster nodes."""
+    try:
+        import ray
+        if not ray.is_initialized():
+            ray.init(ignore_reinit_error=True)
+
+        nodes = ray.nodes()
+        alive_nodes = [n for n in nodes if n.get('Alive', False)]
+
+        if alive_nodes:
+            click.echo()
+            click.echo("Ray Cluster Nodes:")
+            for node in alive_nodes:
+                node_id = node.get('NodeID', 'unknown')[:8]
+                node_ip = node.get('NodeManagerAddress', 'unknown')
+                resources = node.get('Resources', {})
+                cpus = resources.get('CPU', 0)
+                gpus = resources.get('GPU', 0)
+
+                node_type = "head" if node.get('node_type') == 'head' else "worker"
+                gpu_str = f", {int(gpus)} GPU" if gpus else ""
+                click.echo(f"  {node_id}... ({node_type}) - {node_ip} ({int(cpus)} CPU{gpu_str})")
+    except Exception:
+        pass  # Ray not available or not connected

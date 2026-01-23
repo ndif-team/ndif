@@ -45,7 +45,26 @@ def stop(service: str, force: bool):
 
     # Handle worker node differently
     if getattr(session.config, 'node_type', 'head') == "worker":
-        click.echo("This is a worker node. Stop the cluster from the head node.")
+        click.echo(f"Session: {session.config.session_id} (worker node)")
+        click.echo()
+        click.echo("Stopping Ray worker...")
+        try:
+            result = subprocess.run(
+                ['ray', 'stop'],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                click.echo("✓ Ray worker stopped")
+            else:
+                click.echo(f"Ray stop output: {result.stderr}")
+        except FileNotFoundError:
+            click.echo("Error: 'ray' command not found", err=True)
+
+        session.mark_service_running('ray-worker', False)
+        end_session(session)
+        click.echo("✓ Session ended")
         return
 
     click.echo(f"Session: {session.config.session_id}")
