@@ -176,17 +176,17 @@ def _output_human(session, show_env: bool):
         # Show Ray cluster nodes if this is a head node
         node_type = getattr(session.config, 'node_type', 'head') if session else 'head'
         if node_type == 'head':
-            _show_ray_nodes()
+            _show_ray_nodes(ray_address)
     else:
         click.echo(f"  ✗ Ray not reachable at {ray_address}")
 
 
-def _show_ray_nodes():
+def _show_ray_nodes(ray_address: str):
     """Show Ray cluster nodes."""
     try:
         import ray
         if not ray.is_initialized():
-            ray.init(ignore_reinit_error=True)
+            ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         nodes = ray.nodes()
         alive_nodes = [n for n in nodes if n.get('Alive', False)]
