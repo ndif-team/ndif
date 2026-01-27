@@ -7,14 +7,15 @@ import click
 import redis.asyncio as redis
 import asyncio
 
-from .checks import check_prerequisites
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()
 @click.option('--json-output', 'json_flag', is_flag=True, help='Output raw JSON')
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-def queue(json_flag: bool, watch: bool, redis_url: str):
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+def queue(json_flag: bool, watch: bool, broker_url: str):
     """View queue and processor status.
 
     Shows current queue state including active processors,
@@ -25,16 +26,18 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
         ndif queue --json-output      # Raw JSON output
         ndif queue --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
         # Check prerequisites silently
-        check_prerequisites(redis_url=redis_url)
+        check_prerequisites(broker_url=broker_url)
 
         if watch:
             # Watch mode - loop forever
             try:
                 while True:
                     # Fetch data BEFORE clearing screen to reduce flicker
-                    data = asyncio.run(_fetch_queue_state(redis_url))
+                    data = asyncio.run(_fetch_queue_state(broker_url))
 
                     # Now clear and display atomically
                     click.clear()
@@ -46,7 +49,7 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
                 return
         else:
             # Single shot
-            data = asyncio.run(_fetch_queue_state(redis_url))
+            data = asyncio.run(_fetch_queue_state(broker_url))
             _render_queue_state(data, json_flag)
 
     except Exception as e:
@@ -54,9 +57,9 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
         raise click.Abort()
 
 
-async def _fetch_queue_state(redis_url: str) -> dict:
+async def _fetch_queue_state(broker_url: str) -> dict:
     """Fetch queue state from the dispatcher via Redis streams."""
-    redis_client = redis.Redis.from_url(redis_url)
+    redis_client = redis.Redis.from_url(broker_url)
 
     try:
         # Use PID and timestamp as unique response key

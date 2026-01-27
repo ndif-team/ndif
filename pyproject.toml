@@ -11,6 +11,7 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     # CLI
     "click>=8.0.0",
+    "python-dotenv>=1.0.0",
 
     # Core API dependencies
     "fastapi==0.108.0", # Note: pinned version for Socket.IO compatibility
@@ -22,6 +23,7 @@ dependencies = [
     "uvicorn[standard]==0.24.0",
     "gunicorn",
     "eventlet",
+    "zstandard",
 
     # Ray dependencies
     "ray[serve]>=2.50.0",

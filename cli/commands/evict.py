@@ -4,17 +4,18 @@ import click
 import ray
 import asyncio
 
-from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
-from .checks import check_prerequisites
+from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()
 @click.argument('checkpoint', required=False)
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all deployments')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
-@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, redis_url: str):
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str):
     """Evict (remove) a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -28,9 +29,13 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, red
         ndif evict --all                               # Evict all deployments
         ndif evict openai-community/gpt2 --ray-address ray://localhost:10001
     """
+    # Use session defaults if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
+
     try:
         # Check prerequisites silently
-        check_prerequisites(redis_url=redis_url, ray_address=ray_address)
+        check_prerequisites(broker_url=broker_url, ray_address=ray_address)
 
         # Validate arguments
         if not evict_all and not checkpoint:
@@ -121,7 +126,7 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, red
                 evicted_count += 1
 
                 # Notify dispatcher about eviction
-                asyncio.run(notify_dispatcher(redis_url, "evict", model_key))
+                asyncio.run(notify_dispatcher(broker_url, "evict", model_key))
 
         # Summary (only for multiple models)
         if len(model_keys) > 1:
