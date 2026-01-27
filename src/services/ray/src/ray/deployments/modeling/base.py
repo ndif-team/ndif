@@ -3,7 +3,7 @@ import gc
 import os
 import threading
 import time
-import traceback
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict
 
@@ -11,10 +11,9 @@ import ray
 import torch
 from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
-from ray import serve
+
 from torch.amp import autocast
-from torch.cuda import (max_memory_allocated, memory_allocated,
-                        reset_peak_memory_stats)
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from transformers.modeling_utils import _get_device_map
 
 from nnsight.modeling.mixins import RemoteableMixin
@@ -22,27 +21,31 @@ from nnsight.modeling.mixins.remoteable import StreamTracer
 from nnsight.schema.request import RequestModel
 
 from ....logging import set_logger
-from ....metrics import (ExecutionTimeMetric, GPUMemMetric,
-                         ModelLoadTimeMetric, RequestResponseSizeMetric)
+from ....metrics import (
+    ExecutionTimeMetric,
+    GPUMemMetric,
+    ModelLoadTimeMetric,
+    RequestResponseSizeMetric,
+)
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
-from ....schema import (BackendRequestModel, BackendResponseModel,
-                        BackendResultModel)
+from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
 from ....types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_environment import (
-    WHITELISTED_MODULES, WHITELISTED_MODULES_DESERIALIZATION, Protector)
+    WHITELISTED_MODULES,
+    WHITELISTED_MODULES_DESERIALIZATION,
+    Protector,
+)
 from ...nn.security.protected_objects import protect
-from .util import (kill_thread, load_with_cache_deletion_retry,
-                   remove_accelerate_hooks)
+from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
 class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
-        cuda_devices: str,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -51,8 +54,6 @@ class BaseModelDeployment:
         **kwargs,
     ) -> None:
         super().__init__()
-
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         ObjectStoreProvider.connect()
         SioProvider.connect()
