@@ -16,13 +16,13 @@ class SioProvider(Provider):
     @classmethod
     def from_env(cls) -> None:
         super().from_env()
-        cls.api_url = os.environ.get("API_URL")
+        cls.api_url = os.environ.get("NDIF_API_URL")
 
     @classmethod
     def to_env(cls) -> dict:
         return {
             **super().to_env(),
-            "API_URL": cls.api_url,
+            "NDIF_API_URL": cls.api_url,
         }
 
     @classmethod

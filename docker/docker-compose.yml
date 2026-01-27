@@ -2,14 +2,14 @@ services:
   message_broker:
     image: redis:${REDIS_VERSION}
     ports:
-      - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
+      - ${NDIF_BROKER_PORT}:6379
 
   minio:
     image: minio/minio:${MINIO_VERSION}
-    command: server /data
-    profiles: ["dependencies"]
+    command: server /data --console-address ":9001"
     ports:
-      - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
+      - ${NDIF_OBJECT_STORE_PORT}:9000
+      - ${NDIF_OBJECT_STORE_CONSOLE_PORT}:9001
 
   ray:
     image: ray:${RAY_VERSION}
@@ -19,10 +19,10 @@ services:
       - ray-data:/tmp/ray/
 
     ports:
-      - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
-      - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
-      - ${DEV_RAY_DASHBOARD_PORT}:${RAY_DASHBOARD_INTERNAL_PORT}
-      - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
+      - ${NDIF_RAY_HEAD_PORT}:6379
+      - ${NDIF_RAY_CLIENT_PORT}:10001
+      - ${NDIF_RAY_DASHBOARD_PORT}:8265
+      - ${NDIF_RAY_SERVE_PORT}:8262
     deploy:
       replicas: 1
       resources:
@@ -33,13 +33,20 @@ services:
               capabilities: [ gpu ]
     environment:
       - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
-      - OBJECT_STORE_URL=http://${HOST_IP}:${DEV_MINIO_PORT}
-      - API_URL=http://${HOST_IP}:${DEV_API_PORT}
+      - NDIF_OBJECT_STORE_URL=http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
+      - NDIF_API_URL=http://${HOST_IP}:${NDIF_API_PORT}
       - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-
+      - NDIF_RAY_HEAD_PORT=${NDIF_RAY_HEAD_PORT}
+      - NDIF_RAY_CLIENT_PORT=${NDIF_RAY_CLIENT_PORT}
+      - NDIF_RAY_DASHBOARD_PORT=${NDIF_RAY_DASHBOARD_PORT}
+      - NDIF_RAY_SERVE_PORT=${NDIF_RAY_SERVE_PORT}
+      - NDIF_RAY_OBJECT_MANAGER_PORT=${NDIF_RAY_OBJECT_MANAGER_PORT}
+      - NDIF_RAY_DASHBOARD_GRPC_PORT=${NDIF_RAY_DASHBOARD_GRPC_PORT}
+      - NDIF_RAY_TEMP_DIR=${NDIF_RAY_TEMP_DIR}
+      - NDIF_CONTROLLER_IMPORT_PATH=${NDIF_CONTROLLER_IMPORT_PATH}
       - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
 
@@ -49,26 +56,26 @@ services:
   api:
     image: api:${API_VERSION}
     ports:
-      - ${DEV_API_PORT}:${API_INTERNAL_PORT}
+      - ${NDIF_API_PORT}:8001
     environment:
-      OBJECT_STORE_URL: http://${HOST_IP}:${DEV_MINIO_PORT}
-      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
-      WORKERS: ${API_WORKERS}
-      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
+      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+      NDIF_API_WORKERS: ${NDIF_API_WORKERS}
+      NDIF_API_PORT: 8001
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_DEV_MODE: ${NDIF_DEV_MODE}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
       INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
-      API_INTERNAL_PORT: ${API_INTERNAL_PORT}
-      API_URL: http://localhost:${API_INTERNAL_PORT}
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}

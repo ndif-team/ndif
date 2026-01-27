@@ -25,8 +25,8 @@ class QueueConfig:
 
     Attributes:
         broker_url: Redis connection URL for queue operations.
-            Environment variable: BROKER_URL
-            Default: None (required in production)
+            Environment variable: NDIF_BROKER_URL
+            Default: redis://localhost:6379
         status_cache_freq_s: How long to cache cluster status in Redis (seconds).
             Environment variable: COORDINATOR_STATUS_CACHE_FREQ_S
             Default: 120
@@ -54,7 +54,7 @@ class QueueConfig:
         Raises:
             ValueError: If a required configuration value is missing or invalid.
         """
-        cls.broker_url = os.environ.get("BROKER_URL")
+        cls.broker_url = os.environ.get("NDIF_BROKER_URL", "redis://localhost:6379")
 
         status_cache_str = os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120")
         cls.status_cache_freq_s = cls._parse_positive_int(
@@ -74,7 +74,7 @@ class QueueConfig:
             Dictionary mapping environment variable names to their current values.
         """
         return {
-            "BROKER_URL": cls.broker_url,
+            "NDIF_BROKER_URL": cls.broker_url,
             "COORDINATOR_STATUS_CACHE_FREQ_S": cls.status_cache_freq_s,
             "COORDINATOR_PROCESSOR_REPLY_FREQ_S": cls.processor_reply_freq_s,
         }

@@ -384,7 +384,6 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
 
 
 def preflight_check_api(
-    host: str,
     port: int,
     broker_url: str,
     object_store_url: str,
@@ -394,7 +393,6 @@ def preflight_check_api(
     """Run pre-flight checks before starting the API service.
 
     Args:
-        host: Host to bind to
         port: Port to bind to
         broker_url: Redis/broker URL
         object_store_url: Object store URL

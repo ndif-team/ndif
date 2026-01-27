@@ -25,8 +25,8 @@ class AppConfig:
 
     Attributes:
         broker_url: Redis connection URL for queue and pub/sub operations.
-            Environment variable: BROKER_URL
-            Default: None (required in production)
+            Environment variable: NDIF_BROKER_URL
+            Default: redis://localhost:6379
         socketio_max_http_buffer_size: Maximum size in bytes for SocketIO
             HTTP buffer. Limits the size of incoming messages.
             Environment variable: SOCKETIO_MAX_HTTP_BUFFER_SIZE
@@ -60,7 +60,7 @@ class AppConfig:
         Raises:
             ValueError: If a configuration value is invalid.
         """
-        cls.broker_url = os.environ.get("BROKER_URL")
+        cls.broker_url = os.environ.get("NDIF_BROKER_URL", "redis://localhost:6379")
 
         buffer_size_str = os.environ.get("SOCKETIO_MAX_HTTP_BUFFER_SIZE", "100000000")
         cls.socketio_max_http_buffer_size = cls._parse_positive_int(
@@ -85,7 +85,7 @@ class AppConfig:
             Dictionary mapping environment variable names to their current values.
         """
         return {
-            "BROKER_URL": cls.broker_url,
+            "NDIF_BROKER_URL": cls.broker_url,
             "SOCKETIO_MAX_HTTP_BUFFER_SIZE": cls.socketio_max_http_buffer_size,
             "SOCKETIO_PING_TIMEOUT": cls.socketio_ping_timeout,
             "STATUS_REQUEST_TIMEOUT_S": cls.status_request_timeout_s,

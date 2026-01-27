@@ -125,7 +125,6 @@ def start(service: str, worker: bool, verbose: bool):
     if 'api' in services_to_start:
         click.echo("  API:")
         checks = preflight_check_api(
-            config.api_host,
             config.api_port,
             config.broker_url,
             config.object_store_url,
@@ -351,7 +350,7 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
         raise RuntimeError(f"start.sh not found at {start_script}")
 
     click.echo("Starting NDIF API service...")
-    click.echo(f"  Host: {session.config.api_host}:{session.config.api_port}")
+    click.echo(f"  Port: {session.config.api_port}")
     click.echo(f"  Workers: {session.config.api_workers}")
     click.echo(f"  Broker: {session.config.broker_url}")
     click.echo(f"  Object Store: {session.config.object_store_url}")
@@ -365,13 +364,13 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
 
     env = os.environ.copy()
     env.update({
-        'OBJECT_STORE_URL': session.config.object_store_url,
-        'BROKER_URL': session.config.broker_url,
-        'WORKERS': str(session.config.api_workers),
-        'RAY_ADDRESS': session.config.ray_address,
-        'API_INTERNAL_PORT': str(session.config.api_port),
-        'API_URL': session.config.api_url,
-        'DEV_MODE': 'true',
+        'NDIF_OBJECT_STORE_URL': session.config.object_store_url,
+        'NDIF_BROKER_URL': session.config.broker_url,
+        'NDIF_API_WORKERS': str(session.config.api_workers),
+        'NDIF_RAY_ADDRESS': session.config.ray_address,
+        'NDIF_API_PORT': str(session.config.api_port),
+        'NDIF_API_URL': session.config.api_url,
+        'NDIF_DEV_MODE': 'true',
     })
 
     if verbose:
@@ -399,10 +398,10 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
 def _start_ray(session: Session, repo_root: Path, verbose: bool):
     """Start the Ray service."""
     ray_service_dir = repo_root / "src" / "services" / "ray"
-    start_script = ray_service_dir / "start-cli.sh"
+    start_script = ray_service_dir / "start.sh"
 
     if not start_script.exists():
-        raise RuntimeError(f"start-cli.sh not found at {start_script}")
+        raise RuntimeError(f"start.sh not found at {start_script}")
 
     click.echo("Starting NDIF Ray service...")
     click.echo(f"  Object Store: {session.config.object_store_url}")
@@ -424,7 +423,6 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         'NDIF_RAY_TEMP_DIR': session.config.ray_temp_dir,
         'NDIF_RAY_HEAD_PORT': str(session.config.ray_head_port),
         'NDIF_RAY_OBJECT_MANAGER_PORT': str(session.config.ray_object_manager_port),
-        'NDIF_RAY_DASHBOARD_HOST': session.config.ray_dashboard_host,
         'NDIF_RAY_DASHBOARD_PORT': str(session.config.ray_dashboard_port),
         'NDIF_RAY_DASHBOARD_GRPC_PORT': str(session.config.ray_dashboard_grpc_port),
         'NDIF_RAY_SERVE_PORT': str(session.config.ray_serve_port),

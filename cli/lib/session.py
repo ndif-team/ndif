@@ -122,7 +122,6 @@ class SessionConfig:
     ray_dashboard_grpc_port: int
 
     # API configuration
-    api_host: str
     api_port: int
     api_workers: int
 
@@ -180,8 +179,8 @@ class SessionConfig:
         api_url = get_env("NDIF_API_URL")
         ray_address = get_env("NDIF_RAY_ADDRESS")
 
-        broker_port = urlparse(broker_url).port or int(get_env("NDIF_BROKER_PORT"))
-        object_store_port = urlparse(object_store_url).port or int(get_env("NDIF_OBJECT_STORE_PORT"))
+        broker_port = urlparse(broker_url).port or 6379  # Default Redis port
+        object_store_port = urlparse(object_store_url).port or 9000  # Default MinIO port
         api_port = urlparse(api_url).port or int(get_env("NDIF_API_PORT"))
 
         # Initialize services based on node type
@@ -212,13 +211,11 @@ class SessionConfig:
             ray_temp_dir=get_env("NDIF_RAY_TEMP_DIR"),
             ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")),
             ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")),
-            ray_dashboard_host=get_env("NDIF_RAY_DASHBOARD_HOST"),
             ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")),
             ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")),
             ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")),
 
             # API config
-            api_host=get_env("NDIF_API_HOST"),
             api_port=api_port,
             api_workers=int(get_env("NDIF_API_WORKERS")),
 
