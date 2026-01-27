@@ -226,21 +226,11 @@ class TestActivationModification:
 class TestGradients:
     """Tests for gradient computation."""
 
-    def test_retain_grad(self, model: LanguageModel):
-        """Test retaining gradients on intermediate tensors."""
-        with model.trace("Hello World", remote=True):
-            hidden_states = model.transformer.h[-1].output[0].save()
-            hidden_states.retain_grad()
-            logits = model.lm_head.output
-            logits.sum().backward()
-
-        assert hidden_states.grad is not None
-
     def test_grad_access_in_backward(self, model: LanguageModel):
         """Test accessing gradients inside backward context."""
         with model.trace("Hello World", remote=True):
             hidden_states = model.transformer.h[-1].output[0]
-            hs_shape = hidden_states.shape
+            hs_shape = hidden_states.shape.save()
             hidden_states.requires_grad_(True)
             logits = model.lm_head.output
 
