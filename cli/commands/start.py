@@ -408,7 +408,7 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
     click.echo(f"  API: {session.config.api_url}")
     click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
     click.echo(f"  Head Port: {session.config.ray_head_port}")
-    click.echo(f"  Dashboard: {session.config.ray_dashboard_host}:{session.config.ray_dashboard_port}")
+    click.echo(f"  Dashboard: {session.config.ray_dashboard_port}")
 
     log_dir = session.get_service_log_dir('ray')
     log_file = log_dir / "output.log"

@@ -112,7 +112,7 @@ def _output_human(session, show_env: bool):
         click.echo(f"  Object Store URL: {session.config.object_store_url}")
         click.echo(f"  API URL: {session.config.api_url}")
         click.echo(f"  Ray Address: {session.config.ray_address}")
-        click.echo(f"  Ray Dashboard: {session.config.ray_dashboard_host}:{session.config.ray_dashboard_port}")
+        click.echo(f"  Ray Dashboard: {session.config.ray_dashboard_port}")
 
     else:
         click.echo("No active session")

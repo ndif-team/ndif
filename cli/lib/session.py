@@ -116,7 +116,6 @@ class SessionConfig:
     ray_temp_dir: str
     ray_head_port: int
     ray_dashboard_port: int
-    ray_dashboard_host: str
     ray_serve_port: int
     ray_object_manager_port: int
     ray_dashboard_grpc_port: int
