@@ -96,15 +96,24 @@ class Deployment:
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
         try:
+
+            env_vars = {
+                "CUDA_VISIBLE_DEVICES": ",".join(str(gpu) for gpu in self.gpus),
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                **SioProvider.to_env(),
+                **ObjectStoreProvider.to_env(),
+                **MailgunProvider.to_env(),
+            }
+
+            env_vars = {k: v for k, v in env_vars.items() if v is not None}
+
             actor = ModelActor.options(
                 name=self.name,
                 resources={f"node:{node_name}": 0.01},
                 namespace="NDIF",
                 lifetime="detached",
                 runtime_env={
-                    **SioProvider.to_env(),
-                    **ObjectStoreProvider.to_env(),
-                    **MailgunProvider.to_env(),
+                    "env_vars": env_vars,
                 },
             ).remote(**deployment_args.model_dump())
 
