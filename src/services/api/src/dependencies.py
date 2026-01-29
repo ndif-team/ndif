@@ -2,13 +2,18 @@ import os
 import sys
 
 from fastapi import HTTPException, Request
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 from packaging.version import Version
 from nnsight import __version__
 
 from .types import API_KEY
 from .db import api_key_store
 from .schema import BackendRequestModel
+from .providers.redis import RedisProvider
 
 MIN_NNSIGHT_VERSION = os.getenv("MIN_NNSIGHT_VERSION", __version__)
 DEV_MODE = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
@@ -125,6 +130,24 @@ async def check_hotswapping_access(api_key: API_KEY) -> bool:
     if api_key_store is None:
         return False
     return api_key_store.key_has_hotswapping_access(api_key)
+
+
+async def require_ray_connection() -> None:
+    """FastAPI dependency to ensure Ray is connected before processing.
+
+    Checks the 'ray:connected' Redis key which is maintained by the Dispatcher.
+    If Ray is not connected, returns a 503 Service Unavailable error.
+
+    Raises:
+        HTTPException: 503 if Ray is not connected.
+    """
+    is_connected = await RedisProvider.async_client.get("ray:connected")
+
+    if not is_connected:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable: compute backend is reconnecting. Please try again in a few minutes.",
+        )
 
 
 async def validate_request(raw_request: Request) -> BackendRequestModel:

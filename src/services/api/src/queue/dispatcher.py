@@ -29,11 +29,11 @@ import time
 import traceback
 from typing import Optional
 
-import redis
 from enum import Enum
 
 from ..logging import set_logger
 from ..providers.ray import RayProvider
+from ..providers.redis import RedisProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel
 from .config import QueueConfig
@@ -88,15 +88,12 @@ class Dispatcher:
         communication, and applies necessary patches.
 
         Raises:
-            Exception: If Redis connection fails (from redis.asyncio.Redis.from_url).
+            Exception: If Redis connection fails.
             Note: Ray connection failures are handled with retry logic in connect().
 
         See Also:
             QueueConfig: Centralized configuration for all queue settings.
         """
-        self.redis_client: redis.asyncio.Redis = redis.asyncio.Redis.from_url(
-            QueueConfig.broker_url
-        )
         self.processors: dict[str, Processor] = {}
 
         self.error_queue: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
@@ -133,11 +130,17 @@ class Dispatcher:
         Attempts to connect to Ray with retry logic. Blocks until a successful
         connection is established, retrying every second on failure.
 
+        Also maintains the 'ray:connected' Redis key to signal connection status
+        to API endpoints.
+
         Note:
             This method is also called during error recovery when the Ray
             connection is lost.
         """
         self.logger.info(f"Connecting to Ray")
+
+        # Mark as disconnected while attempting to connect
+        RedisProvider.sync_client.delete("ray:connected")
 
         while not RayProvider.connected():
             try:
@@ -149,6 +152,8 @@ class Dispatcher:
 
                 time.sleep(1)
 
+        # Mark as connected
+        RedisProvider.sync_client.set("ray:connected", "1")
         self.logger.info(f"Connected to Ray")
 
     async def get(self) -> Optional[BackendRequestModel]:
@@ -162,7 +167,7 @@ class Dispatcher:
             The next BackendRequestModel from the queue, or None if the
             timeout elapsed with no request available.
         """
-        result = await self.redis_client.brpop("queue", timeout=1)
+        result = await RedisProvider.async_client.brpop("queue", timeout=1)
 
         if result is not None:
             return pickle.loads(result[1])
@@ -287,7 +292,7 @@ class Dispatcher:
             )
 
             # Clear env cache since it comes from the Ray cluster
-            await self.redis_client.delete("env")
+            await RedisProvider.async_client.delete("env")
 
             self.connect()
 
@@ -381,7 +386,7 @@ class Dispatcher:
 
             try:
                 if got_status:
-                    message = await self.redis_client.xread(
+                    message = await RedisProvider.async_client.xread(
                         {"status:trigger": last_id}, count=1, block=0
                     )
 
@@ -399,13 +404,13 @@ class Dispatcher:
                 status = await asyncio.wait_for(submit(handle, "status"), timeout=60)
                 status = pickle.dumps(status)
 
-                await self.redis_client.publish("status:event", status)
+                await RedisProvider.async_client.publish("status:event", status)
 
-                await self.redis_client.set(
+                await RedisProvider.async_client.set(
                     "status", status, ex=self.status_cache_freq_s
                 )
 
-                await self.redis_client.delete("status:requested")
+                await RedisProvider.async_client.delete("status:requested")
 
                 got_status = True
 
@@ -426,7 +431,7 @@ class Dispatcher:
         while True:
             try:
                 # Read from the dispatcher events stream
-                messages = await self.redis_client.xread(
+                messages = await RedisProvider.async_client.xread(
                     {"dispatcher:events": last_id},
                     count=1,
                     block=1000,  # Block for 1 second
@@ -475,12 +480,14 @@ class Dispatcher:
         try:
             queue_state = self.get_state()
             queue_state_bytes = pickle.dumps(queue_state)
-            await self.redis_client.lpush(response_key, queue_state_bytes)
+            await RedisProvider.async_client.lpush(response_key, queue_state_bytes)
 
         except Exception as e:
             self.logger.error(f"Error getting queue state: {e}")
             error_state = {"error": str(e)}
-            await self.redis_client.lpush(response_key, pickle.dumps(error_state))
+            await RedisProvider.async_client.lpush(
+                response_key, pickle.dumps(error_state)
+            )
 
     async def _handle_deploy_event(self, event_data: dict) -> None:
         """Handle DEPLOY event"""
@@ -517,7 +524,7 @@ class Dispatcher:
                 # If found in this processor, return the result
                 if result["status"] != "not_found":
                     result_bytes = pickle.dumps(result)
-                    await self.redis_client.lpush(response_key, result_bytes)
+                    await RedisProvider.async_client.lpush(response_key, result_bytes)
                     self.logger.info(f"Kill request completed: {result['status']}")
                     return
 
@@ -526,7 +533,7 @@ class Dispatcher:
                 "status": "not_found",
                 "message": f"Request {request_id} not found in any processor",
             }
-            await self.redis_client.lpush(response_key, pickle.dumps(result))
+            await RedisProvider.async_client.lpush(response_key, pickle.dumps(result))
 
         except Exception as e:
             self.logger.error(f"Error handling kill request: {e}")
@@ -534,7 +541,9 @@ class Dispatcher:
                 "status": "error",
                 "message": f"Error handling kill request: {str(e)}",
             }
-            await self.redis_client.lpush(response_key, pickle.dumps(error_result))
+            await RedisProvider.async_client.lpush(
+                response_key, pickle.dumps(error_result)
+            )
 
     async def _handle_env_event(self, event_data: dict) -> None:
         """Handle ENV event - get Python environment info from controller"""
@@ -542,9 +551,9 @@ class Dispatcher:
 
         try:
             # Check cache first
-            cached_env = await self.redis_client.get("env")
+            cached_env = await RedisProvider.async_client.get("env")
             if cached_env is not None:
-                await self.redis_client.lpush(response_key, cached_env)
+                await RedisProvider.async_client.lpush(response_key, cached_env)
                 return
 
             # Get env info from controller
@@ -553,12 +562,14 @@ class Dispatcher:
             env_bytes = pickle.dumps(env_info)
 
             # Cache the result (no expiration)
-            await self.redis_client.set("env", env_bytes)
+            await RedisProvider.async_client.set("env", env_bytes)
 
             # Send response
-            await self.redis_client.lpush(response_key, env_bytes)
+            await RedisProvider.async_client.lpush(response_key, env_bytes)
 
         except Exception as e:
             self.logger.error(f"Error getting env info: {e}")
             error_result = {"error": str(e)}
-            await self.redis_client.lpush(response_key, pickle.dumps(error_result))
+            await RedisProvider.async_client.lpush(
+                response_key, pickle.dumps(error_result)
+            )

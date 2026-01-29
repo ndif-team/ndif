@@ -355,7 +355,7 @@ class Processor:
 
         The method handles two cases:
             - Actor not yet created: Continues polling until it appears
-            - Other errors: Reports to error_queue and cancels the processor
+            - Initialization error: Reports error to user and cancels processor
 
         Raises:
             No exceptions are raised; errors are reported via the error_queue
@@ -367,18 +367,26 @@ class Processor:
 
                 await submit(handle, "__ray_ready__")
 
-                break
+                return  # Success - model is ready
 
             except Exception as e:
-                if not str(e).startswith("Failed to look up actor"):
-                    self.eviction_queue.put_nowait(
-                        (
-                            self.model_key,
-                            "Error initializing model deployment. Please try again later. Sorry for the inconvenience.",
-                        )
+                error_str = str(e)
+
+                # Actor doesn't exist yet - keep waiting
+                if error_str.startswith("Failed to look up actor"):
+                    await asyncio.sleep(1)
+                    continue
+
+                # Actual initialization error - report to user and stop
+                self.eviction_queue.put_nowait(
+                    (
+                        self.model_key,
+                        f"Error initializing model deployment: {error_str}",
                     )
-                    self.error_queue.put_nowait((self.model_key, e))
-                    self.status = ProcessorStatus.CANCELLED
+                )
+                self.error_queue.put_nowait((self.model_key, e))
+                self.status = ProcessorStatus.CANCELLED
+                return
 
     async def execute(self, request: BackendRequestModel) -> None:
         """Execute a single inference request on the model deployment.
