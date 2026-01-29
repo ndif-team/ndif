@@ -168,31 +168,142 @@ class _ControllerActor:
         for deployment in deployment_delta.deployments_to_delete:
             deployment.delete()
 
+        # Cache deployments - must complete before from_cache can proceed to free up resources
         cache_futures = []
-
-        # Cache deployments
+        cache_deployments = []
         for deployment in deployment_delta.deployments_to_cache:
             cache_future = deployment.cache()
 
             if cache_future is not None:
                 cache_futures.append(cache_future)
+                cache_deployments.append(deployment)
+            else:
+                # cache() failed immediately - clean up
+                self.logger.error(
+                    f"Failed to initiate cache for {deployment.model_key}"
+                )
+                try:
+                    deployment.delete()
+                except Exception:
+                    pass
+                self._remove_deployment_from_state(deployment)
 
-        # Wait for cache operations to complete
-        ray.get(cache_futures)
+        # Wait for all cache operations to complete before proceeding
+        for future, deployment in zip(cache_futures, cache_deployments):
+            try:
+                ray.get(future)
+                self.logger.info(
+                    f"Deployment {deployment.model_key} completed cache successfully"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Deployment {deployment.model_key} failed during cache: {e}"
+                )
+                try:
+                    deployment.delete()
+                except Exception:
+                    pass
+                self._remove_deployment_from_state(deployment)
 
-        # Deploy models from cache
+        # Deploy models from cache - spawn monitoring tasks
         for deployment in deployment_delta.deployments_from_cache:
-            deployment.from_cache()
+            future = deployment.from_cache()
+            if future is not None:
+                asyncio.create_task(
+                    self._monitor_deployment(future, deployment, "from_cache")
+                )
+            else:
+                # from_cache() failed immediately - clean up
+                self.logger.error(
+                    f"Failed to initiate from_cache for {deployment.model_key}"
+                )
+                deployment.delete()
+                self._remove_deployment_from_state(deployment)
 
-        # Create models from disk
+        # Create models from disk - spawn monitoring tasks
         for name, deployment in deployment_delta.deployments_to_create:
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
-                cuda_devices=",".join(str(gpu) for gpu in deployment.gpus),
                 execution_timeout=self.execution_timeout_seconds,
             )
 
+            # create() returns None always, but may fail internally
             deployment.create(name, deployment_args)
+
+            # Get the actor handle and monitor its ready state
+            try:
+                actor = deployment.actor
+                ready_future = actor.__ray_ready__.remote()
+                asyncio.create_task(
+                    self._monitor_deployment(ready_future, deployment, "create")
+                )
+            except Exception as e:
+                # create() failed or actor not available - clean up
+                self.logger.error(
+                    f"Failed to get actor handle for {deployment.model_key}: {e}"
+                )
+                deployment.delete()
+                self._remove_deployment_from_state(deployment)
+
+    async def _monitor_deployment(
+        self,
+        future: ray.ObjectRef,
+        deployment: Deployment,
+        operation: str,
+    ) -> None:
+        """Monitor a deployment future and clean up on failure.
+
+        This runs as an async task, so it doesn't block the controller.
+
+        Args:
+            future: Ray future to monitor.
+            deployment: The Deployment object being monitored.
+            operation: Name of the operation for logging.
+        """
+        try:
+            # Use asyncio to wait for the ray future without blocking
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: ray.get(future)
+            )
+            self.logger.info(
+                f"Deployment {deployment.model_key} completed {operation} successfully"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Deployment {deployment.model_key} failed during {operation}: {e}"
+            )
+            # Delete the failed deployment to return resources
+            # Wrap in try-catch as the actor may already be gone
+            try:
+                deployment.delete()
+            except Exception as delete_error:
+                self.logger.debug(
+                    f"Error deleting failed deployment {deployment.model_key}: {delete_error}"
+                )
+            self._remove_deployment_from_state(deployment)
+
+    def _remove_deployment_from_state(self, deployment: Deployment) -> None:
+        """Remove a deployment from the internal state.
+
+        Args:
+            deployment: The deployment to remove.
+        """
+        # Remove from state using node_id directly
+        state_key = (deployment.node_id, deployment.model_key)
+        if state_key in self.state:
+            del self.state[state_key]
+
+        # Remove from the specific cluster node using node_id
+        if deployment.node_id and deployment.node_id in self.cluster.nodes:
+            node = self.cluster.nodes[deployment.node_id]
+            if deployment.model_key in node.deployments:
+                # Return GPUs to the node
+                node.resources.available_gpus.extend(deployment.gpus)
+                del node.deployments[deployment.model_key]
+            if deployment.model_key in node.cache:
+                # Return CPU memory to the node
+                node.resources.available_cpu_memory_bytes += deployment.size_bytes
+                del node.cache[deployment.model_key]
 
     def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
         """Get the deployment of a model key (or None if not found)."""

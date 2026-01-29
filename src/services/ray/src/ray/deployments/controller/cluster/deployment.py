@@ -29,12 +29,14 @@ class Deployment:
         gpus: list[int],
         size_bytes: int,
         dedicated: bool = False,
+        node_id: str = None,
     ):
         self.model_key = model_key
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
         self.dedicated = dedicated
+        self.node_id = node_id
         self.deployed = time.time()
 
     @property
@@ -54,6 +56,7 @@ class Deployment:
             "gpus": self.gpus,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
+            "node_id": self.node_id,
             "deployed": self.deployed,
         }
 

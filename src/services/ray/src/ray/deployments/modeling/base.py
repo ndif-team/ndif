@@ -440,7 +440,6 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
-    cuda_devices: str
 
     execution_timeout: float | None = None
     device_map: str | None = "auto"
