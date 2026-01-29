@@ -215,6 +215,9 @@ modules:
   - name: enum
     strict: false
 
+  - name: __future__
+    strict: false
+
 # =============================================================================
 # DESERIALIZATION MODULES
 # =============================================================================
@@ -252,6 +255,10 @@ deserialization_modules:
 
   - name: nnsight.modeling
     strict: false
+
+  - name: transformers
+    strict: false
+
 
 # =============================================================================
 # DUNDER ATTRIBUTES
