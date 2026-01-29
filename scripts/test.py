@@ -1,8 +1,7 @@
 import nnsight
 
 nnsight.CONFIG.set_default_api_key("api key")
-nnsight.CONFIG.API.HOST = "localhost:5001"
-nnsight.CONFIG.API.SSL = False
+nnsight.CONFIG.API.HOST = "http://localhost:5001"
 
 model = nnsight.LanguageModel("openai-community/gpt2")
 
