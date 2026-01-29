@@ -250,7 +250,9 @@ class Dispatcher:
         """Process all pending error events from Processors.
 
         Drains the error_queue and handles each error:
-            - If Ray is disconnected, purges all Processors and reconnects
+            - Detects connection errors from exception messages
+            - If a connection error is detected OR Ray is disconnected,
+              purges all Processors and reconnects
             - Clears the env cache (since it comes from the Ray cluster)
             - Logs the full traceback for each error
             - Resets affected Processors to READY status to resume processing
@@ -259,27 +261,48 @@ class Dispatcher:
             Processors remain in BUSY status after reporting an error until
             this method clears them by setting status to READY.
         """
-        if not self.error_queue.empty():
-            if not RayProvider.connected():
-                self.purge(
-                    "Critical server error occurred. Please try again later. Sorry for the inconvenience."
-                )
+        if self.error_queue.empty():
+            return
 
-                # Clear env cache since it comes from the Ray cluster
-                await self.redis_client.delete("env")
+        # First, collect all errors and check if any are connection errors
+        errors: list[tuple[str, Exception]] = []
+        has_connection_error = False
 
-                self.connect()
+        while not self.error_queue.empty():
+            model_key, error = self.error_queue.get_nowait()
+            errors.append((model_key, error))
+            if RayProvider.is_connection_error(error):
+                has_connection_error = True
 
-            while not self.error_queue.empty():
-                model_key, error = self.error_queue.get_nowait()
-                tb_str = "".join(
-                    traceback.format_exception(type(error), error, error.__traceback__)
-                )
-                self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
+        # If we detected a connection error OR Ray reports disconnected, reconnect
+        needs_reconnect = has_connection_error or not RayProvider.connected()
 
-                if model_key in self.processors:
-                    processor = self.processors[model_key]
-                    processor.status = ProcessorStatus.READY
+        if needs_reconnect:
+            self.logger.warning(
+                f"Connection error detected (has_connection_error={has_connection_error}), "
+                f"forcing reconnection..."
+            )
+            self.purge(
+                "Critical server error occurred. Please try again later. Sorry for the inconvenience."
+            )
+
+            # Clear env cache since it comes from the Ray cluster
+            await self.redis_client.delete("env")
+
+            self.connect()
+
+        # Log all errors
+        for model_key, error in errors:
+            tb_str = "".join(
+                traceback.format_exception(type(error), error, error.__traceback__)
+            )
+            self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
+
+            # Only reset processor to READY if we didn't reconnect
+            # (if we reconnected, processors were purged)
+            if not needs_reconnect and model_key in self.processors:
+                processor = self.processors[model_key]
+                processor.status = ProcessorStatus.READY
 
     def get_state(self) -> dict[str, dict[str, object]]:
         """Get a snapshot of the dispatcher and all processor states.
