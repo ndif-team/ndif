@@ -17,6 +17,8 @@ services:
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
       - ray-data:/tmp/ray/
+      - /home/zikai/nnsight/src/nnsight/:/usr/local/lib/python3.12/site-packages/nnsight/
+
 
     ports:
       - ${NDIF_RAY_HEAD_PORT}:6379
@@ -55,6 +57,8 @@ services:
 
   api:
     image: api:${API_VERSION}
+    volumes:
+      - /home/zikai/nnsight/src/nnsight/:/usr/local/lib/python3.12/site-packages/nnsight/
     ports:
       - ${NDIF_API_PORT}:8001
     environment:

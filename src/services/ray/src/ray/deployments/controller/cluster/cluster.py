@@ -113,14 +113,14 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
-    def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
+    def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: int = 1):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
 
         Args:
             model_keys (List[MODEL_KEY]): List of model keys to deploy
             dedicated (Optional[bool], optional): Whether to deploy the models as dedicated. Defaults to False.
-
+            replicas (int, optional): Number of replicas to deploy. Defaults to 1.
         Returns:
             Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
         """
@@ -151,20 +151,23 @@ class Cluster:
 
                 results["result"][model_key] = f"{size_in_bytes}\n{tb}"
 
+                for replica_id in range(replicas):
+                    results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
+
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
-                for model_key, deployment in list(node.deployments.items()):
+                for (model_key, replica_id), deployment in list(node.deployments.items()):
                     if deployment.dedicated and model_key not in model_sizes_in_bytes:
                         logger.info(
                             f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                         )
 
-                        results["evictions"].add(model_key)
+                        results["evictions"].add((model_key, replica_id))
 
-                        node.evict(model_key, exclude=set(model_keys))
+                        node.evict(model_key, replica_id, exclude=set(model_keys))
 
                         change = True
 
@@ -178,17 +181,21 @@ class Cluster:
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
             )
+            for replica_id in range(replicas):
+                logger.info(
+                    f"=> Analyzing deployment of {model_key} with replica {replica_id} with size {size_in_bytes}..."
+                )
 
             candidates = {}
 
             # Check each node to see if the model can be deployed on it.
             for node in self.nodes.values():
                 logger.info(
-                    f"==> Analyzing deployment of {model_key} for node {node.name}..."
+                    f"==> Analyzing deployment of {model_key} with replica {replica_id} for node {node.name}..."
                 )
 
                 # Evaluate the node to see if the model can be deployed on it.
-                candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated)
+                candidate = node.evaluate(model_key, replica_id, size_in_bytes, dedicated=dedicated)
 
                 logger.info(
                     f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
@@ -225,19 +232,20 @@ class Cluster:
 
             if candidate_level == CandidateLevel.DEPLOYED:
                 logger.info(
-                    f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
+                    f"=> {model_key} replica {replica_id} is already deployed on {self.nodes[node_id].name}"
                 )
 
             elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
-                logger.error(f"=> {model_key} cannot be deployed on any node")
+                logger.error(f"=> {model_key} replica {replica_id} cannot be deployed on any node")
 
             else:
                 logger.info(
-                    f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
+                    f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
                 )
 
                 self.nodes[node_id].deploy(
                     model_key,
+                    replica_id, 
                     candidate,
                     size_in_bytes,
                     dedicated=dedicated,
@@ -250,7 +258,7 @@ class Cluster:
 
         return results, change
 
-    def evict(self, model_keys: List[MODEL_KEY]):
+    def evict(self, model_keys: List[MODEL_KEY], replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,):
         """Evict models from the cluster.
 
         Returns:
@@ -261,18 +269,17 @@ class Cluster:
         change = False
         results = {}
 
-        for model_key in model_keys:
-            found = False
+        if replica_keys:
+            for model_key, replica_id in replica_keys:
+                found = False
 
-            # Search for deployment across all nodes
-            for node_id, node in self.nodes.items():
-                if model_key in node.deployments:
-                    deployment = node.deployments[model_key]
+                for node in self.nodes.values():
+                    deployment = node.deployments.get((model_key, replica_id))
+                    if deployment is None:
+                        continue
 
-                    # Evict from node (updates resources, removes from deployments)
-                    node.evict(model_key)
-
-                    results[model_key] = {
+                    node.evict(model_key, replica_id)
+                    results[model_key, replica_id] = {
                         "status": "evicted",
                         "node": node.name,
                         "freed_gpus": len(deployment.gpus),
@@ -282,7 +289,38 @@ class Cluster:
                     found = True
                     break
 
-            if not found:
-                results[model_key] = {"status": "not_found"}
+                if not found:
+                    results[model_key, replica_id] = {
+                        "status": "not_found",
+                    }
+                
+            return results, change
+
+        for model_key in model_keys:
+
+            # replica keys are not provided, we will evict all replicas for each model
+            found_any = False
+
+            # search for deployments across all nodes
+            for node in self.nodes.values():
+                for (deployment_key, deployment) in node.deployments.items():
+                    deployment_model_key, deployment_replica_id = deployment_key
+                    if deployment_model_key != model_key:
+                        continue
+                    
+                    node.evict(deployment_model_key, deployment_replica_id)
+                    results[deployment_model_key, deployment_replica_id] = {
+                        "status": "evicted",
+                        "node": node.name,
+                        "freed_gpus": len(deployment.gpus),
+                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
+                    }
+                    change = True
+                    found_any = True
+
+            if not found_any:
+                results[(model_key, -1)] = {
+                    "status": "not_found",
+                }
 
         return results, change

@@ -87,8 +87,8 @@ class Node:
         self.resources = resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
 
-        self.deployments: Dict[MODEL_KEY, Deployment] = {}
-        self.cache: Dict[MODEL_KEY, Deployment] = {}
+        self.deployments: Dict[tuple[MODEL_KEY, int], Deployment] = {}
+        self.cache: Dict[tuple[MODEL_KEY, int], Deployment] = {}
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
@@ -110,6 +110,7 @@ class Node:
     def deploy(
         self,
         model_key: MODEL_KEY,
+        replica_id, int,
         candidate: Candidate,
         size_bytes: int,
         dedicated: Optional[bool] = None,
@@ -117,24 +118,25 @@ class Node:
     ):
         # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
-            self.evict(eviction, exclude=exclude)
+            self.evict(eviction[0], eviction[1], exclude=exclude)
 
-        self.deployments[model_key] = Deployment(
+        self.deployments[(model_key, replica_id)] = Deployment(
             model_key=model_key,
+            replica_id=replica_id,
             deployment_level=DeploymentLevel.HOT,
             gpus=self.resources.assign(candidate.gpus_required),
             size_bytes=size_bytes,
             dedicated=dedicated,
         )
 
-        if model_key in self.cache:
-            del self.cache[model_key]
+        if (model_key, replica_id) in self.cache:
+            del self.cache[(model_key, replica_id)]
 
             # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
 
-    def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
-        deployment = self.deployments[model_key]
+    def evict(self, model_key: MODEL_KEY, replica_id: int, exclude: Optional[Set[MODEL_KEY]] = None):
+        deployment = self.deployments[(model_key, replica_id)]
 
         self.resources.available_gpus.extend(deployment.gpus)
 
@@ -174,20 +176,21 @@ class Node:
                         eviction_deployment.size_bytes
                     )
 
-        del self.deployments[model_key]
+        del self.deployments[(model_key, replica_id)]
 
         if cpu_memory_needed <= 0:
             self.resources.available_cpu_memory_bytes -= deployment.size_bytes
 
-            self.cache[model_key] = Deployment(
+            self.cache[(model_key, replica_id)] = Deployment(
                 model_key=deployment.model_key,
+                replica_id=replica_id,
                 deployment_level=DeploymentLevel.WARM,
                 gpus=[],
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
             )
 
-    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[tuple[MODEL_KEY, int]]:
         deployments = sorted(list(self.deployments.values()), key=lambda x: len(x.gpus))
 
         gpus_needed = gpus_required - len(self.resources.available_gpus)
@@ -206,7 +209,7 @@ class Node:
             ):
                 continue
 
-            evictions.append(deployment.model_key)
+            evictions.append((deployment.model_key, deployment.replica_id))
 
             gpus_needed -= len(deployment.gpus)
 
@@ -216,11 +219,11 @@ class Node:
         return list()
 
     def evaluate(
-        self, model_key: MODEL_KEY, model_size_in_bytes: int, dedicated: bool = False
+        self, model_key: MODEL_KEY, replica_id: int, model_size_in_bytes: int, dedicated: bool = False
     ) -> Candidate:
-        if model_key in self.deployments:
+        if (model_key, replica_id) in self.deployments:
             if dedicated:
-                self.deployments[model_key].dedicated = True
+                self.deployments[(model_key, replica_id)].dedicated = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 

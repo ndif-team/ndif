@@ -46,6 +46,7 @@ class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
+        replica_id: int,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -59,6 +60,7 @@ class BaseModelDeployment:
         SioProvider.connect()
 
         self.model_key = model_key
+        self.replica_id = replica_id
         self.execution_timeout = execution_timeout
         self.dispatch = dispatch
         self.dtype = dtype
@@ -344,7 +346,7 @@ class BaseModelDeployment:
         or other critical failures that require a fresh replica state.
         """
         ray.kill(
-            ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"),
+            ray.get_actor(f"ModelActor:{self.model_key}:{self.replica_id}", namespace="NDIF"),
             no_restart=False,
         )
 
@@ -440,6 +442,7 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
+    replica_id: int
     cuda_devices: str
 
     execution_timeout: float | None = None
