@@ -50,18 +50,15 @@ services:
       - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
 
-    env_file:
-      - .env
 
   api:
     image: api:${API_VERSION}
     ports:
-      - ${NDIF_API_PORT}:8001
+      - ${NDIF_API_PORT}:${NDIF_API_PORT}
     environment:
       NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
       NDIF_API_WORKERS: ${NDIF_API_WORKERS}
-      NDIF_API_PORT: 8001
       NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
       NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
       NDIF_DEV_MODE: ${NDIF_DEV_MODE}
@@ -76,6 +73,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      COORDINATOR_STATUS_CACHE_FREQ_S: 10
+      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
+    env_file:
+      - .env
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
