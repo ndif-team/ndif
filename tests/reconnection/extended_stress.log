@@ -1,0 +1,158 @@
+============================================================
+      Extended Stress Test: 10 cycles
+============================================================
+
+Parameters:
+  - Ray down time: 3s
+  - Recovery wait: 20s
+
+[00:14:58] Initial health check...
+[00:15:04] ✓ System healthy, starting stress test
+
+============================================================
+
+--- Cycle 1/10 ---
+[00:15:44] Cycle 1: ✗ FAILED (6.086018484s)
+
+--- Cycle 2/10 ---
+[00:16:26] Cycle 2: ✗ FAILED (6.952933628s)
+
+--- Cycle 3/10 ---
+[00:17:07] Cycle 3: ✗ FAILED (7.169512769s)
+
+[00:17:07] WARNING: 3 consecutive failures!
+[00:17:07] Checking API container health...
+[00:17:07] API container is running
+[00:17:07] Recent API logs:
+[2026-01-29 05:17:06] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:17:06] [78] [ERROR] [/src/schema/mixins.py:320] e523b4ff-0bce-430d-a5cb-34e969f92ee3 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:17:06] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769663825.7062178
+[2026-01-29 05:17:06] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:17:06] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 4/10 ---
+[00:17:48] Cycle 4: ✗ FAILED (7.195570960s)
+
+[00:17:48] WARNING: 4 consecutive failures!
+[00:17:48] Checking API container health...
+[00:17:48] API container is running
+[00:17:48] Recent API logs:
+[2026-01-29 05:17:48] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:17:48] [78] [ERROR] [/src/schema/mixins.py:320] 6ac158fd-2faa-4e2d-a618-da4230f9a13b - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:17:48] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769663867.1655378
+[2026-01-29 05:17:48] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:17:48] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 5/10 ---
+[00:18:30] Cycle 5: ✗ FAILED (7.070181548s)
+
+[00:18:30] WARNING: 5 consecutive failures!
+[00:18:30] Checking API container health...
+[00:18:30] API container is running
+[00:18:30] Recent API logs:
+[2026-01-29 05:18:29] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:18:29] [78] [ERROR] [/src/schema/mixins.py:320] 442d4a6e-816c-4ffa-9eb6-9e4dca36dd31 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:18:29] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769663908.6015575
+[2026-01-29 05:18:29] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:18:29] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 6/10 ---
+[00:19:11] Cycle 6: ✗ FAILED (7.061001445s)
+
+[00:19:11] WARNING: 6 consecutive failures!
+[00:19:11] Checking API container health...
+[00:19:11] API container is running
+[00:19:11] Recent API logs:
+[2026-01-29 05:19:10] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:19:10] [78] [ERROR] [/src/schema/mixins.py:320] d1e3e814-a1ba-4bb7-be09-a56337494fad - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:19:10] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769663949.8723915
+[2026-01-29 05:19:10] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:19:10] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 7/10 ---
+[00:19:52] Cycle 7: ✗ FAILED (7.091205727s)
+
+[00:19:52] WARNING: 7 consecutive failures!
+[00:19:52] Checking API container health...
+[00:19:53] API container is running
+[00:19:53] Recent API logs:
+[2026-01-29 05:19:52] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:19:52] [78] [ERROR] [/src/schema/mixins.py:320] 29a8ce91-fae7-4072-ac1a-3aca4abea3ee - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:19:52] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769663991.2599657
+[2026-01-29 05:19:52] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:19:52] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 8/10 ---
+[00:20:34] Cycle 8: ✗ FAILED (7.048227286s)
+
+[00:20:34] WARNING: 8 consecutive failures!
+[00:20:34] Checking API container health...
+[00:20:34] API container is running
+[00:20:34] Recent API logs:
+[2026-01-29 05:20:33] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:20:33] [78] [ERROR] [/src/schema/mixins.py:320] c35ee128-8c03-4b5d-a7f0-801a0a7484f3 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:20:33] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769664032.5953698
+[2026-01-29 05:20:33] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:20:33] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 9/10 ---
+[00:21:15] Cycle 9: ✗ FAILED (7.381308292s)
+
+[00:21:15] WARNING: 9 consecutive failures!
+[00:21:15] Checking API container health...
+[00:21:15] API container is running
+[00:21:15] Recent API logs:
+[2026-01-29 05:21:15] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:21:15] [78] [ERROR] [/src/schema/mixins.py:320] 648eddef-faa5-435a-8253-ce6e610bb6e7 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:21:15] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769664074.092727
+[2026-01-29 05:21:15] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:21:15] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+--- Cycle 10/10 ---
+[00:21:57] Cycle 10: ✗ FAILED (7.109064432s)
+
+[00:21:57] WARNING: 10 consecutive failures!
+[00:21:57] Checking API container health...
+[00:21:57] API container is running
+[00:21:57] Recent API logs:
+[2026-01-29 05:21:56] [78] [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+[2026-01-29 05:21:56] [78] [ERROR] [/src/schema/mixins.py:320] 376a5d86-18a1-45c1-b5c1-66de4d30a8b9 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+[2026-01-29 05:21:56] [78] [INFO] [/src/schema/request.py:133] Request status: JobStatus.ERROR, Last status: JobStatus.QUEUED, Last status time: 1769664115.5126808
+[2026-01-29 05:21:56] [78] [INFO] [/src/schema/request.py:138] Updating last status: JobStatus.ERROR
+[2026-01-29 05:21:56] [78] [INFO] [/src/queue/dispatcher.py:140] Connecting to Ray
+
+
+============================================================
+      EXTENDED STRESS TEST RESULTS
+============================================================
+
+Total: 0 success, 10 failed out of 10 cycles
+Success rate: 0%
+Max consecutive failures: 10
+
+[00:21:57] Final health check (5 requests)...
+[00:22:54] Final health: 5/5 requests succeeded
+
+============================================================
+API Error Summary:
+============================================================
+Total ERROR count: 80
+
+Error types:
+     10 [ERROR] [/src/queue/dispatcher.py:278] Error in model nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null}: Request can't be sent because the Ray client has already been disconnected due to an error. Last exception: <_MultiThreadedRendezvous of RPC that terminated with:
+      9 [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.CANCELLED
+      4 [ERROR] [/src/queue/dispatcher.py:211] Removing processor nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null} with status ProcessorStatus.BUSY
+      3 [ERROR] [/src/queue/dispatcher.py:278] Error in model nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": null}: Failed during this or a previous request. Exception that broke the connection: <_MultiThreadedRendezvous of RPC that terminated with:
+      1 [ERROR] [/src/schema/mixins.py:320] e523b4ff-0bce-430d-a5cb-34e969f92ee3 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+      1 [ERROR] [/src/schema/mixins.py:320] e0e9c85b-b187-4efb-8202-abc7669ba89d - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+      1 [ERROR] [/src/schema/mixins.py:320] d3364e24-cdef-4f7c-b23a-f3989117af66 - ERROR: Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.
+      1 [ERROR] [/src/schema/mixins.py:320] d1e3e814-a1ba-4bb7-be09-a56337494fad - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
+      1 [ERROR] [/src/schema/mixins.py:320] cb25f11a-6a71-44cd-b2ec-8cf006726578 - ERROR: Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.
+      1 [ERROR] [/src/schema/mixins.py:320] c35ee128-8c03-4b5d-a7f0-801a0a7484f3 - ERROR: Error provisioning model deployment. Please try again later. Sorry for the inconvenience.
