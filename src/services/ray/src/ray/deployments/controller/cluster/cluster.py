@@ -149,8 +149,6 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                results["result"][model_key] = f"{size_in_bytes}\n{tb}"
-
                 for replica_id in range(replicas):
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
 
@@ -228,8 +226,6 @@ class Cluster:
 
             candidate_level = candidate.candidate_level
 
-            results["result"][model_key] = candidate_level.name
-
             if candidate_level == CandidateLevel.DEPLOYED:
                 logger.info(
                     f"=> {model_key} replica {replica_id} is already deployed on {self.nodes[node_id].name}"
@@ -255,6 +251,8 @@ class Cluster:
                 results["evictions"].update(candidate.evictions)
 
                 change = True
+
+            results["result"][(model_key, replica_id)] = candidate_level.name
 
         return results, change
 

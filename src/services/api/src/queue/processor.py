@@ -146,8 +146,8 @@ class Processor:
         self.in_flight = 0
 
         self.dedicated: Optional[bool] = None
-        self.current_request_ids: dict[int, Optional[str]] = {}
-        self.current_request_started_ats: dict[int, Optional[float]] = {}
+        self.current_request_ids: dict[int, Optional[str]] = {replica_id: None for replica_id in self.replica_ids}
+        self.current_request_started_ats: dict[int, Optional[float]] = {replica_id: None for replica_id in self.replica_ids}
 
 
     def remove_replica(self, replica_id: int, message: str) -> None:
@@ -193,7 +193,6 @@ class Processor:
         self._status = value
         self.status_changed_at = time.time()
 
-    @property
     def get_handle(self, replica_id: int) -> ray.actor.ActorHandle:
         """Get the Ray actor handle for this model's deployment.
 
@@ -394,7 +393,9 @@ class Processor:
         """
         while True:
             try:
+                logger.info(f"Checking if replica {replica_id} is ready")
                 handle = self.get_handle(replica_id)
+                logger.info(f"Handle: {handle}")
 
                 await submit(handle, "__ray_ready__")
 

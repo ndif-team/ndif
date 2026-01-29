@@ -110,7 +110,7 @@ class Node:
     def deploy(
         self,
         model_key: MODEL_KEY,
-        replica_id, int,
+        replica_id: int,
         candidate: Candidate,
         size_bytes: int,
         dedicated: Optional[bool] = None,
