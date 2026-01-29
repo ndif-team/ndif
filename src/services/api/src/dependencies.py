@@ -11,7 +11,7 @@ from .db import api_key_store
 from .schema import BackendRequestModel
 
 MIN_NNSIGHT_VERSION = os.getenv("MIN_NNSIGHT_VERSION", __version__)
-DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
+DEV_MODE = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
 
 
 async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
