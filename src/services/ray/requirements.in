@@ -1,4 +1,4 @@
-nnsight
+git+https://github.com/ndif-team/nnsight.git@v0.5.16
 ray[serve]==2.50.0
 python-slugify
 # Telemetry

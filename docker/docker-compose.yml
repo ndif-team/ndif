@@ -52,12 +52,24 @@ services:
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
 
     env_file:
-      - .env
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
+      - path: ../.env
+        required: false
 
   api:
     image: api:${API_VERSION}
     ports:
       - ${NDIF_API_PORT}:${NDIF_API_PORT}
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
+      - path: ../.env
+        required: false
     environment:
       NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
