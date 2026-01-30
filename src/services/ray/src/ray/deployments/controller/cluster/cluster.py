@@ -133,10 +133,31 @@ class Cluster:
 
         change = False
 
+        existing_replica_ids_by_model = {model_key: set() for model_key in model_keys}
+        if existing_replica_ids_by_model:
+            for node in self.nodes.values():
+                for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
+                    if deployment_model_key in existing_replica_ids_by_model:
+                        existing_replica_ids_by_model[deployment_model_key].add(deployment_replica_id)
+
         # First get the size of the models in bytes
         model_sizes_in_bytes = {
             model_key: self.evaluator(model_key) for model_key in model_keys
         }
+
+        def target_replica_ids_for(model_key: MODEL_KEY) -> List[int]:
+            existing_replica_ids = existing_replica_ids_by_model.get(model_key, set())
+            if not existing_replica_ids:
+                return list(range(replicas))
+
+            existing_sorted = sorted(existing_replica_ids)
+            current_replica_count = len(existing_sorted)
+            if current_replica_count >= replicas:
+                return existing_sorted
+
+            start_replica_id = existing_sorted[-1] + 1
+            needed = replicas - current_replica_count
+            return existing_sorted + list(range(start_replica_id, start_replica_id + needed))
 
         for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
             if isinstance(size_in_bytes, Exception):
@@ -149,7 +170,7 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                for replica_id in range(replicas):
+                for replica_id in target_replica_ids_for(model_key):
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
@@ -179,7 +200,7 @@ class Cluster:
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
             )
-            for replica_id in range(replicas):
+            for replica_id in target_replica_ids_for(model_key):
                 logger.info(
                     f"=> Analyzing deployment of {model_key} with replica {replica_id} with size {size_in_bytes}..."
                 )

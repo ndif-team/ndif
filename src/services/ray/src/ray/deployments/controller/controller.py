@@ -118,6 +118,14 @@ class _ControllerActor:
 
         return results
 
+    def _current_replica_count(self, model_key: MODEL_KEY) -> int:
+        existing_replica_ids = set()
+        for node in self.cluster.nodes.values():
+            for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
+                if deployment_model_key == model_key:
+                    existing_replica_ids.add(deployment_replica_id)
+        return len(existing_replica_ids)
+
     def scale(self, model_key: MODEL_KEY, replicas: int, dedicated: Optional[bool] = False):
         """Scale a model up to a replica count.
 
@@ -127,14 +135,7 @@ class _ControllerActor:
         if replicas <= 0:
             raise ValueError("replicas must be a positive integer")
 
-        # Determine existing deployed replica IDs for this model.
-        existing_replica_ids = []
-        for node in self.cluster.nodes.values():
-            for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
-                if deployment_model_key == model_key:
-                    existing_replica_ids.append(deployment_replica_id)
-
-        current_replica_count = len(set(existing_replica_ids))
+        current_replica_count = self._current_replica_count(model_key)
         if current_replica_count >= replicas:
             return {
                 "deploy": {"result": {}, "evictions": set()},
@@ -154,6 +155,28 @@ class _ControllerActor:
             "deploy": deploy_results,
             "current_replicas": current_replica_count,
             "target_replicas": replicas,
+            "changed": deploy_change,
+        }
+
+    def scale_up(self, model_key: MODEL_KEY, replicas: int, dedicated: Optional[bool] = False):
+        """Add a number of replicas to an existing deployment."""
+        if replicas <= 0:
+            raise ValueError("replicas must be a positive integer")
+
+        current_replica_count = self._current_replica_count(model_key)
+        target_replicas = current_replica_count + replicas
+
+        deploy_results, deploy_change = self.cluster.deploy(
+            [model_key], dedicated=dedicated, replicas=target_replicas
+        )
+
+        if deploy_change:
+            self.apply()
+
+        return {
+            "deploy": deploy_results,
+            "current_replicas": current_replica_count,
+            "target_replicas": target_replicas,
             "changed": deploy_change,
         }
 
