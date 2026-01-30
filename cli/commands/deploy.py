@@ -51,6 +51,14 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         click.echo(f"Getting actor handle for {model_key}...")
         controller = get_controller_actor_handle()
 
+        existing_deployment = ray.get(controller.get_deployment.remote(model_key))
+        if existing_deployment is not None:
+            click.echo(
+                f"✗ Error: {model_key} already has deployed replicas. "
+                "Use `ndif scale` to add replicas."
+            )
+            raise click.Abort()
+
         click.echo(f"Deploying {model_key} with {replicas} replicas...")
         object_ref = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated, replicas=replicas)
         results = ray.get(object_ref)
