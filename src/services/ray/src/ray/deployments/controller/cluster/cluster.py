@@ -184,75 +184,75 @@ class Cluster:
                     f"=> Analyzing deployment of {model_key} with replica {replica_id} with size {size_in_bytes}..."
                 )
 
-            candidates = {}
+                candidates = {}
 
-            # Check each node to see if the model can be deployed on it.
-            for node in self.nodes.values():
-                logger.info(
-                    f"==> Analyzing deployment of {model_key} with replica {replica_id} for node {node.name}..."
-                )
+                # Check each node to see if the model can be deployed on it.
+                for node in self.nodes.values():
+                    logger.info(
+                        f"==> Analyzing deployment of {model_key} with replica {replica_id} for node {node.name}..."
+                    )
 
-                # Evaluate the node to see if the model can be deployed on it.
-                candidate = node.evaluate(model_key, replica_id, size_in_bytes, dedicated=dedicated)
+                    # Evaluate the node to see if the model can be deployed on it.
+                    candidate = node.evaluate(model_key, replica_id, size_in_bytes, dedicated=dedicated)
 
-                logger.info(
-                    f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
-                )
+                    logger.info(
+                        f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
+                    )
 
-                # If the model is already deployed on this node, we can stop looking for nodes.
-                if candidate.candidate_level == CandidateLevel.DEPLOYED:
-                    candidates = {node.id: candidate}
-
-                    break
-
-                # If we haven't found a node yet, add this one to the candidates.
-                if len(candidates) == 0:
-                    candidates[node.id] = candidate
-
-                # If we have found a node, we need to see if this node is better than the current best node.
-                else:
-                    candidate_level = list(candidates.values())[0].candidate_level
-
-                    # If the candidate is the same level as the current best node, we can add it to the candidates.
-                    if candidate.candidate_level == candidate_level:
-                        candidates[node.id] = candidate
-
-                    # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
-                    elif candidate.candidate_level < candidate_level:
+                    # If the model is already deployed on this node, we can stop looking for nodes.
+                    if candidate.candidate_level == CandidateLevel.DEPLOYED:
                         candidates = {node.id: candidate}
 
-            # Pick a random node from the candidates.
-            node_id, candidate = random.choice(list(candidates.items()))
+                        break
 
-            candidate_level = candidate.candidate_level
+                    # If we haven't found a node yet, add this one to the candidates.
+                    if len(candidates) == 0:
+                        candidates[node.id] = candidate
 
-            if candidate_level == CandidateLevel.DEPLOYED:
-                logger.info(
-                    f"=> {model_key} replica {replica_id} is already deployed on {self.nodes[node_id].name}"
-                )
+                    # If we have found a node, we need to see if this node is better than the current best node.
+                    else:
+                        candidate_level = list(candidates.values())[0].candidate_level
 
-            elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
-                logger.error(f"=> {model_key} replica {replica_id} cannot be deployed on any node")
+                        # If the candidate is the same level as the current best node, we can add it to the candidates.
+                        if candidate.candidate_level == candidate_level:
+                            candidates[node.id] = candidate
 
-            else:
-                logger.info(
-                    f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
-                )
+                        # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
+                        elif candidate.candidate_level < candidate_level:
+                            candidates = {node.id: candidate}
 
-                self.nodes[node_id].deploy(
-                    model_key,
-                    replica_id, 
-                    candidate,
-                    size_in_bytes,
-                    dedicated=dedicated,
-                    exclude=set(model_keys),
-                )
+                # Pick a random node from the candidates.
+                node_id, candidate = random.choice(list(candidates.items()))
 
-                results["evictions"].update(candidate.evictions)
+                candidate_level = candidate.candidate_level
 
-                change = True
+                if candidate_level == CandidateLevel.DEPLOYED:
+                    logger.info(
+                        f"=> {model_key} replica {replica_id} is already deployed on {self.nodes[node_id].name}"
+                    )
 
-            results["result"][(model_key, replica_id)] = candidate_level.name
+                elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
+                    logger.error(f"=> {model_key} replica {replica_id} cannot be deployed on any node")
+
+                else:
+                    logger.info(
+                        f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
+                    )
+
+                    self.nodes[node_id].deploy(
+                        model_key,
+                        replica_id,
+                        candidate,
+                        size_in_bytes,
+                        dedicated=dedicated,
+                        exclude=set(model_keys),
+                    )
+
+                    results["evictions"].update(candidate.evictions)
+
+                    change = True
+
+                results["result"][(model_key, replica_id)] = candidate_level.name
 
         return results, change
 

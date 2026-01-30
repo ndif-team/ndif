@@ -36,7 +36,7 @@ class _ControllerActor:
         execution_timeout_seconds: float,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
-        replica_count: int,
+        replica_count: Optional[int] = None,
     ):
         super().__init__()
 
@@ -55,10 +55,10 @@ class _ControllerActor:
             model_cache_percentage=self.model_cache_percentage,
         )
 
-        self.cluster.update_nodes()
-
         if deployments and deployments != [""]:
             self._deploy(deployments, dedicated=True)
+
+        self.cluster.update_nodes()
 
         asyncio.create_task(self.check_nodes())
 
@@ -92,10 +92,11 @@ class _ControllerActor:
     def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: Optional[int] = None):
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        replica_count = self.replica_count if replicas is None else replicas
+        if replicas is None:
+            # default to 1
+            replicas = 1
 
-
-        results, change = self.cluster.deploy(model_keys, dedicated=dedicated, replicas=replica_count)
+        results, change = self.cluster.deploy(model_keys, dedicated=dedicated, replicas=replicas)
 
         if change:
             self.apply()
@@ -103,8 +104,9 @@ class _ControllerActor:
         return results
 
     async def deploy(
-        self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: Optional[int] = None
+        self, model_keys: List[MODEL_KEY], replicas: Optional[int] = None, dedicated: Optional[bool] = False, 
     ):
+        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}, replicas: {replicas}")
         return self._deploy(model_keys, dedicated=dedicated, replicas=replicas)
 
     def evict(self, model_keys: List[MODEL_KEY], replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None):
@@ -386,9 +388,6 @@ class ControllerDeploymentArgs(BaseModel):
     )
     model_cache_percentage: Optional[float] = float(
         os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
-    )
-    replica_count: Optional[int] = int(
-        os.environ.get("NDIF_REPLICA_COUNT", "1")
     )
 
 def app(**kwargs):
