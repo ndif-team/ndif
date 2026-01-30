@@ -480,6 +480,17 @@ class Dispatcher:
             self.logger.info(
                 f"Created processor for {model_key} due to deployment event"
             )
+        else:
+            if replicas is not None:
+                processor = self.processors[model_key]
+                current_ids = set(processor.replica_ids)
+                current_count = len(current_ids)
+                if replicas > current_count:
+                    start_replica_id = max(current_ids) + 1 if current_ids else 0
+                    for replica_id in range(
+                        start_replica_id, start_replica_id + (replicas - current_count)
+                    ):
+                        processor.add_replica(replica_id)
 
     async def _handle_evict_event(self, event_data: dict) -> None:
         """Handle EVICT event"""
