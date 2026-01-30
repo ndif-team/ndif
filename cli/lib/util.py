@@ -66,17 +66,20 @@ def get_controller_actor_handle(namespace: str = "NDIF") -> ray.actor.ActorHandl
     return ray.get_actor("Controller", namespace=namespace)
 
 
-def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.ActorHandle:
+def get_actor_handle(model_key: str, namespace: str = "NDIF", replica_id: int = 0) -> ray.actor.ActorHandle:
     """Get a Ray actor handle by model key and namespace.
 
     Args:
         model_key: Model key
         namespace: Ray namespace (default: "NDIF")
-
+        replica_id: Replica ID (default: 0)
     Returns:
         Ray actor handle
     """
-    return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
+    return ray.get_actor(model_actor_name(model_key, replica_id), namespace=namespace)
+
+def model_actor_name(model_key: str, replica_id: int = 0) -> str:
+    return f"ModelActor:{model_key}:{replica_id}"
 
 
 def get_model_key(checkpoint: str, revision: str = "main") -> str:
@@ -97,7 +100,7 @@ def get_model_key(checkpoint: str, revision: str = "main") -> str:
     return model.to_model_key()
 
 
-async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
+async def notify_dispatcher(redis_url: str, event_type: str, model_key: str, replicas: int | None = None, replica_id: int | None = None):
     """Notify dispatcher of deployment changes via Redis streams.
 
     Args:
@@ -107,13 +110,20 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """
     redis_client = redis.Redis.from_url(redis_url)
     try:
+        payload = {
+            "event_type": event_type,
+            "model_key": model_key,
+            "timestamp": str(time.time()),
+        }
+        if replicas is not None:
+            payload["replicas"] = replicas
+        if replica_id is not None:
+            payload["replica_id"] = replica_id
         await redis_client.xadd(
             "dispatcher:events",
-            {
-                "event_type": event_type,
-                "model_key": model_key,
-                "timestamp": str(time.time()),
-            }
+            payload,
         )
     finally:
         await redis_client.aclose()
+
+
