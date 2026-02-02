@@ -28,6 +28,25 @@ from ..lib.checks import (
 from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
 
+def _apply_cli_overrides(api_url: str = None, broker_url: str = None,
+                         object_store_url: str = None, ray_address: str = None,
+                         ray_dashboard_port: int = None):
+    """Apply CLI argument overrides to environment variables.
+
+    CLI arguments take precedence over environment variables.
+    """
+    if api_url is not None:
+        os.environ['NDIF_API_URL'] = api_url
+    if broker_url is not None:
+        os.environ['NDIF_BROKER_URL'] = broker_url
+    if object_store_url is not None:
+        os.environ['NDIF_OBJECT_STORE_URL'] = object_store_url
+    if ray_address is not None:
+        os.environ['NDIF_RAY_ADDRESS'] = ray_address
+    if ray_dashboard_port is not None:
+        os.environ['NDIF_RAY_DASHBOARD_PORT'] = str(ray_dashboard_port)
+
+
 @click.command()
 @click.argument('service', type=click.Choice(
     ['api', 'ray', 'broker', 'object-store', 'all'],
@@ -35,7 +54,13 @@ from ..lib.deps import start_redis as util_start_redis, start_object_store as ut
 ), default='all')
 @click.option('--worker', is_flag=True, help='Start as Ray worker node (connects to existing head)')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
-def start(service: str, worker: bool, verbose: bool):
+@click.option('--api-url', default=None, help='API URL (default: from NDIF_API_URL)')
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+@click.option('--object-store-url', default=None, help='Object store URL (default: from NDIF_OBJECT_STORE_URL)')
+@click.option('--ray-address', default=None, help='Ray head address for worker mode (default: from NDIF_RAY_ADDRESS)')
+@click.option('--ray-dashboard-port', type=int, default=None, help='Ray dashboard port (default: from NDIF_RAY_DASHBOARD_PORT)')
+def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: str,
+          object_store_url: str, ray_address: str, ray_dashboard_port: int):
     """Start NDIF services.
 
     SERVICE: Which service to start (api, ray, broker, object-store, or all). Default: all
@@ -50,16 +75,21 @@ def start(service: str, worker: bool, verbose: bool):
         ndif start broker                       # Start broker (Redis) only
         ndif start --verbose                    # Start with logs visible
         ndif start --worker                     # Start as Ray worker node
+        ndif start --api-url http://localhost:8080  # Start with custom API URL
+        ndif start --broker-url redis://host:6379   # Use custom broker
 
-    Key Environment Variables:
-        NDIF_BROKER_URL          - Broker URL (default: redis://localhost:6379/)
-        NDIF_OBJECT_STORE_URL    - Object store URL (default: http://localhost:27017)
-        NDIF_API_PORT            - API port (default: 8001)
-        NDIF_RAY_TEMP_DIR        - Ray temp directory (default: /tmp/ray)
-        NDIF_RAY_ADDRESS         - Ray head address for workers (default: ray://localhost:10001)
-        NDIF_SESSION_ROOT        - Session directory (default: ~/.ndif)
+    CLI arguments take precedence over environment variables.
     """
     print_logo()
+
+    # Apply CLI overrides to environment (takes precedence over env vars)
+    _apply_cli_overrides(
+        api_url=api_url,
+        broker_url=broker_url,
+        object_store_url=object_store_url,
+        ray_address=ray_address,
+        ray_dashboard_port=ray_dashboard_port,
+    )
 
     repo_root = get_repo_root()
 

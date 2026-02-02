@@ -27,7 +27,8 @@ KEY_PACKAGES = [
 @click.option('--json-output', 'json_flag', is_flag=True, help='Output as JSON')
 @click.option('--all', 'show_all', is_flag=True, help='Show all installed packages (default: key packages only)')
 @click.option('--local', is_flag=True, help='Show local system info instead of cluster env')
-def env(json_flag: bool, show_all: bool, local: bool):
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
     """Show Ray cluster environment information.
 
     Displays Python version and installed packages from the Ray cluster,
@@ -38,14 +39,16 @@ def env(json_flag: bool, show_all: bool, local: bool):
         ndif env --all             # Show all installed packages
         ndif env --json-output     # Output as JSON
         ndif env --local           # Show local system info
+        ndif env --broker-url redis://host:6379  # Query specific broker
     """
     if local:
         _show_local_env(json_flag)
         return
 
-    # Get broker URL from session or defaults
-    session = get_current_session()
-    broker_url = session.config.broker_url if session else get_env("NDIF_BROKER_URL")
+    # Get broker URL: CLI arg > session > env default
+    if broker_url is None:
+        session = get_current_session()
+        broker_url = session.config.broker_url if session else get_env("NDIF_BROKER_URL")
 
     # Check if Redis is reachable
     if not check_redis(broker_url):
