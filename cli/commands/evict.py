@@ -10,24 +10,24 @@ from ..lib.session import get_env
 
 
 @click.command()
-@click.argument('checkpoint', required=False)
+@click.argument('checkpoints', nargs=-1)
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
-@click.option('--all', 'evict_all', is_flag=True, help='Evict all deployments')
+@click.option('--all', 'evict_all', is_flag=True, help='Evict all HOT deployments')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str):
-    """Evict (remove) a model deployment.
+def evict(checkpoints: tuple, revision: str, evict_all: bool, ray_address: str, broker_url: str):
+    """Evict (remove) one or more model deployments.
 
-    CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
-                Optional if using --all flag
+    CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
+                 Optional if using --all flag
 
-    This command removes a running model deployment to free up resources.
+    This command removes running model deployments to free up resources.
 
     Examples:
         ndif evict gpt2
+        ndif evict gpt2 meta-llama/Llama-3.1-8b
         ndif evict meta-llama/Llama-2-7b-hf --revision main
-        ndif evict --all                               # Evict all deployments
-        ndif evict openai-community/gpt2 --ray-address ray://localhost:10001
+        ndif evict --all                               # Evict all HOT deployments
     """
     # Use session defaults if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -38,12 +38,12 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)
 
         # Validate arguments
-        if not evict_all and not checkpoint:
-            click.echo("✗ Error: Must provide either CHECKPOINT or --all flag", err=True)
+        if not evict_all and not checkpoints:
+            click.echo("✗ Error: Must provide either CHECKPOINTS or --all flag", err=True)
             raise click.Abort()
 
-        if evict_all and checkpoint:
-            click.echo("✗ Error: Cannot use both CHECKPOINT and --all flag", err=True)
+        if evict_all and checkpoints:
+            click.echo("✗ Error: Cannot use both CHECKPOINTS and --all flag", err=True)
             raise click.Abort()
 
         # Connect to Ray (suppress verbose output)
@@ -74,22 +74,31 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
                 return
 
         else:
-            # Single model eviction
-            click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
-
-            # TODO: revision bug ("main" is not always the default revision)
-            model_key = get_model_key(checkpoint, revision)
-
-            model_keys = [model_key]
+            # Generate model keys for all checkpoints
+            model_keys = []
+            for checkpoint in checkpoints:
+                click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
+                # TODO: revision bug ("main" is not always the default revision)
+                model_key = get_model_key(checkpoint, revision)
+                model_keys.append(model_key)
+                click.echo(f"  Model key: {model_key}")
 
         # Evict the models
-        if not evict_all:
-            click.echo(f"Evicting {checkpoint}...")
-        else:
-            click.echo(f"Evicting {len(model_keys)} model(s)...")
+        click.echo(f"Evicting {len(model_keys)} model(s)...")
 
         object_ref = controller.evict.remote(model_keys=model_keys)
         results = ray.get(object_ref)
+
+        # Build model_key -> checkpoint mapping for display
+        if evict_all:
+            # Use repo_id from deployments dict
+            key_to_name = {
+                d.get("model_key"): d.get("repo_id", d.get("model_key"))
+                for d in deployments.values()
+            }
+        else:
+            # Map model_keys back to checkpoints
+            key_to_name = dict(zip(model_keys, checkpoints))
 
         # Display results
         total_gpus_freed = 0
@@ -98,28 +107,21 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         not_found_count = 0
 
         for model_key, result in results.items():
-            # Extract repo_id for display from deployments dict if available
-            if evict_all:
-                repo_id = next(
-                    (d["repo_id"] for d in deployments.values() if d.get("model_key") == model_key),
-                    model_key
-                )
-            else:
-                repo_id = checkpoint
+            display_name = key_to_name.get(model_key, model_key)
 
             if result["status"] == "not_found":
                 if len(model_keys) == 1:
-                    click.echo(f"✗ {repo_id} not found")
+                    click.echo(f"✗ {display_name} not found")
                 else:
-                    click.echo(f"  ✗ {repo_id}: not found")
+                    click.echo(f"  ✗ {display_name}: not found")
                 not_found_count += 1
             else:
                 if len(model_keys) == 1:
-                    click.echo(f"✓ Evicted {repo_id}")
+                    click.echo(f"✓ Evicted {display_name}")
                     click.echo(f"  GPUs freed: {result['freed_gpus']}")
                     click.echo(f"  Memory freed: {round(result['freed_memory_gbs'], 4)} GB")
                 else:
-                    click.echo(f"  ✓ {repo_id}: evicted")
+                    click.echo(f"  ✓ {display_name}: evicted")
 
                 total_gpus_freed += result['freed_gpus']
                 total_memory_freed += result['freed_memory_gbs']
