@@ -110,6 +110,26 @@ class _ControllerActor:
 
         return results
 
+    def flush_warm_cache(self, node_ids: Optional[List[str]] = None) -> dict:
+        """Flush WARM cache from specified nodes (or all nodes).
+
+        This removes all WARM (CPU-cached) models, transitioning them to COLD.
+
+        Args:
+            node_ids: Optional list of node IDs to flush. Defaults to all nodes.
+
+        Returns:
+            Dict with per-node flush results including flushed model keys and memory freed.
+        """
+        results = self.cluster.flush_warm_cache(node_ids)
+
+        # Update state to remove flushed deployments
+        for node_id, flush_result in results.items():
+            for model_key in flush_result["flushed"]:
+                self.state.pop((node_id, model_key), None)
+
+        return results
+
     def build(self):
         new_state = {}
 

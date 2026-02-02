@@ -13,21 +13,24 @@ from ..lib.session import get_env
 @click.argument('checkpoints', nargs=-1)
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all HOT deployments')
+@click.option('--flush-cache', 'flush_cache', is_flag=True, help='Flush all WARM models from CPU cache')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def evict(checkpoints: tuple, revision: str, evict_all: bool, ray_address: str, broker_url: str):
+def evict(checkpoints: tuple, revision: str, evict_all: bool, flush_cache: bool, ray_address: str, broker_url: str):
     """Evict (remove) one or more model deployments.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
-                 Optional if using --all flag
+                 Optional if using --all or --flush-cache flags
 
     This command removes running model deployments to free up resources.
+    Use --flush-cache to clear all WARM (CPU-cached) models.
 
     Examples:
         ndif evict gpt2
         ndif evict gpt2 meta-llama/Llama-3.1-8b
         ndif evict meta-llama/Llama-2-7b-hf --revision main
         ndif evict --all                               # Evict all HOT deployments
+        ndif evict --flush-cache                       # Flush all WARM models from cache
     """
     # Use session defaults if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -38,11 +41,14 @@ def evict(checkpoints: tuple, revision: str, evict_all: bool, ray_address: str, 
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)
 
         # Validate arguments
-        if not evict_all and not checkpoints:
-            click.echo("✗ Error: Must provide either CHECKPOINTS or --all flag", err=True)
+        if flush_cache:
+            if checkpoints or evict_all:
+                click.echo("✗ Error: --flush-cache cannot be combined with checkpoints or --all", err=True)
+                raise click.Abort()
+        elif not evict_all and not checkpoints:
+            click.echo("✗ Error: Must provide either CHECKPOINTS, --all, or --flush-cache", err=True)
             raise click.Abort()
-
-        if evict_all and checkpoints:
+        elif evict_all and checkpoints:
             click.echo("✗ Error: Cannot use both CHECKPOINTS and --all flag", err=True)
             raise click.Abort()
 
@@ -53,6 +59,29 @@ def evict(checkpoints: tuple, revision: str, evict_all: bool, ray_address: str, 
         # Get controller actor handle
         click.echo("Getting controller handle...")
         controller = get_controller_actor_handle()
+
+        # Handle flush cache
+        if flush_cache:
+            click.echo("Flushing WARM cache from all nodes...")
+            results = ray.get(controller.flush_warm_cache.remote())
+
+            total_flushed = 0
+            total_memory = 0
+
+            for node_id, result in results.items():
+                flushed = result["flushed"]
+                memory = result["memory_freed_bytes"]
+                total_flushed += len(flushed)
+                total_memory += memory
+
+                if flushed:
+                    click.echo(f"  Node {node_id[:8]}...: {len(flushed)} model(s), {memory / (1024**3):.2f} GB freed")
+
+            if total_flushed == 0:
+                click.echo("No WARM models to flush.")
+            else:
+                click.echo(f"\n✓ Flushed {total_flushed} WARM model(s), freed {total_memory / (1024**3):.2f} GB")
+            return
 
         # Determine which model keys to evict
         if evict_all:

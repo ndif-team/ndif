@@ -286,3 +286,24 @@ class Cluster:
                 results[model_key] = {"status": "not_found"}
 
         return results, change
+
+    def flush_warm_cache(self, node_ids: Optional[List[str]] = None) -> dict:
+        """Flush WARM cache from specified nodes (or all nodes).
+
+        Args:
+            node_ids: List of node IDs to flush. If None, flush all nodes.
+
+        Returns:
+            Dict mapping node_id -> flush results
+        """
+        results = {}
+
+        if node_ids is not None:
+            target_nodes = [n for n in self.nodes.values() if n.id in node_ids]
+        else:
+            target_nodes = list(self.nodes.values())
+
+        for node in target_nodes:
+            results[node.id] = node.flush_cache()
+
+        return results
