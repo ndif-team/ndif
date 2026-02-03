@@ -260,7 +260,9 @@ class Processor:
 
             self.dedicated = await self.check_dedicated(controller)
 
-            if not self.dedicated:
+            if not self.dedicated and not self.queue.empty():
+                # Only filter if there are requests waiting.
+                # An empty queue means we're provisioning preemptively (e.g., from CLI).
                 hotswap = False
 
                 valid_queue = list()
@@ -440,19 +442,14 @@ class Processor:
             self.current_request_id = None
             self.current_request_started_at = None
 
-    async def processor_worker(self, provision: bool = True) -> None:
+    async def processor_worker(self) -> None:
         """Main asyncio task managing the processor lifecycle and request loop.
 
         This is the primary entry point for processor operation. It handles:
             1. Spawning the reply_worker for status updates
-            2. Provisioning the model deployment (if requested)
+            2. Provisioning the model deployment
             3. Waiting for model initialization
             4. Processing requests from the queue sequentially
-
-        Args:
-            provision: If True, request a new deployment from the Controller.
-                If False, assume the model is already deployed (used when
-                responding to external deployment events).
 
         Note:
             This method runs indefinitely until the processor status becomes
@@ -465,10 +462,7 @@ class Processor:
 
         asyncio.create_task(self.reply_worker())
 
-        if provision:
-            await self.provision()
-        else:
-            self.status = ProcessorStatus.READY
+        await self.provision()
 
         if self.status == ProcessorStatus.CANCELLED:
             return

@@ -466,7 +466,7 @@ class Dispatcher:
         if model_key not in self.processors:
             processor = Processor(model_key, self.eviction_queue, self.error_queue)
             self.processors[model_key] = processor
-            asyncio.create_task(processor.processor_worker(provision=False))
+            asyncio.create_task(processor.processor_worker())
             self.logger.info(
                 f"Created processor for {model_key} due to deployment event"
             )
