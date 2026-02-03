@@ -14,7 +14,7 @@ from ..lib.session import get_env
 @click.command()
 @click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
-@click.option('--replica-id', default=0, help='Replica ID (default: 0)')
+@click.option('--replica-id', default=0, type=int, help='Replica ID (default: 0)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def restart(checkpoint: str, revision: str, ray_address: str, replica_id: int):
     """Restart a model deployment.

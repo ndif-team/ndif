@@ -15,7 +15,7 @@ from ..lib.session import get_env
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all deployments')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-@click.option('--replica-id', default=None, help='Replica ID to evict (default: None, evict all replicas)')
+@click.option('--replica-id', default=None, type=int, help='Replica ID to evict (default: None, evict all replicas)')
 
 def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str, replica_id: int | None):
     """Evict (remove) a model deployment.
@@ -99,7 +99,9 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         else:
             click.echo(f"Evicting {len(model_keys)} model(s)...")
 
-        object_ref = controller.evict.remote(model_keys=model_keys, replica_keys=replica_keys)
+        object_ref = controller.evict.remote(
+            model_keys=model_keys, replica_keys=replica_keys
+        )
         results = ray.get(object_ref)
 
         # Display results

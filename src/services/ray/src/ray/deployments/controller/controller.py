@@ -47,6 +47,7 @@ class _ControllerActor:
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
         self.replica_count = replica_count
+        self.desired_replicas: Dict[MODEL_KEY, int] = {}
 
         self.state: dict[tuple[str, str, int], Deployment] = dict()
 
@@ -95,6 +96,8 @@ class _ControllerActor:
         if replicas is None:
             # default to 1
             replicas = 1
+        for model_key in model_keys:
+            self.desired_replicas[model_key] = replicas
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated, replicas=replicas)
 
@@ -109,9 +112,29 @@ class _ControllerActor:
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}, replicas: {replicas}")
         return self._deploy(model_keys, dedicated=dedicated, replicas=replicas)
 
-    def evict(self, model_keys: List[MODEL_KEY], replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None):
+    def evict(
+        self,
+        model_keys: List[MODEL_KEY],
+        replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,
+        cache: bool = True,
+    ):
         """Evict models from the cluster."""
-        results, change = self.cluster.evict(model_keys, replica_keys=replica_keys)
+        if replica_keys:
+            evicted_by_model: Dict[MODEL_KEY, int] = {}
+            for model_key, _replica_id in replica_keys:
+                evicted_by_model[model_key] = evicted_by_model.get(model_key, 0) + 1
+            for model_key, count in evicted_by_model.items():
+                current_desired = self.desired_replicas.get(
+                    model_key, self._current_replica_count(model_key)
+                )
+                self.desired_replicas[model_key] = max(0, current_desired - count)
+        else:
+            for model_key in model_keys:
+                self.desired_replicas[model_key] = 0
+
+        results, change = self.cluster.evict(
+            model_keys, replica_keys=replica_keys, cache=cache
+        )
 
         if change:
             self.apply()
@@ -144,6 +167,7 @@ class _ControllerActor:
                 "changed": False,
             }
 
+        self.desired_replicas[model_key] = replicas
         deploy_results, deploy_change = self.cluster.deploy(
             [model_key], dedicated=dedicated, replicas=replicas
         )
@@ -166,6 +190,7 @@ class _ControllerActor:
         current_replica_count = self._current_replica_count(model_key)
         target_replicas = current_replica_count + replicas
 
+        self.desired_replicas[model_key] = target_replicas
         deploy_results, deploy_change = self.cluster.deploy(
             [model_key], dedicated=dedicated, replicas=target_replicas
         )
@@ -187,7 +212,6 @@ class _ControllerActor:
         deployments_from_cache = []
         deployments_to_create = []
         deployments_to_delete = []
-
         # For every node
         for id, node in self.cluster.nodes.items():
             # For every cached deployment

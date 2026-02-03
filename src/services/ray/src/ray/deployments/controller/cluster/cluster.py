@@ -288,7 +288,12 @@ class Cluster:
 
         return results, change
 
-    def evict(self, model_keys: List[MODEL_KEY], replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,):
+    def evict(
+        self,
+        model_keys: List[MODEL_KEY],
+        replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,
+        cache: bool = True,
+    ):
         """Evict models from the cluster.
 
         Returns:
@@ -308,7 +313,7 @@ class Cluster:
                     if deployment is None:
                         continue
 
-                    node.evict(model_key, replica_id)
+                    node.evict(model_key, replica_id, cache=cache)
                     results[model_key, replica_id] = {
                         "status": "evicted",
                         "node": node.name,
@@ -337,8 +342,8 @@ class Cluster:
                     deployment_model_key, deployment_replica_id = deployment_key
                     if deployment_model_key != model_key:
                         continue
-                    
-                    node.evict(deployment_model_key, deployment_replica_id)
+
+                    node.evict(deployment_model_key, deployment_replica_id, cache=cache)
                     results[deployment_model_key, deployment_replica_id] = {
                         "status": "evicted",
                         "node": node.name,

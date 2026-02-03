@@ -209,7 +209,13 @@ class Node:
             # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
 
-    def evict(self, model_key: MODEL_KEY, replica_id: int, exclude: Optional[Set[MODEL_KEY]] = None):
+    def evict(
+        self,
+        model_key: MODEL_KEY,
+        replica_id: int,
+        exclude: Optional[Set[MODEL_KEY]] = None,
+        cache: bool = True,
+    ):
         deployment = self.deployments[(model_key, replica_id)]
 
         for gpu_id, bytes_used in deployment.gpu_mem_bytes_by_id.items():
@@ -254,7 +260,7 @@ class Node:
 
         del self.deployments[(model_key, replica_id)]
 
-        if cpu_memory_needed <= 0:
+        if cpu_memory_needed <= 0 and cache:
             self.resources.available_cpu_memory_bytes -= deployment.size_bytes
 
             self.cache[(model_key, replica_id)] = Deployment(
