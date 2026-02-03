@@ -24,6 +24,7 @@ from ..lib.checks import (
     preflight_check_broker,
     preflight_check_object_store,
     run_preflight_checks,
+    wait_for_services,
 )
 from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
@@ -54,12 +55,13 @@ def _apply_cli_overrides(api_url: str = None, broker_url: str = None,
 ), default='all')
 @click.option('--worker', is_flag=True, help='Start as Ray worker node (connects to existing head)')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
+@click.option('--timeout', type=int, default=120, help='Timeout in seconds for services to become ready (default: 120)')
 @click.option('--api-url', default=None, help='API URL (default: from NDIF_API_URL)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
 @click.option('--object-store-url', default=None, help='Object store URL (default: from NDIF_OBJECT_STORE_URL)')
 @click.option('--ray-address', default=None, help='Ray head address for worker mode (default: from NDIF_RAY_ADDRESS)')
 @click.option('--ray-dashboard-port', type=int, default=None, help='Ray dashboard port (default: from NDIF_RAY_DASHBOARD_PORT)')
-def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: str,
+def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str, broker_url: str,
           object_store_url: str, ray_address: str, ray_dashboard_port: int):
     """Start NDIF services.
 
@@ -115,29 +117,33 @@ def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: s
         click.echo("\nUse 'ndif info' to see session status.")
         return
 
-    click.echo(f"Services to start: {', '.join(services_to_start)}")
-    click.echo()
+    if verbose:
+        click.echo(f"Services to start: {', '.join(services_to_start)}")
+        click.echo()
 
     # Run ALL pre-flight checks before creating session
     click.echo("Running pre-flight checks...")
     all_checks = []
 
     if 'broker' in services_to_start:
-        click.echo("  Broker:")
+        if verbose:
+            click.echo("  Broker:")
         checks = preflight_check_broker(config.broker_port)
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'object-store' in services_to_start:
-        click.echo("  Object store:")
+        if verbose:
+            click.echo("  Object store:")
         checks = preflight_check_object_store(config.object_store_port)
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'ray' in services_to_start:
-        click.echo("  Ray:")
+        if verbose:
+            click.echo("  Ray:")
         checks = preflight_check_ray(
             config.ray_temp_dir,
             config.object_store_url,
@@ -149,11 +155,12 @@ def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: s
             skip_object_store_check='object-store' in services_to_start,
         )
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'api' in services_to_start:
-        click.echo("  API:")
+        if verbose:
+            click.echo("  API:")
         checks = preflight_check_api(
             config.api_port,
             config.broker_url,
@@ -162,10 +169,13 @@ def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: s
             skip_object_store_check='object-store' in services_to_start,
         )
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
-    click.echo("\n✓ All pre-flight checks passed")
+    if verbose:
+        click.echo("\n✓ All pre-flight checks passed")
+    else:
+        click.echo("  ✓ All pre-flight checks passed")
     click.echo()
 
     # Now create or reuse session
@@ -173,9 +183,10 @@ def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: s
         session = existing_session
     else:
         session = Session.create()
-        click.echo(f"Session: {session.config.session_id}")
-        click.echo(f"  Logs: {session.logs_dir}")
-        click.echo()
+        if verbose:
+            click.echo(f"Session: {session.config.session_id}")
+            click.echo(f"  Logs: {session.logs_dir}")
+            click.echo()
 
     # Track what we've started for rollback
     started_services = []
@@ -220,7 +231,26 @@ def start(service: str, worker: bool, verbose: bool, api_url: str, broker_url: s
             _rollback(session, started_services, processes, existing_session is None)
             sys.exit(0)
     else:
-        click.echo("\n✓ Services started successfully.")
+        # Wait for services to be ready
+        click.echo("Waiting for services to be ready...")
+
+        success, failed = wait_for_services(
+            broker_url=session.config.broker_url if 'broker' in started_services else None,
+            minio_url=session.config.object_store_url if 'object-store' in started_services else None,
+            ray_address=session.config.ray_address if 'ray' in started_services else None,
+            api_url=session.config.api_url if 'api' in started_services else None,
+            timeout=timeout,
+        )
+
+        if not success:
+            click.echo(f"\n✗ Services failed to become ready: {', '.join(failed)}", err=True)
+            _rollback(session, started_services, processes, existing_session is None)
+            sys.exit(1)
+
+        click.echo("\n✓ All services ready.")
+        click.echo()
+        click.echo(f"Session: {session.config.session_id}")
+        click.echo(f"  Logs: {session.logs_dir}")
         click.echo("\nTo view logs:")
         for name in started_services:
             if name in ('api', 'ray'):
@@ -344,10 +374,9 @@ def _start_broker(session: Session, verbose: bool):
             click.echo(f"  ✓ {message} (PID: {pid})")
         else:
             click.echo(f"  ✓ {message}")
+        click.echo()
     else:
         raise RuntimeError(f"Failed to start broker: {message}")
-
-    click.echo()
 
 
 def _start_object_store(session: Session, verbose: bool):
@@ -365,10 +394,9 @@ def _start_object_store(session: Session, verbose: bool):
             click.echo(f"  ✓ {message} (PID: {pid})")
         else:
             click.echo(f"  ✓ {message}")
+        click.echo()
     else:
         raise RuntimeError(f"Failed to start object store: {message}")
-
-    click.echo()
 
 
 def _start_api(session: Session, repo_root: Path, verbose: bool):
@@ -382,13 +410,14 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
     click.echo("Starting NDIF API service...")
     click.echo(f"  Port: {session.config.api_port}")
     click.echo(f"  Workers: {session.config.api_workers}")
-    click.echo(f"  Broker: {session.config.broker_url}")
-    click.echo(f"  Object Store: {session.config.object_store_url}")
-    click.echo(f"  Ray: {session.config.ray_address}")
+    if verbose:
+        click.echo(f"  Broker: {session.config.broker_url}")
+        click.echo(f"  Object Store: {session.config.object_store_url}")
+        click.echo(f"  Ray: {session.config.ray_address}")
 
     log_dir = session.get_service_log_dir('api')
     log_file = log_dir / "output.log"
-    if not verbose:
+    if verbose:
         click.echo(f"  Logs: {log_file}")
     click.echo()
 
@@ -434,15 +463,16 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         raise RuntimeError(f"start.sh not found at {start_script}")
 
     click.echo("Starting NDIF Ray service...")
-    click.echo(f"  Object Store: {session.config.object_store_url}")
-    click.echo(f"  API: {session.config.api_url}")
-    click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
+    if verbose:
+        click.echo(f"  Object Store: {session.config.object_store_url}")
+        click.echo(f"  API: {session.config.api_url}")
+        click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
     click.echo(f"  Head Port: {session.config.ray_head_port}")
     click.echo(f"  Dashboard: {session.config.ray_dashboard_port}")
 
     log_dir = session.get_service_log_dir('ray')
     log_file = log_dir / "output.log"
-    if not verbose:
+    if verbose:
         click.echo(f"  Logs: {log_file}")
     click.echo()
 

@@ -120,6 +120,58 @@ def check_ray(ray_address: str, timeout: int = 2) -> bool:
         return False
 
 
+def wait_for_services(
+    broker_url: str = None,
+    minio_url: str = None,
+    ray_address: str = None,
+    api_url: str = None,
+    timeout: int = 120,
+    poll_interval: float = 2.0,
+) -> tuple[bool, list[str]]:
+    """Wait for services to become ready.
+
+    Args:
+        broker_url: Broker (Redis) URL to check (None = skip)
+        minio_url: MinIO URL to check (None = skip)
+        ray_address: Ray address to check (None = skip)
+        api_url: API URL to check (None = skip)
+        timeout: Maximum seconds to wait
+        poll_interval: Seconds between checks
+
+    Returns:
+        Tuple of (success, list of services that failed to become ready)
+    """
+    import time
+    import click
+
+    services = {}
+    if broker_url:
+        services['broker'] = lambda: check_redis(broker_url)
+    if minio_url:
+        services['object-store'] = lambda: check_minio(minio_url)
+    if ray_address:
+        services['ray'] = lambda: check_ray(ray_address)
+    if api_url:
+        services['api'] = lambda: check_api(api_url)
+
+    if not services:
+        return True, []
+
+    pending = set(services.keys())
+    start_time = time.time()
+
+    while pending and (time.time() - start_time) < timeout:
+        for name in list(pending):
+            if services[name]():
+                click.echo(f"  ✓ {name.capitalize()} ready")
+                pending.remove(name)
+
+        if pending:
+            time.sleep(poll_interval)
+
+    return len(pending) == 0, list(pending)
+
+
 def check_prerequisites(broker_url: str = None, minio_url: str = None,
                        api_url: str = None, ray_address: str = None,
                        verbose: bool = False):
