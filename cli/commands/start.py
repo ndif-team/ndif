@@ -25,6 +25,7 @@ from ..lib.checks import (
     preflight_check_object_store,
     run_preflight_checks,
     wait_for_services,
+    preflight_check_worker,
 )
 from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
 
@@ -516,7 +517,6 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
 
 def _start_worker_mode(repo_root: Path, verbose: bool):
     """Handle starting as a Ray worker node."""
-    from ..lib.checks import preflight_check_worker
 
     # Check for existing session
     existing_session = get_current_session()

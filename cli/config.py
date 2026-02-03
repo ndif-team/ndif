@@ -9,6 +9,7 @@ Example:
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -32,7 +33,6 @@ NDIF_SESSION_ROOT = os.path.expanduser("~/.ndif")
 
 def _build_env_vars():
     """Build ENV_VARS dict from NDIF_* variables in this module and os.environ."""
-    import sys
     module = sys.modules[__name__]
     env_vars = {}
     # First, get from os.environ (includes vars loaded from .env files)

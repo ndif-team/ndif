@@ -2,6 +2,7 @@
 
 import json
 import click
+import ray
 
 from ..lib.session import (
     get_current_session,
@@ -184,7 +185,6 @@ def _output_human(session, show_env: bool):
 def _show_ray_nodes(ray_address: str):
     """Show Ray cluster nodes."""
     try:
-        import ray
         if not ray.is_initialized():
             ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 

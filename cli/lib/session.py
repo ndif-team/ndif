@@ -19,6 +19,8 @@ Session directory structure:
 import json
 import os
 import getpass
+import socket
+import subprocess
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -413,7 +415,6 @@ def get_pids_on_port(port: int) -> list[int]:
     Returns:
         List of PIDs using the port
     """
-    import subprocess
 
     try:
         # Use lsof to find processes listening on the port
@@ -445,7 +446,6 @@ def is_port_in_use(port: int) -> bool:
     Returns:
         True if port is in use
     """
-    import socket
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

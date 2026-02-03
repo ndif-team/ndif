@@ -14,6 +14,14 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import redis as redis_sync
+import requests
+import time
+import click
+import sys
+import pwd
+import subprocess
+
 
 @dataclass
 class CheckResult:
@@ -43,7 +51,6 @@ def check_redis(redis_url: str, timeout: int = 2) -> bool:
         True if Redis is reachable, False otherwise
     """
     try:
-        import redis as redis_sync
         client = redis_sync.Redis.from_url(redis_url, socket_connect_timeout=timeout)
         client.ping()
         client.close()
@@ -63,7 +70,6 @@ def check_minio(minio_url: str, timeout: int = 2) -> bool:
         True if MinIO is reachable, False otherwise
     """
     try:
-        import requests
         # Try to access the MinIO health endpoint
         response = requests.get(f"{minio_url}/minio/health/live", timeout=timeout)
         return response.status_code == 200
@@ -82,7 +88,6 @@ def check_api(api_url: str, timeout: int = 2) -> bool:
         True if API is reachable, False otherwise
     """
     try:
-        import requests
         # Try to access the API ping endpoint
         response = requests.get(f"{api_url}/ping", timeout=timeout)
         return response.status_code == 200
@@ -101,9 +106,6 @@ def check_ray(ray_address: str, timeout: int = 2) -> bool:
         True if Ray port is listening, False otherwise
     """
     try:
-        import socket
-        from urllib.parse import urlparse
-
         # Parse the ray address to get host and port
         # ray://localhost:10001 -> localhost, 10001
         parsed = urlparse(ray_address)
@@ -141,9 +143,6 @@ def wait_for_services(
     Returns:
         Tuple of (success, list of services that failed to become ready)
     """
-    import time
-    import click
-
     services = {}
     if broker_url:
         services['broker'] = lambda: check_redis(broker_url)
@@ -184,8 +183,6 @@ def check_prerequisites(broker_url: str = None, minio_url: str = None,
         ray_address: Ray address to check (optional)
         verbose: If True, show checking messages and success. If False, only show errors.
     """
-    import click
-    import sys
 
     if verbose:
         click.echo("Checking prerequisites...")
@@ -285,7 +282,6 @@ def check_directory_writable(path: str | Path) -> CheckResult:
     except PermissionError:
         # Get owner info
         try:
-            import pwd
             stat_info = path.stat()
             owner = pwd.getpwuid(stat_info.st_uid).pw_name
             details = f"Directory owned by '{owner}', current user is '{os.environ.get('USER', 'unknown')}'"
@@ -337,7 +333,6 @@ def check_port_available(port: int, service_name: str = "service") -> CheckResul
 
 def _get_port_user(port: int) -> str:
     """Get information about what process is using a port."""
-    import subprocess
 
     try:
         # Try lsof first
@@ -419,7 +414,6 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
     # Check for common Ray temp dir issues
     # Ray creates subdirectories, so we need enough space
     try:
-        import shutil
         total, used, free = shutil.disk_usage(temp_dir)
         free_gb = free / (1024**3)
         if free_gb < 1:
@@ -611,7 +605,6 @@ def run_preflight_checks(checks: list[CheckResult], verbose: bool = True) -> boo
     Returns:
         True if all checks passed, False otherwise
     """
-    import click
 
     all_passed = True
 
