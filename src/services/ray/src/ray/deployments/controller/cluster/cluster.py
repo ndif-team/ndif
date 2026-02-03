@@ -128,6 +128,12 @@ class Cluster:
         Returns:
             Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
         """
+        def _gib(bytes_value: Optional[int]) -> Optional[float]:
+            if bytes_value is None:
+                return None
+            return bytes_value / (1024 ** 3)
+        def _gib_map(bytes_by_id: Dict[int, int]) -> Dict[int, float]:
+            return {gpu_id: bytes_value / (1024 ** 3) for gpu_id, bytes_value in bytes_by_id.items()}
 
         logger.info(
             f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
@@ -201,12 +207,13 @@ class Cluster:
 
         # For each model to deploy, find the best node to deploy it on, if possible.
         for model_key, size_in_bytes in sorted_models:
+            size_gib = _gib(size_in_bytes)
             logger.info(
-                f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
+                f"=> Analyzing deployment of {model_key} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
             )
             for replica_id in target_replica_ids_for(model_key):
                 logger.info(
-                    f"=> Analyzing deployment of {model_key} with replica {replica_id} with size {size_in_bytes}..."
+                    f"=> Analyzing deployment of {model_key} replica {replica_id} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
                 )
 
                 candidates = {}
@@ -219,9 +226,11 @@ class Cluster:
 
                     # Evaluate the node to see if the model can be deployed on it.
                     candidate = node.evaluate(model_key, replica_id, size_in_bytes, dedicated=dedicated)
+                    gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
 
                     logger.info(
-                        f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
+                        f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, "
+                        f"gpu_mem_required_gib: {gpu_mem_required_gib}, evictions: {candidate.evictions}"
                     )
 
                     # If the model is already deployed on this node, we can stop looking for nodes.
@@ -260,8 +269,11 @@ class Cluster:
                     logger.error(f"=> {model_key} replica {replica_id} cannot be deployed on any node")
 
                 else:
+                    gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
                     logger.info(
-                        f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
+                        f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} ({size_gib:.2f} GiB) "
+                        f"on {self.nodes[node_id].name} because {candidate_level.name}. "
+                        f"gpu_mem_required_gib: {gpu_mem_required_gib}, evictions: {candidate.evictions}"
                     )
 
                     try:
@@ -277,8 +289,23 @@ class Cluster:
                         change = True
                         results["result"][(model_key, replica_id)] = candidate_level.name
                     except ValueError as exc:
+                        node = self.nodes[node_id]
+                        gpu_mem_available = node.resources.gpu_memory_available_bytes_by_id
+                        gpu_mem_available_gib = _gib_map(gpu_mem_available)
+                        gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
+                        max_available_gib = (
+                            max(gpu_mem_available_gib.values()) if gpu_mem_available_gib else None
+                        )
                         logger.warning(
-                            f"=> Failed to deploy {model_key} replica {replica_id} on {self.nodes[node_id].name}: {exc}"
+                            f"=> Failed to deploy {model_key} replica {replica_id} on {node.name}: {exc}. "
+                            f"gpu_mem_required_gib: {gpu_mem_required_gib}, "
+                            f"gpu_mem_total_gib: {_gib(node.resources.gpu_memory_bytes)}, "
+                            f"gpu_mem_available_gib_by_id: {gpu_mem_available_gib}, "
+                            f"max_available_gib: {max_available_gib}, "
+                            f"available_gpus: {node.resources.available_gpus}, "
+                            f"candidate_gpu_ids: {candidate.gpu_ids}, "
+                            f"gpus_required: {candidate.gpus_required}, "
+                            f"min_available_gpu_fraction: {node.resources.min_available_gpu_fraction}"
                         )
                         results["result"][(model_key, replica_id)] = CandidateLevel.CANT_ACCOMMODATE.name
                         continue
