@@ -2,10 +2,17 @@
 
 import json
 import pickle
+import time
 import click
+import importlib.metadata
+import subprocess
+import sys
+import platform
+import requests
+import redis as redis_sync
 
 from ..lib.session import get_current_session, get_env
-from ..lib.checks import check_redis
+from ..lib.checks import check_redis, check_api
 
 # Key packages from pyproject.toml dependencies
 KEY_PACKAGES = [
@@ -45,10 +52,11 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
         _show_local_env(json_flag)
         return
 
-    # Get broker URL: CLI arg > session > env default
+    # Get broker URL and API URL: CLI arg > session > env default
+    session = get_current_session()
     if broker_url is None:
-        session = get_current_session()
         broker_url = session.config.broker_url if session else get_env("NDIF_BROKER_URL")
+    api_url = session.config.api_url if session else get_env("NDIF_API_URL")
 
     # Check if Redis is reachable
     if not check_redis(broker_url):
@@ -59,14 +67,19 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
 
     # Try to get cached env from Redis
     try:
-        import redis as redis_sync
         client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
         cached_env = client.get("env")
-        client.close()
+
+        # If not cached, trigger the API to populate it
+        if cached_env is None:
+            client.close()
+            cached_env = _fetch_and_cache_env(api_url, broker_url)
+
+        else:
+            client.close()
 
         if cached_env is None:
-            click.echo("No environment info cached in Redis.")
-            click.echo("The API service caches this after the first /env request.")
+            click.echo("No environment info available.")
             click.echo("\nUse --local to show local system info instead.")
             return
 
@@ -79,6 +92,47 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
 
     except Exception as e:
         click.echo(f"Error reading environment info: {e}", err=True)
+
+
+def _fetch_and_cache_env(api_url: str, broker_url: str, timeout: int = 30) -> bytes | None:
+    """Request /env from the API to populate the cache, then return cached data.
+
+    Args:
+        api_url: API base URL
+        broker_url: Redis broker URL
+        timeout: Maximum seconds to wait for cache to populate
+
+    Returns:
+        Cached env data as bytes, or None if failed
+    """
+    # Check if API is reachable
+    if not check_api(api_url):
+        click.echo(f"Error: Cannot reach API at {api_url}", err=True)
+        click.echo("Make sure the API service is running (ndif start api)", err=True)
+        return None
+
+    # Make the /env request to trigger caching
+    click.echo("Fetching environment info from cluster...")
+    try:
+        response = requests.get(f"{api_url}/env", timeout=timeout)
+        if response.status_code != 200:
+            click.echo(f"Error: API returned status {response.status_code}", err=True)
+            return None
+    except requests.RequestException as e:
+        click.echo(f"Error fetching from API: {e}", err=True)
+        return None
+
+    # Wait briefly for cache to populate, then read from Redis
+    time.sleep(0.5)
+
+    try:
+        client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
+        cached_env = client.get("env")
+        client.close()
+        return cached_env
+    except Exception as e:
+        click.echo(f"Error reading from cache: {e}", err=True)
+        return None
 
 
 def _format_env_human(env_data: dict, show_all: bool = False):
@@ -120,8 +174,6 @@ def _format_env_human(env_data: dict, show_all: bool = False):
 
 def _show_local_env(json_flag: bool):
     """Show local system environment info."""
-    import sys
-    import platform
 
     data = {
         'python_version': sys.version,
@@ -132,7 +184,6 @@ def _show_local_env(json_flag: bool):
 
     # Try to get GPU info
     try:
-        import subprocess
         result = subprocess.run(
             ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
             capture_output=True,
@@ -150,7 +201,6 @@ def _show_local_env(json_flag: bool):
 
     # Try to get key packages
     try:
-        import importlib.metadata
         key_packages = ['torch', 'ray', 'nnsight', 'transformers', 'numpy']
         installed = {}
         for pkg in key_packages:
