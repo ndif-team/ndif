@@ -32,6 +32,7 @@ class Deployment:
         gpu_memory_fraction: float | None,
         size_bytes: int,
         dedicated: bool = False,
+        node_id: str = None,
     ):
         self.model_key = model_key
         self.replica_id = replica_id
@@ -41,6 +42,7 @@ class Deployment:
         self.gpu_memory_fraction = gpu_memory_fraction
         self.size_bytes = size_bytes
         self.dedicated = dedicated
+        self.node_id = node_id
         self.deployed = time.time()
 
     @property
@@ -63,6 +65,7 @@ class Deployment:
             "gpu_memory_fraction": self.gpu_memory_fraction,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
+            "node_id": self.node_id,
             "deployed": self.deployed,
         }
 

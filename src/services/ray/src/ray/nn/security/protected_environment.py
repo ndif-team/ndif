@@ -33,7 +33,8 @@ from nnsight.util import Patch, Patcher
 from nnsight.modeling.mixins.remoteable import StreamTracer
 
 import ast
-setattr(ast, 'compile', compile)
+
+setattr(ast, "compile", compile)
 
 # =============================================================================
 # WHITELIST CONFIGURATION LOADING
@@ -104,6 +105,65 @@ WHITELISTED_MODULES_DESERIALIZATION = [
     *_load_modules("deserialization_modules"),
     *WHITELISTED_MODULES,
 ]
+
+
+class UnauthorizedModule:
+    """A lazy placeholder for non-whitelisted modules.
+
+    Instead of immediately raising an ImportError when a non-whitelisted module
+    is imported, this object is returned. The ImportError is only raised when
+    the user tries to interact with the module (attribute access, calling, etc.).
+    """
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "_module_name", name)
+
+    def _raise_error(self) -> None:
+        """Raise the ImportError for this unauthorized module."""
+        name = object.__getattribute__(self, "_module_name")
+        raise ImportError(f"Module {name} is not whitelisted")
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in ("_module_name", "_raise_error"):
+            return object.__getattribute__(self, name)
+        object.__getattribute__(self, "_raise_error")()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self._raise_error()
+
+    def __delattr__(self, name: str) -> None:
+        self._raise_error()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise_error()
+
+    def __iter__(self) -> Any:
+        self._raise_error()
+
+    def __next__(self) -> Any:
+        self._raise_error()
+
+    def __len__(self) -> int:
+        self._raise_error()
+
+    def __getitem__(self, key: Any) -> Any:
+        self._raise_error()
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._raise_error()
+
+    def __delitem__(self, key: Any) -> None:
+        self._raise_error()
+
+    def __contains__(self, item: Any) -> bool:
+        self._raise_error()
+
+    def __bool__(self) -> bool:
+        self._raise_error()
+
+    def __repr__(self) -> str:
+        name = object.__getattribute__(self, "_module_name")
+        return f"<UnauthorizedModule '{name}'>"
 
 
 class ProtectedModule(ModuleType):
@@ -195,7 +255,7 @@ class Importer:
                     protected.__dict__.update(result.__dict__)
                     return protected
 
-            raise ImportError(f"Module {result.__name__} is not whitelisted")
+            return UnauthorizedModule(result.__name__)
 
         for module in self.whitelisted_modules:
             if module.check(name):
@@ -211,7 +271,7 @@ class Importer:
                 finally:
                     self.protector.__enter__()
 
-        raise ImportError(f"Module {name} is not whitelisted")
+        return UnauthorizedModule(name)
 
 
 class Protector(Patcher):
@@ -410,9 +470,10 @@ def _inplacevar_(op: str, x: Any, y: Any) -> Any:
     return op_map[op](x, y)
 
 
-# Store reference to original compile before we patch it
-# This prevents infinite recursion when restricted_compile calls compile
+# Store references to original compile and exec before we patch them
+# This prevents infinite recursion when restricted_compile/restricted_exec call them
 _original_compile = compile
+_original_exec = exec
 
 
 def restricted_compile(
@@ -510,4 +571,23 @@ def restricted_exec(
         code = restricted_compile(code, mode="exec")
 
     exec_globals = make_restricted_globals(globals)
-    exec(code, exec_globals, locals)
+    _original_exec(code, exec_globals, locals)
+
+    # Sync new/modified values back to the original globals dict
+    # This ensures that defined functions/variables are accessible to the caller
+    if globals is not None:
+        _guard_keys = frozenset(
+            (
+                "__builtins__",
+                "_getattr_",
+                "_getitem_",
+                "_getiter_",
+                "_iter_unpack_sequence_",
+                "_unpack_sequence_",
+                "_write_",
+                "_inplacevar_",
+            )
+        )
+        for key, value in exec_globals.items():
+            if key not in _guard_keys:
+                globals[key] = value

@@ -201,6 +201,7 @@ class Node:
             gpu_memory_fraction=gpu_memory_fraction,
             size_bytes=size_bytes,
             dedicated=dedicated,
+            node_id=self.id,
         )
 
         if (model_key, replica_id) in self.cache:
@@ -272,6 +273,7 @@ class Node:
                 gpu_memory_fraction=None,
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
+                node_id=self.id,
             )
 
     def evictions(self, gpus_required: int, dedicated: bool = False) -> List[tuple[MODEL_KEY, int]]:

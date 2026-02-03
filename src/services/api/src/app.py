@@ -5,7 +5,6 @@ import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs
 
-import redis
 import socketio
 import uvicorn
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
@@ -21,9 +20,10 @@ from .types import REQUEST_ID, SESSION_ID
 logger = set_logger("API")
 
 from .config import AppConfig
-from .dependencies import validate_request
+from .dependencies import validate_request, require_ray_connection
 from .metrics import NetworkStatusMetric
 from .providers.objectstore import ObjectStoreProvider
+from .providers.redis import RedisProvider
 from .schema import BackendRequestModel, BackendResponseModel
 
 # Init FastAPI app
@@ -63,10 +63,7 @@ sm = SocketManager(
 ObjectStoreProvider.connect()
 
 
-redis_client = redis.asyncio.Redis.from_url(AppConfig.broker_url)
-
-
-@app.post("/request")
+@app.post("/request", dependencies=[Depends(require_ray_connection)])
 async def request(
     background_tasks: BackgroundTasks,
     backend_request: BackendRequestModel = Depends(validate_request),
@@ -97,7 +94,7 @@ async def request(
 
         backend_request.request = await backend_request.request
 
-        await redis_client.lpush("queue", pickle.dumps(backend_request))
+        await RedisProvider.async_client.lpush("queue", pickle.dumps(backend_request))
 
     except Exception as exception:
         description = f"{traceback.format_exc()}\n{str(exception)}"
@@ -210,7 +207,7 @@ async def ping():
     return "pong"
 
 
-@app.get("/status", status_code=200)
+@app.get("/status", status_code=200, dependencies=[Depends(require_ray_connection)])
 async def status() -> Dict[str, Any]:
     """Get the current cluster status.
 
@@ -228,22 +225,24 @@ async def status() -> Dict[str, Any]:
         AppConfig.status_request_timeout_s: Configures the timeout duration.
     """
     # Check for cached status first
-    cached_status = await redis_client.get("status")
+    cached_status = await RedisProvider.async_client.get("status")
     if cached_status is not None:
         return pickle.loads(cached_status)
 
     # No cached status, need to request and wait for it
-    pubsub = redis_client.pubsub()
+    pubsub = RedisProvider.async_client.pubsub()
 
     try:
         await pubsub.subscribe("status:event")
 
         # Trigger status request if not already requested
-        if await redis_client.set("status:requested", "1", nx=True):
-            await redis_client.xadd("status:trigger", {"reason": "requested"})
+        if await RedisProvider.async_client.set("status:requested", "1", nx=True):
+            await RedisProvider.async_client.xadd(
+                "status:trigger", {"reason": "requested"}
+            )
 
         # Check again in case status was cached while we were setting up
-        cached_status = await redis_client.get("status")
+        cached_status = await RedisProvider.async_client.get("status")
         if cached_status is not None:
             return pickle.loads(cached_status)
 
@@ -279,7 +278,7 @@ async def status() -> Dict[str, Any]:
         await pubsub.aclose()
 
 
-@app.get("/env", status_code=200)
+@app.get("/env", status_code=200, dependencies=[Depends(require_ray_connection)])
 async def env() -> Dict[str, Any]:
     """Get the Python environment information from the Ray cluster.
 
@@ -293,7 +292,7 @@ async def env() -> Dict[str, Any]:
         HTTPException: If the request times out (504 Gateway Timeout).
     """
     # Check for cached env first
-    cached_env = await redis_client.get("env")
+    cached_env = await RedisProvider.async_client.get("env")
     if cached_env is not None:
         return pickle.loads(cached_env)
 
@@ -302,7 +301,7 @@ async def env() -> Dict[str, Any]:
 
     try:
         # Send ENV event to dispatcher
-        await redis_client.xadd(
+        await RedisProvider.async_client.xadd(
             "dispatcher:events",
             {
                 "event_type": "env",
@@ -311,7 +310,7 @@ async def env() -> Dict[str, Any]:
         )
 
         # Wait for response with timeout
-        result = await redis_client.brpop(
+        result = await RedisProvider.async_client.brpop(
             response_key, timeout=AppConfig.status_request_timeout_s
         )
 
@@ -333,7 +332,7 @@ async def env() -> Dict[str, Any]:
 
     finally:
         # Clean up the response key
-        await redis_client.delete(response_key)
+        await RedisProvider.async_client.delete(response_key)
 
 
 if __name__ == "__main__":

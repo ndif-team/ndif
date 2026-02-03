@@ -28,7 +28,14 @@ from ..lib.session import get_env
     help="Scale up the model by the number of replicas specified (default: False)",
 )
 
-def scale(checkpoint: str, revision: str, ray_address: str, replicas: int, dedicated: bool):
+def scale(
+    checkpoint: str,
+    revision: str,
+    ray_address: str,
+    replicas: int,
+    dedicated: bool,
+    scale_up: bool,
+):
     """Scale a model to an exact replica count.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -55,8 +62,16 @@ def scale(checkpoint: str, revision: str, ray_address: str, replicas: int, dedic
         click.echo(f"Getting actor handle for {model_key}...")
         controller = get_controller_actor_handle()
 
-        click.echo(f"Scaling {model_key} to {replicas} replicas...")
-        object_ref = controller.scale.remote(model_key=model_key, replicas=replicas, dedicated=dedicated)
+        if scale_up:
+            click.echo(f"Scaling up {model_key} by {replicas} replicas...")
+            object_ref = controller.scale_up.remote(
+                model_key=model_key, replicas=replicas, dedicated=dedicated
+            )
+        else:
+            click.echo(f"Scaling {model_key} to {replicas} replicas...")
+            object_ref = controller.scale.remote(
+                model_key=model_key, replicas=replicas, dedicated=dedicated
+            )
         results = ray.get(object_ref)
 
         deploy_results = results.get("deploy", {})

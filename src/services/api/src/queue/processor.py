@@ -404,7 +404,7 @@ class Processor:
 
         The method handles two cases:
             - Actor not yet created: Continues polling until it appears
-            - Other errors: Reports to error_queue and cancels the processor
+            - Initialization error: Reports error to user and cancels processor
 
         Raises:
             No exceptions are raised; errors are reported via the error_queue
@@ -418,24 +418,31 @@ class Processor:
 
                 await submit(handle, "__ray_ready__")
 
-                break
+                return  # Success - model is ready
 
             except Exception as e:
-                if not str(e).startswith("Failed to look up actor"):
-                    self.eviction_queue.put_nowait(
-                        (
-                            self.model_key,
-                            "Error initializing model deployment. Please try again later. Sorry for the inconvenience.",
-                            replica_id,
-                        )
-                    )
-                    self.error_queue.put_nowait((self.model_key, e))
-                    self.remove_replica(
+                error_str = str(e)
+
+                # Actor doesn't exist yet - keep waiting
+                if error_str.startswith("Failed to look up actor"):
+                    await asyncio.sleep(1)
+                    continue
+
+                # Actual initialization error - report to user and stop
+                self.eviction_queue.put_nowait(
+                    (
+                        self.model_key,
+                        "Error initializing model deployment. Please try again later. Sorry for the inconvenience.",
                         replica_id,
-                        f"Error initializing model deployment for replica {replica_id}. Please try again later. Sorry for the inconvenience.",
                     )
-                    return
-    
+                )
+                self.error_queue.put_nowait((self.model_key, e))
+                self.remove_replica(
+                    replica_id,
+                    f"Error initializing model deployment for replica {replica_id}. Please try again later. Sorry for the inconvenience.",
+                )
+                return
+
     async def initialize(self) -> None:
         """Wait for all model replicas to complete initialization."""
         await asyncio.gather(
