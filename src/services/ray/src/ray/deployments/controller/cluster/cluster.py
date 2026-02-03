@@ -98,6 +98,10 @@ class Cluster:
                         cpu_memory_bytes=cpu_memory_bytes,
                         available_cpu_memory_bytes=cpu_memory_bytes,
                         available_gpus=list(range(int(total_gpus))),
+                        gpu_memory_available_bytes_by_id={
+                            gpu_id: int(gpu_memory_bytes)
+                            for gpu_id in range(int(total_gpus))
+                        },
                     ),
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
@@ -260,20 +264,27 @@ class Cluster:
                         f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
                     )
 
-                    self.nodes[node_id].deploy(
-                        model_key,
-                        replica_id,
-                        candidate,
-                        size_in_bytes,
-                        dedicated=dedicated,
-                        exclude=set(model_keys),
-                    )
+                    try:
+                        self.nodes[node_id].deploy(
+                            model_key,
+                            replica_id,
+                            candidate,
+                            size_in_bytes,
+                            dedicated=dedicated,
+                            exclude=set(model_keys),
+                        )
+                        results["evictions"].update(candidate.evictions)
+                        change = True
+                        results["result"][(model_key, replica_id)] = candidate_level.name
+                    except ValueError as exc:
+                        logger.warning(
+                            f"=> Failed to deploy {model_key} replica {replica_id} on {self.nodes[node_id].name}: {exc}"
+                        )
+                        results["result"][(model_key, replica_id)] = CandidateLevel.CANT_ACCOMMODATE.name
+                        continue
 
-                    results["evictions"].update(candidate.evictions)
-
-                    change = True
-
-                results["result"][(model_key, replica_id)] = candidate_level.name
+                if (model_key, replica_id) not in results["result"]:
+                    results["result"][(model_key, replica_id)] = candidate_level.name
 
         return results, change
 

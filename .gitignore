@@ -4,3 +4,4 @@ creds.json
 *.nfs*
 ndif.egg-info
 .env
+logs/

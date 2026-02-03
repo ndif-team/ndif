@@ -48,6 +48,7 @@ class BaseModelDeployment:
         model_key: MODEL_KEY,
         replica_id: int,
         execution_timeout: float | None,
+        gpu_memory_fraction: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
         *args,
@@ -62,6 +63,7 @@ class BaseModelDeployment:
         self.model_key = model_key
         self.replica_id = replica_id
         self.execution_timeout = execution_timeout
+        self.gpu_memory_fraction = gpu_memory_fraction
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
@@ -76,6 +78,13 @@ class BaseModelDeployment:
             dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
+
+        if self.gpu_memory_fraction and torch.cuda.is_available():
+            try:
+                fraction = min(0.99, max(0.01, self.gpu_memory_fraction))
+                torch.cuda.set_per_process_memory_fraction(fraction, device=0)
+            except Exception:
+                self.logger.exception("Error setting per-process GPU memory fraction.")
 
         self.model = self.load_from_disk()
 
@@ -192,6 +201,14 @@ class BaseModelDeployment:
 
         if self.cached:
             raise LookupError("Failed to look up actor")
+
+        ctx = self.runtime_context
+        node_id = ctx.get_node_id() if hasattr(ctx, "get_node_id") else None
+        actor_id = ctx.get_actor_id() if hasattr(ctx, "get_actor_id") else None
+        self.logger.info(
+            f"Serving request id={getattr(request, 'id', None)} "
+            f"model_key={self.model_key} replica_id={self.replica_id} "
+        )
 
         self.request = request
 
@@ -446,6 +463,7 @@ class BaseModelDeploymentArgs(BaseModel):
     cuda_devices: str
 
     execution_timeout: float | None = None
+    gpu_memory_fraction: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"

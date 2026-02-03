@@ -261,6 +261,7 @@ class _ControllerActor:
                 replica_id=deployment.replica_id,
                 cuda_devices=",".join(str(gpu) for gpu in deployment.gpus),
                 execution_timeout=self.execution_timeout_seconds,
+                gpu_memory_fraction=deployment.gpu_memory_fraction,
             )
 
             deployment.create(name, deployment_args)

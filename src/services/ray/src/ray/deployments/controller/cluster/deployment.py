@@ -28,6 +28,8 @@ class Deployment:
         replica_id: int,
         deployment_level: DeploymentLevel,
         gpus: list[int],
+        gpu_mem_bytes_by_id: Dict[int, int],
+        gpu_memory_fraction: float | None,
         size_bytes: int,
         dedicated: bool = False,
     ):
@@ -35,6 +37,8 @@ class Deployment:
         self.replica_id = replica_id
         self.deployment_level = deployment_level
         self.gpus = gpus
+        self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id
+        self.gpu_memory_fraction = gpu_memory_fraction
         self.size_bytes = size_bytes
         self.dedicated = dedicated
         self.deployed = time.time()
@@ -55,6 +59,8 @@ class Deployment:
             "replica_id": self.replica_id,
             "deployment_level": self.deployment_level.value,
             "gpus": self.gpus,
+            "gpu_mem_bytes_by_id": self.gpu_mem_bytes_by_id,
+            "gpu_memory_fraction": self.gpu_memory_fraction,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
             "deployed": self.deployed,
