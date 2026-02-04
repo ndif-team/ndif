@@ -44,12 +44,15 @@ class SchedulingControllerActor(_ControllerActor):
         schedule = ray.get(self.scheduler.get_schedule.remote())
 
         for model_key, schedule in schedule.items():
-            application_name = f"ModelActor:{model_key}"
+            application_name_prefix = f"ModelActor:{model_key}:"
+            matched = False
 
-            if application_name in status["deployments"]:
-                status["deployments"][application_name]["schedule"] = schedule
+            for deployment_name, deployment in status["deployments"].items():
+                if deployment_name.startswith(application_name_prefix):
+                    deployment["schedule"] = schedule
+                    matched = True
 
-            else:
+            if not matched:
                 self.cluster.evaluator(model_key)
 
                 repo_id = self.cluster.evaluator.cache[model_key].config._name_or_path
@@ -57,7 +60,7 @@ class SchedulingControllerActor(_ControllerActor):
                 if repo_id in status["deployments"]:
                     del status["deployments"][repo_id]
 
-                status["deployments"][application_name] = {
+                status["deployments"][application_name_prefix] = {
                     "deployment_level": DeploymentLevel.COLD.name,
                     "model_key": model_key,
                     "repo_id": repo_id,
