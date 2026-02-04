@@ -183,7 +183,7 @@ def create_app(
                 return JSONResponse(
                     status_code=400,
                     content={
-                        "error": f"Model mismatch: server is serving {model_key}, "
+                        "detail": f"Model mismatch: server is serving {model_key}, "
                         f"but request is for {req_model_key}"
                     },
                 )
