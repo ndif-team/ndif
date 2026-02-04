@@ -81,3 +81,9 @@ ndif restart <checkpoint> [--replica-id N]
 Behavior:
 - Restarts the specific replica actor.
 
+## TODOs (tentative, by priority)
+- Auto-scaling support.
+- Load balancing and placement strategy for replicas.
+- Fast replica deployment and restoration, we can probably use existing replica to speed up the deployment and restoration for new replicas.
+- Replica with diverse inference backend.
+- Smart routing.
