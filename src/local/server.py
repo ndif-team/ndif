@@ -1,16 +1,15 @@
 """Local NDIF server — single-model, no infrastructure dependencies.
 
 Provides full nnsight client compatibility (SocketIO + HTTP) without
-requiring Redis, MinIO, Ray, or RestrictedPython.
+requiring Redis, MinIO, or RestrictedPython at runtime.
 """
 
 import asyncio
 import gc
 import logging
 import socket
-import uuid
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable
 
 import socketio
 import torch
@@ -20,45 +19,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from torch.amp import autocast
 
-from nnsight.intervention.tracing.globals import Globals
-from nnsight.intervention.tracing.tracer import Tracer
-from nnsight.intervention.tracing.util import wrap_exception
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
+from cli.lib.util import get_model_key
+from src.common.schema.request import BackendRequestModel
+from src.services.ray.src.ray.nn.backend import RemoteExecutionBackend
+
 from .serialization import save_result
 
 logger = logging.getLogger("ndif.local")
-
-
-# =============================================================================
-# Execution
-# =============================================================================
-
-
-class LocalExecutionBackend:
-    """Execute nnsight interventions locally without sandboxing.
-
-    Simplified from src/services/ray/src/ray/nn/backend.py — removes the
-    Protector wrapper since local mode trusts user code.
-    """
-
-    def __init__(self, fn: Callable):
-        self.fn = fn
-
-    def __call__(self, tracer: Tracer) -> dict:
-        Globals.stack = 0
-        Globals.enter()
-        try:
-            saves = tracer.execute(self.fn)
-        except Exception as e:
-            raise wrap_exception(e, tracer.info) from None
-        finally:
-            Globals.exit()
-        Globals.saves.clear()
-        Globals.stack = 0
-        return saves
 
 
 # =============================================================================
@@ -170,42 +141,33 @@ def create_app(
         Mirrors the production /request endpoint (src/services/api/src/app.py)
         but queues in-memory instead of Redis.
         """
-        headers = request.headers
-        request_id = headers.get("ndif-request_id")
-        if request_id is None:
-            request_id = str(uuid.uuid4())
+        backend_request = BackendRequestModel.from_request(request)
 
-        # Validate model key matches loaded model
-        req_model_key = headers.get("nnsight-model-key")
-        if req_model_key is not None:
-            req_model_key = req_model_key.replace('"revision": "main"', '"revision": null')
-            if req_model_key != model_key:
+        if backend_request.model_key is not None:
+            if backend_request.model_key != model_key:
                 return JSONResponse(
                     status_code=400,
                     content={
                         "detail": f"Model mismatch: server is serving {model_key}, "
-                        f"but request is for {req_model_key}"
+                        f"but request is for {backend_request.model_key}"
                     },
                 )
 
-        session_id = headers.get("ndif-session_id")
-        compress_raw = headers.get("nnsight-compress", "true")
-        compress = compress_raw.lower() not in ("false", "0", "no", "off")
-
-        body = await request.body()
+        body = await backend_request.request
+        compress = str(backend_request.compress).lower() not in ("false", "0", "no", "off")
 
         await queue.put(_QueueItem(
-            id=request_id,
+            id=backend_request.id,
             body=body,
-            session_id=session_id,
+            session_id=backend_request.session_id,
             compress=compress,
         ))
 
         response = ResponseModel(
-            id=request_id,
+            id=backend_request.id,
             status=ResponseModel.JobStatus.RECEIVED,
             description="Your job has been received and is waiting to be processed.",
-            session_id=session_id,
+            session_id=backend_request.session_id,
         )
         return response.model_dump(exclude_unset=True)
 
@@ -289,7 +251,7 @@ def create_app(
         """Run the intervention graph. Called in a thread."""
         device = "cuda" if torch.cuda.is_available() else "cpu"
         with autocast(device_type=device, dtype=torch.get_default_dtype()):
-            return LocalExecutionBackend(request_model.interventions)(
+            return RemoteExecutionBackend(request_model.interventions, nullcontext())(
                 request_model.tracer
             )
 
@@ -346,7 +308,7 @@ def run(
     torch.set_default_dtype(torch_dtype)
 
     logger.info(f"Loading model: {checkpoint}")
-    loaded_model_key = _get_model_key(checkpoint)
+    loaded_model_key = get_model_key(checkpoint)
     model = RemoteableMixin.from_model_key(
         loaded_model_key,
         device_map="auto",
@@ -369,14 +331,3 @@ def run(
     )
 
     uvicorn.run(app, host=host, port=chosen_port, log_level="info")
-
-
-def _get_model_key(checkpoint: str) -> str:
-    """Convert a checkpoint string to a model key.
-
-    Duplicated from cli/lib/util.py:get_model_key to avoid importing ray.
-    """
-    from nnsight import LanguageModel
-
-    m = LanguageModel(checkpoint, revision=None, dispatch=False)
-    return m.to_model_key()
