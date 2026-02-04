@@ -12,32 +12,30 @@ dependencies = [
     # CLI
     "click>=8.0.0",
     "python-dotenv>=1.0.0",
-
-    # Core API dependencies
+    # Local mode dependencies
     "fastapi==0.108.0", # Note: pinned version for Socket.IO compatibility
+    "python-socketio==5.13.0", # Note: pinned version for Socket.IO compatibility
+    "uvicorn[standard]==0.24.0",
+    "zstandard",
+    "nnsight",
+    "torch",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+server = [
+    # Full server infrastructure
     "fastapi-cache2",
     "fastapi-socketio",
-    "python-socketio==5.13.0", # Note: pinned version for Socket.IO compatibility
     "redis",
     "psycopg2-binary",
-    "uvicorn[standard]==0.24.0",
     "gunicorn",
     "eventlet",
-    "zstandard",
-
-    # Ray dependencies
     "ray[serve]>=2.50.0",
-    "nnsight",
-
-    # Storage and utilities
     "boto3",
-    "torch",
     "python-slugify",
     "requests",
-
-    # Security
     "RestrictedPython>=7.0",
-    "pyyaml>=6.0",
 ]
 
 [project.scripts]
@@ -52,6 +50,9 @@ exclude = ["docker*", "scripts*", "tests*"]
 "src.services.api" = ["start.sh"]
 "src.services.ray" = ["start.sh"]
 "src.services.ray.src.ray.nn.security" = ["whitelist.yaml"]
+
+[tool.uv.sources]
+nnsight = { git = "https://github.com/ndif-team/nnsight", rev = "v0.5.16" }
 
 [dependency-groups]
 dev = [

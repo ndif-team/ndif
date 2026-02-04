@@ -2,6 +2,7 @@
 
 import click
 from cli.commands import start, stop, restart, deploy, evict, queue
+from cli.commands.local import local
 from cli.commands.status import status
 from cli.commands.logs import logs
 from cli.commands.kill import kill
@@ -30,6 +31,7 @@ cli.add_command(logs)
 cli.add_command(kill)
 cli.add_command(info)
 cli.add_command(env)
+cli.add_command(local)
 
 if __name__ == "__main__":
     cli()
