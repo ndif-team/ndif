@@ -97,10 +97,11 @@ def scale(
         failures = []
         for (result_key, status) in result_statuses:
             _, replica_id = result_key
-            if status in success_statuses:
-                successes.append((replica_id, status))
+            status_str = str(status).upper()
+            if status_str in success_statuses:
+                successes.append((replica_id, status_str))
             else:
-                failures.append((replica_id, status))
+                failures.append((replica_id, status_str))
 
         total = len(result_statuses)
         if not changed:
@@ -113,7 +114,7 @@ def scale(
         elif total == 0:
             click.echo("⚠ No replica results returned from controller.")
         else:
-            click.echo(f"✓ Scale result: {len(successes)}/{total} replicas ready.")
+            click.echo(f"✓ Scale result: {len(successes)}/{total} replicas scheduled.")
 
         if failures:
             click.echo("• Failed replicas:")
@@ -122,6 +123,7 @@ def scale(
                     click.echo(f"  - replica {replica_id}: {status}")
                 else:
                     click.echo(f"  - replica {replica_id}: error during evaluation/deploy")
+            raise click.Abort()
 
         if deploy_results.get("evictions"):
             click.echo("• Evictions:")

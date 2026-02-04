@@ -367,7 +367,7 @@ class Cluster:
 
             # search for deployments across all nodes
             for node in self.nodes.values():
-                for (deployment_key, deployment) in node.deployments.items():
+                for (deployment_key, deployment) in list(node.deployments.items()):
                     deployment_model_key, deployment_replica_id = deployment_key
                     if deployment_model_key != model_key:
                         continue

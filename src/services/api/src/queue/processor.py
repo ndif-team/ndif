@@ -146,6 +146,7 @@ class Processor:
         self.in_flight = 0
         self.busy_replicas: set[int] = set()
         self._replica_worker_tasks: dict[int, asyncio.Task] = {}
+        self.ready_replicas: set[int] = set()
 
         self.dedicated: Optional[bool] = None
         self.current_request_ids: dict[int, Optional[str]] = {replica_id: None for replica_id in self.replica_ids}
@@ -168,6 +169,7 @@ class Processor:
         self.current_request_started_ats.pop(replica_id, None)
         self.busy_replicas.discard(replica_id)
         self._replica_worker_tasks.pop(replica_id, None)
+        self.ready_replicas.discard(replica_id)
         if self.replica_count == 0:
             self.status = ProcessorStatus.CANCELLED
             self.purge(message)
@@ -188,7 +190,21 @@ class Processor:
         self.current_request_ids[replica_id] = None
         self.current_request_started_ats[replica_id] = None
         if self.status in {ProcessorStatus.READY, ProcessorStatus.BUSY}:
-            self._start_replica_worker(replica_id)
+            asyncio.create_task(self.initialize_replica(replica_id))
+
+    async def _decrease_desired_replica(self, replica_id: int) -> None:
+        """Permanently decrease desired replicas for a failed replica."""
+        try:
+            controller = controller_handle()
+            await submit(
+                controller,
+                "evict",
+                [self.model_key],
+                replica_keys=[(self.model_key, replica_id)],
+                cache=True,
+            )
+        except Exception as e:
+            self.error_queue.put_nowait((self.model_key, e))
 
     @property
     def status(self) -> ProcessorStatus:
@@ -379,9 +395,14 @@ class Processor:
                         replica_id,
                     )
                 )
-                self.status = ProcessorStatus.CANCELLED
-
-                return
+                await self._decrease_desired_replica(replica_id)
+                self.remove_replica(
+                    replica_id,
+                    "Error provisioning model deployment. Please try again later. Sorry for the inconvenience.",
+                )
+                if self.status == ProcessorStatus.CANCELLED:
+                    return
+                continue
 
             if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
                 self.eviction_queue.put_nowait(
@@ -391,9 +412,13 @@ class Processor:
                         replica_id,
                     )
                 )
-                self.status = ProcessorStatus.CANCELLED
-
-                return
+                await self._decrease_desired_replica(replica_id)
+                self.remove_replica(
+                    replica_id,
+                    "Model deployment cannot be accomodated at this time. Please try again later. Sorry for the inconvenience.",
+                )
+                if self.status == ProcessorStatus.CANCELLED:
+                    return
 
     async def initialize_replica(self, replica_id: int) -> None:
         """Wait for the model replica deployment to complete initialization.
@@ -410,6 +435,8 @@ class Processor:
             No exceptions are raised; errors are reported via the error_queue
             and the processor status is set to CANCELLED.
         """
+        start = time.monotonic()
+
         while True:
             try:
                 logger.info(f"Checking if replica {replica_id} is ready")
@@ -418,6 +445,9 @@ class Processor:
 
                 await submit(handle, "__ray_ready__")
 
+                self.ready_replicas.add(replica_id)
+                if self.status in {ProcessorStatus.READY, ProcessorStatus.BUSY}:
+                    self._start_replica_worker(replica_id)
                 return  # Success - model is ready
 
             except Exception as e:
@@ -437,6 +467,7 @@ class Processor:
                     )
                 )
                 self.error_queue.put_nowait((self.model_key, e))
+                await self._decrease_desired_replica(replica_id)
                 self.remove_replica(
                     replica_id,
                     f"Error initializing model deployment for replica {replica_id}. Please try again later. Sorry for the inconvenience.",
@@ -444,10 +475,39 @@ class Processor:
                 return
 
     async def initialize(self) -> None:
-        """Wait for all model replicas to complete initialization."""
-        await asyncio.gather(
-            *[self.initialize_replica(replica_id) for replica_id in self.replica_ids]
-        )
+        """Wait for enough model replicas to complete initialization."""
+        if not self.replica_ids:
+            self.status = ProcessorStatus.CANCELLED
+            self.purge("No replicas available to initialize. Please try again later. Sorry for the inconvenience.")
+            return
+
+        tasks_by_replica = {
+            replica_id: asyncio.create_task(self.initialize_replica(replica_id))
+            for replica_id in list(self.replica_ids)
+        }
+
+        while True:
+            min_ready = min(self.replica_count, QueueConfig.processor_min_ready_replicas)
+            if len(self.ready_replicas) >= min_ready:
+                return
+            if self.status == ProcessorStatus.CANCELLED:
+                return
+
+            done, _ = await asyncio.wait(
+                tasks_by_replica.values(), return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # Clean up completed tasks from the tracking map
+            for replica_id, task in list(tasks_by_replica.items()):
+                if task in done:
+                    tasks_by_replica.pop(replica_id, None)
+
+            if not tasks_by_replica and len(self.ready_replicas) < min_ready:
+                self.status = ProcessorStatus.CANCELLED
+                self.purge(
+                    "Model deployment failed to initialize. Please try again later. Sorry for the inconvenience."
+                )
+                return
 
     async def execute(self, request: BackendRequestModel, replica_id: int) -> None:
         """Execute a single inference request on the model deployment.
@@ -501,6 +561,7 @@ class Processor:
                         replica_id,
                     )
                 )
+                await self._decrease_desired_replica(replica_id)
                 self.status = ProcessorStatus.CANCELLED
             else:
                 self.error_queue.put_nowait((self.model_key, e))
@@ -551,7 +612,7 @@ class Processor:
 
         self.status = ProcessorStatus.READY
 
-        for replica_id in self.replica_ids:
+        for replica_id in self.ready_replicas:
             self._start_replica_worker(replica_id)
         await asyncio.gather(*self._replica_worker_tasks.values())
 

@@ -162,7 +162,7 @@ class BaseModelDeployment:
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
+        device_map = _get_device_map(self.model._module, "auto", None, None)
 
         remove_accelerate_hooks(self.model._module)
 
