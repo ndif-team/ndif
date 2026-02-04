@@ -131,7 +131,6 @@ class _ControllerActor:
         else:
             for model_key in model_keys:
                 self.desired_replicas[model_key] = 0
-
         results, change = self.cluster.evict(
             model_keys, replica_keys=replica_keys, cache=cache
         )
@@ -147,6 +146,7 @@ class _ControllerActor:
             for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
                 if deployment_model_key == model_key:
                     existing_replica_ids.add(deployment_replica_id)
+        self.logger.info(f"existing replica ids: {existing_replica_ids}")
         return len(existing_replica_ids)
 
     def scale(self, model_key: MODEL_KEY, replicas: int, dedicated: Optional[bool] = False):
@@ -212,9 +212,12 @@ class _ControllerActor:
         deployments_from_cache = []
         deployments_to_create = []
         deployments_to_delete = []
+        self.logger.info(f"Building state: {self.state}")
+        self.logger.info(f"cluster nodes: {self.cluster.nodes}")
         # For every node
         for id, node in self.cluster.nodes.items():
             # For every cached deployment
+            self.logger.info(f"node cache: {node.cache}")
             for (model_key, replica_id), cached in node.cache.items():
                 # It will always exist in the state if its now cached.
                 existing_deployment = self.state.pop((id, cached.model_key, cached.replica_id))
@@ -227,6 +230,7 @@ class _ControllerActor:
                 new_state[(id, cached.model_key, cached.replica_id)] = cached
 
             # For every deployed deployment
+            self.logger.info(f"node deployments: {node.deployments}")
             for (model_key, replica_id), deployment in node.deployments.items():
                 existing_deployment = self.state.pop((id, deployment.model_key, deployment.replica_id), None)
 
@@ -241,6 +245,7 @@ class _ControllerActor:
 
         # For every deployment that doesn't exist in the new state, we need to delete it.
         for (id, model_key, replica_id), deployment in self.state.items():
+            self.logger.info(f"deployment to delete: {deployment}")
             deployments_to_delete.append(deployment)
 
         # Update state.
@@ -341,6 +346,12 @@ class _ControllerActor:
                 )
                 deployment.delete()
                 self._remove_deployment_from_state(deployment)
+        for node in self.cluster.nodes.values():
+            self.logger.info(f"node: {node.name} deployments: {node.deployments}")
+            for deployment in node.deployments.values():
+                self.logger.info(f"deployment: {deployment.model_key} {deployment.replica_id} gpu memory: {deployment.gpu_mem_bytes_by_id}")
+            for cached_deployment in node.cache.values():
+                self.logger.info(f"cached deployment: {cached_deployment.model_key} {cached_deployment.replica_id} gpu memory: {cached_deployment.gpu_mem_bytes_by_id}")
 
     async def _monitor_deployment(
         self,

@@ -67,7 +67,7 @@ class QueueConfig:
             reply_freq_str, "COORDINATOR_PROCESSOR_REPLY_FREQ_S"
         )
 
-        replica_count_str = os.environ.get("NDIF_MODEL_REPLICAS_DEFAULT", "2")
+        replica_count_str = os.environ.get("NDIF_MODEL_REPLICAS_DEFAULT", "3")
         cls.processor_replica_count = cls._parse_positive_int(
             replica_count_str, "NDIF_MODEL_REPLICAS_DEFAULT"
         )

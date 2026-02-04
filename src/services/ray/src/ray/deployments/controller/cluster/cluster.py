@@ -339,7 +339,7 @@ class Cluster:
                     deployment = node.deployments.get((model_key, replica_id))
                     if deployment is None:
                         continue
-
+                    logger.info(f"gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
                     node.evict(model_key, replica_id, cache=cache)
                     results[model_key, replica_id] = {
                         "status": "evicted",
@@ -347,6 +347,7 @@ class Cluster:
                         "freed_gpus": len(deployment.gpus),
                         "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
                     }
+                    logger.info(f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}")
                     change = True
                     found = True
                     break
@@ -361,6 +362,7 @@ class Cluster:
         for model_key in model_keys:
 
             # replica keys are not provided, we will evict all replicas for each model
+            logger.info(f"evicting all replicas for model: {model_key}")
             found_any = False
 
             # search for deployments across all nodes
@@ -369,7 +371,7 @@ class Cluster:
                     deployment_model_key, deployment_replica_id = deployment_key
                     if deployment_model_key != model_key:
                         continue
-
+                    logger.info(f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
                     node.evict(deployment_model_key, deployment_replica_id, cache=cache)
                     results[deployment_model_key, deployment_replica_id] = {
                         "status": "evicted",
@@ -377,6 +379,7 @@ class Cluster:
                         "freed_gpus": len(deployment.gpus),
                         "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
                     }
+                    logger.info(f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}")
                     change = True
                     found_any = True
 

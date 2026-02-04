@@ -6,6 +6,8 @@ export
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
 
+.PHONY: build up down ta
+
 build:
 	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
 	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
