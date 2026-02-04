@@ -53,8 +53,7 @@ FastAPI + in-memory SocketIO (src/local/server.py)
     │
 Background worker (single asyncio task)
     │
-    ├─ No sandbox (trusts user code)
-    ├─ LocalExecutionBackend (same Globals management, no Protector)
+    ├─ No sandbox (RemoteExecutionBackend with nullcontext(), trusts user code)
     └─ save_result() with TensorStoragePickler (result → disk → HTTP URL)
 ```
 
@@ -73,7 +72,7 @@ The local server is fully compatible with the nnsight client's `remote=True` int
 4. Background worker picks from `asyncio.Queue`:
    - Emits `RUNNING` status via SocketIO
    - Deserializes with `RequestModel.deserialize(body, persistent_objects, compress)`
-   - Executes with `LocalExecutionBackend` (Globals enter/exit + `tracer.execute(fn)`)
+   - Executes with `RemoteExecutionBackend` + `nullcontext()` (Globals enter/exit + `tracer.execute(fn)`, no sandbox)
    - Saves result to disk with `TensorStoragePickler` + optional zstd compression
    - Emits `COMPLETED` with `(result_url, result_size)` tuple
 5. Client downloads result via `GET /results/{id}`
@@ -110,40 +109,7 @@ The import path prefix identifies the class, the JSON suffix identifies the spec
 | Sandboxing | `RestrictedPython` Protector | None (trusts user code) |
 | Model routing | Dispatcher routes by model key | Single model, validates key at `/request` |
 | Model count | Multiple models via Ray actors | One model per server instance |
-| Execution | `RemoteExecutionBackend` (with Protector) | `LocalExecutionBackend` (no Protector) |
-
-## Code duplication
-
-Local mode duplicates code from the production codebase to avoid importing modules with heavy top-level dependencies (ray, boto3, redis). These are tracked here for future refactoring.
-
-### 1. `TensorStoragePickler` + `cpu_pickle_module`
-
-- **Local**: `src/local/serialization.py:17-32`
-- **Production**: `src/common/schema/mixins.py:25-68`
-- **Why duplicated**: `mixins.py` imports `boto3` (via `ObjectStoreProvider`) and `botocore` at module level
-- **Refactoring idea**: Extract `TensorStoragePickler` + `cpu_pickle_module` into a standalone module (e.g. `src/common/tensor_pickle.py`) with no storage dependencies, import from both `mixins.py` and `src/local/serialization.py`
-
-### 2. `LocalExecutionBackend`
-
-- **Local**: `src/local/server.py:40-61`
-- **Production**: `src/services/ray/src/ray/nn/backend.py:12-32` (`RemoteExecutionBackend`)
-- **Why duplicated**: `backend.py` imports `Protector` from the security module which depends on `RestrictedPython`
-- **Difference**: Local version removes the `with self.protector:` context manager wrapper
-- **Refactoring idea**: Make `Protector` optional in `RemoteExecutionBackend.__init__`, or extract the Globals management into a base class
-
-### 3. `_get_model_key()`
-
-- **Local**: `src/local/server.py:372-380`
-- **Production**: `cli/lib/util.py:82-97` (`get_model_key`)
-- **Why duplicated**: `cli/lib/util.py` imports `ray` at module level (line 6)
-- **Refactoring idea**: Move `get_model_key` to a utility module that doesn't import ray, or lazy-import ray only in functions that need it
-
-### 4. Request header parsing
-
-- **Local**: `src/local/server.py:171-191` (inline in handler)
-- **Production**: `src/common/schema/request.py:68-102` (`BackendRequestModel.from_request`)
-- **Why duplicated**: `BackendRequestModel` imports `ray` at module level (line 7)
-- **Refactoring idea**: Extract header parsing into a standalone function, have both `BackendRequestModel.from_request` and the local handler call it
+| Execution | `RemoteExecutionBackend` (with Protector) | `RemoteExecutionBackend` (with `nullcontext()`, no Protector) |
 
 ## CLI structure
 
@@ -169,7 +135,7 @@ ndif
 
 `pyproject.toml` splits dependencies:
 
-- **Base** (`pip install ndif`): click, fastapi, python-socketio, uvicorn, zstandard, nnsight, torch, pyyaml — enough for local mode
+- **Base** (`pip install ndif`): click, fastapi, python-socketio, uvicorn, zstandard, nnsight, torch, pyyaml
 - **Server** (`pip install ndif[server]`): adds ray, redis, boto3, RestrictedPython, gunicorn, eventlet, etc.
 
-**Known limitation**: `cli/cli.py` imports all commands at module level, including ones that `import ray`. So `ndif local start` currently requires ray to be installed even though local mode doesn't use it. Making CLI imports lazy is a follow-up task.
+**Note**: Local mode imports from production modules (`src.common.schema`, `src.services.ray...backend`, `cli.lib.util`), so it requires `[server]` dependencies (ray, boto3) to be installed.
