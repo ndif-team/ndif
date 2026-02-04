@@ -63,9 +63,6 @@ def pytest_collection_modifyitems(config, items):
         "TestAdhocModules",
         "TestEdgeCases",
         "TestPrintAndDebug",
-        # Replica integration tests
-        "TestReplicaRequests",
-        "TestReplicaCLI",
     }
 
     for item in items:
