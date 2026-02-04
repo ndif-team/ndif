@@ -71,6 +71,7 @@ def find_available_port(start_port: int) -> int:
     port = start_port
     while True:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("", port))
                 return port
@@ -81,6 +82,7 @@ def find_available_port(start_port: int) -> int:
 def check_port_available(port: int) -> bool:
     """Check if a specific port is available."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind(("", port))
             return True
