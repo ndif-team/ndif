@@ -1,0 +1,23 @@
+# NDIF Model Deployment Configuration
+#
+# This file defines models to deploy via `ndif deploy -f models.yaml`
+#
+# Models can be specified in two forms:
+#   - Simple: just the checkpoint string (uses default revision and dedicated=false)
+#   - Full: a mapping with checkpoint, revision, and dedicated options
+#
+# Examples:
+#   models:
+#     - gpt2                              # Simple form
+#     - checkpoint: meta-llama/Llama-3.1-8b  # Full form
+#       revision: main
+#       dedicated: true
+
+models:
+  # Simple form - just the checkpoint (revision=main, dedicated=false)
+  - gpt2
+
+  # Full form - with explicit options
+  #- checkpoint: meta-llama/Llama-3.1-8B
+  #  revision: main
+  #  dedicated: true

@@ -31,4 +31,4 @@ requests
 torch
 python-slugify
 influxdb-client
-nnsight
+git+https://github.com/ndif-team/nnsight.git@v0.5.16

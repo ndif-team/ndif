@@ -1,4 +1,4 @@
-nnsight
+git+https://github.com/ndif-team/nnsight.git@v0.5.16
 ray[serve]==2.50.0
 python-slugify
 # Telemetry
@@ -10,3 +10,6 @@ influxdb-client
 # Google Cal Scheduling
 google-api-python-client
 google
+
+# Security
+RestrictedPython>=7.0

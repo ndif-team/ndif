@@ -1,8 +1,10 @@
 import asyncio
 import os
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from importlib.metadata import distributions, packages_distributions
+from typing import Any, Dict, List, Optional
 
 import ray
 from pydantic import BaseModel
@@ -108,6 +110,26 @@ class _ControllerActor:
 
         return results
 
+    def flush_warm_cache(self, node_ids: Optional[List[str]] = None) -> dict:
+        """Flush WARM cache from specified nodes (or all nodes).
+
+        This removes all WARM (CPU-cached) models, transitioning them to COLD.
+
+        Args:
+            node_ids: Optional list of node IDs to flush. Defaults to all nodes.
+
+        Returns:
+            Dict with per-node flush results including flushed model keys and memory freed.
+        """
+        results = self.cluster.flush_warm_cache(node_ids)
+
+        # Update state to remove flushed deployments
+        for node_id, flush_result in results.items():
+            for model_key in flush_result["flushed"]:
+                self.state.pop((node_id, model_key), None)
+
+        return results
+
     def build(self):
         new_state = {}
 
@@ -198,6 +220,40 @@ class _ControllerActor:
             if model_key in node.deployments.keys():
                 return node.deployments[model_key].get_state()
         return None
+
+    def env(self) -> Dict[str, Any]:
+        """Get the Python environment information.
+
+        Returns:
+            Dictionary containing Python version and installed pip packages.
+        """
+        pd_map = packages_distributions()
+        dist_to_imports = {}
+        for import_name, dist_names in pd_map.items():
+            for dist_name in dist_names:
+                if dist_name not in dist_to_imports:
+                    dist_to_imports[dist_name] = []
+                dist_to_imports[dist_name].append(import_name)
+
+        packages = {}
+        for dist in distributions():
+            dist_name = dist.metadata["Name"]
+            version = dist.version
+
+            # Get import names from packages_distributions mapping
+            import_names = dist_to_imports.get(dist_name, [])
+
+            if import_names:
+                for imp_name in import_names:
+                    packages[imp_name] = version
+            else:
+                # Fallback to distribution name if no import mapping found
+                packages[dist_name] = version
+
+        return {
+            "python_version": sys.version,
+            "packages": packages,
+        }
 
     def status(self):
         ray_status = list_actors()

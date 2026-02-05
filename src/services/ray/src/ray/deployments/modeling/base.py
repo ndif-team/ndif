@@ -3,7 +3,7 @@ import gc
 import os
 import threading
 import time
-import traceback
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict
 
@@ -11,15 +11,15 @@ import ray
 import torch
 from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
-from ray import serve
+
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
-
 from transformers.modeling_utils import _get_device_map
+
 from nnsight.modeling.mixins import RemoteableMixin
-from nnsight.schema.request import RequestModel
 from nnsight.modeling.mixins.remoteable import StreamTracer
-from ....types import MODEL_KEY
+from nnsight.schema.request import RequestModel
+
 from ....logging import set_logger
 from ....metrics import (
     ExecutionTimeMetric,
@@ -30,14 +30,15 @@ from ....metrics import (
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
+from ....types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_objects import protect_model
 from ...nn.security.protected_environment import (
     WHITELISTED_MODULES,
     WHITELISTED_MODULES_DESERIALIZATION,
     Protector,
 )
+from ...nn.security.protected_objects import protect
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
@@ -45,7 +46,6 @@ class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
-        cuda_devices: str,
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
@@ -55,9 +55,8 @@ class BaseModelDeployment:
     ) -> None:
         super().__init__()
 
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
-
         ObjectStoreProvider.connect()
+        SioProvider.connect()
 
         self.model_key = model_key
         self.execution_timeout = execution_timeout
@@ -78,6 +77,12 @@ class BaseModelDeployment:
 
         self.model = self.load_from_disk()
 
+        self.persistent_objects = self.model._remoteable_persistent_objects()
+
+        for key, value in self.persistent_objects.items():
+            if isinstance(value, torch.nn.Module):
+                self.persistent_objects[key] = protect(value)
+
         self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
         if dispatch:
@@ -92,7 +97,6 @@ class BaseModelDeployment:
         self.kill_switch = asyncio.Event()
         self.execution_ident = None
 
-        protect_model()
         StreamTracer.register(self.stream_send, self.stream_receive)
 
     def load_from_disk(self):
@@ -239,14 +243,15 @@ class BaseModelDeployment:
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
-        """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION, builtins=True):
-            request = self.request.deserialize(self.model)
 
         self.respond(
             status=BackendResponseModel.JobStatus.RUNNING,
             description="Your job has started running.",
         )
+
+        """Logic to execute before execution."""
+        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+            request = self.request.deserialize(self.persistent_objects)
 
         return request
 
@@ -300,7 +305,7 @@ class BaseModelDeployment:
         result_object = BackendResultModel(
             id=self.request.id,
             **saves,
-        ).save()
+        ).save(compress=self.request.compress)
 
         self.respond(
             status=BackendResponseModel.JobStatus.COMPLETED,
@@ -323,10 +328,9 @@ class BaseModelDeployment:
             exception (Exception): The exception that was raised during __call__.
         """
 
-        description = traceback.format_exc()
         self.respond(
             status=BackendResponseModel.JobStatus.ERROR,
-            description=f"{description}\n{str(exception)}",
+            description=str(exception),
         )
 
         # Special handling for CUDA device-side assertion errors
@@ -358,8 +362,6 @@ class BaseModelDeployment:
         """
         self.kill_switch.clear()
         self.execution_ident = None
-
-        SioProvider.disconnect()
 
         self.model._model.zero_grad()
         self.request = None
@@ -427,7 +429,7 @@ class BaseModelDeployment:
                 - description: Human-readable status description
                 - data: Optional additional data
         """
-        
+
         try:
             self.request.create_response(**kwargs, logger=self.logger).respond()
         except:

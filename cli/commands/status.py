@@ -6,7 +6,9 @@ import click
 import ray
 from collections import defaultdict
 
-from .util import get_controller_actor_handle
+from ..lib.util import get_controller_actor_handle, extract_repo_id_from_model_key
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()
@@ -14,7 +16,7 @@ from .util import get_controller_actor_handle
 @click.option('--verbose', is_flag=True, help='Show detailed cluster state')
 @click.option('--show-cold', is_flag=True, help='List all COLD deployments')
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_address: str):
     """View cluster and deployment status.
 
@@ -28,9 +30,14 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
         ndif status --json-output      # Raw JSON output
         ndif status --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     try:
-        # Connect to Ray
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        # Check prerequisites silently
+        check_prerequisites(ray_address=ray_address)
+
+        # Connect to Ray (suppress verbose output)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         if watch:
             # Watch mode - loop forever
@@ -114,6 +121,10 @@ def format_status_simple(status_data: dict, show_cold: bool):
     click.echo(f"  Total GPUs: {total_gpus} ({available_gpus} available)")
     if total_gpu_memory > 0:
         click.echo(f"  GPU Memory: {total_gpu_memory / (1024**3):.1f} GB per GPU")
+    click.echo()
+
+    # Show Ray nodes directly
+    _show_ray_nodes_summary()
     click.echo()
 
     # Group deployments by level
@@ -244,7 +255,7 @@ def format_state_verbose(state: dict):
         click.echo(f"    Deployments ({node.get('num_deployments', 0)}):")
         if deployments:
             for dep in deployments:
-                repo_id = _extract_repo_id_from_model_key(dep.get('model_key', ''))
+                repo_id = extract_repo_id_from_model_key(dep.get('model_key', ''))
                 click.echo(f"      • {repo_id}")
                 click.echo(f"        Level: {dep.get('deployment_level', 'unknown')}")
                 click.echo(f"        GPUs: {dep.get('gpus', [])}")
@@ -258,7 +269,7 @@ def format_state_verbose(state: dict):
         click.echo(f"    Cache ({len(cache)} models, {cache_size / (1024**3):.2f} GB):")
         if cache:
             for cached in cache:
-                repo_id = _extract_repo_id_from_model_key(cached.get('model_key', ''))
+                repo_id = extract_repo_id_from_model_key(cached.get('model_key', ''))
                 click.echo(f"      • {repo_id}")
                 click.echo(f"        Size: {cached.get('size_bytes', 0) / (1024**3):.2f} GB")
         else:
@@ -272,7 +283,7 @@ def format_state_verbose(state: dict):
     click.echo(f"Evaluator Cache ({len(eval_cache)} models):")
     if eval_cache:
         for model_key, model_info in list(eval_cache.items())[:5]:  # Show first 5
-            repo_id = _extract_repo_id_from_model_key(model_key)
+            repo_id = extract_repo_id_from_model_key(model_key)
             size_bytes = model_info.get('size_in_bytes', 0)
             click.echo(f"  • {repo_id}: {size_bytes / (1024**3):.2f} GB")
         if len(eval_cache) > 5:
@@ -284,16 +295,26 @@ def format_state_verbose(state: dict):
     click.echo("-" * 60)
 
 
-def _extract_repo_id_from_model_key(model_key: str) -> str:
-    """Extract repo_id from model_key string."""
-    # model_key format: 'nnsight.modeling.language.LanguageModel:{"repo_id": "...", ...}'
+def _show_ray_nodes_summary():
+    """Show summary of Ray cluster nodes."""
     try:
-        if '"repo_id":' in model_key:
-            start = model_key.index('"repo_id":') + len('"repo_id":')
-            remainder = model_key[start:].strip()
-            if remainder.startswith('"'):
-                end = remainder.index('"', 1)
-                return remainder[1:end]
-    except (ValueError, IndexError):
+        nodes = ray.nodes()
+        alive_nodes = [n for n in nodes if n.get('Alive', False)]
+
+        if alive_nodes:
+            click.echo("Connected Nodes:")
+            for node in alive_nodes:
+                node_id = node.get('NodeID', 'unknown')[:8]
+                node_ip = node.get('NodeManagerAddress', 'unknown')
+                resources = node.get('Resources', {})
+                cpus = resources.get('CPU', 0)
+                gpus = resources.get('GPU', 0)
+
+                # Determine node type from resources or default
+                is_head = 'node:__internal_head__' in resources
+                node_type_str = "head" if is_head else "worker"
+
+                gpu_str = f", {int(gpus)} GPU" if gpus else ""
+                click.echo(f"  {node_id}... ({node_type_str}) - {node_ip} ({int(cpus)} CPU{gpu_str})")
+    except Exception:
         pass
-    return model_key

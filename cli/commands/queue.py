@@ -7,12 +7,16 @@ import click
 import redis.asyncio as redis
 import asyncio
 
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
+from ..lib.util import extract_repo_id_from_model_key
+
 
 @click.command()
 @click.option('--json-output', 'json_flag', is_flag=True, help='Output raw JSON')
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-def queue(json_flag: bool, watch: bool, redis_url: str):
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+def queue(json_flag: bool, watch: bool, broker_url: str):
     """View queue and processor status.
 
     Shows current queue state including active processors,
@@ -23,13 +27,18 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
         ndif queue --json-output      # Raw JSON output
         ndif queue --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
+        # Check prerequisites silently
+        check_prerequisites(broker_url=broker_url)
+
         if watch:
             # Watch mode - loop forever
             try:
                 while True:
                     # Fetch data BEFORE clearing screen to reduce flicker
-                    data = asyncio.run(_fetch_queue_state(redis_url))
+                    data = asyncio.run(_fetch_queue_state(broker_url))
 
                     # Now clear and display atomically
                     click.clear()
@@ -41,7 +50,7 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
                 return
         else:
             # Single shot
-            data = asyncio.run(_fetch_queue_state(redis_url))
+            data = asyncio.run(_fetch_queue_state(broker_url))
             _render_queue_state(data, json_flag)
 
     except Exception as e:
@@ -49,19 +58,26 @@ def queue(json_flag: bool, watch: bool, redis_url: str):
         raise click.Abort()
 
 
-async def _fetch_queue_state(redis_url: str) -> dict:
-    """Fetch queue state from the dispatcher via Redis."""
-    redis_client = redis.Redis.from_url(redis_url)
+async def _fetch_queue_state(broker_url: str) -> dict:
+    """Fetch queue state from the dispatcher via Redis streams."""
+    redis_client = redis.Redis.from_url(broker_url)
 
     try:
-        # Use PID as unique ID for this request
-        request_id = str(os.getpid())
+        # Use PID and timestamp as unique response key
+        response_key = f"queue_state_response:{os.getpid()}:{int(time.time() * 1000)}"
 
-        # Send request to dispatcher
-        await redis_client.lpush("queue_state", request_id)
+        # Send QUEUE_STATE_REQUEST event to dispatcher events stream
+        await redis_client.xadd(
+            "dispatcher:events",
+            {
+                "event_type": "queue_state_request",
+                "response_key": response_key,
+                "timestamp": str(time.time()),
+            }
+        )
 
-        # Wait for response
-        result = await redis_client.brpop(request_id, timeout=5)
+        # Wait for response on the response key
+        result = await redis_client.brpop(response_key, timeout=5)
 
         if result is None:
             raise Exception("Timeout waiting for queue state response")
@@ -117,7 +133,6 @@ def format_queue_state_simple(queue_data: dict):
 
 def _print_processor(processor: dict):
     """Print a single processor's state."""
-    model_key = processor.get('model_key', 'unknown')
     status = processor.get('status', 'unknown')
     current_request = processor.get('current_request_id')
     dedicated = processor.get('dedicated')
@@ -126,7 +141,7 @@ def _print_processor(processor: dict):
     current_request_started_at = processor.get('current_request_started_at')
 
     # Extract repo_id from model_key for display
-    repo_id = _extract_repo_id_from_model_key(model_key)
+    repo_id = extract_repo_id_from_model_key(processor.get('model_key', 'unknown'))
 
     # Status emoji
     status_emoji = {
@@ -168,16 +183,3 @@ def _print_processor(processor: dict):
             click.echo(f"    Queued Requests: {shown}, ... (+{len(request_ids) - 3} more)")
 
 
-def _extract_repo_id_from_model_key(model_key: str) -> str:
-    """Extract repo_id from model_key string."""
-    # model_key format: 'nnsight.modeling.language.LanguageModel:{"repo_id": "...", ...}'
-    try:
-        if '"repo_id":' in model_key:
-            start = model_key.index('"repo_id":') + len('"repo_id":')
-            remainder = model_key[start:].strip()
-            if remainder.startswith('"'):
-                end = remainder.index('"', 1)
-                return remainder[1:end]
-    except (ValueError, IndexError):
-        pass
-    return model_key

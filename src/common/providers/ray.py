@@ -14,13 +14,13 @@ class RayProvider(Provider):
     @classmethod
     def from_env(cls) -> None:
         super().from_env()
-        cls.ray_url = os.environ.get("RAY_ADDRESS")
+        cls.ray_url = os.environ.get("NDIF_RAY_ADDRESS", "ray://localhost:10001")
 
     @classmethod
     def to_env(cls) -> dict:
         return {
             **super().to_env(),
-            "RAY_ADDRESS": cls.ray_url,
+            "NDIF_RAY_ADDRESS": cls.ray_url,
         }
 
     @classmethod
@@ -42,7 +42,7 @@ class RayProvider(Provider):
             port = int(port)
         else:
             logger.warning(
-                f"RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
+                f"NDIF_RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
             )
             host = addr
             port = 6379  # Default Ray port if not specified
