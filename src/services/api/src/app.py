@@ -207,6 +207,12 @@ async def ping():
     return "pong"
 
 
+@app.get("/connected", status_code=200, dependencies=[Depends(require_ray_connection)])
+async def connected():
+    """Endpoint to check if Ray cluster is connected."""
+    return {"status": "connected"}
+
+
 @app.get("/status", status_code=200, dependencies=[Depends(require_ray_connection)])
 async def status() -> Dict[str, Any]:
     """Get the current cluster status.
