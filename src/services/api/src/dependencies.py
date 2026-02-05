@@ -1,17 +1,16 @@
-import os
-import sys
-
 from fastapi import HTTPException, Request
-from starlette.status import HTTP_400_BAD_REQUEST, HTTP_401_UNAUTHORIZED
+from starlette.status import (
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 from packaging.version import Version
-from nnsight import __version__
 
+from .config import AppConfig
 from .types import API_KEY
 from .db import api_key_store
 from .schema import BackendRequestModel
-
-MIN_NNSIGHT_VERSION = os.getenv("MIN_NNSIGHT_VERSION", __version__)
-DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
+from .providers.redis import RedisProvider
 
 
 async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
@@ -26,7 +25,7 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
     Raises:
         HTTPException: If the API key is missing or invalid, or validation is not configured.
     """
-    if DEV_MODE:
+    if AppConfig.dev_mode:
         return api_key
 
     if api_key_store is None:
@@ -56,10 +55,9 @@ async def validate_python_version(python_version: str) -> str:
         HTTPException: If the Python version is missing or incompatible.
     """
 
-    if DEV_MODE:
+    if AppConfig.dev_mode:
         return python_version
 
-    server_python_version = ".".join(sys.version.split(".")[0:2])  # e.g. 3.12
     user_python_version = ".".join(python_version.split(".")[0:2])
 
     if user_python_version == "":
@@ -68,10 +66,13 @@ async def validate_python_version(python_version: str) -> str:
             detail="Client python version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
-    if user_python_version != server_python_version:
+    min_python_version = Version(AppConfig.min_python_version)
+    user_version = Version(user_python_version)
+
+    if user_version < min_python_version:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"Client python version {user_python_version} does not match server version: {server_python_version}. Please update your python version and try again.",
+            detail=f"Client python version {user_python_version} is incompatible with the server. The minimum supported version is {min_python_version}. Please update your python version and try again.",
         )
 
     return user_python_version
@@ -90,7 +91,7 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
         HTTPException: If the nnsight version is missing or incompatible.
     """
 
-    if DEV_MODE:
+    if AppConfig.dev_mode:
         return nnsight_version
 
     if nnsight_version == "":
@@ -99,7 +100,7 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
             detail="Client nnsight version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
-    min_nnsight_version = Version(MIN_NNSIGHT_VERSION)
+    min_nnsight_version = Version(AppConfig.min_nnsight_version)
     user_nnsight_version = Version(nnsight_version)
 
     if user_nnsight_version < min_nnsight_version:
@@ -120,11 +121,29 @@ async def check_hotswapping_access(api_key: API_KEY) -> bool:
     Returns:
         True if hotswapping is enabled for this API key, False otherwise.
     """
-    if DEV_MODE:
+    if AppConfig.dev_mode:
         return True
     if api_key_store is None:
         return False
     return api_key_store.key_has_hotswapping_access(api_key)
+
+
+async def require_ray_connection() -> None:
+    """FastAPI dependency to ensure Ray is connected before processing.
+
+    Checks the 'ray:connected' Redis key which is maintained by the Dispatcher.
+    If Ray is not connected, returns a 503 Service Unavailable error.
+
+    Raises:
+        HTTPException: 503 if Ray is not connected.
+    """
+    is_connected = await RedisProvider.async_client.get("ray:connected")
+
+    if not is_connected:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service temporarily unavailable: compute backend is reconnecting. Please try again in a few minutes.",
+        )
 
 
 async def validate_request(raw_request: Request) -> BackendRequestModel:

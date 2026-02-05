@@ -125,6 +125,7 @@ class Node:
             gpus=self.resources.assign(candidate.gpus_required),
             size_bytes=size_bytes,
             dedicated=dedicated,
+            node_id=self.id,
         )
 
         if model_key in self.cache:
@@ -185,6 +186,7 @@ class Node:
                 gpus=[],
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
+                node_id=self.id,
             )
 
     def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
