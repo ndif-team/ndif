@@ -158,6 +158,7 @@ def wait_for_services(
 
     pending = set(services.keys())
     start_time = time.time()
+    last_status_time = 0
 
     while pending and (time.time() - start_time) < timeout:
         for name in list(pending):
@@ -166,6 +167,12 @@ def wait_for_services(
                 pending.remove(name)
 
         if pending:
+            elapsed = time.time() - start_time
+            # Show status every 10 seconds
+            if elapsed - last_status_time >= 10:
+                pending_list = ', '.join(sorted(pending))
+                click.echo(f"  ... still waiting for: {pending_list} ({int(elapsed)}s)")
+                last_status_time = elapsed
             time.sleep(poll_interval)
 
     return len(pending) == 0, list(pending)

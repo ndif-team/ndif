@@ -93,10 +93,12 @@ def _output_human(session, show_env: bool):
         for name, svc in session.config.services.items():
             port_in_use = is_port_in_use(svc.port)
 
+            hint = None
             if svc.running and port_in_use:
                 status = "🟢 running"
             elif svc.running and not port_in_use:
                 status = "🟡 marked running but port not in use"
+                hint = f"Check logs: ndif logs {name}"
             elif not svc.running and port_in_use:
                 status = "🟡 stopped but port in use (external?)"
             else:
@@ -104,6 +106,8 @@ def _output_human(session, show_env: bool):
 
             managed_str = "managed" if svc.managed else "external"
             click.echo(f"  {name}: {status} (port {svc.port}, {managed_str})")
+            if hint:
+                click.echo(f"       └─ {hint}")
 
         click.echo()
 

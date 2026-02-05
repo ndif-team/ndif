@@ -9,6 +9,7 @@ import asyncio
 
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
+from ..lib.util import extract_repo_id_from_model_key
 
 
 @click.command()
@@ -140,7 +141,7 @@ def _print_processor(processor: dict):
     current_request_started_at = processor.get('current_request_started_at')
 
     # Extract repo_id from model_key for display
-    repo_id = _extract_repo_id_from_model_key(processor.get('model_key', 'unknown'))
+    repo_id = extract_repo_id_from_model_key(processor.get('model_key', 'unknown'))
 
     # Status emoji
     status_emoji = {
@@ -182,16 +183,3 @@ def _print_processor(processor: dict):
             click.echo(f"    Queued Requests: {shown}, ... (+{len(request_ids) - 3} more)")
 
 
-def _extract_repo_id_from_model_key(model_key: str) -> str:
-    """Extract repo_id from model_key string."""
-    # model_key format: 'nnsight.modeling.language.LanguageModel:{"repo_id": "...", ...}'
-    try:
-        if '"repo_id":' in model_key:
-            start = model_key.index('"repo_id":') + len('"repo_id":')
-            remainder = model_key[start:].strip()
-            if remainder.startswith('"'):
-                end = remainder.index('"', 1)
-                return remainder[1:end]
-    except (ValueError, IndexError):
-        pass
-    return model_key

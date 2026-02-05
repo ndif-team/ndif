@@ -97,6 +97,28 @@ def get_model_key(checkpoint: str, revision: str = None) -> str:
     return model.to_model_key()
 
 
+def extract_repo_id_from_model_key(model_key: str) -> str:
+    """Extract repo_id from model_key string.
+
+    Args:
+        model_key: Full model key string
+
+    Returns:
+        The repo_id if found, otherwise the original model_key
+    """
+    # model_key format: 'nnsight.modeling.language.LanguageModel:{"repo_id": "...", ...}'
+    try:
+        if '"repo_id":' in model_key:
+            start = model_key.index('"repo_id":') + len('"repo_id":')
+            remainder = model_key[start:].strip()
+            if remainder.startswith('"'):
+                end = remainder.index('"', 1)
+                return remainder[1:end]
+    except (ValueError, IndexError):
+        pass
+    return model_key
+
+
 async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """Notify dispatcher of deployment changes via Redis streams.
 

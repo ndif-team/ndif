@@ -6,7 +6,7 @@ import click
 import ray
 from collections import defaultdict
 
-from ..lib.util import get_controller_actor_handle
+from ..lib.util import get_controller_actor_handle, extract_repo_id_from_model_key
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 
@@ -255,7 +255,7 @@ def format_state_verbose(state: dict):
         click.echo(f"    Deployments ({node.get('num_deployments', 0)}):")
         if deployments:
             for dep in deployments:
-                repo_id = _extract_repo_id_from_model_key(dep.get('model_key', ''))
+                repo_id = extract_repo_id_from_model_key(dep.get('model_key', ''))
                 click.echo(f"      • {repo_id}")
                 click.echo(f"        Level: {dep.get('deployment_level', 'unknown')}")
                 click.echo(f"        GPUs: {dep.get('gpus', [])}")
@@ -269,7 +269,7 @@ def format_state_verbose(state: dict):
         click.echo(f"    Cache ({len(cache)} models, {cache_size / (1024**3):.2f} GB):")
         if cache:
             for cached in cache:
-                repo_id = _extract_repo_id_from_model_key(cached.get('model_key', ''))
+                repo_id = extract_repo_id_from_model_key(cached.get('model_key', ''))
                 click.echo(f"      • {repo_id}")
                 click.echo(f"        Size: {cached.get('size_bytes', 0) / (1024**3):.2f} GB")
         else:
@@ -283,7 +283,7 @@ def format_state_verbose(state: dict):
     click.echo(f"Evaluator Cache ({len(eval_cache)} models):")
     if eval_cache:
         for model_key, model_info in list(eval_cache.items())[:5]:  # Show first 5
-            repo_id = _extract_repo_id_from_model_key(model_key)
+            repo_id = extract_repo_id_from_model_key(model_key)
             size_bytes = model_info.get('size_in_bytes', 0)
             click.echo(f"  • {repo_id}: {size_bytes / (1024**3):.2f} GB")
         if len(eval_cache) > 5:
@@ -293,21 +293,6 @@ def format_state_verbose(state: dict):
 
     click.echo()
     click.echo("-" * 60)
-
-
-def _extract_repo_id_from_model_key(model_key: str) -> str:
-    """Extract repo_id from model_key string."""
-    # model_key format: 'nnsight.modeling.language.LanguageModel:{"repo_id": "...", ...}'
-    try:
-        if '"repo_id":' in model_key:
-            start = model_key.index('"repo_id":') + len('"repo_id":')
-            remainder = model_key[start:].strip()
-            if remainder.startswith('"'):
-                end = remainder.index('"', 1)
-                return remainder[1:end]
-    except (ValueError, IndexError):
-        pass
-    return model_key
 
 
 def _show_ray_nodes_summary():
