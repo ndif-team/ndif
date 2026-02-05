@@ -68,7 +68,7 @@ def _parse_model_specs(file_path: str, cli_revision: str, cli_dedicated: bool) -
 @click.command()
 @click.argument('checkpoints', nargs=-1)
 @click.option('-f', '--file', 'config_file', type=click.Path(), help='YAML config file with model specs')
-@click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--dedicated', is_flag=True, help='Deploy as dedicated - will not be evicted (default: False)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
@@ -117,7 +117,7 @@ def deploy(checkpoints: tuple, config_file: str, revision: str, dedicated: bool,
         # Generate model keys
         model_keys_map = {}  # model_key -> spec (for tracking dedicated flag)
         for spec in model_specs:
-            click.echo(f"Generating model key for {spec['checkpoint']} (revision: {spec['revision']})...")
+            click.echo(f"Generating model key for {spec['checkpoint']}{f' (revision: {spec['revision']})' if spec['revision'] else ''}...")
             model_key = get_model_key(spec["checkpoint"], spec["revision"])
             model_keys_map[model_key] = spec
             click.echo(f"  Model key: {model_key}")

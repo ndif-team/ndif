@@ -79,12 +79,12 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.Actor
     return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
 
 
-def get_model_key(checkpoint: str, revision: str = "main") -> str:
+def get_model_key(checkpoint: str, revision: str = None) -> str:
     """Get the model key for a checkpoint.
 
     Args:
         checkpoint: Model checkpoint/repo ID
-        revision: Model revision (default: "main")
+        revision: Model revision (default: None, uses model's default)
 
     Returns:
         Model key string
@@ -93,7 +93,7 @@ def get_model_key(checkpoint: str, revision: str = "main") -> str:
     # There should be a more lightweight way to do this.
     from nnsight import LanguageModel
 
-    model = LanguageModel(checkpoint, revision=None, dispatch=False)
+    model = LanguageModel(checkpoint, revision=revision, dispatch=False)
     return model.to_model_key()
 
 

@@ -450,7 +450,7 @@ def is_port_in_use(port: int) -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
-            result = s.connect_ex(("0.0.0.0", port))
+            result = s.connect_ex(("localhost", port))
             return result == 0
     except (socket.error, OSError):
         return False

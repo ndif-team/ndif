@@ -11,7 +11,7 @@ from ..lib.session import get_env
 
 @click.command()
 @click.argument('checkpoints', nargs=-1)
-@click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all HOT deployments')
 @click.option('--flush-cache', 'flush_cache', is_flag=True, help='Flush all WARM models from CPU cache')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
@@ -106,8 +106,7 @@ def evict(checkpoints: tuple, revision: str, evict_all: bool, flush_cache: bool,
             # Generate model keys for all checkpoints
             model_keys = []
             for checkpoint in checkpoints:
-                click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
-                # TODO: revision bug ("main" is not always the default revision)
+                click.echo(f"Generating model key for {checkpoint}{f' (revision: {revision})' if revision else ''}...")
                 model_key = get_model_key(checkpoint, revision)
                 model_keys.append(model_key)
                 click.echo(f"  Model key: {model_key}")
