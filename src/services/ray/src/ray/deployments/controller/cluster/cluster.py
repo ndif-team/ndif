@@ -12,6 +12,7 @@ from ray.util.state import list_nodes
 from .....types import MODEL_KEY, NODE_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, Node, Resources
+from .utils import gib, gib_map
 
 logger = logging.getLogger("ndif")
 
@@ -117,6 +118,18 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
+    def target_replica_ids_for(self, model_key: MODEL_KEY, existing_replica_ids: list[int]) -> List[int]:
+        if not existing_replica_ids:
+            return list(range(self.replicas))
+        existing_sorted = sorted(existing_replica_ids)
+        current_replica_count = len(existing_sorted)
+        if current_replica_count >= self.replicas:
+            return existing_replica_ids
+
+        start_replica_id = existing_sorted[-1] + 1
+        needed = self.replicas - current_replica_count
+        return existing_replica_ids + list(range(start_replica_id, start_replica_id + needed))
+    
     def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: int = 1):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
@@ -128,12 +141,7 @@ class Cluster:
         Returns:
             Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
         """
-        def _gib(bytes_value: Optional[int]) -> Optional[float]:
-            if bytes_value is None:
-                return None
-            return bytes_value / (1024 ** 3)
-        def _gib_map(bytes_by_id: Dict[int, int]) -> Dict[int, float]:
-            return {gpu_id: bytes_value / (1024 ** 3) for gpu_id, bytes_value in bytes_by_id.items()}
+        
 
         logger.info(
             f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
@@ -155,19 +163,7 @@ class Cluster:
             model_key: self.evaluator(model_key) for model_key in model_keys
         }
 
-        def target_replica_ids_for(model_key: MODEL_KEY) -> List[int]:
-            existing_replica_ids = existing_replica_ids_by_model.get(model_key, set())
-            if not existing_replica_ids:
-                return list(range(replicas))
-
-            existing_sorted = sorted(existing_replica_ids)
-            current_replica_count = len(existing_sorted)
-            if current_replica_count >= replicas:
-                return existing_sorted
-
-            start_replica_id = existing_sorted[-1] + 1
-            needed = replicas - current_replica_count
-            return existing_sorted + list(range(start_replica_id, start_replica_id + needed))
+        
 
         for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
             if isinstance(size_in_bytes, Exception):
@@ -180,7 +176,7 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                for replica_id in target_replica_ids_for(model_key):
+                for replica_id in self.target_replica_ids_for(model_key, existing_replica_ids_by_model[model_key]):
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
@@ -207,11 +203,11 @@ class Cluster:
 
         # For each model to deploy, find the best node to deploy it on, if possible.
         for model_key, size_in_bytes in sorted_models:
-            size_gib = _gib(size_in_bytes)
+            size_gib = gib(size_in_bytes)
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
             )
-            for replica_id in target_replica_ids_for(model_key):
+            for replica_id in self.target_replica_ids_for(model_key, existing_replica_ids_by_model[model_key]):
                 logger.info(
                     f"=> Analyzing deployment of {model_key} replica {replica_id} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
                 )
@@ -226,7 +222,7 @@ class Cluster:
 
                     # Evaluate the node to see if the model can be deployed on it.
                     candidate = node.evaluate(model_key, replica_id, size_in_bytes, dedicated=dedicated)
-                    gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
+                    gpu_mem_required_gib = gib(candidate.gpu_memory_required_bytes)
 
                     logger.info(
                         f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, "
@@ -269,46 +265,24 @@ class Cluster:
                     logger.error(f"=> {model_key} replica {replica_id} cannot be deployed on any node")
 
                 else:
-                    gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
+                    gpu_mem_required_gib = gib(candidate.gpu_memory_required_bytes)
                     logger.info(
                         f"=> Deploying {model_key} replica {replica_id} with size {size_in_bytes} ({size_gib:.2f} GiB) "
                         f"on {self.nodes[node_id].name} because {candidate_level.name}. "
                         f"gpu_mem_required_gib: {gpu_mem_required_gib}, evictions: {candidate.evictions}"
                     )
 
-                    try:
-                        self.nodes[node_id].deploy(
-                            model_key,
-                            replica_id,
-                            candidate,
-                            size_in_bytes,
-                            dedicated=dedicated,
-                            exclude=set(model_keys),
-                        )
-                        results["evictions"].update(candidate.evictions)
-                        change = True
-                        results["result"][(model_key, replica_id)] = candidate_level.name
-                    except ValueError as exc:
-                        node = self.nodes[node_id]
-                        gpu_mem_available = node.resources.gpu_memory_available_bytes_by_id
-                        gpu_mem_available_gib = _gib_map(gpu_mem_available)
-                        gpu_mem_required_gib = _gib(candidate.gpu_memory_required_bytes)
-                        max_available_gib = (
-                            max(gpu_mem_available_gib.values()) if gpu_mem_available_gib else None
-                        )
-                        logger.warning(
-                            f"=> Failed to deploy {model_key} replica {replica_id} on {node.name}: {exc}. "
-                            f"gpu_mem_required_gib: {gpu_mem_required_gib}, "
-                            f"gpu_mem_total_gib: {_gib(node.resources.gpu_memory_bytes)}, "
-                            f"gpu_mem_available_gib_by_id: {gpu_mem_available_gib}, "
-                            f"max_available_gib: {max_available_gib}, "
-                            f"available_gpus: {node.resources.available_gpus}, "
-                            f"candidate_gpu_ids: {candidate.gpu_ids}, "
-                            f"gpus_required: {candidate.gpus_required}, "
-                            f"min_available_gpu_fraction: {node.resources.min_available_gpu_fraction}"
-                        )
-                        results["result"][(model_key, replica_id)] = CandidateLevel.CANT_ACCOMMODATE.name
-                        continue
+                    self.nodes[node_id].deploy(
+                        model_key,
+                        replica_id,
+                        candidate,
+                        size_in_bytes,
+                        dedicated=dedicated,
+                        exclude=set(model_keys),
+                    )
+                    results["evictions"].update(candidate.evictions)
+                    change = True
+                    results["result"][(model_key, replica_id)] = candidate_level.name
 
                 if (model_key, replica_id) not in results["result"]:
                     results["result"][(model_key, replica_id)] = candidate_level.name

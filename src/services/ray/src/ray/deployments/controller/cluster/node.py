@@ -1,5 +1,6 @@
 import logging
 import time
+import torch
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set
@@ -60,6 +61,16 @@ class Resources:
     def _update_available_gpus(self, gpu_id: int) -> None:
         total = self.gpu_memory_bytes
         available = self.gpu_memory_available_bytes_by_id[gpu_id]
+
+        try:
+            if torch.cuda.is_available():
+                real_free, real_total = torch.cuda.mem_get_info(gpu_id)
+                available = min(available, int(real_free))
+                total = min(total, int(real_total))
+        except Exception:
+            pass
+
+        self.gpu_memory_available_bytes_by_id[gpu_id] = available
         if available >= total * self.min_available_gpu_fraction:
             if gpu_id not in self.available_gpus:
                 self.available_gpus.append(gpu_id)
@@ -67,7 +78,7 @@ class Resources:
             if gpu_id in self.available_gpus:
                 self.available_gpus.remove(gpu_id)
 
-    def assign_full_gpus(self, gpus_required: int) -> tuple[list[int], Dict[int, int]]:
+    def assign_full_gpus(self, gpus_required: int) -> Dict[int, int]:
         if gpus_required > len(self.available_gpus):
             raise ValueError(
                 f"Not enough GPUs available to assign {gpus_required} GPUs"
@@ -81,9 +92,9 @@ class Resources:
             self.gpu_memory_available_bytes_by_id[gpu_id] = 0
             gpu_mem_bytes_by_id[gpu_id] = self.gpu_memory_bytes
 
-        return gpus, gpu_mem_bytes_by_id
+        return gpu_mem_bytes_by_id
 
-    def assign_memory(self, required_bytes: int, gpu_id: Optional[int] = None) -> tuple[list[int], Dict[int, int]]:
+    def assign_memory(self, required_bytes: int, gpu_id: Optional[int] = None) -> Dict[int, int]:
         if gpu_id is None:
             eligible = [
                 (id, available)
@@ -91,7 +102,9 @@ class Resources:
                 if available >= required_bytes
             ]
             if not eligible:
-                raise ValueError("No GPU has enough available memory to assign")
+                raise ValueError(
+                    f"No GPU has enough available memory to assign {required_bytes} bytes"
+                )
             gpu_id = max(eligible, key=lambda item: item[1])[0]
         elif self.gpu_memory_available_bytes_by_id.get(gpu_id, 0) < required_bytes:
             raise ValueError(f"GPU {gpu_id} does not have enough available memory")
@@ -99,11 +112,11 @@ class Resources:
         self.gpu_memory_available_bytes_by_id[gpu_id] -= required_bytes
         self._update_available_gpus(gpu_id)
 
-        return [gpu_id], {gpu_id: required_bytes}
+        return {gpu_id: required_bytes}
 
     def assign(self, gpus_required: int) -> list[int]:
-        gpus, _ = self.assign_full_gpus(gpus_required)
-        return gpus
+        gpu_mem_bytes_by_id = self.assign_full_gpus(gpus_required)
+        return list(gpu_mem_bytes_by_id.keys())
 
     def __str__(self):
         return (
@@ -176,27 +189,30 @@ class Node:
             candidate.gpu_memory_required_bytes is not None
             and candidate.gpu_memory_required_bytes <= self.resources.gpu_memory_bytes
         ):
-            gpus, gpu_mem_bytes_by_id = self.resources.assign_memory(
+            gpu_mem_bytes_by_id = self.resources.assign_memory(
                 candidate.gpu_memory_required_bytes,
                 gpu_id=candidate.gpu_ids[0] if candidate.gpu_ids else None,
             )
         else:
-            gpus, gpu_mem_bytes_by_id = self.resources.assign_full_gpus(
+            gpu_mem_bytes_by_id = self.resources.assign_full_gpus(
                 candidate.gpus_required
             )
 
         gpu_memory_fraction = None
-        if len(gpus) == 1:
+        if len(gpu_mem_bytes_by_id.keys()) == 1:
+            gpu_id = next(iter(gpu_mem_bytes_by_id.keys()))
             gpu_memory_fraction = min(
                 0.99,
-                max(0.01, gpu_mem_bytes_by_id[gpus[0]] / self.resources.gpu_memory_bytes),
+                max(
+                    0.01,
+                    gpu_mem_bytes_by_id[gpu_id] / self.resources.gpu_memory_bytes,
+                ),
             )
 
         self.deployments[(model_key, replica_id)] = Deployment(
             model_key=model_key,
             replica_id=replica_id,
             deployment_level=DeploymentLevel.HOT,
-            gpus=gpus,
             gpu_mem_bytes_by_id=gpu_mem_bytes_by_id,
             gpu_memory_fraction=gpu_memory_fraction,
             size_bytes=size_bytes,
@@ -268,7 +284,6 @@ class Node:
                 model_key=deployment.model_key,
                 replica_id=replica_id,
                 deployment_level=DeploymentLevel.WARM,
-                gpus=[],
                 gpu_mem_bytes_by_id={},
                 gpu_memory_fraction=None,
                 size_bytes=deployment.size_bytes,

@@ -27,7 +27,6 @@ class Deployment:
         model_key: MODEL_KEY,
         replica_id: int,
         deployment_level: DeploymentLevel,
-        gpus: list[int],
         gpu_mem_bytes_by_id: Dict[int, int],
         gpu_memory_fraction: float | None,
         size_bytes: int,
@@ -37,7 +36,6 @@ class Deployment:
         self.model_key = model_key
         self.replica_id = replica_id
         self.deployment_level = deployment_level
-        self.gpus = gpus
         self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id
         self.gpu_memory_fraction = gpu_memory_fraction
         self.size_bytes = size_bytes
@@ -52,6 +50,10 @@ class Deployment:
     @property
     def actor(self):
         return ray.get_actor(self.name, namespace="NDIF")
+    
+    @property
+    def gpus(self):
+        return list(self.gpu_mem_bytes_by_id.keys())
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the deployment."""
@@ -60,7 +62,6 @@ class Deployment:
             "model_key": self.model_key,
             "replica_id": self.replica_id,
             "deployment_level": self.deployment_level.value,
-            "gpus": self.gpus,
             "gpu_mem_bytes_by_id": self.gpu_mem_bytes_by_id,
             "gpu_memory_fraction": self.gpu_memory_fraction,
             "size_bytes": self.size_bytes,
