@@ -155,6 +155,7 @@ class BaseModelDeployment:
         self.cached = True
 
     def from_cache(self, cuda_devices: str):
+        # TODO zikai: test the device changes; refactor the actor gpu allocation logic
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         torch.cuda.synchronize()
@@ -185,6 +186,33 @@ class BaseModelDeployment:
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
+        # Log requested CUDA devices vs what the process can actually see after setup.
+        try:
+            visible_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if torch.cuda.is_available():
+                device_count = torch.cuda.device_count()
+                device_names = [
+                    torch.cuda.get_device_name(i) for i in range(device_count)
+                ]
+                self.logger.info(
+                    "from_cache requested cuda_devices=%s; "
+                    "CUDA_VISIBLE_DEVICES(after)=%s; "
+                    "visible device_count=%s; device_names=%s",
+                    cuda_devices,
+                    visible_env,
+                    device_count,
+                    device_names,
+                )
+            else:
+                self.logger.info(
+                    "from_cache requested cuda_devices=%s; "
+                    "CUDA_VISIBLE_DEVICES(after)=%s; cuda_available=False",
+                    cuda_devices,
+                    visible_env,
+                )
+        except Exception:
+            self.logger.exception("Error logging CUDA visibility after from_cache.")
+
         self.cached = False
 
     async def __call__(self, request: BackendRequestModel) -> None:
@@ -202,9 +230,6 @@ class BaseModelDeployment:
         if self.cached:
             raise LookupError("Failed to look up actor")
 
-        ctx = self.runtime_context
-        node_id = ctx.get_node_id() if hasattr(ctx, "get_node_id") else None
-        actor_id = ctx.get_actor_id() if hasattr(ctx, "get_actor_id") else None
         self.logger.info(
             f"Serving request id={getattr(request, 'id', None)} "
             f"model_key={self.model_key} replica_id={self.replica_id} "

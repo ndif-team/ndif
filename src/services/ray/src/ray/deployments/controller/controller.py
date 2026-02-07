@@ -90,12 +90,9 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: Optional[int] = None):
+    def _deploy(self, model_keys: List[MODEL_KEY], replicas: int = 1, dedicated: Optional[bool] = False):
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        if replicas is None:
-            # default to 1
-            replicas = 1
         for model_key in model_keys:
             self.desired_replicas[model_key] = replicas
 
@@ -107,10 +104,9 @@ class _ControllerActor:
         return results
 
     async def deploy(
-        self, model_keys: List[MODEL_KEY], replicas: Optional[int] = None, dedicated: Optional[bool] = False, 
+        self, model_keys: List[MODEL_KEY], replicas: int = 1, dedicated: Optional[bool] = False, 
     ):
-        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}, replicas: {replicas}")
-        return self._deploy(model_keys, dedicated=dedicated, replicas=replicas)
+        return self._deploy(model_keys, replicas=replicas, dedicated=dedicated)
 
     def evict(
         self,
@@ -143,9 +139,9 @@ class _ControllerActor:
     def _current_replica_count(self, model_key: MODEL_KEY) -> int:
         existing_replica_ids = set()
         for node in self.cluster.nodes.values():
-            for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
-                if deployment_model_key == model_key:
-                    existing_replica_ids.add(deployment_replica_id)
+            model_map = node.deployments.get(model_key, {})
+            for deployment_replica_id in model_map.keys():
+                existing_replica_ids.add(deployment_replica_id)
         self.logger.info(f"existing replica ids: {existing_replica_ids}")
         return len(existing_replica_ids)
 
@@ -218,30 +214,36 @@ class _ControllerActor:
         for id, node in self.cluster.nodes.items():
             # For every cached deployment
             self.logger.info(f"node cache: {node.cache}")
-            for (model_key, replica_id), cached in node.cache.items():
-                # It will always exist in the state if its now cached.
-                existing_deployment = self.state.pop((id, cached.model_key, cached.replica_id))
+            for model_key, model_map in node.cache.items():
+                for replica_id, cached in model_map.items():
+                    # It will always exist in the state if its now cached.
+                    existing_deployment = self.state.pop(
+                        (id, cached.model_key, cached.replica_id)
+                    )
 
-                # If the deployment is hot, we need to actually cache it.
-                if existing_deployment.deployment_level == DeploymentLevel.HOT:
-                    deployments_to_cache.append(cached)
+                    # If the deployment is hot, we need to actually cache it.
+                    if existing_deployment.deployment_level == DeploymentLevel.HOT:
+                        deployments_to_cache.append(cached)
 
-                # Update state.
-                new_state[(id, cached.model_key, cached.replica_id)] = cached
+                    # Update state.
+                    new_state[(id, cached.model_key, cached.replica_id)] = cached
 
             # For every deployed deployment
             self.logger.info(f"node deployments: {node.deployments}")
-            for (model_key, replica_id), deployment in node.deployments.items():
-                existing_deployment = self.state.pop((id, deployment.model_key, deployment.replica_id), None)
+            for model_key, model_map in node.deployments.items():
+                for replica_id, deployment in model_map.items():
+                    existing_deployment = self.state.pop(
+                        (id, deployment.model_key, deployment.replica_id), None
+                    )
 
-                # If the deployment didn't exist before, we need to create it.
-                if existing_deployment is None:
-                    deployments_to_create.append((node.name, deployment))
-                # If the deployment is warm, we need to move it from cache.
-                elif existing_deployment.deployment_level == DeploymentLevel.WARM:
-                    deployments_from_cache.append(deployment)
-                # Update state.
-                new_state[(id, deployment.model_key, deployment.replica_id)] = deployment
+                    # If the deployment didn't exist before, we need to create it.
+                    if existing_deployment is None:
+                        deployments_to_create.append((node.name, deployment))
+                    # If the deployment is warm, we need to move it from cache.
+                    elif existing_deployment.deployment_level == DeploymentLevel.WARM:
+                        deployments_from_cache.append(deployment)
+                    # Update state.
+                    new_state[(id, deployment.model_key, deployment.replica_id)] = deployment
 
         # For every deployment that doesn't exist in the new state, we need to delete it.
         for (id, model_key, replica_id), deployment in self.state.items():
@@ -346,12 +348,6 @@ class _ControllerActor:
                 )
                 deployment.delete()
                 self._remove_deployment_from_state(deployment)
-        for node in self.cluster.nodes.values():
-            self.logger.info(f"node: {node.name} deployments: {node.deployments}")
-            for deployment in node.deployments.values():
-                self.logger.info(f"deployment: {deployment.model_key} {deployment.replica_id} gpu memory: {deployment.gpu_mem_bytes_by_id}")
-            for cached_deployment in node.cache.values():
-                self.logger.info(f"cached deployment: {cached_deployment.model_key} {cached_deployment.replica_id} gpu memory: {cached_deployment.gpu_mem_bytes_by_id}")
 
     async def _monitor_deployment(
         self,
@@ -404,27 +400,49 @@ class _ControllerActor:
         # Remove from the specific cluster node using node_id
         if deployment.node_id and deployment.node_id in self.cluster.nodes:
             node = self.cluster.nodes[deployment.node_id]
-            deployment_key = (deployment.model_key, deployment.replica_id)
-            if deployment_key in node.deployments:
+            model_map = node.deployments.get(deployment.model_key)
+            if model_map and deployment.replica_id in model_map:
                 # Return GPUs to the node
                 node.resources.available_gpus.extend(deployment.gpus)
-                del node.deployments[deployment_key]
-            if deployment_key in node.cache:
+                del model_map[deployment.replica_id]
+                if not model_map:
+                    del node.deployments[deployment.model_key]
+            cache_map = node.cache.get(deployment.model_key)
+            if cache_map and deployment.replica_id in cache_map:
                 # Return CPU memory to the node
                 node.resources.available_cpu_memory_bytes += deployment.size_bytes
-                del node.cache[deployment_key]
+                del cache_map[deployment.replica_id]
+                if not cache_map:
+                    del node.cache[deployment.model_key]
 
-    def get_deployment(self, model_key: MODEL_KEY, replica_id: Optional[int] = None) -> Optional[dict]:
+    def get_deployment_for_replica(self, model_key: MODEL_KEY, replica_id: int) -> dict:
         """Get the deployment of a model key (or None if not found)."""
         for node in self.cluster.nodes.values():
-            if replica_id is None:
-                for (deployment_model_key, deployment_replica_id), deployment in node.deployments.items():
-                    if deployment_model_key == model_key:
-                        return deployment.get_state()
-            else:
-                if (model_key, replica_id) in node.deployments.keys():
-                    return node.deployments[(model_key, replica_id)].get_state()
-        return None
+            deployment = node.deployments.get(model_key, {}).get(replica_id)
+            if deployment is not None:
+                return deployment.get_state()
+        replica_not_found = {
+            "model_key": model_key,
+            "replica_id": replica_id,
+            "deployment_state": "not_found",
+        }
+        self.logger.error(f"Deployment {model_key} {replica_id} not found")
+        return replica_not_found
+    
+    def get_deployment(self, model_key: MODEL_KEY) -> dict:
+        deployments = {}
+        for node in self.cluster.nodes.values():
+            model_map = node.deployments.get(model_key, {})
+            for deployment_replica_id, deployment in model_map.items():
+                deployments[deployment_replica_id] = deployment.get_state()
+        if not deployments:
+            model_not_found = {
+                "model_key": model_key,
+                "deployments_state": "not_found",
+            }
+            self.logger.error(f"Deployments {model_key} not found")
+            return model_not_found
+        return deployments
 
     def env(self) -> Dict[str, Any]:
         """Get the Python environment information.
@@ -485,10 +503,11 @@ class _ControllerActor:
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
-            for deployment in node.deployments.values():
-                application_name = deployment.name
+            for model_map in node.deployments.values():
+                for deployment in model_map.values():
+                    application_name = deployment.name
 
-                status[application_name] = {
+                    status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "dedicated": deployment.dedicated,
@@ -524,31 +543,32 @@ class _ControllerActor:
                     ].config._name_or_path
                 )
 
-            for cached_deployment in node.cache.values():
-                application_name = cached_deployment.name
+            for model_map in node.cache.values():
+                for cached_deployment in model_map.values():
+                    application_name = cached_deployment.name
 
-                status[application_name] = {
-                    "deployment_level": DeploymentLevel.WARM.name,
-                    "model_key": cached_deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].revision,
-                    "config": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].n_params,
-                }
+                    status[application_name] = {
+                        "deployment_level": DeploymentLevel.WARM.name,
+                        "model_key": cached_deployment.model_key,
+                        "repo_id": self.cluster.evaluator.cache[
+                            cached_deployment.model_key
+                        ].config._name_or_path,
+                        "revision": self.cluster.evaluator.cache[
+                            cached_deployment.model_key
+                        ].revision,
+                        "config": self.cluster.evaluator.cache[
+                            cached_deployment.model_key
+                        ].config.to_json_string(),
+                        "n_params": self.cluster.evaluator.cache[
+                            cached_deployment.model_key
+                        ].n_params,
+                    }
 
-                existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path
-                )
+                    existing_repo_ids.add(
+                        self.cluster.evaluator.cache[
+                            cached_deployment.model_key
+                        ].config._name_or_path
+                    )
 
         downloaded_models = get_downloaded_models()
 
@@ -573,7 +593,8 @@ class _ControllerActor:
                             f"{deployment.model_key}:{deployment.replica_id}": {
                                 "gpus_required": len(deployment.gpus),
                             }
-                            for deployment in node.deployments.values()
+                            for model_map in node.deployments.values()
+                            for deployment in model_map.values()
                         },
                     }
                     for node_id, node in self.cluster.nodes.items()

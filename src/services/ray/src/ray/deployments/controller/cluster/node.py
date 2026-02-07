@@ -149,8 +149,46 @@ class Node:
         self.gpu_memory_coefficient = gpu_memory_coefficient
         self.gpu_memory_buffer_bytes = gpu_memory_buffer_bytes
 
-        self.deployments: Dict[tuple[MODEL_KEY, int], Deployment] = {}
-        self.cache: Dict[tuple[MODEL_KEY, int], Deployment] = {}
+        self.deployments: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
+        self.cache: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
+
+    def _get_from_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        model_key: MODEL_KEY,
+        replica_id: int,
+    ) -> Optional[Deployment]:
+        return store.get(model_key, {}).get(replica_id)
+
+    def _set_in_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        deployment: Deployment,
+    ) -> None:
+        store.setdefault(deployment.model_key, {})[deployment.replica_id] = deployment
+
+    def _remove_from_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        model_key: MODEL_KEY,
+        replica_id: int,
+    ) -> Optional[Deployment]:
+        model_map = store.get(model_key)
+        if not model_map:
+            return None
+        deployment = model_map.pop(replica_id, None)
+        if not model_map:
+            del store[model_key]
+        return deployment
+
+    def _flatten_map(
+        self, store: Dict[MODEL_KEY, Dict[int, Deployment]]
+    ) -> List[Deployment]:
+        return [
+            deployment
+            for model_map in store.values()
+            for deployment in model_map.values()
+        ]
 
     def gpu_memory_required_bytes(self, model_size_in_bytes: int) -> int:
         return int(model_size_in_bytes * self.gpu_memory_coefficient + self.gpu_memory_buffer_bytes)
@@ -158,18 +196,28 @@ class Node:
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
 
+        deployments_state: List[Dict[str, Any]] = []
+        num_deployments = 0
+        for model_map in self.deployments.values():
+            for deployment in model_map.values():
+                deployments_state.append(deployment.get_state())
+                num_deployments += 1
+
+        cache_state: List[Dict[str, Any]] = []
+        cache_size = 0
+        for model_map in self.cache.values():
+            for deployment in model_map.values():
+                cache_state.append(deployment.get_state())
+                cache_size += deployment.size_bytes
+
         return {
             "id": self.id,
             "name": self.name,
             "resources": asdict(self.resources),
-            "deployments": [
-                deployment.get_state() for deployment in self.deployments.values()
-            ],
-            "num_deployments": len(self.deployments),
-            "cache": [deployment.get_state() for deployment in self.cache.values()],
-            "cache_size": sum(
-                [deployment.size_bytes for deployment in self.cache.values()]
-            ),
+            "deployments": deployments_state,
+            "num_deployments": num_deployments,
+            "cache": cache_state,
+            "cache_size": cache_size,
         }
 
     def deploy(
@@ -209,7 +257,7 @@ class Node:
                 ),
             )
 
-        self.deployments[(model_key, replica_id)] = Deployment(
+        self._set_in_map(self.deployments, Deployment(
             model_key=model_key,
             replica_id=replica_id,
             deployment_level=DeploymentLevel.HOT,
@@ -218,10 +266,10 @@ class Node:
             size_bytes=size_bytes,
             dedicated=dedicated,
             node_id=self.id,
-        )
+        ))
 
-        if (model_key, replica_id) in self.cache:
-            del self.cache[(model_key, replica_id)]
+        if self._get_from_map(self.cache, model_key, replica_id) is not None:
+            self._remove_from_map(self.cache, model_key, replica_id)
 
             # Return its cpu memory to the node
             self.resources.available_cpu_memory_bytes += size_bytes
@@ -233,7 +281,9 @@ class Node:
         exclude: Optional[Set[MODEL_KEY]] = None,
         cache: bool = True,
     ):
-        deployment = self.deployments[(model_key, replica_id)]
+        deployment = self._get_from_map(self.deployments, model_key, replica_id)
+        if deployment is None:
+            raise KeyError(f"Deployment not found: {model_key}:{replica_id}")
 
         for gpu_id, bytes_used in deployment.gpu_mem_bytes_by_id.items():
             self.resources.gpu_memory_available_bytes_by_id[gpu_id] += bytes_used
@@ -251,7 +301,7 @@ class Node:
             cache_evictions = []
 
             for eviction_deployment in sorted(
-                self.cache.values(), key=lambda x: x.size_bytes
+                self._flatten_map(self.cache), key=lambda x: x.size_bytes
             ):
                 if exclude is not None and eviction_deployment.model_key in exclude:
                     continue
@@ -269,18 +319,22 @@ class Node:
                         f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}"
                     )
 
-                    del self.cache[eviction_deployment.model_key]
+                    self._remove_from_map(
+                        self.cache,
+                        eviction_deployment.model_key,
+                        eviction_deployment.replica_id,
+                    )
 
                     self.resources.available_cpu_memory_bytes += (
                         eviction_deployment.size_bytes
                     )
 
-        del self.deployments[(model_key, replica_id)]
+        self._remove_from_map(self.deployments, model_key, replica_id)
 
         if cpu_memory_needed <= 0 and cache:
             self.resources.available_cpu_memory_bytes -= deployment.size_bytes
 
-            self.cache[(model_key, replica_id)] = Deployment(
+            self._set_in_map(self.cache, Deployment(
                 model_key=deployment.model_key,
                 replica_id=replica_id,
                 deployment_level=DeploymentLevel.WARM,
@@ -289,10 +343,12 @@ class Node:
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
                 node_id=self.id,
-            )
+            ))
 
     def evictions(self, gpus_required: int, dedicated: bool = False) -> List[tuple[MODEL_KEY, int]]:
-        deployments = sorted(list(self.deployments.values()), key=lambda x: len(x.gpus))
+        deployments = sorted(
+            self._flatten_map(self.deployments), key=lambda x: len(x.gpus)
+        )
 
         gpus_needed = gpus_required - len(self.resources.available_gpus)
 
@@ -332,7 +388,7 @@ class Node:
             needed = required_bytes - available_bytes
             candidates = [
                 deployment
-                for deployment in self.deployments.values()
+                for deployment in self._flatten_map(self.deployments)
                 if gpu_id in deployment.gpu_mem_bytes_by_id
             ]
             candidates = sorted(
@@ -369,13 +425,14 @@ class Node:
     def evaluate(
         self, model_key: MODEL_KEY, replica_id: int, model_size_in_bytes: int, dedicated: bool = False
     ) -> Candidate:
-        if (model_key, replica_id) in self.deployments:
+        deployment = self._get_from_map(self.deployments, model_key, replica_id)
+        if deployment is not None:
             if dedicated:
-                self.deployments[(model_key, replica_id)].dedicated = True
+                deployment.dedicated = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
-        cached = model_key in self.cache
+        cached = self._get_from_map(self.cache, model_key, replica_id) is not None
 
         required_bytes = self.gpu_memory_required_bytes(model_size_in_bytes)
 
@@ -432,7 +489,7 @@ class Node:
             return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)
 
     def purge(self):
-        for deployment in self.deployments.values():
+        for deployment in self._flatten_map(self.deployments):
             deployment.delete()
-        for cache in self.cache.values():
+        for cache in self._flatten_map(self.cache):
             cache.delete()

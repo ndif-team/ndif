@@ -154,9 +154,13 @@ class Cluster:
         existing_replica_ids_by_model = {model_key: set() for model_key in model_keys}
         if existing_replica_ids_by_model:
             for node in self.nodes.values():
-                for (deployment_model_key, deployment_replica_id) in node.deployments.keys():
-                    if deployment_model_key in existing_replica_ids_by_model:
-                        existing_replica_ids_by_model[deployment_model_key].add(deployment_replica_id)
+                for deployment_model_key, model_map in node.deployments.items():
+                    if deployment_model_key not in existing_replica_ids_by_model:
+                        continue
+                    for deployment_replica_id in model_map.keys():
+                        existing_replica_ids_by_model[deployment_model_key].add(
+                            deployment_replica_id
+                        )
 
         # First get the size of the models in bytes
         model_sizes_in_bytes = {
@@ -184,17 +188,18 @@ class Cluster:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
-                for (model_key, replica_id), deployment in list(node.deployments.items()):
-                    if deployment.dedicated and model_key not in model_sizes_in_bytes:
-                        logger.info(
-                            f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
-                        )
+                for model_key, model_map in list(node.deployments.items()):
+                    for replica_id, deployment in list(model_map.items()):
+                        if deployment.dedicated and model_key not in model_sizes_in_bytes:
+                            logger.info(
+                                f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
+                            )
 
-                        results["evictions"].add((model_key, replica_id))
+                            results["evictions"].add((model_key, replica_id))
 
-                        node.evict(model_key, replica_id, exclude=set(model_keys))
+                            node.evict(model_key, replica_id, exclude=set(model_keys))
 
-                        change = True
+                            change = True
 
         # Sort models by size in descending order (deploy biggest ones first)
         sorted_models = sorted(
@@ -310,7 +315,7 @@ class Cluster:
                 found = False
 
                 for node in self.nodes.values():
-                    deployment = node.deployments.get((model_key, replica_id))
+                    deployment = node.deployments.get(model_key, {}).get(replica_id)
                     if deployment is None:
                         continue
                     logger.info(f"gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
@@ -341,21 +346,25 @@ class Cluster:
 
             # search for deployments across all nodes
             for node in self.nodes.values():
-                for (deployment_key, deployment) in list(node.deployments.items()):
-                    deployment_model_key, deployment_replica_id = deployment_key
+                for deployment_model_key, model_map in list(node.deployments.items()):
                     if deployment_model_key != model_key:
                         continue
-                    logger.info(f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
-                    node.evict(deployment_model_key, deployment_replica_id, cache=cache)
-                    results[deployment_model_key, deployment_replica_id] = {
-                        "status": "evicted",
-                        "node": node.name,
-                        "freed_gpus": len(deployment.gpus),
-                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
-                    }
-                    logger.info(f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}")
-                    change = True
-                    found_any = True
+                    for deployment_replica_id, deployment in list(model_map.items()):
+                        logger.info(
+                            f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}"
+                        )
+                        node.evict(deployment_model_key, deployment_replica_id, cache=cache)
+                        results[deployment_model_key, deployment_replica_id] = {
+                            "status": "evicted",
+                            "node": node.name,
+                            "freed_gpus": len(deployment.gpus),
+                            "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
+                        }
+                        logger.info(
+                            f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}"
+                        )
+                        change = True
+                        found_any = True
 
             if not found_any:
                 results[(model_key, -1)] = {
