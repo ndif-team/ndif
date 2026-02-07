@@ -37,3 +37,14 @@ def get_actor_handle(name: str) -> ray.actor.ActorHandle:
 
 def controller_handle():
     return get_actor_handle("Controller")
+
+def model_actor_name(model_key: str, replica_id: int = 0) -> str:
+    return f"ModelActor:{model_key}:{replica_id}"
+
+def get_model_actor_handle(
+    model_key: str, replica_id: int = 0
+) -> ray.actor.ActorHandle:
+    try:
+        return get_actor_handle(model_actor_name(model_key, replica_id))
+    except Exception:
+        raise RuntimeError(f"ModelActor {model_actor_name(model_key, replica_id)} not found")

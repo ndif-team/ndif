@@ -82,7 +82,7 @@
               "type": "influxdb",
               "uid": "P951FEA4DE68E13C5"
             },
-            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"request_status\")",
+            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"request_status_time\")",
             "refId": "A"
           }
         ],
@@ -167,7 +167,7 @@
         "pluginVersion": "11.5.1",
         "targets": [
           {
-            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"gpu_mem\")",
+            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"request_gpu_mem\")",
             "refId": "A"
           }
         ],
@@ -314,7 +314,7 @@
         "pluginVersion": "11.5.1",
         "targets": [
           {
-            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"stage_latency\")",
+            "query": "from(bucket: \"data\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"request_execution_time\")",
             "refId": "A"
           }
         ],

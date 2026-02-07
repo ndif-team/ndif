@@ -46,7 +46,9 @@ class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
+        replica_id: int,
         execution_timeout: float | None,
+        gpu_memory_fraction: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
         *args,
@@ -59,7 +61,9 @@ class BaseModelDeployment:
         SioProvider.connect()
 
         self.model_key = model_key
+        self.replica_id = replica_id
         self.execution_timeout = execution_timeout
+        self.gpu_memory_fraction = gpu_memory_fraction
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
@@ -74,6 +78,13 @@ class BaseModelDeployment:
             dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
+
+        if self.gpu_memory_fraction and torch.cuda.is_available():
+            try:
+                fraction = min(0.99, max(0.01, self.gpu_memory_fraction))
+                torch.cuda.set_per_process_memory_fraction(fraction, device=0)
+            except Exception:
+                self.logger.exception("Error setting per-process GPU memory fraction.")
 
         self.model = self.load_from_disk()
 
@@ -144,6 +155,7 @@ class BaseModelDeployment:
         self.cached = True
 
     def from_cache(self, cuda_devices: str):
+        # TODO zikai: test the device changes; refactor the actor gpu allocation logic
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
 
         torch.cuda.synchronize()
@@ -151,7 +163,7 @@ class BaseModelDeployment:
 
         self.logger.info(f"Loading model from cache for model key {self.model_key}...")
 
-        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
+        device_map = _get_device_map(self.model._module, "auto", None, None)
 
         remove_accelerate_hooks(self.model._module)
 
@@ -174,6 +186,33 @@ class BaseModelDeployment:
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
+        # Log requested CUDA devices vs what the process can actually see after setup.
+        try:
+            visible_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if torch.cuda.is_available():
+                device_count = torch.cuda.device_count()
+                device_names = [
+                    torch.cuda.get_device_name(i) for i in range(device_count)
+                ]
+                self.logger.info(
+                    "from_cache requested cuda_devices=%s; "
+                    "CUDA_VISIBLE_DEVICES(after)=%s; "
+                    "visible device_count=%s; device_names=%s",
+                    cuda_devices,
+                    visible_env,
+                    device_count,
+                    device_names,
+                )
+            else:
+                self.logger.info(
+                    "from_cache requested cuda_devices=%s; "
+                    "CUDA_VISIBLE_DEVICES(after)=%s; cuda_available=False",
+                    cuda_devices,
+                    visible_env,
+                )
+        except Exception:
+            self.logger.exception("Error logging CUDA visibility after from_cache.")
+
         self.cached = False
 
     async def __call__(self, request: BackendRequestModel) -> None:
@@ -190,6 +229,11 @@ class BaseModelDeployment:
 
         if self.cached:
             raise LookupError("Failed to look up actor")
+
+        self.logger.info(
+            f"Serving request id={getattr(request, 'id', None)} "
+            f"model_key={self.model_key} replica_id={self.replica_id} "
+        )
 
         self.request = request
 
@@ -344,7 +388,7 @@ class BaseModelDeployment:
         or other critical failures that require a fresh replica state.
         """
         ray.kill(
-            ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"),
+            ray.get_actor(f"ModelActor:{self.model_key}:{self.replica_id}", namespace="NDIF"),
             no_restart=False,
         )
 
@@ -440,8 +484,11 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
+    replica_id: int
+    cuda_devices: str
 
     execution_timeout: float | None = None
+    gpu_memory_fraction: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
