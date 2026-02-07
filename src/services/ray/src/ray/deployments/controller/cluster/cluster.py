@@ -3,7 +3,6 @@ import random
 import traceback
 from typing import Any, Dict, List, Optional
 
-import ray
 from ray._private import services
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
@@ -19,7 +18,7 @@ logger = logging.getLogger("ndif")
 class Cluster:
     def __init__(
         self,
-        minimum_deployment_time_seconds: float = None,
+        minimum_deployment_time_seconds: float | None = None,
         model_cache_percentage: float = 0.5,
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
@@ -28,7 +27,7 @@ class Cluster:
 
         self._state = None
 
-        self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
+        self.minimum_deployment_time_seconds: float = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
 
     @property
@@ -60,6 +59,13 @@ class Cluster:
 
         return state
 
+
+    def get_node_by_name(self, name: str) -> Node | None:
+        for node in self.nodes.values():
+            if node.name == name:
+                return node
+        return None
+
     def update_nodes(self):
         logger.info("Updating nodes...")
 
@@ -67,8 +73,10 @@ class Cluster:
         current_nodes = set()
 
         for node in nodes:
-            if "GPU" not in node.resources_total:
-                # We currently only do resource management for nodes with GPUs
+            has_gpu = "GPU" in node.resources_total
+            cpu_enabled = node.resources_total.get("enable_cpu_deployments", 0) == 1
+
+            if not has_gpu and not cpu_enabled:
                 continue
 
             id = node.node_id
@@ -77,12 +85,16 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
-                total_gpus = node.resources_total["GPU"]
-                gpu_type = "TEST"
-                # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (
-                    (node.resources_total["cuda_memory_bytes"]) / total_gpus
-                )
+                total_gpus = 0
+                gpu_type = "CPU"
+                gpu_memory_bytes = 0
+
+                if has_gpu:
+                    # Real GPU node
+                    total_gpus = node.resources_total["GPU"]
+                    gpu_type = "TEST"
+                    gpu_memory_bytes = node.resources_total["cuda_memory_bytes"] / total_gpus
+
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
