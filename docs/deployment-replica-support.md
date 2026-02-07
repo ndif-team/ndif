@@ -20,9 +20,12 @@ Replicas move between three deployment levels:
 - **COLD**: downloaded but not deployed.
 
 ## Replica Count and Scaling
-The system-wide replica count is set in `src/services/api/src/queue/config.py` with the variable `NDIF_MODEL_REPLICAS_DEFAULT`. This value is used as the default number of replicas for a model when a user issuing a model tracer without existing deployments (defaults to 1). 
-The replica deployments may fail if there are not enough resources to deploy the replicas. A request which deploys a model will be served as long as `NDIF_PROCESSOR_MIN_READY_REPLICAS` (in `src/services/api/src/queue/config.py`, defaults to 1) replicas are successfully deployed. 
-In this version, no auto-scaling is supported, so the replica can only be controlled by admin using cli commands.
+Request-driven processors default to a single replica unless an explicit replica
+count is provided (for example via `ndif deploy` or `ndif scale`). The replica
+deployments may fail if there are not enough resources to deploy all replicas.
+A request which deploys a model will be served as long as at least one replica
+is successfully deployed. In this version, no auto-scaling is supported, so the
+replica count can only be controlled by admin using CLI commands.
 
 ## Replica Operations
 

@@ -43,8 +43,6 @@ class QueueConfig:
     broker_url: Optional[str]
     status_cache_freq_s: int
     processor_reply_freq_s: int
-    processor_replica_count: int
-    processor_min_ready_replicas: int
 
     @classmethod
     def from_env(cls) -> None:
@@ -68,17 +66,6 @@ class QueueConfig:
             reply_freq_str, "COORDINATOR_PROCESSOR_REPLY_FREQ_S"
         )
 
-        replica_count_str = os.environ.get("NDIF_MODEL_REPLICAS_DEFAULT", "1")
-        cls.processor_replica_count = cls._parse_positive_int(
-            replica_count_str, "NDIF_MODEL_REPLICAS_DEFAULT"
-        )
-
-        min_ready_str = os.environ.get("NDIF_PROCESSOR_MIN_READY_REPLICAS", "1")
-        cls.processor_min_ready_replicas = cls._parse_positive_int(
-            min_ready_str, "NDIF_PROCESSOR_MIN_READY_REPLICAS"
-        )
-
-
     @classmethod
     def to_env(cls) -> dict[str, object]:
         """Export configuration as a dictionary suitable for environment variables.
@@ -90,8 +77,6 @@ class QueueConfig:
             "NDIF_BROKER_URL": cls.broker_url,
             "COORDINATOR_STATUS_CACHE_FREQ_S": cls.status_cache_freq_s,
             "COORDINATOR_PROCESSOR_REPLY_FREQ_S": cls.processor_reply_freq_s,
-            "NDIF_MODEL_REPLICAS_DEFAULT": cls.processor_replica_count,
-            "NDIF_PROCESSOR_MIN_READY_REPLICAS": cls.processor_min_ready_replicas,
         }
 
     @classmethod

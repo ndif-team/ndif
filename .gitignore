@@ -4,4 +4,7 @@ creds.json
 *.nfs*
 ndif.egg-info
 .env
+# TODO zikai: remove this after testing
 logs/
+# ignore compose override file, it contains local paths
+docker/docker-compose.override.yml 
