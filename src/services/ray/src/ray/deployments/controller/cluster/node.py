@@ -139,15 +139,11 @@ class Node:
         name: str,
         resources: Resources,
         minimum_deployment_time_seconds: float = None,
-        gpu_memory_coefficient: float = 3.0,
-        gpu_memory_buffer_bytes: int = 512 * 1024 * 1024,
     ):
         self.id = id
         self.name = name
         self.resources = resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
-        self.gpu_memory_coefficient = gpu_memory_coefficient
-        self.gpu_memory_buffer_bytes = gpu_memory_buffer_bytes
 
         self.deployments: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
         self.cache: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
@@ -189,9 +185,6 @@ class Node:
             for model_map in store.values()
             for deployment in model_map.values()
         ]
-
-    def gpu_memory_required_bytes(self, model_size_in_bytes: int) -> int:
-        return int(model_size_in_bytes * self.gpu_memory_coefficient + self.gpu_memory_buffer_bytes)
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
@@ -279,7 +272,6 @@ class Node:
         model_key: MODEL_KEY,
         replica_id: int,
         exclude: Optional[Set[MODEL_KEY]] = None,
-        cache: bool = True,
     ):
         deployment = self._get_from_map(self.deployments, model_key, replica_id)
         if deployment is None:
@@ -331,7 +323,7 @@ class Node:
 
         self._remove_from_map(self.deployments, model_key, replica_id)
 
-        if cpu_memory_needed <= 0 and cache:
+        if cpu_memory_needed <= 0:
             self.resources.available_cpu_memory_bytes -= deployment.size_bytes
 
             self._set_in_map(self.cache, Deployment(
@@ -433,11 +425,28 @@ class Node:
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
         cached = self._get_from_map(self.cache, model_key, replica_id) is not None
+        
+        # Heuristic for deciding fractional allocation vs full single-GPU allocation.
+        gpu_fraction_factor = 3.0
+        fraction_largest_possible = 0.8
+        fraction_threshold_bytes = int(
+            self.resources.gpu_memory_bytes * fraction_largest_possible
+        )
+        required_bytes = int(model_size_in_bytes * gpu_fraction_factor)
+        single_gpu_fit_by_model_size = model_size_in_bytes <= self.resources.gpu_memory_bytes
 
-        required_bytes = self.gpu_memory_required_bytes(model_size_in_bytes)
+        # One-GPU eligibility is decided by evaluator size (real model size).
+        # If the estimated requirement is small, use fractional allocation.
+        # Otherwise, reserve the full GPU for this single-GPU deployment.
+        if single_gpu_fit_by_model_size:
+            if required_bytes < fraction_threshold_bytes:
+                one_gpu_required_bytes = required_bytes
+            else:
+                one_gpu_required_bytes = int(self.resources.gpu_memory_bytes)
 
-        if required_bytes <= self.resources.gpu_memory_bytes:
-            selection = self.evictions_for_gpu_memory(required_bytes, dedicated=dedicated)
+            selection = self.evictions_for_gpu_memory(
+                one_gpu_required_bytes, dedicated=dedicated
+            )
             if selection is not None:
                 gpu_id, evictions = selection
                 if len(evictions) == 0:
@@ -448,8 +457,8 @@ class Node:
                     candidate_level=candidate_level,
                     gpus_required=1,
                     gpu_ids=[gpu_id],
-                    gpu_mem_bytes_by_id={gpu_id: required_bytes},
-                    gpu_memory_required_bytes=required_bytes,
+                    gpu_mem_bytes_by_id={gpu_id: one_gpu_required_bytes},
+                    gpu_memory_required_bytes=one_gpu_required_bytes,
                     evictions=evictions,
                 )
 
