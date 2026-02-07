@@ -16,16 +16,6 @@ logger = logging.getLogger("ndif")
 
 
 class Cluster:
-    """Custom cluster class for managing Ray resources.
-
-    Args:
-        nodes (Dict[NODE_ID, Node]): Map of nodes currently in the cluster.
-        evaluator (ModelEvaluator): The model evaluator estimates model size by loading onto the meta device.
-        _state (GlobalState | None): Ray's GlobalState obj provides access to the cluster state, e.g. node health, resource util, etc.
-        minimum_deployment_time_seconds (float): The minimum deployment time in seconds.
-        model_cache_percentage (float): The percentage of CPU memory to reserve for model caching.
-    """
-
     def __init__(
         self,
         minimum_deployment_time_seconds: float | None = None,
@@ -77,15 +67,6 @@ class Cluster:
         return None
 
     def update_nodes(self):
-        """
-        Update the nodes in the cluster. Periodically tries to add new or remove old nodes from the cluster
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
         logger.info("Updating nodes...")
 
         nodes = list_nodes(detail=True)
