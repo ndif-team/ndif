@@ -1,6 +1,7 @@
 import logging
 import random
 import traceback
+import uuid
 from typing import Any, Dict, List, Optional
 
 import ray
@@ -9,7 +10,7 @@ from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
-from .....types import MODEL_KEY, NODE_ID
+from .....types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, Node, Resources
 from .utils import gib, gib_map
@@ -118,17 +119,25 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
-    def target_replica_ids_for(self, model_key: MODEL_KEY, existing_replica_ids: list[int]) -> List[int]:
-        if not existing_replica_ids:
-            return list(range(self.replicas))
-        existing_sorted = sorted(existing_replica_ids)
-        current_replica_count = len(existing_sorted)
-        if current_replica_count >= self.replicas:
-            return existing_replica_ids
+    def _new_replica_id(self) -> REPLICA_ID:
+        return uuid.uuid4().hex
 
-        start_replica_id = existing_sorted[-1] + 1
-        needed = self.replicas - current_replica_count
-        return existing_replica_ids + list(range(start_replica_id, start_replica_id + needed))
+    def target_replica_ids_for(
+        self,
+        existing_replica_ids: set[REPLICA_ID],
+        replicas: int,
+    ) -> List[REPLICA_ID]:
+        target_replica_ids = list(existing_replica_ids)
+        target_replica_id_set = set(target_replica_ids)
+
+        while len(target_replica_ids) < replicas:
+            replica_id = self._new_replica_id()
+            if replica_id in target_replica_id_set:
+                continue
+            target_replica_ids.append(replica_id)
+            target_replica_id_set.add(replica_id)
+
+        return target_replica_ids
     
     def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: int = 1):
         """
@@ -151,7 +160,9 @@ class Cluster:
 
         change = False
 
-        existing_replica_ids_by_model = {model_key: set() for model_key in model_keys}
+        existing_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
+            model_key: set() for model_key in model_keys
+        }
         if existing_replica_ids_by_model:
             for node in self.nodes.values():
                 for deployment_model_key, model_map in node.deployments.items():
@@ -161,6 +172,12 @@ class Cluster:
                         existing_replica_ids_by_model[deployment_model_key].add(
                             deployment_replica_id
                         )
+        target_replica_ids_by_model: dict[MODEL_KEY, List[REPLICA_ID]] = {
+            model_key: self.target_replica_ids_for(
+                existing_replica_ids_by_model[model_key], replicas
+            )
+            for model_key in model_keys
+        }
 
         # First get the size of the models in bytes
         model_sizes_in_bytes = {
@@ -180,7 +197,7 @@ class Cluster:
 
                 del model_sizes_in_bytes[model_key]
 
-                for replica_id in self.target_replica_ids_for(model_key, existing_replica_ids_by_model[model_key]):
+                for replica_id in target_replica_ids_by_model[model_key]:
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
@@ -212,7 +229,7 @@ class Cluster:
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
             )
-            for replica_id in self.target_replica_ids_for(model_key, existing_replica_ids_by_model[model_key]):
+            for replica_id in target_replica_ids_by_model[model_key]:
                 logger.info(
                     f"=> Analyzing deployment of {model_key} replica {replica_id} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
                 )
@@ -297,8 +314,7 @@ class Cluster:
     def evict(
         self,
         model_keys: List[MODEL_KEY],
-        replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,
-        cache: bool = True,
+        replica_keys: Optional[List[tuple[MODEL_KEY, REPLICA_ID]]] = None,
     ):
         """Evict models from the cluster.
 
@@ -319,7 +335,7 @@ class Cluster:
                     if deployment is None:
                         continue
                     logger.info(f"gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
-                    node.evict(model_key, replica_id, cache=cache)
+                    node.evict(model_key, replica_id)
                     results[model_key, replica_id] = {
                         "status": "evicted",
                         "node": node.name,
@@ -353,7 +369,7 @@ class Cluster:
                         logger.info(
                             f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}"
                         )
-                        node.evict(deployment_model_key, deployment_replica_id, cache=cache)
+                        node.evict(deployment_model_key, deployment_replica_id)
                         results[deployment_model_key, deployment_replica_id] = {
                             "status": "evicted",
                             "node": node.name,
@@ -367,7 +383,7 @@ class Cluster:
                         found_any = True
 
             if not found_any:
-                results[(model_key, -1)] = {
+                results[(model_key, None)] = {
                     "status": "not_found",
                 }
 

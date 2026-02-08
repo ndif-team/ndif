@@ -1,11 +1,12 @@
 import logging
 import time
+import random
 import torch
 from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set
 
-from .....types import MODEL_KEY, NODE_ID
+from .....types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .deployment import Deployment, DeploymentLevel
 
 logger = logging.getLogger("ndif")
@@ -145,29 +146,29 @@ class Node:
         self.resources = resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
 
-        self.deployments: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
-        self.cache: Dict[MODEL_KEY, Dict[int, Deployment]] = {}
+        self.deployments: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]] = {}
+        self.cache: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]] = {}
 
     def _get_from_map(
         self,
-        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
     ) -> Optional[Deployment]:
         return store.get(model_key, {}).get(replica_id)
 
     def _set_in_map(
         self,
-        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
         deployment: Deployment,
     ) -> None:
         store.setdefault(deployment.model_key, {})[deployment.replica_id] = deployment
 
     def _remove_from_map(
         self,
-        store: Dict[MODEL_KEY, Dict[int, Deployment]],
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
     ) -> Optional[Deployment]:
         model_map = store.get(model_key)
         if not model_map:
@@ -178,7 +179,7 @@ class Node:
         return deployment
 
     def _flatten_map(
-        self, store: Dict[MODEL_KEY, Dict[int, Deployment]]
+        self, store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]]
     ) -> List[Deployment]:
         return [
             deployment
@@ -216,7 +217,7 @@ class Node:
     def deploy(
         self,
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
         candidate: Candidate,
         size_bytes: int,
         dedicated: Optional[bool] = None,
@@ -270,7 +271,7 @@ class Node:
     def evict(
         self,
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
         exclude: Optional[Set[MODEL_KEY]] = None,
     ):
         deployment = self._get_from_map(self.deployments, model_key, replica_id)
@@ -337,9 +338,11 @@ class Node:
                 node_id=self.id,
             ))
 
-    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[tuple[MODEL_KEY, int]]:
+    def evictions_for_gpu_count(
+        self, gpus_required: int, dedicated: bool = False
+    ) -> List[tuple[MODEL_KEY, REPLICA_ID]]:
         deployments = sorted(
-            self._flatten_map(self.deployments), key=lambda x: len(x.gpus)
+            self._evictable_deployments(dedicated=dedicated), key=lambda x: len(x.gpus)
         )
 
         gpus_needed = gpus_required - len(self.resources.available_gpus)
@@ -347,18 +350,7 @@ class Node:
         evictions = []
 
         for deployment in deployments:
-            if deployment.dedicated:
-                continue
-
-            if (
-                not dedicated
-                and self.minimum_deployment_time_seconds is not None
-                and time.time() - deployment.deployed
-                < self.minimum_deployment_time_seconds
-            ):
-                continue
-
-            evictions.append((deployment.model_key, deployment.replica_id))
+            evictions.append(self._deployment_key(deployment))
 
             gpus_needed -= len(deployment.gpus)
 
@@ -367,40 +359,34 @@ class Node:
 
         return list()
 
-    def evictions_for_gpu_memory(
+    def evictions_for_fractional_gpu_memory(
         self, required_bytes: int, dedicated: bool = False
-    ) -> Optional[tuple[int, List[tuple[MODEL_KEY, int]]]]:
+    ) -> Optional[tuple[int, List[tuple[MODEL_KEY, REPLICA_ID]]]]:
         best_gpu_id = None
-        best_evictions: List[tuple[MODEL_KEY, int]] = []
+        best_evictions: List[tuple[MODEL_KEY, REPLICA_ID]] = []
+        evictable_deployments = self._evictable_deployments(dedicated=dedicated)
 
-        for gpu_id, available_bytes in self.resources.gpu_memory_available_bytes_by_id.items():
+        # shuffle the available GPUs to avoid bias
+        available_gpu_ids = list(self.resources.gpu_memory_available_bytes_by_id.keys())
+        random.shuffle(available_gpu_ids)
+        for gpu_id in available_gpu_ids:
+            available_bytes = self.resources.gpu_memory_available_bytes_by_id[gpu_id]
             if available_bytes >= required_bytes:
                 return gpu_id, []
 
             needed = required_bytes - available_bytes
             candidates = [
                 deployment
-                for deployment in self._flatten_map(self.deployments)
+                for deployment in evictable_deployments
                 if gpu_id in deployment.gpu_mem_bytes_by_id
             ]
             candidates = sorted(
                 candidates, key=lambda x: x.gpu_mem_bytes_by_id.get(gpu_id, 0)
             )
 
-            evictions: List[tuple[MODEL_KEY, int]] = []
+            evictions: List[tuple[MODEL_KEY, REPLICA_ID]] = []
             for deployment in candidates:
-                if deployment.dedicated:
-                    continue
-
-                if (
-                    not dedicated
-                    and self.minimum_deployment_time_seconds is not None
-                    and time.time() - deployment.deployed
-                    < self.minimum_deployment_time_seconds
-                ):
-                    continue
-
-                evictions.append((deployment.model_key, deployment.replica_id))
+                evictions.append(self._deployment_key(deployment))
                 needed -= deployment.gpu_mem_bytes_by_id.get(gpu_id, 0)
 
                 if needed <= 0:
@@ -414,8 +400,35 @@ class Node:
 
         return best_gpu_id, best_evictions
 
+    def _deployment_key(self, deployment: Deployment) -> tuple[MODEL_KEY, REPLICA_ID]:
+        return deployment.model_key, deployment.replica_id
+
+    def _is_evictable(self, deployment: Deployment, dedicated: bool) -> bool:
+        if deployment.dedicated:
+            return False
+
+        if (
+            not dedicated
+            and self.minimum_deployment_time_seconds is not None
+            and time.time() - deployment.deployed < self.minimum_deployment_time_seconds
+        ):
+            return False
+
+        return True
+
+    def _evictable_deployments(self, dedicated: bool) -> List[Deployment]:
+        return [
+            deployment
+            for deployment in self._flatten_map(self.deployments)
+            if self._is_evictable(deployment, dedicated=dedicated)
+        ]
+
     def evaluate(
-        self, model_key: MODEL_KEY, replica_id: int, model_size_in_bytes: int, dedicated: bool = False
+        self,
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+        model_size_in_bytes: int,
+        dedicated: bool = False,
     ) -> Candidate:
         deployment = self._get_from_map(self.deployments, model_key, replica_id)
         if deployment is not None:
@@ -444,7 +457,7 @@ class Node:
             else:
                 one_gpu_required_bytes = int(self.resources.gpu_memory_bytes)
 
-            selection = self.evictions_for_gpu_memory(
+            selection = self.evictions_for_fractional_gpu_memory(
                 one_gpu_required_bytes, dedicated=dedicated
             )
             if selection is not None:
@@ -487,7 +500,9 @@ class Node:
                 gpu_memory_required_bytes=required_bytes,
             )
 
-            candidate.evictions = self.evictions(gpus_required, dedicated=dedicated)
+            candidate.evictions = self.evictions_for_gpu_count(
+                gpus_required, dedicated=dedicated
+            )
 
             if len(candidate.evictions) == 0:
                 candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE

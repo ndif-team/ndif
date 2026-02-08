@@ -36,6 +36,7 @@ from ..providers.ray import RayProvider
 from ..providers.redis import RedisProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel
+from ..types import REPLICA_ID
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 from .util import patch, controller_handle, submit
@@ -97,7 +98,9 @@ class Dispatcher:
         self.processors: dict[str, Processor] = {}
 
         self.error_queue: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
-        self.eviction_queue: asyncio.Queue[tuple[str, str, Optional[int]]] = asyncio.Queue()
+        self.eviction_queue: asyncio.Queue[
+            tuple[str, str, Optional[REPLICA_ID]]
+        ] = asyncio.Queue()
 
         self.status_cache_freq_s = QueueConfig.status_cache_freq_s
 
@@ -504,29 +507,19 @@ class Dispatcher:
 
 
         if model_key not in self.processors:
-            processor = Processor(model_key, self.eviction_queue, self.error_queue, replicas)
-            self.processors[model_key] = processor
-            asyncio.create_task(processor.processor_worker(provision=False))
             self.logger.info(
-                f"Created processor for {model_key} due to deployment event"
+                f"Ignoring deploy event for {model_key}; processor not active"
             )
         else:
+            processor = self.processors[model_key]
             if replicas is not None:
-                processor = self.processors[model_key]
-                current_ids = set(processor.replica_ids)
-                current_count = len(current_ids)
-                if replicas > current_count:
-                    start_replica_id = max(current_ids) + 1 if current_ids else 0
-                    for replica_id in range(
-                        start_replica_id, start_replica_id + (replicas - current_count)
-                    ):
-                        processor.add_replica(replica_id)
+                processor.requested_replica_count = max(1, replicas)
 
     async def _handle_evict_event(self, event_data: dict) -> None:
         """Handle EVICT event"""
         model_key = event_data.get(b"model_key", b"").decode("utf-8")
         replica_id_raw = event_data.get(b"replica_id", b"").decode("utf-8")
-        replica_id = int(replica_id_raw) if replica_id_raw else None
+        replica_id: Optional[REPLICA_ID] = replica_id_raw or None
 
         if model_key in self.processors:
             if replica_id is None:

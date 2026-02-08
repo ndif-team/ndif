@@ -30,7 +30,7 @@ from ....metrics import (
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-from ....types import MODEL_KEY
+from ....types import MODEL_KEY, REPLICA_ID
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_environment import (
@@ -46,7 +46,7 @@ class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
         execution_timeout: float | None,
         gpu_memory_fraction: float | None,
         dispatch: bool,
@@ -484,7 +484,7 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
-    replica_id: int
+    replica_id: REPLICA_ID
     cuda_devices: str
 
     execution_timeout: float | None = None

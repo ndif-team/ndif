@@ -29,6 +29,7 @@ from typing import Optional
 import ray
 
 from ..schema import BackendRequestModel, BackendResponseModel
+from ..types import MODEL_KEY, REPLICA_ID, REQUEST_ID
 
 from .config import QueueConfig
 from .replicas import Replicas
@@ -121,9 +122,9 @@ class Processor:
 
     def __init__(
         self,
-        model_key: str,
-        eviction_queue: asyncio.Queue[tuple[str, str, Optional[int]]],
-        error_queue: asyncio.Queue[tuple[str, Exception]],
+        model_key: MODEL_KEY,
+        eviction_queue: asyncio.Queue[tuple[MODEL_KEY, str, Optional[REPLICA_ID]]],
+        error_queue: asyncio.Queue[tuple[MODEL_KEY, Exception]],
         replica_count: int = 1,
     ) -> None:
         """Initialize a new Processor for a specific model.
@@ -144,11 +145,12 @@ class Processor:
         self._status = ProcessorStatus.UNINITIALIZED
         self.status_changed_at: float = 0
 
-        self.replicas = Replicas(replica_count)
+        self.requested_replica_count = max(1, replica_count)
+        self.replicas = Replicas()
 
         self.dedicated: Optional[bool] = None
 
-    def remove_replica(self, replica_id: int, message: str) -> None:
+    def remove_replica(self, replica_id: REPLICA_ID, message: str) -> None:
         """Remove a replica from the processor. Only metadata on this processor is deleted, the replica deployment is not deleted.
 
         Args:
@@ -168,27 +170,13 @@ class Processor:
         if self.replicas.in_flight == 0:
             self.status = ProcessorStatus.READY
 
-    def add_replica(self, replica_id: int) -> None:
+    def add_replica(self, replica_id: REPLICA_ID) -> None:
         """Add a replica to the processor and start a worker if possible."""
         if not self.replicas.add(replica_id):
             logger.error(f"Replica {replica_id} already exists in processor {self.model_key}")
             return
         if self.status in {ProcessorStatus.READY, ProcessorStatus.BUSY}:
             asyncio.create_task(self.initialize_replica(replica_id))
-
-    async def _decrease_desired_replica(self, replica_id: int) -> None:
-        """Permanently decrease desired replicas for a failed replica."""
-        try:
-            controller = controller_handle()
-            await submit(
-                controller,
-                "evict",
-                [self.model_key],
-                replica_keys=[(self.model_key, replica_id)],
-                cache=True,
-            )
-        except Exception as e:
-            self.error_queue.put_nowait((self.model_key, e))
 
     @property
     def status(self) -> ProcessorStatus:
@@ -212,7 +200,7 @@ class Processor:
         self._status = value
         self.status_changed_at = time.time()
 
-    def get_handle(self, replica_id: int) -> ray.actor.ActorHandle:
+    def get_handle(self, replica_id: REPLICA_ID) -> ray.actor.ActorHandle:
         """Get the Ray actor handle for this model's deployment.
 
         Returns:
@@ -271,11 +259,18 @@ class Processor:
             Returns False if the deployment information cannot be retrieved.
         """
         result = await submit(handle, "get_deployment", self.model_key)
+        # TODO: How should we change the logic of dedicated for replicas??
 
-        if result is None:
+        if result is None or not isinstance(result, dict):
             return False
 
-        return result.get("dedicated", False)
+        if result.get("deployments_state") == "not_found":
+            return False
+
+        return any(
+            isinstance(deployment, dict) and deployment.get("dedicated", False)
+            for deployment in result.values()
+        )
 
     async def provision(self) -> None:
         """Provision the model deployment via the Controller.
@@ -338,7 +333,7 @@ class Processor:
                     return
 
             result = await submit(
-                controller, "deploy", [self.model_key], self.replicas.replica_count
+                controller, "deploy", [self.model_key], self.requested_replica_count
             )
 
         except Exception as e:
@@ -354,10 +349,19 @@ class Processor:
             return
 
         deployment_statuses = result["result"]
+        deployment_replica_ids = list(
+            dict.fromkeys(
+                str(replica_id)
+                for model_key, replica_id in deployment_statuses.keys()
+                if model_key == self.model_key
+            )
+        )
+        self.replicas.set_replica_ids(deployment_replica_ids)
 
         evictions = result["evictions"]
 
         for model_key, replica_id in evictions:
+            replica_id = str(replica_id)
             self.eviction_queue.put_nowait(
                 (
                     model_key,
@@ -368,6 +372,7 @@ class Processor:
 
         for result_key, status in deployment_statuses.items():
             model_key, replica_id = result_key
+            replica_id = str(replica_id)
             status_str = str(status).lower()
 
             try:
@@ -381,7 +386,6 @@ class Processor:
                         replica_id,
                     )
                 )
-                await self._decrease_desired_replica(replica_id)
                 self.remove_replica(
                     replica_id,
                     "Error provisioning model deployment. Please try again later. Sorry for the inconvenience.",
@@ -398,7 +402,6 @@ class Processor:
                         replica_id,
                     )
                 )
-                await self._decrease_desired_replica(replica_id)
                 self.remove_replica(
                     replica_id,
                     "Model deployment cannot be accomodated at this time. Please try again later. Sorry for the inconvenience.",
@@ -406,7 +409,7 @@ class Processor:
                 if self.status == ProcessorStatus.CANCELLED:
                     return
 
-    async def initialize_replica(self, replica_id: int) -> None:
+    async def initialize_replica(self, replica_id: REPLICA_ID) -> None:
         """Wait for the model replica deployment to complete initialization.
 
         Polls the ModelActor until it reports ready via the __ray_ready__ method.
@@ -442,7 +445,6 @@ class Processor:
                 )
             )
             self.error_queue.put_nowait((self.model_key, e))
-            await self._decrease_desired_replica(replica_id)
             self.remove_replica(
                 replica_id,
                 f"Error initializing model deployment for replica {replica_id}. Please try again later. Sorry for the inconvenience.",
@@ -483,7 +485,7 @@ class Processor:
             )
             return
 
-    async def execute(self, request: BackendRequestModel, replica_id: int) -> None:
+    async def execute(self, request: BackendRequestModel, replica_id: REPLICA_ID) -> None:
         """Execute a single inference request on the model deployment.
 
         Submits the request to the ModelActor, notifies the user of dispatch,
@@ -533,7 +535,6 @@ class Processor:
                         replica_id,
                     )
                 )
-                await self._decrease_desired_replica(replica_id)
                 self.status = ProcessorStatus.CANCELLED
             else:
                 self.error_queue.put_nowait((self.model_key, e))
@@ -584,7 +585,7 @@ class Processor:
             self._start_replica_worker(replica_id)
         await asyncio.gather(*self.replicas.worker_tasks.values())
 
-    def _start_replica_worker(self, replica_id: int) -> None:
+    def _start_replica_worker(self, replica_id: REPLICA_ID) -> None:
         self.replicas.start_worker(
             replica_id,
             should_stop=lambda: self.status == ProcessorStatus.CANCELLED,
@@ -596,7 +597,7 @@ class Processor:
         )
 
     async def _execute_replica_request(
-        self, replica_id: int, request: BackendRequestModel
+        self, replica_id: REPLICA_ID, request: BackendRequestModel
     ) -> None:
         await self.execute(request, replica_id)
 
@@ -698,7 +699,7 @@ class Processor:
             **replica_state,
         }
 
-    async def kill_request(self, request_id: str) -> dict:
+    async def kill_request(self, request_id: REQUEST_ID) -> dict:
         """Kill a specific request by ID.
 
         Args:

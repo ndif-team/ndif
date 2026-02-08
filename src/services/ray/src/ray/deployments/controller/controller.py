@@ -14,7 +14,7 @@ from ....logging.logger import set_logger
 from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
-from ....types import MODEL_KEY
+from ....types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
@@ -49,7 +49,7 @@ class _ControllerActor:
         self.replica_count = replica_count
         self.desired_replicas: Dict[MODEL_KEY, int] = {}
 
-        self.state: dict[tuple[str, str, int], Deployment] = dict()
+        self.state: dict[tuple[str, str, REPLICA_ID], Deployment] = dict()
 
         self.cluster = Cluster(
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
@@ -90,6 +90,20 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
+    def _adjust_desired_for_cant_accommodate(self, results: Dict[str, Any]) -> None:
+        cant_accommodate_by_model: Dict[MODEL_KEY, int] = {}
+        for (model_key, _replica_id), status in results.get("result", {}).items():
+            if str(status).upper() == "CANT_ACCOMMODATE":
+                cant_accommodate_by_model[model_key] = (
+                    cant_accommodate_by_model.get(model_key, 0) + 1
+                )
+
+        for model_key, count in cant_accommodate_by_model.items():
+            current_desired = self.desired_replicas.get(
+                model_key, self._current_replica_count(model_key)
+            )
+            self.desired_replicas[model_key] = max(0, current_desired - count)
+
     def _deploy(self, model_keys: List[MODEL_KEY], replicas: int = 1, dedicated: Optional[bool] = False):
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
@@ -97,6 +111,7 @@ class _ControllerActor:
             self.desired_replicas[model_key] = replicas
 
         results, change = self.cluster.deploy(model_keys, dedicated=dedicated, replicas=replicas)
+        self._adjust_desired_for_cant_accommodate(results)
 
         if change:
             self.apply()
@@ -111,8 +126,7 @@ class _ControllerActor:
     def evict(
         self,
         model_keys: List[MODEL_KEY],
-        replica_keys: Optional[List[tuple[MODEL_KEY, int]]] = None,
-        cache: bool = True,
+        replica_keys: Optional[List[tuple[MODEL_KEY, REPLICA_ID]]] = None,
     ):
         """Evict models from the cluster."""
         if replica_keys:
@@ -128,7 +142,7 @@ class _ControllerActor:
             for model_key in model_keys:
                 self.desired_replicas[model_key] = 0
         results, change = self.cluster.evict(
-            model_keys, replica_keys=replica_keys, cache=cache
+            model_keys, replica_keys=replica_keys
         )
 
         if change:
@@ -167,6 +181,7 @@ class _ControllerActor:
         deploy_results, deploy_change = self.cluster.deploy(
             [model_key], dedicated=dedicated, replicas=replicas
         )
+        self._adjust_desired_for_cant_accommodate(deploy_results)
 
         if deploy_change:
             self.apply()
@@ -190,6 +205,7 @@ class _ControllerActor:
         deploy_results, deploy_change = self.cluster.deploy(
             [model_key], dedicated=dedicated, replicas=target_replicas
         )
+        self._adjust_desired_for_cant_accommodate(deploy_results)
 
         if deploy_change:
             self.apply()
@@ -415,7 +431,11 @@ class _ControllerActor:
                 if not cache_map:
                     del node.cache[deployment.model_key]
 
-    def get_deployment_for_replica(self, model_key: MODEL_KEY, replica_id: int) -> dict:
+    def get_deployment_for_replica(
+        self,
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+    ) -> dict:
         """Get the deployment of a model key (or None if not found)."""
         for node in self.cluster.nodes.values():
             deployment = node.deployments.get(model_key, {}).get(replica_id)

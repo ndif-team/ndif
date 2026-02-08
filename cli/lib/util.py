@@ -66,7 +66,11 @@ def get_controller_actor_handle(namespace: str = "NDIF") -> ray.actor.ActorHandl
     return ray.get_actor("Controller", namespace=namespace)
 
 
-def get_actor_handle(model_key: str, namespace: str = "NDIF", replica_id: int = 0) -> ray.actor.ActorHandle:
+def get_actor_handle(
+    model_key: str,
+    namespace: str = "NDIF",
+    replica_id: str = "0",
+) -> ray.actor.ActorHandle:
     """Get a Ray actor handle by model key and namespace.
 
     Args:
@@ -78,7 +82,7 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF", replica_id: int = 
     """
     return ray.get_actor(model_actor_name(model_key, replica_id), namespace=namespace)
 
-def model_actor_name(model_key: str, replica_id: int = 0) -> str:
+def model_actor_name(model_key: str, replica_id: str = "0") -> str:
     return f"ModelActor:{model_key}:{replica_id}"
 
 
@@ -100,7 +104,13 @@ def get_model_key(checkpoint: str, revision: str = "main") -> str:
     return model.to_model_key()
 
 
-async def notify_dispatcher(redis_url: str, event_type: str, model_key: str, replicas: int | None = None, replica_id: int | None = None):
+async def notify_dispatcher(
+    redis_url: str,
+    event_type: str,
+    model_key: str,
+    replicas: int | None = None,
+    replica_id: str | None = None,
+):
     """Notify dispatcher of deployment changes via Redis streams.
 
     Args:
@@ -125,5 +135,4 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str, rep
         )
     finally:
         await redis_client.aclose()
-
 

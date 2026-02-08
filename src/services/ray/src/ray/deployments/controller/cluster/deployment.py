@@ -9,7 +9,7 @@ import ray
 from .....providers.mailgun import MailgunProvider
 from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
-from .....types import MODEL_KEY
+from .....types import MODEL_KEY, REPLICA_ID
 from ...modeling.base import BaseModelDeploymentArgs, ModelActor
 
 logger = logging.getLogger("ndif")
@@ -25,7 +25,7 @@ class Deployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
-        replica_id: int,
+        replica_id: REPLICA_ID,
         deployment_level: DeploymentLevel,
         gpu_mem_bytes_by_id: Dict[int, int],
         gpu_memory_fraction: float | None,
