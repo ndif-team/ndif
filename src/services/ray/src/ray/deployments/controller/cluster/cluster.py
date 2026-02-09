@@ -124,18 +124,24 @@ class Cluster:
 
     def target_replica_ids_for(
         self,
-        existing_replica_ids: set[REPLICA_ID],
+        cached_replica_ids: set[REPLICA_ID],
+        deployed_replica_ids: set[REPLICA_ID],
         replicas: int,
     ) -> List[REPLICA_ID]:
-        target_replica_ids = list(existing_replica_ids)
+        needed = max(0, replicas - len(deployed_replica_ids))
+
+        # Start with cached IDs (up to needed)
+        target_replica_ids = list(cached_replica_ids)[:needed]
         target_replica_id_set = set(target_replica_ids)
 
-        while len(target_replica_ids) < replicas:
+        # Generate new IDs for the remainder, avoiding deployed and cached IDs
+        avoid = deployed_replica_ids | cached_replica_ids | target_replica_id_set
+        while len(target_replica_ids) < needed:
             replica_id = self._new_replica_id()
-            if replica_id in target_replica_id_set:
+            if replica_id in avoid:
                 continue
             target_replica_ids.append(replica_id)
-            target_replica_id_set.add(replica_id)
+            avoid.add(replica_id)
 
         return target_replica_ids
     
@@ -160,21 +166,24 @@ class Cluster:
 
         change = False
 
-        existing_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
+        deployed_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
             model_key: set() for model_key in model_keys
         }
-        if existing_replica_ids_by_model:
-            for node in self.nodes.values():
-                for deployment_model_key, model_map in node.deployments.items():
-                    if deployment_model_key not in existing_replica_ids_by_model:
-                        continue
-                    for deployment_replica_id in model_map.keys():
-                        existing_replica_ids_by_model[deployment_model_key].add(
-                            deployment_replica_id
-                        )
+        cached_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
+            model_key: set() for model_key in model_keys
+        }
+        for node in self.nodes.values():
+            for model_key in model_keys:
+                for replica_id in node.deployments.get(model_key, {}):
+                    deployed_replica_ids_by_model[model_key].add(replica_id)
+                for replica_id in node.cache.get(model_key, {}):
+                    cached_replica_ids_by_model[model_key].add(replica_id)
+
         target_replica_ids_by_model: dict[MODEL_KEY, List[REPLICA_ID]] = {
             model_key: self.target_replica_ids_for(
-                existing_replica_ids_by_model[model_key], replicas
+                cached_replica_ids_by_model[model_key],
+                deployed_replica_ids_by_model[model_key],
+                replicas,
             )
             for model_key in model_keys
         }
@@ -222,6 +231,12 @@ class Cluster:
         sorted_models = sorted(
             model_sizes_in_bytes.items(), key=lambda x: x[1], reverse=True
         )
+
+        # Record already-deployed replicas in results (they need no action but
+        # downstream consumers must know about them for routing).
+        for model_key in model_keys:
+            for replica_id in deployed_replica_ids_by_model[model_key]:
+                results["result"][(model_key, replica_id)] = CandidateLevel.DEPLOYED.name
 
         # For each model to deploy, find the best node to deploy it on, if possible.
         for model_key, size_in_bytes in sorted_models:

@@ -1,12 +1,42 @@
 """Deploy command for NDIF - Deploy a model without requiring to submit a request."""
 
-import click
-import ray
 import asyncio
 
-from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
+import click
+import ray
+
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
+from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
+
+
+def _model_key_in_state(state: dict, model_key: str) -> bool:
+    cluster_state = state.get("cluster", {})
+    nodes = cluster_state.get("nodes", [])
+    node_iter = nodes.values() if isinstance(nodes, dict) else nodes
+    for node in node_iter:
+        for deployment in node.get("deployments", []) or []:
+            if deployment.get("model_key") == model_key:
+                return True
+    return False
+
+
+def _deployment_exists(controller: ray.actor.ActorHandle, model_key: str) -> bool:
+    try:
+        existing = ray.get(controller.get_deployment.remote(model_key))
+    except TypeError as e:
+        message = str(e)
+        if "positional" in message or "keyword" in message:
+            # Compatibility with older controller API: get_deployment() takes no args.
+            state = ray.get(controller.get_state.remote())
+            return _model_key_in_state(state, model_key)
+        raise
+
+    if existing is None:
+        return False
+    if isinstance(existing, dict) and existing.get("deployments_state") == "not_found":
+        return False
+    return True
 
 
 @click.command()
@@ -51,8 +81,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         click.echo(f"Getting actor handle for {model_key}...")
         controller = get_controller_actor_handle()
 
-        existing_deployment = ray.get(controller.get_deployment.remote(model_key))
-        if existing_deployment is not None:
+        if _deployment_exists(controller, model_key):
             click.echo(
                 f"✗ Error: {model_key} already has deployed replicas. "
                 "Use `ndif scale` to add replicas."
