@@ -1,11 +1,10 @@
 import asyncio
 import gc
-import os
 import threading
 import time
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Set
 
 import ray
 import torch
@@ -49,6 +48,7 @@ class BaseModelDeployment:
         execution_timeout: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
+        target_gpus: List[int] | None = None,
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -63,6 +63,7 @@ class BaseModelDeployment:
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
+        self.target_gpus = target_gpus or []
 
         self.cached = False
 
@@ -74,6 +75,12 @@ class BaseModelDeployment:
             dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
+
+        # Set the default CUDA device to the first target GPU BEFORE any CUDA
+        # call. This ensures the CUDA context (~400MiB) is created on the
+        # target GPU rather than always landing on GPU 0.
+        if self.target_gpus:
+            torch.cuda.set_device(self.target_gpus[0])
 
         self.model = self.load_from_disk()
 
@@ -99,15 +106,65 @@ class BaseModelDeployment:
 
         StreamTracer.register(self.stream_send, self.stream_receive)
 
+    def _build_max_memory(self) -> Optional[Dict[int, int]]:
+        """Build a max_memory dict that restricts model placement to target GPUs.
+
+        Returns a dict mapping GPU index to max memory in bytes. Non-target GPUs
+        get 0 bytes to prevent any allocation. Returns None if no target GPUs
+        are set, which lets accelerate use all available GPUs.
+        """
+        if not self.target_gpus:
+            return None
+
+        num_gpus = torch.cuda.device_count()
+        target_set = set(self.target_gpus)
+        max_memory = {}
+        for i in range(num_gpus):
+            if i in target_set:
+                max_memory[i] = torch.cuda.get_device_properties(i).total_memory
+            else:
+                max_memory[i] = 0
+        return max_memory
+
+    def _verify_device_placement(self, module: torch.nn.Module, source: str):
+        """Verify and log that model parameters are on the expected GPUs.
+
+        Args:
+            module: The model module to check.
+            source: Description of load source (e.g., 'disk', 'cache') for logging.
+        """
+        devices: Set[str] = set()
+        for param in module.parameters():
+            devices.add(f"{param.device.type}:{param.device.index}")
+
+        self.logger.info(
+            f"Model loaded from {source} on devices: {devices}"
+        )
+
+        if self.target_gpus:
+            expected = {f"cuda:{gpu}" for gpu in self.target_gpus}
+            actual_cuda = {d for d in devices if d.startswith("cuda:")}
+            if actual_cuda and not actual_cuda.issubset(expected):
+                self.logger.warning(
+                    f"Device placement mismatch! Expected GPUs {self.target_gpus}, "
+                    f"but model is on {actual_cuda}"
+                )
+
     def load_from_disk(self):
         start = time.time()
         torch.cuda.synchronize()
-        self.logger.info(f"Loading model from disk for model key {self.model_key}...")
+        self.logger.info(
+            f"Loading model from disk for model key {self.model_key} "
+            f"targeting GPUs {self.target_gpus}..."
+        )
+
+        max_memory = self._build_max_memory()
 
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
                 device_map="auto",
+                max_memory=max_memory,
                 dispatch=self.dispatch,
                 torch_dtype=self.dtype,
                 **self.extra_kwargs,
@@ -118,13 +175,10 @@ class BaseModelDeployment:
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
 
-        devices = set()
-
-        for param in model._module.parameters():
-            devices.add(f"{param.device.type}:{param.device.index}")
+        self._verify_device_placement(model._module, "disk")
 
         self.logger.info(
-            f"Model loaded from disk in {load_time} seconds on devices: {devices}"
+            f"Model loaded from disk in {load_time} seconds"
         )
 
         return model
@@ -143,15 +197,33 @@ class BaseModelDeployment:
 
         self.cached = True
 
-    def from_cache(self, cuda_devices: str):
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+    def from_cache(self, target_gpus: List[int]):
+        """Restore model from CPU cache onto the specified GPU(s).
+
+        Uses max_memory targeting to ensure the model is placed on exactly
+        the requested GPUs, rather than relying on CUDA_VISIBLE_DEVICES
+        (which cannot be changed after CUDA context initialization).
+
+        Args:
+            target_gpus: List of physical GPU indices to place the model on.
+        """
+        self.target_gpus = target_gpus
+
+        # Switch default CUDA device to the new target GPU before any CUDA ops
+        if self.target_gpus:
+            torch.cuda.set_device(self.target_gpus[0])
 
         torch.cuda.synchronize()
         start = time.time()
 
-        self.logger.info(f"Loading model from cache for model key {self.model_key}...")
+        self.logger.info(
+            f"Loading model from cache for model key {self.model_key} "
+            f"onto GPUs {target_gpus}..."
+        )
 
-        device_map = _get_device_map(self.model._module, "auto", None, None, None, None)
+        max_memory = self._build_max_memory()
+
+        device_map = _get_device_map(self.model._module, "auto", max_memory, None)
 
         remove_accelerate_hooks(self.model._module)
 
@@ -163,13 +235,10 @@ class BaseModelDeployment:
 
         load_time = time.time() - start
 
-        devices = set()
-
-        for param in self.model._module.parameters():
-            devices.add(f"{param.device.type}:{param.device.index}")
+        self._verify_device_placement(self.model._module, "cache")
 
         self.logger.info(
-            f"Model loaded from cache in {load_time} seconds on devices: {devices}"
+            f"Model loaded from cache in {load_time} seconds"
         )
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
@@ -445,6 +514,7 @@ class BaseModelDeploymentArgs(BaseModel):
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
+    target_gpus: List[int] | None = None
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
