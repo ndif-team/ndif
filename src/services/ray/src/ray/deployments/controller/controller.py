@@ -36,7 +36,6 @@ class _ControllerActor:
         execution_timeout_seconds: float,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
-        replica_count: Optional[int] = None,
     ):
         super().__init__()
 
@@ -46,7 +45,7 @@ class _ControllerActor:
         self.model_cache_percentage = model_cache_percentage
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
-        self.replica_count = replica_count
+        self.replica_count = 1
         self.desired_replicas: Dict[MODEL_KEY, int] = {}
 
         self.state: dict[tuple[str, str, REPLICA_ID], Deployment] = dict()
@@ -56,10 +55,13 @@ class _ControllerActor:
             model_cache_percentage=self.model_cache_percentage,
         )
 
+        
+        self.cluster.update_nodes()
+        
         if deployments and deployments != [""]:
             self._deploy(deployments, dedicated=True)
 
-        self.cluster.update_nodes()
+        
 
         asyncio.create_task(self.check_nodes())
 

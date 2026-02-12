@@ -210,6 +210,10 @@ class BaseModelDeployment:
         # torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
+        # reset the memory fraction
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            for gpu_id in self.gpu_mem_bytes_by_id:
+                torch.cuda.set_per_process_memory_fraction(1.0, device=gpu_id)
 
         self.cached = True
 
