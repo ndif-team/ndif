@@ -342,7 +342,7 @@ class _ControllerActor:
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
                 replica_id=deployment.replica_id,
-                cuda_devices=",".join(str(gpu) for gpu in deployment.gpus),
+                gpu_mem_bytes_by_id=deployment.gpu_mem_bytes_by_id,
                 execution_timeout=self.execution_timeout_seconds,
                 gpu_memory_fraction=deployment.gpu_memory_fraction,
             )

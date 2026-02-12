@@ -226,9 +226,28 @@ class BaseModelDeployment:
         """
         self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
 
-        # Switch default CUDA device to the new target GPU before any CUDA ops
+        # Switch default CUDA device to the new target GPU before any CUDA ops.
         if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
             torch.cuda.set_device(list(self.gpu_mem_bytes_by_id.keys())[0])
+
+        # Set cap on memory allocation for each GPU (best-effort).
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            for gpu_id, bytes_cap in self.gpu_mem_bytes_by_id.items():
+                if bytes_cap <= 0:
+                    continue
+                try:
+                    total = torch.cuda.get_device_properties(gpu_id).total_memory
+                    if total <= 0:
+                        continue
+                    fraction = min(0.99, max(0.01, bytes_cap / total))
+                    torch.cuda.set_per_process_memory_fraction(
+                        fraction, device=gpu_id
+                    )
+                except Exception:
+                    self.logger.exception(
+                        "Error setting per-process GPU memory fraction for gpu_id=%s.",
+                        gpu_id,
+                    )
 
         torch.cuda.synchronize()
         start = time.time()
@@ -238,16 +257,8 @@ class BaseModelDeployment:
             f"onto GPUs {list(self.gpu_mem_bytes_by_id.keys())}..."
         )
 
-
         max_memory = self._build_max_memory()
-        # set cap on memory allocation for each GPU
-        for gpu_id in self.gpu_mem_bytes_by_id:
-            if self.gpu_mem_bytes_by_id[gpu_id] is not 0:
-                torch.cuda.set_per_process_memory_fraction(
-                    self.gpu_mem_bytes_by_id[gpu_id] / torch.cuda.get_device_properties(gpu_id).total_memory,
-                        device=gpu_id
-                    )
-    
+
         device_map = _get_device_map(self.model._module, "auto", max_memory, None)
 
         remove_accelerate_hooks(self.model._module)

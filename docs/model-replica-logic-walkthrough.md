@@ -144,7 +144,7 @@ Important replica behaviors:
   - triggers in-flight cancellation
 - `to_cache()`:
   - cancels current work, moves model to CPU, marks replica cached
-- `from_cache(cuda_devices)`:
+- `from_cache(gpu_mem_bytes_by_id)`:
   - moves cached model back to GPU
 - `restart()`:
   - kills the specific replica actor with `no_restart=False`
@@ -187,7 +187,7 @@ Apply / state materialization:
 `controller.apply()` diffs controller-tracked state against the latest `cluster.nodes` view and triggers the actual actor-side operations:
 
 - HOT -> WARM (evict with `cache=True`): `build()` classifies the replica into `deployments_to_cache`, and `apply()` calls `Deployment.cache()` which invokes `ModelActor.to_cache()` (move weights to CPU, mark cached).
-- WARM -> HOT (redeploy from cache): `build()` classifies into `deployments_from_cache`, and `apply()` calls `Deployment.from_cache()` which invokes `ModelActor.from_cache(cuda_devices)` (move back to GPU).
+- WARM -> HOT (redeploy from cache): `build()` classifies into `deployments_from_cache`, and `apply()` calls `Deployment.from_cache()` which invokes `ModelActor.from_cache(gpu_mem_bytes_by_id)` (move back to GPU).
 - Removed replicas (no longer present in deployments or cache): `build()` classifies into `deployments_to_delete`, and `apply()` calls `Deployment.delete()` (kills the actor).
 
 Queue side sync:
