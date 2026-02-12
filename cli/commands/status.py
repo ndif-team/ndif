@@ -258,7 +258,7 @@ def format_state_verbose(state: dict):
                 repo_id = _extract_repo_id_from_model_key(dep.get('model_key', ''))
                 click.echo(f"      • {repo_id}")
                 click.echo(f"        Level: {dep.get('deployment_level', 'unknown')}")
-                click.echo(f"        GPUs: {dep.get('gpus', [])}")
+                click.echo(f"        GPUs: {dep.get('gpu_mem_bytes_by_id', {}).keys()}")
                 click.echo(f"        Size: {dep.get('size_bytes', 0) / (1024**3):.2f} GB")
                 click.echo(f"        Dedicated: {dep.get('dedicated', False)}")
         else:

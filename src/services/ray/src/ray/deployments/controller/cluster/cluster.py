@@ -208,7 +208,7 @@ class Cluster:
 
                 for replica_id in target_replica_ids_by_model[model_key]:
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
-
+                    
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
