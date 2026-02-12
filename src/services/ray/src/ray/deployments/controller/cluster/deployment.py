@@ -102,16 +102,20 @@ class Deployment:
     def from_cache(self):
         try:
             actor = self.actor
-            return actor.from_cache.remote(",".join(str(gpu) for gpu in self.gpus))
+            return actor.from_cache.remote(self.gpus)
         except Exception:
             logger.exception(f"Error removing actor {self.model_key} from cache.")
             return None
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
         try:
+            # Inject the assigned GPU indices so the actor knows which GPUs to target
+            deployment_args.target_gpus = self.gpus
 
             env_vars = {
-                "CUDA_VISIBLE_DEVICES": ",".join(str(gpu) for gpu in self.gpus),
+                # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor
+                # inherits full GPU visibility from the worker node. GPU targeting
+                # is handled by max_memory in the actor's load_from_disk/from_cache.
                 "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
                 **SioProvider.to_env(),
                 **ObjectStoreProvider.to_env(),

@@ -24,9 +24,9 @@ class RemoteExecutionBackend(Backend):
         except Exception as e:
             raise wrap_exception(e, tracer.info) from None
         finally:
+            Globals.cache.clear()
+            Globals.saves.clear()
             Globals.exit()
-
-        Globals.saves.clear()
-        Globals.stack = 0
+            Globals.stack = 0
 
         return saves

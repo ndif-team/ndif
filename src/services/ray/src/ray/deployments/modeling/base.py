@@ -1,11 +1,11 @@
 import asyncio
 import gc
-import os
 import threading
 import time
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Set
+
 
 import ray
 import torch
@@ -51,6 +51,8 @@ class BaseModelDeployment:
         gpu_memory_fraction: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
+        gpu_mem_bytes_by_id: Dict[int, int] | None = None,
+
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -67,6 +69,7 @@ class BaseModelDeployment:
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
+        self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
 
         self.cached = False
 
@@ -79,10 +82,19 @@ class BaseModelDeployment:
 
         torch.set_default_dtype(torch.bfloat16)
 
+        # Set the default CUDA device to the first target GPU BEFORE any CUDA
+        # call. This ensures the CUDA context (~400MiB) is created on the
+        # target GPU rather than always landing on GPU 0.
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            torch.cuda.set_device(list(self.gpu_mem_bytes_by_id.keys())[0])
+
         if self.gpu_memory_fraction and torch.cuda.is_available():
             try:
                 fraction = min(0.99, max(0.01, self.gpu_memory_fraction))
-                torch.cuda.set_per_process_memory_fraction(fraction, device=0)
+                device = list(self.gpu_mem_bytes_by_id.keys())[0] if self.gpu_mem_bytes_by_id else 0
+                torch.cuda.set_per_process_memory_fraction(
+                    fraction, device=device
+                )
             except Exception:
                 self.logger.exception("Error setting per-process GPU memory fraction.")
 
@@ -110,15 +122,65 @@ class BaseModelDeployment:
 
         StreamTracer.register(self.stream_send, self.stream_receive)
 
+    def _build_max_memory(self) -> Optional[Dict[int, int]]:
+        """Build a max_memory dict based on gpu_mem_bytes_by_id.
+
+        Returns a dict mapping GPU index to max memory in bytes. Non-target GPUs
+        get 0 bytes to prevent any allocation. Returns None if no GPU map
+        is set, which lets accelerate use all available GPUs.
+        """
+        if not self.gpu_mem_bytes_by_id or not torch.cuda.is_available():
+            return None
+
+        num_gpus = torch.cuda.device_count()
+        max_memory = {}
+        for i in range(num_gpus):
+            if i in self.gpu_mem_bytes_by_id:
+                total = torch.cuda.get_device_properties(i).total_memory
+                max_memory[i] = min(self.gpu_mem_bytes_by_id[i], total)
+            else:
+                max_memory[i] = 0
+        return max_memory
+
+    def _verify_device_placement(self, module: torch.nn.Module, source: str):
+        """Verify and log that model parameters are on the expected GPUs.
+
+        Args:
+            module: The model module to check.
+            source: Description of load source (e.g., 'disk', 'cache') for logging.
+        """
+        devices: Set[str] = set()
+        for param in module.parameters():
+            devices.add(f"{param.device.type}:{param.device.index}")
+
+        self.logger.info(
+            f"Model loaded from {source} on devices: {devices}"
+        )
+
+        if self.gpu_mem_bytes_by_id:
+            expected = {f"cuda:{gpu}" for gpu in list(self.gpu_mem_bytes_by_id.keys())}
+            actual_cuda = {d for d in devices if d.startswith("cuda:")}
+            if actual_cuda and not actual_cuda.issubset(expected):
+                self.logger.warning(
+                    f"Device placement mismatch! Expected GPUs {list(self.gpu_mem_bytes_by_id.keys())}, "
+                    f"but model is on {actual_cuda}"
+                )
+
     def load_from_disk(self):
         start = time.time()
         torch.cuda.synchronize()
-        self.logger.info(f"Loading model from disk for model key {self.model_key}...")
+        self.logger.info(
+            f"Loading model from disk for model key {self.model_key} "
+            f"targeting GPUs {list(self.gpu_mem_bytes_by_id.keys())}..."
+        )
+
+        max_memory = self._build_max_memory()
 
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
                 device_map="auto",
+                max_memory=max_memory,
                 dispatch=self.dispatch,
                 torch_dtype=self.dtype,
                 **self.extra_kwargs,
@@ -129,13 +191,10 @@ class BaseModelDeployment:
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
 
-        devices = set()
-
-        for param in model._module.parameters():
-            devices.add(f"{param.device.type}:{param.device.index}")
+        self._verify_device_placement(model._module, "disk")
 
         self.logger.info(
-            f"Model loaded from disk in {load_time} seconds on devices: {devices}"
+            f"Model loaded from disk in {load_time} seconds"
         )
 
         return model
@@ -154,16 +213,42 @@ class BaseModelDeployment:
 
         self.cached = True
 
-    def from_cache(self, cuda_devices: str):
-        # TODO zikai: test the device changes; refactor the actor gpu allocation logic
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_devices
+
+    def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int]):
+        """Restore model from CPU cache onto the specified GPU(s).
+
+        Uses max_memory targeting to ensure the model is placed on exactly
+        the requested GPUs, rather than relying on CUDA_VISIBLE_DEVICES
+        (which cannot be changed after CUDA context initialization).
+
+        Args:
+            gpu_mem_bytes_by_id: Map of physical GPU indices to max bytes.
+        """
+        self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
+
+        # Switch default CUDA device to the new target GPU before any CUDA ops
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            torch.cuda.set_device(list(self.gpu_mem_bytes_by_id.keys())[0])
 
         torch.cuda.synchronize()
         start = time.time()
 
-        self.logger.info(f"Loading model from cache for model key {self.model_key}...")
+        self.logger.info(
+            f"Loading model from cache for model key {self.model_key} "
+            f"onto GPUs {list(self.gpu_mem_bytes_by_id.keys())}..."
+        )
 
-        device_map = _get_device_map(self.model._module, "auto", None, None)
+
+        max_memory = self._build_max_memory()
+        # set cap on memory allocation for each GPU
+        for gpu_id in self.gpu_mem_bytes_by_id:
+            if self.gpu_mem_bytes_by_id[gpu_id] is not 0:
+                torch.cuda.set_per_process_memory_fraction(
+                    self.gpu_mem_bytes_by_id[gpu_id] / torch.cuda.get_device_properties(gpu_id).total_memory,
+                        device=gpu_id
+                    )
+    
+        device_map = _get_device_map(self.model._module, "auto", max_memory, None)
 
         remove_accelerate_hooks(self.model._module)
 
@@ -175,43 +260,13 @@ class BaseModelDeployment:
 
         load_time = time.time() - start
 
-        devices = set()
-
-        for param in self.model._module.parameters():
-            devices.add(f"{param.device.type}:{param.device.index}")
+        self._verify_device_placement(self.model._module, "cache")
 
         self.logger.info(
-            f"Model loaded from cache in {load_time} seconds on devices: {devices}"
+            f"Model loaded from cache in {load_time} seconds"
         )
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
-
-        # Log requested CUDA devices vs what the process can actually see after setup.
-        try:
-            visible_env = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if torch.cuda.is_available():
-                device_count = torch.cuda.device_count()
-                device_names = [
-                    torch.cuda.get_device_name(i) for i in range(device_count)
-                ]
-                self.logger.info(
-                    "from_cache requested cuda_devices=%s; "
-                    "CUDA_VISIBLE_DEVICES(after)=%s; "
-                    "visible device_count=%s; device_names=%s",
-                    cuda_devices,
-                    visible_env,
-                    device_count,
-                    device_names,
-                )
-            else:
-                self.logger.info(
-                    "from_cache requested cuda_devices=%s; "
-                    "CUDA_VISIBLE_DEVICES(after)=%s; cuda_available=False",
-                    cuda_devices,
-                    visible_env,
-                )
-        except Exception:
-            self.logger.exception("Error logging CUDA visibility after from_cache.")
 
         self.cached = False
 
@@ -485,7 +540,8 @@ class BaseModelDeploymentArgs(BaseModel):
 
     model_key: MODEL_KEY
     replica_id: REPLICA_ID
-    cuda_devices: str
+    gpu_mem_bytes_by_id: Dict[int, int]
+
 
     execution_timeout: float | None = None
     gpu_memory_fraction: float | None = None
@@ -494,7 +550,7 @@ class BaseModelDeploymentArgs(BaseModel):
     dtype: str | torch.dtype = "bfloat16"
 
 
-@ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
+@ray.remote(num_cpus=0, num_gpus=0, max_restarts=-1)
 class ModelActor(BaseModelDeployment):
     """Ray remote actor for model execution.
 
