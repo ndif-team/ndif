@@ -13,14 +13,23 @@ logger = logging.getLogger("ndif")
 
 @dataclass
 class CacheEntry:
-    size_in_bytes: int
-    n_params: int
-    config: Any  # PretrainedConfig from transformers
+    """Pretrained Config from transformers."""
+    config: Any
+
+    """Revision of the model."""
     revision: str
+
+    """Number of parameters in the model."""
+    n_params: int
+
+    """Size of the model in bytes before padding."""
+    size_in_bytes_pre_padding: int
+
+    """Padding factor for the computed amount of GPU/CPU memory."""
     padding_factor: float
 
 
-class GPUResourceEvaluator:
+class ResourceEvaluator:
     def __init__(
         self,
     ):
@@ -34,7 +43,7 @@ class GPUResourceEvaluator:
         return {
             "cache": {
                 key: {
-                    "size_in_bytes": value.size_in_bytes,
+                    "size_in_bytes_pre_padding": value.size_in_bytes_pre_padding,
                     "config": value.config,
                     "padding_factor": value.padding_factor,
                 }
@@ -44,14 +53,18 @@ class GPUResourceEvaluator:
         }
 
     def __call__(self, model_key: MODEL_KEY, padding_factor: float = 0.15) -> int | Exception:
+        # Skip model size computation if it's already in the cache.
         if model_key in self.cache:
+            logger.info(
+                f"=> Model {model_key} already in evaluation cache. Pre-padding size: {self.cache[model_key].size_in_bytes_pre_padding}"
+            )
+
             cached = self.cache[model_key]
-            if cached.padding_factor == padding_factor:
-                logger.info(
-                    f"=> Model {model_key} already in evaluation cache. Size: {cached.size_in_bytes}"
-                )
-                return cached.size_in_bytes
-            # padding_factor differs; fall through to recompute
+
+            model_size_bytes_pre_padding = cached.size_in_bytes_pre_padding
+            model_size_bytes = model_size_bytes_pre_padding + int(model_size_bytes_pre_padding * padding_factor)
+
+            return model_size_bytes
 
         try:
             meta_model = RemoteableMixin.from_model_key(
@@ -72,15 +85,15 @@ class GPUResourceEvaluator:
         for buffer in meta_model._model.buffers():
             buffer_size += buffer.nelement() * buffer.element_size()
 
-        model_size_bytes = param_size + buffer_size
-        model_size_bytes += int(model_size_bytes * padding_factor)
+        model_size_bytes_pre_padding = param_size + buffer_size
+        model_size_bytes = model_size_bytes_pre_padding + int(model_size_bytes_pre_padding * padding_factor)
 
         self.cache[model_key] = CacheEntry(
-            model_size_bytes,
-            n_params,
-            meta_model._model.config,
-            str(meta_model.revision),
-            padding_factor,
+            config=meta_model._model.config,
+            revision=str(meta_model.revision),
+            n_params=n_params,
+            size_in_bytes_pre_padding=model_size_bytes_pre_padding,
+            padding_factor=padding_factor,
         )
 
         logger.info(f"=> New model evaluated: {model_key} size: {model_size_bytes}")

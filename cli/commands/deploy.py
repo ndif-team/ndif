@@ -7,17 +7,15 @@ import asyncio
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
-from src.services.ray.src.ray.deployments.modeling.base import DeploymentResourceConfig
+from src.common.schema import DeploymentConfig
 
 
 @click.command()
 @click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
-@click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-@click.option('--cpu-only', is_flag=True, help='Deploy the model on CPU only (default: False)')
-def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str, cpu_only: bool):
+def deploy(checkpoint: str, revision: str, ray_address: str, broker_url: str):
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -27,6 +25,8 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         ndif deploy meta-llama/Llama-2-7b-hf --revision main
         ndif deploy openai-community/gpt2 --dedicated --ray-address ray://localhost:10001
     """
+
+    # TODO: Fix dedicated flag in the examples docstring
 
     # Use session defaults if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -51,8 +51,8 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         controller = get_controller_actor_handle()
 
         click.echo(f"Deploying {model_key}...")
-        resources = {model_key: DeploymentResourceConfig(cpu_only=cpu_only)}
-        object_ref = controller._deploy.remote(model_keys=[model_key], resources=resources, dedicated=dedicated)
+        models = {model_key: DeploymentConfig(cpu_only=cpu_only)}
+        object_ref = controller._deploy.remote(models)
         results = ray.get(object_ref)
         result_status = results["result"][model_key]
 

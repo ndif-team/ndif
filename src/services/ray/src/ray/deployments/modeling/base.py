@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Set, Literal
 import ray
 import torch
 from accelerate import dispatch_model
-from pydantic import BaseModel, ConfigDict
 
 from torch.amp import autocast
 
@@ -40,16 +39,15 @@ from ...nn.security.protected_environment import (
 from ...nn.security.protected_objects import protect
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
-
-
 class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
-        execution_timeout: float | None,
+        execution_timeout_seconds: float,
         dispatch: bool,
         dtype: str | torch.dtype,
         target_gpus: List[int] | None = None,
+        device_map: str | None = "auto",
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -60,12 +58,12 @@ class BaseModelDeployment:
         SioProvider.connect()
 
         self.model_key = model_key
-        self.execution_timeout = execution_timeout
+        self.execution_timeout_seconds = execution_timeout_seconds
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
         self.target_gpus = target_gpus or []
-        self.cpu_only: bool = cuda_devices == ""
+        self.cpu_only: bool = device_map == "cpu"
 
         self.cached = False
 
@@ -188,11 +186,13 @@ class BaseModelDeployment:
 
     async def to_cache(self):
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
+        self._cuda_sync()
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = self.model._module.cpu()
+        self._cuda_sync()
         gc.collect()
         self._cuda_empty_cache()
 
@@ -224,7 +224,7 @@ class BaseModelDeployment:
 
         max_memory = self._build_max_memory()
 
-        device_map = _get_device_map(self.model._module, "auto" if not self.cpu_only else "cpu", None, None, None, None)
+        device_map = _get_device_map(self.model._module, "auto" if not self.cpu_only else "cpu", max_memory, None)
 
         remove_accelerate_hooks(self.model._module)
 
@@ -273,7 +273,7 @@ class BaseModelDeployment:
 
             done, pending = await asyncio.wait(
                 [job_task, kill_task],
-                timeout=self.execution_timeout,
+                timeout=self.execution_timeout_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
@@ -288,7 +288,7 @@ class BaseModelDeployment:
             else:
                 kill_thread(self.execution_ident)
                 raise Exception(
-                    f"Job took longer than timeout: {self.execution_timeout} seconds"
+                    f"Job took longer than timeout: {self.execution_timeout_seconds} seconds"
                 )
 
             self.post(result)
@@ -516,24 +516,6 @@ class BaseModelDeployment:
         except:
             self.logger.exception("Error responding to client")
 
-
-class BaseModelDeploymentArgs(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    model_key: MODEL_KEY
-
-    execution_timeout: float | None = None
-    device_map: str | None = "auto"
-    dispatch: bool = True
-    dtype: str | torch.dtype = "bfloat16"
-    target_gpus: List[int] | None = None
-
-class DeploymentResourceConfig(BaseModel):
-    num_cpus: int = 2
-
-    padding_factor: float = 0.15
-
-    cpu_only: bool = False
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
 class ModelActor(BaseModelDeployment):

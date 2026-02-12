@@ -10,7 +10,8 @@ from .....providers.mailgun import MailgunProvider
 from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
 from .....types import MODEL_KEY
-from ...modeling.base import BaseModelDeploymentArgs, ModelActor
+from ...modeling.base import ModelActor
+from src.common.schema import DeploymentConfig
 
 logger = logging.getLogger("ndif")
 
@@ -24,22 +25,35 @@ class DeploymentLevel(Enum):
 class Deployment:
     def __init__(
         self,
-        model_key: MODEL_KEY,
         deployment_level: DeploymentLevel,
+        model_key: MODEL_KEY,
         gpus: list[int],
         size_bytes: int,
-        dedicated: bool = False,
-        node_id: str = None,
-        cpu_only: bool = False,
+        deployment_cfg: DeploymentConfig | None = None,
+        node_id: str | None = None,
     ):
-        self.model_key = model_key
+        # Instance metadata
+        self.deployed = time.time() # NOTE(cadentj): I wonder if this should be in create() instead?
         self.deployment_level = deployment_level
+
+        self.model_key = model_key
+        self.node_id = node_id # NOTE(cadentj): what is this used for?
+
+        # These parameters are passed to the ModelActor but derived at runtime
+        # so they are not included in the DeploymentConfig
         self.gpus = gpus
         self.size_bytes = size_bytes
-        self.dedicated = dedicated
-        self.node_id = node_id
-        self.cpu_only = cpu_only
-        self.deployed = time.time()
+
+        # The deployment config is None after eviction
+        self.deployment_cfg = deployment_cfg
+
+    @property
+    def cpu_only(self):
+        return self.deployment_cfg.device_map == "cpu"
+    
+    @property
+    def dedicated(self):
+        return self.deployment_cfg.dedicated
 
     @property
     def name(self):
@@ -99,11 +113,8 @@ class Deployment:
             logger.exception(f"Error removing actor {self.model_key} from cache.")
             return None
 
-    def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
+    def create(self, node_name: str):
         try:
-            # Inject the assigned GPU indices so the actor knows which GPUs to target
-            deployment_args.target_gpus = self.gpus
-
             env_vars = {
                 # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor
                 # inherits full GPU visibility from the worker node. GPU targeting
@@ -116,7 +127,7 @@ class Deployment:
 
             env_vars = {k: v for k, v in env_vars.items() if v is not None}
 
-            actor = ModelActor.options(
+            ModelActor.options(
                 name=self.name,
                 resources={f"node:{node_name}": 0.01},
                 namespace="NDIF",
@@ -124,7 +135,11 @@ class Deployment:
                 runtime_env={
                     "env_vars": env_vars,
                 },
-            ).remote(**deployment_args.model_dump())
+            ).remote(
+                model_key=self.model_key,
+                target_gpus=self.gpus,
+                **self.deployment_cfg.model_dump()
+            )
 
         except Exception:
             logger.exception(f"Error creating actor {self.model_key}.")

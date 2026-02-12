@@ -1,7 +1,7 @@
 import asyncio
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import distributions, packages_distributions
 from typing import Any, Dict, List, Optional
@@ -15,7 +15,7 @@ from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....types import MODEL_KEY
-from ..modeling.base import BaseModelDeploymentArgs, DeploymentResourceConfig
+from src.common.schema import DeploymentConfig
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
 
@@ -31,16 +31,14 @@ class DeploymentDelta:
 class _ControllerActor:
     def __init__(
         self,
-        deployments: List[MODEL_KEY],
+        deployments: Dict[MODEL_KEY, DeploymentConfig],
         model_import_path: str,
-        execution_timeout_seconds: float,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
     ):
         super().__init__()
 
         self.model_import_path = model_import_path
-        self.execution_timeout_seconds = execution_timeout_seconds
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
         self.runtime_context = ray.get_runtime_context()
@@ -55,8 +53,8 @@ class _ControllerActor:
 
         self.cluster.update_nodes()
 
-        if deployments and deployments != [""]:
-            self._deploy(deployments, dedicated=True)
+        if len(deployments) > 0:
+            self._deploy(deployments)
 
         asyncio.create_task(self.check_nodes())
 
@@ -65,16 +63,16 @@ class _ControllerActor:
 
         state = {
             "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
-            "execution_timeout_seconds": self.execution_timeout_seconds,
             "model_cache_percentage": self.model_cache_percentage,
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
         }
 
         if include_ray_state:
-            state["ray_dashboard_url"] = self.ray_dashboard_url
+            # NOTE(cadentj): These just don't exist on the class? @JadenFiotto-Kaufman
+            # state["ray_dashboard_url"] = self.ray_dashboard_url
             state["runtime_context"] = self.runtime_context.get()
-            state["replica_context"] = asdict(self.replica_context)
-            state["serve_details"] = self.client.get_serve_details()
+            # state["replica_context"] = asdict(self.replica_context)
+            # state["serve_details"] = self.client.get_serve_details()
 
         state["datetime"] = datetime.now().isoformat()
         return state
@@ -86,19 +84,26 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
-        resources = resources or {}
-        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
+    def _deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
+        self.logger.info(
+            "Deploying models \n" + "\n".join(
+                [
+                    f"  - {model_key}: {deployment_cfg}"
+                    for model_key, deployment_cfg 
+                    in models.items()
+                ]
+            )
+        )
 
-        results, change = self.cluster.deploy(model_keys, dedicated=dedicated, resources=resources)
+        results, change = self.cluster.deploy(models)
 
         if change:
             self.apply()
 
         return results
 
-    async def deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
-        return self._deploy(model_keys, dedicated=dedicated, resources=resources)
+    async def deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
+        return self._deploy(models)
 
     def evict(self, model_keys: List[MODEL_KEY]):
         """Evict models from the cluster."""
@@ -220,16 +225,10 @@ class _ControllerActor:
                 self._remove_deployment_from_state(deployment)
 
         # Create models from disk - spawn monitoring tasks
-        for name, deployment in deployment_delta.deployments_to_create:
-            
-            deployment_args = BaseModelDeploymentArgs(
-                model_key=deployment.model_key,
-                execution_timeout=self.execution_timeout_seconds,
-                device_map="auto",
-            )
+        for node_name, deployment in deployment_delta.deployments_to_create:
 
             # create() returns None always, but may fail internally
-            deployment.create(name, deployment_args)
+            deployment.create(node_name)
 
             # Get the actor handle and monitor its ready state
             try:
@@ -299,11 +298,11 @@ class _ControllerActor:
             node = self.cluster.nodes[deployment.node_id]
             if deployment.model_key in node.deployments:
                 # Return GPUs to the node
-                node.resources.available_gpus.extend(deployment.gpus)
+                node.gpu_resource.available_gpus.extend(deployment.gpus)
                 del node.deployments[deployment.model_key]
             if deployment.model_key in node.cache:
                 # Return CPU memory to the node
-                node.resources.available_cpu_memory_bytes += deployment.size_bytes
+                node.cpu_resource.available_cpu_memory_bytes += deployment.size_bytes
                 del node.cache[deployment.model_key]
 
     def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
@@ -380,16 +379,16 @@ class _ControllerActor:
                     "deployment_level": deployment.deployment_level.name,
                     "dedicated": deployment.dedicated,
                     "model_key": deployment.model_key,
-                    "repo_id": self.cluster.gpu_resource_evaluator.cache[
+                    "repo_id": self.cluster.resource_evaluator.cache[
                         deployment.model_key
                     ].config._name_or_path,
-                    "revision": self.cluster.gpu_resource_evaluator.cache[
+                    "revision": self.cluster.resource_evaluator.cache[
                         deployment.model_key
                     ].revision,
-                    "config": self.cluster.gpu_resource_evaluator.cache[
+                    "config": self.cluster.resource_evaluator.cache[
                         deployment.model_key
                     ].config.to_json_string(),
-                    "n_params": self.cluster.gpu_resource_evaluator.cache[
+                    "n_params": self.cluster.resource_evaluator.cache[
                         deployment.model_key
                     ].n_params,
                 }
@@ -405,7 +404,7 @@ class _ControllerActor:
                     }
 
                 existing_repo_ids.add(
-                    self.cluster.gpu_resource_evaluator.cache[
+                    self.cluster.resource_evaluator.cache[
                         deployment.model_key
                     ].config._name_or_path
                 )
@@ -416,22 +415,22 @@ class _ControllerActor:
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
-                    "repo_id": self.cluster.gpu_resource_evaluator.cache[
+                    "repo_id": self.cluster.resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config._name_or_path,
-                    "revision": self.cluster.gpu_resource_evaluator.cache[
+                    "revision": self.cluster.resource_evaluator.cache[
                         cached_deployment.model_key
                     ].revision,
-                    "config": self.cluster.gpu_resource_evaluator.cache[
+                    "config": self.cluster.resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config.to_json_string(),
-                    "n_params": self.cluster.gpu_resource_evaluator.cache[
+                    "n_params": self.cluster.resource_evaluator.cache[
                         cached_deployment.model_key
                     ].n_params,
                 }
 
                 existing_repo_ids.add(
-                    self.cluster.gpu_resource_evaluator.cache[
+                    self.cluster.resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config._name_or_path
                 )
@@ -477,9 +476,7 @@ class ControllerDeploymentArgs(BaseModel):
     deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
-    execution_timeout_seconds: Optional[float] = float(
-        os.environ.get("NDIF_EXECUTION_TIMEOUT_SECONDS", "3600")
-    )
+
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")
     )
@@ -491,7 +488,7 @@ class ControllerDeploymentArgs(BaseModel):
 def app(**kwargs):
     args = ControllerDeploymentArgs(**kwargs)
 
-    actor = ControllerActor.options(
+    ControllerActor.options(
         name="Controller",
         namespace="NDIF",
         lifetime="detached",

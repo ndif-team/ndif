@@ -9,8 +9,8 @@ from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
 from .....types import MODEL_KEY, NODE_ID
-from .evaluator import GPUResourceEvaluator
-from ..modeling.base import DeploymentResourceConfig
+from .evaluator import ResourceEvaluator
+from src.common.schema import DeploymentConfig
 from .node import CandidateLevel, CPUResource, GPUResource, Node
 
 logger = logging.getLogger("ndif")
@@ -24,7 +24,7 @@ class Cluster:
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
-        self.gpu_resource_evaluator = GPUResourceEvaluator()
+        self.resource_evaluator = ResourceEvaluator()
 
         self._state = None
 
@@ -51,7 +51,7 @@ class Cluster:
 
         state = {
             "nodes": [node.get_state() for node in self.nodes.values()],
-            "gpu_resource_evaluator": self.gpu_resource_evaluator.get_state(),
+            "resource_evaluator": self.resource_evaluator.get_state(),
         }
 
         if include_ray_state:
@@ -115,7 +115,7 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
-    def deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
+    def deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
 
@@ -128,7 +128,13 @@ class Cluster:
         """
 
         logger.info(
-            f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
+            "Cluster deploying models \n" + "\n".join(
+                [
+                    f"  - {model_key}: {deployment_cfg}"
+                    for model_key, deployment_cfg 
+                    in models.items()
+                ]
+            )
         )
 
         results = {"result": {}, "evictions": set()}
@@ -137,10 +143,9 @@ class Cluster:
 
         # Get the size of the models in bytes
         model_sizes_in_bytes = {}
-        for model_key in model_keys:
-            resource_config = resources.get(model_key, DeploymentResourceConfig())
-            padding_factor = resource_config.padding_factor
-            size_in_bytes = self.gpu_resource_evaluator(model_key, padding_factor=padding_factor)
+        for model_key, deployment_cfg in models.items():
+            padding_factor = deployment_cfg.padding_factor
+            size_in_bytes = self.resource_evaluator(model_key, padding_factor=padding_factor)
             if isinstance(size_in_bytes, Exception):
                 tb = "".join(
                     traceback.format_exception(
@@ -155,7 +160,11 @@ class Cluster:
                 model_sizes_in_bytes[model_key] = size_in_bytes
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
-        if dedicated:
+        dedicated_models = {
+            model_key for model_key, deployment_cfg in models.items() if deployment_cfg.dedicated
+        }
+
+        if len(dedicated_models) > 0:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
@@ -167,7 +176,7 @@ class Cluster:
 
                         results["evictions"].add(model_key)
 
-                        node.evict(model_key, exclude=set(model_keys))
+                        node.evict(model_key, exclude=dedicated_models)
 
                         change = True
 
@@ -182,8 +191,7 @@ class Cluster:
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
             )
 
-            resource_config = resources.get(model_key, DeploymentResourceConfig())
-            cpu_only = resource_config.cpu_only
+            deployment_cfg = models.get(model_key, DeploymentConfig())
             candidates = {}
 
             # Check each node to see if the model can be deployed on it.
@@ -194,7 +202,7 @@ class Cluster:
 
                 # Evaluate the node to see if the model can be deployed on it.
                 candidate = node.evaluate(
-                    model_key, size_in_bytes, dedicated=dedicated, cpu_only=cpu_only
+                    model_key, size_in_bytes, deployment_cfg=deployment_cfg
                 )
 
                 logger.info(
@@ -249,9 +257,8 @@ class Cluster:
                         model_key,
                         candidate,
                         size_in_bytes,
-                        dedicated=dedicated,
-                        cpu_only=cpu_only,
-                        exclude=set(model_keys),
+                        deployment_cfg=deployment_cfg,
+                        exclude=set(models.keys()),
                     )
 
                     results["evictions"].update(candidate.evictions)
