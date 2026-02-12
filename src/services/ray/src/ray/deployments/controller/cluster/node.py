@@ -114,6 +114,7 @@ class Node:
         size_bytes: int,
         dedicated: Optional[bool] = None,
         exclude: Optional[Set[MODEL_KEY]] = None,
+        execution_timeout_seconds: Optional[float] = None,
     ):
         # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
@@ -126,6 +127,7 @@ class Node:
             size_bytes=size_bytes,
             dedicated=dedicated,
             node_id=self.id,
+            execution_timeout_seconds=execution_timeout_seconds,
         )
 
         if model_key in self.cache:
