@@ -1,6 +1,6 @@
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set
 
@@ -32,55 +32,46 @@ class Candidate:
 
 
 @dataclass
-class GPU:
-    index: int
-    memory_bytes: int
+class Resources:
+    total_gpus: int
 
-
-@dataclass
-class GPUResources:
     gpu_type: str
-    gpus: list[GPU]
-    available: list[int]
 
-    @property
-    def total(self) -> int:
-        return len(self.gpus)
+    gpu_memory_bytes: int
+    cpu_memory_bytes: int
 
-    @property
-    def memory_bytes(self) -> int:
-        return self.gpus[0].memory_bytes if self.gpus else 0
+    available_cpu_memory_bytes: int
+    available_gpus: list[int]
 
-    def required(self, model_size_in_bytes: int) -> int:
-        if self.memory_bytes == 0:
+    def gpus_required(self, model_size_in_bytes: int) -> int:
+        if self.gpu_memory_bytes == 0:
             raise ValueError("GPU memory bytes is 0")
 
-        return int(model_size_in_bytes // self.memory_bytes + 1)
+        return int(model_size_in_bytes // self.gpu_memory_bytes + 1)
 
-    def assign(self, count: int) -> list[int]:
-        if count > len(self.available):
+    def assign(self, gpus_required: int) -> list[int]:
+        if gpus_required > len(self.available_gpus):
             raise ValueError(
-                f"Not enough GPUs available to assign {count} GPUs"
+                f"Not enough GPUs available to assign {gpus_required} GPUs"
             )
 
-        gpus = self.available[:count]
-        self.available = self.available[count:]
+        gpus = self.available_gpus[:gpus_required]
+
+        self.available_gpus = self.available_gpus[gpus_required:]
+
         return gpus
 
-    def release(self, indices: list[int]) -> None:
-        self.available.extend(indices)
-
-
-@dataclass
-class CPUResources:
-    memory_bytes: int
-    available_memory_bytes: int
-
-    def allocate(self, size_bytes: int) -> None:
-        self.available_memory_bytes -= size_bytes
-
-    def release(self, size_bytes: int) -> None:
-        self.available_memory_bytes += size_bytes
+    def __str__(self):
+        return (
+            f"Resources("
+            f"total_gpus={self.total_gpus}, "
+            f"gpu_type={self.gpu_type}, "
+            f"gpu_memory_bytes={self.gpu_memory_bytes}, "
+            f"cpu_memory_bytes={self.cpu_memory_bytes}, "
+            f"available_cpu_memory_bytes={self.available_cpu_memory_bytes}, "
+            f"available_gpus={self.available_gpus}, "
+            f")"
+        )
 
 
 class Node:
@@ -88,14 +79,12 @@ class Node:
         self,
         id: NODE_ID,
         name: str,
-        gpu_resources: GPUResources,
-        cpu_resources: CPUResources,
+        resources: Resources,
         minimum_deployment_time_seconds: float = None,
     ):
         self.id = id
         self.name = name
-        self.gpu_resources = gpu_resources
-        self.cpu_resources = cpu_resources
+        self.resources = resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
@@ -107,14 +96,7 @@ class Node:
         return {
             "id": self.id,
             "name": self.name,
-            "resources": {
-                "gpu_type": self.gpu_resources.gpu_type,
-                "total_gpus": self.gpu_resources.total,
-                "gpu_memory_bytes": self.gpu_resources.memory_bytes,
-                "available_gpus": self.gpu_resources.available,
-                "cpu_memory_bytes": self.cpu_resources.memory_bytes,
-                "available_cpu_memory_bytes": self.cpu_resources.available_memory_bytes,
-            },
+            "resources": asdict(self.resources),
             "deployments": [
                 deployment.get_state() for deployment in self.deployments.values()
             ],
@@ -140,7 +122,7 @@ class Node:
         self.deployments[model_key] = Deployment(
             model_key=model_key,
             deployment_level=DeploymentLevel.HOT,
-            gpus=self.gpu_resources.assign(candidate.gpus_required),
+            gpus=self.resources.assign(candidate.gpus_required),
             size_bytes=size_bytes,
             dedicated=dedicated,
         )
@@ -149,19 +131,19 @@ class Node:
             del self.cache[model_key]
 
             # Return its cpu memory to the node
-            self.cpu_resources.release(size_bytes)
+            self.resources.available_cpu_memory_bytes += size_bytes
 
     def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
         deployment = self.deployments[model_key]
 
-        self.gpu_resources.release(deployment.gpus)
+        self.resources.available_gpus.extend(deployment.gpus)
 
         cpu_memory_needed = (
-            deployment.size_bytes - self.cpu_resources.available_memory_bytes
+            deployment.size_bytes - self.resources.available_cpu_memory_bytes
         )
 
         logger.info(
-            f"Evicting {model_key} from {self.name} with cpu memory needed: {cpu_memory_needed} = {deployment.size_bytes} - {self.cpu_resources.available_memory_bytes}"
+            f"Evicting {model_key} from {self.name} with cpu memory needed: {cpu_memory_needed} = {deployment.size_bytes} - {self.resources.available_cpu_memory_bytes}"
         )
 
         if cpu_memory_needed > 0:
@@ -188,12 +170,14 @@ class Node:
 
                     del self.cache[eviction_deployment.model_key]
 
-                    self.cpu_resources.release(eviction_deployment.size_bytes)
+                    self.resources.available_cpu_memory_bytes += (
+                        eviction_deployment.size_bytes
+                    )
 
         del self.deployments[model_key]
 
         if cpu_memory_needed <= 0:
-            self.cpu_resources.allocate(deployment.size_bytes)
+            self.resources.available_cpu_memory_bytes -= deployment.size_bytes
 
             self.cache[model_key] = Deployment(
                 model_key=deployment.model_key,
@@ -206,7 +190,7 @@ class Node:
     def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
         deployments = sorted(list(self.deployments.values()), key=lambda x: len(x.gpus))
 
-        gpus_needed = gpus_required - len(self.gpu_resources.available)
+        gpus_needed = gpus_required - len(self.resources.available_gpus)
 
         evictions = []
 
@@ -242,9 +226,9 @@ class Node:
 
         cached = model_key in self.cache
 
-        gpus_required = self.gpu_resources.required(model_size_in_bytes)
+        gpus_required = self.resources.gpus_required(model_size_in_bytes)
 
-        if gpus_required <= len(self.gpu_resources.available):
+        if gpus_required <= len(self.resources.available_gpus):
             return Candidate(
                 candidate_level=(
                     CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
@@ -252,7 +236,7 @@ class Node:
                 gpus_required=gpus_required,
             )
 
-        elif gpus_required <= self.gpu_resources.total:
+        elif gpus_required <= self.resources.total_gpus:
             candidate = Candidate(
                 candidate_level=(
                     CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
