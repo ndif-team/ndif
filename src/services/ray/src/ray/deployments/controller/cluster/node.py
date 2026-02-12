@@ -63,14 +63,6 @@ class Resources:
         total = self.gpu_memory_bytes
         available = self.gpu_memory_available_bytes_by_id[gpu_id]
 
-        try:
-            if torch.cuda.is_available():
-                real_free, real_total = torch.cuda.mem_get_info(gpu_id)
-                available = min(available, int(real_free))
-                total = min(total, int(real_total))
-        except Exception:
-            pass
-
         self.gpu_memory_available_bytes_by_id[gpu_id] = available
         if available >= total * self.min_available_gpu_fraction:
             if gpu_id not in self.available_gpus:
