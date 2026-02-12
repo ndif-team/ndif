@@ -60,7 +60,6 @@ class Cluster:
 
         return state
 
-
     def update_nodes(self):
         logger.info("Updating nodes...")
 
