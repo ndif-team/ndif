@@ -12,7 +12,7 @@ from ray.util.state import list_nodes
 from .....schema.deployment_config import DeploymentConfig
 from .....types import MODEL_KEY, NODE_ID
 from .evaluator import ModelEvaluator
-from .node import CandidateLevel, Node, Resources
+from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 
 logger = logging.getLogger("ndif")
 
@@ -80,10 +80,9 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
-                total_gpus = node.resources_total["GPU"]
-                gpu_type = "TEST"
-                # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (
+                total_gpus = int(node.resources_total["GPU"])
+                gpu_type = node.labels.get("ray.io/accelerator-type", "unknown")
+                per_gpu_memory_bytes = (
                     node.resources_total["cuda_memory_bytes"]
                 ) / total_gpus
                 cpu_memory_bytes = (
@@ -91,22 +90,32 @@ class Cluster:
                     * self.model_cache_percentage
                 )
 
+                gpus = [
+                    GPU(index=i, memory_bytes=per_gpu_memory_bytes)
+                    for i in range(total_gpus)
+                ]
+
+                gpu_resources = GPUResources(
+                    gpu_type=gpu_type,
+                    gpus=gpus,
+                    available=list(range(total_gpus)),
+                )
+
+                cpu_resources = CPUResources(
+                    memory_bytes=cpu_memory_bytes,
+                    available_memory_bytes=cpu_memory_bytes,
+                )
+
                 self.nodes[id] = Node(
                     id,
                     name,
-                    Resources(
-                        total_gpus=total_gpus,
-                        gpu_type=gpu_type,
-                        gpu_memory_bytes=gpu_memory_bytes,
-                        cpu_memory_bytes=cpu_memory_bytes,
-                        available_cpu_memory_bytes=cpu_memory_bytes,
-                        available_gpus=list(range(int(total_gpus))),
-                    ),
+                    gpu_resources=gpu_resources,
+                    cpu_resources=cpu_resources,
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
 
             logger.info(
-                f"=> Node {name} updated with resources: {self.nodes[id].resources}"
+                f"=> Node {name} updated with gpu_resources: {self.nodes[id].gpu_resources}, cpu_resources: {self.nodes[id].cpu_resources}"
             )
 
         for node_id in self.nodes.keys():
