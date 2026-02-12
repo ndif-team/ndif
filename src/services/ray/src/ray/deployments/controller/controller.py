@@ -15,7 +15,7 @@ from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....types import MODEL_KEY
-from ..modeling.base import BaseModelDeploymentArgs
+from ..modeling.base import BaseModelDeploymentArgs, DeploymentResourceConfig
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
 
@@ -86,20 +86,19 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
+    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
+        resources = resources or {}
         self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
+        results, change = self.cluster.deploy(model_keys, dedicated=dedicated, resources=resources)
 
         if change:
             self.apply()
 
         return results
 
-    async def deploy(
-        self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False
-    ):
-        return self._deploy(model_keys, dedicated=dedicated)
+    async def deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
+        return self._deploy(model_keys, dedicated=dedicated, resources=resources)
 
     def evict(self, model_keys: List[MODEL_KEY]):
         """Evict models from the cluster."""
@@ -222,9 +221,11 @@ class _ControllerActor:
 
         # Create models from disk - spawn monitoring tasks
         for name, deployment in deployment_delta.deployments_to_create:
+            
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
                 execution_timeout=self.execution_timeout_seconds,
+                device_map="auto",
             )
 
             # create() returns None always, but may fail internally
@@ -379,16 +380,16 @@ class _ControllerActor:
                     "deployment_level": deployment.deployment_level.name,
                     "dedicated": deployment.dedicated,
                     "model_key": deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
+                    "repo_id": self.cluster.gpu_resource_evaluator.cache[
                         deployment.model_key
                     ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
+                    "revision": self.cluster.gpu_resource_evaluator.cache[
                         deployment.model_key
                     ].revision,
-                    "config": self.cluster.evaluator.cache[
+                    "config": self.cluster.gpu_resource_evaluator.cache[
                         deployment.model_key
                     ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
+                    "n_params": self.cluster.gpu_resource_evaluator.cache[
                         deployment.model_key
                     ].n_params,
                 }
@@ -404,7 +405,7 @@ class _ControllerActor:
                     }
 
                 existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
+                    self.cluster.gpu_resource_evaluator.cache[
                         deployment.model_key
                     ].config._name_or_path
                 )
@@ -415,22 +416,22 @@ class _ControllerActor:
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
+                    "repo_id": self.cluster.gpu_resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
+                    "revision": self.cluster.gpu_resource_evaluator.cache[
                         cached_deployment.model_key
                     ].revision,
-                    "config": self.cluster.evaluator.cache[
+                    "config": self.cluster.gpu_resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
+                    "n_params": self.cluster.gpu_resource_evaluator.cache[
                         cached_deployment.model_key
                     ].n_params,
                 }
 
                 existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
+                    self.cluster.gpu_resource_evaluator.cache[
                         cached_deployment.model_key
                     ].config._name_or_path
                 )
@@ -450,9 +451,9 @@ class _ControllerActor:
                 "nodes": {
                     node_id: {
                         "resources": {
-                            "total_gpus": node.resources.total_gpus,
-                            "gpu_memory_bytes": node.resources.gpu_memory_bytes,
-                            "available_gpus": node.resources.available_gpus,
+                            "total_gpus": node.gpu_resource.total_gpus,
+                            "gpu_memory_bytes": node.gpu_resource.gpu_memory_bytes,
+                            "available_gpus": node.gpu_resource.available_gpus,
                         },
                         "deployments": {
                             model_key: {

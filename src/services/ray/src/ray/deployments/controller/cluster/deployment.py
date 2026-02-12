@@ -30,6 +30,7 @@ class Deployment:
         size_bytes: int,
         dedicated: bool = False,
         node_id: str = None,
+        cpu_only: bool = False,
     ):
         self.model_key = model_key
         self.deployment_level = deployment_level
@@ -37,6 +38,7 @@ class Deployment:
         self.size_bytes = size_bytes
         self.dedicated = dedicated
         self.node_id = node_id
+        self.cpu_only = cpu_only
         self.deployed = time.time()
 
     @property

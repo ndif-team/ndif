@@ -7,6 +7,7 @@ import asyncio
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
+from src.services.ray.src.ray.deployments.modeling.base import DeploymentResourceConfig
 
 
 @click.command()
@@ -15,7 +16,8 @@ from ..lib.session import get_env
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str):
+@click.option('--cpu-only', is_flag=True, help='Deploy the model on CPU only (default: False)')
+def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str, cpu_only: bool):
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -49,7 +51,8 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         controller = get_controller_actor_handle()
 
         click.echo(f"Deploying {model_key}...")
-        object_ref = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated)
+        resources = {model_key: DeploymentResourceConfig(cpu_only=cpu_only)}
+        object_ref = controller._deploy.remote(model_keys=[model_key], resources=resources, dedicated=dedicated)
         results = ray.get(object_ref)
         result_status = results["result"][model_key]
 

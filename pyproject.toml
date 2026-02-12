@@ -28,7 +28,6 @@ dependencies = [
     # Ray dependencies
     "ray[serve]>=2.50.0",
     "nnsight",
-
     # Storage and utilities
     "boto3",
     "torch",

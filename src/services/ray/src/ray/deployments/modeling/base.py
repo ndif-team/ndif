@@ -4,7 +4,7 @@ import threading
 import time
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Literal
 
 import ray
 import torch
@@ -12,9 +12,9 @@ from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
-from transformers.modeling_utils import _get_device_map
 
+from transformers.modeling_utils import _get_device_map
+from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.modeling.mixins.remoteable import StreamTracer
 from nnsight.schema.request import RequestModel
@@ -41,6 +41,7 @@ from ...nn.security.protected_objects import protect
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
+
 class BaseModelDeployment:
     def __init__(
         self,
@@ -64,6 +65,7 @@ class BaseModelDeployment:
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
         self.target_gpus = target_gpus or []
+        self.cpu_only: bool = cuda_devices == ""
 
         self.cached = False
 
@@ -95,7 +97,7 @@ class BaseModelDeployment:
         if dispatch:
             self.model._module.requires_grad_(False)
 
-        torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         self.request: BackendRequestModel
 
@@ -152,7 +154,7 @@ class BaseModelDeployment:
 
     def load_from_disk(self):
         start = time.time()
-        torch.cuda.synchronize()
+        self._cuda_sync()
         self.logger.info(
             f"Loading model from disk for model key {self.model_key} "
             f"targeting GPUs {self.target_gpus}..."
@@ -160,17 +162,18 @@ class BaseModelDeployment:
 
         max_memory = self._build_max_memory()
 
+        device_map = "auto" if not self.cpu_only else "cpu"
         model = load_with_cache_deletion_retry(
             lambda: RemoteableMixin.from_model_key(
                 self.model_key,
-                device_map="auto",
+                device_map=device_map,
                 max_memory=max_memory,
                 dispatch=self.dispatch,
                 torch_dtype=self.dtype,
                 **self.extra_kwargs,
             )
         )
-        torch.cuda.synchronize()
+        self._cuda_sync()
         load_time = time.time() - start
 
         ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
@@ -185,15 +188,13 @@ class BaseModelDeployment:
 
     async def to_cache(self):
         self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-        # torch.cuda.synchronize()
         await self.cancel()
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = self.model._module.cpu()
-        # torch.cuda.synchronize()
         gc.collect()
-        torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         self.cached = True
 
@@ -213,7 +214,7 @@ class BaseModelDeployment:
         if self.target_gpus:
             torch.cuda.set_device(self.target_gpus[0])
 
-        torch.cuda.synchronize()
+        self._cuda_sync()
         start = time.time()
 
         self.logger.info(
@@ -223,15 +224,15 @@ class BaseModelDeployment:
 
         max_memory = self._build_max_memory()
 
-        device_map = _get_device_map(self.model._module, "auto", max_memory, None)
+        device_map = _get_device_map(self.model._module, "auto" if not self.cpu_only else "cpu", None, None, None, None)
 
         remove_accelerate_hooks(self.model._module)
 
         self.model._module = dispatch_model(self.model._module, device_map)
 
-        torch.cuda.synchronize()
+        self._cuda_sync()
         gc.collect()
-        torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
         load_time = time.time() - start
 
@@ -309,6 +310,14 @@ class BaseModelDeployment:
     def check_health(self):
         pass
 
+    def _cuda_sync(self):
+        if not self.cpu_only:
+            torch.cuda.synchronize()
+
+    def _cuda_empty_cache(self):
+        if not self.cpu_only:
+            torch.cuda.empty_cache()
+
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
@@ -336,8 +345,12 @@ class BaseModelDeployment:
 
         self.execution_ident = threading.current_thread().ident
 
-        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-            if torch.cuda.is_available():
+        # Use appropriate device type for autocast
+        device_type: Literal["cuda", "cpu"] = "cpu" if self.cpu_only else "cuda"
+        
+        with autocast(device_type=device_type, dtype=torch.get_default_dtype()):
+
+            if not self.cpu_only:
                 reset_peak_memory_stats()
                 model_memory = memory_allocated()
 
@@ -351,11 +364,10 @@ class BaseModelDeployment:
 
             execution_time = time.time() - execution_time
 
-            # Compute GPU memory usage
-            if torch.cuda.is_available():
+            gpu_mem = 0
+            if not self.cpu_only:
                 gpu_mem = max_memory_allocated() - model_memory
-            else:
-                gpu_mem = 0
+
 
         return result, gpu_mem, execution_time
 
@@ -435,7 +447,7 @@ class BaseModelDeployment:
         self.model._model.zero_grad()
         self.request = None
         gc.collect()
-        torch.cuda.empty_cache()
+        self._cuda_empty_cache()
 
     def log(self, *data):
         """Logs data during model execution.
@@ -516,6 +528,12 @@ class BaseModelDeploymentArgs(BaseModel):
     dtype: str | torch.dtype = "bfloat16"
     target_gpus: List[int] | None = None
 
+class DeploymentResourceConfig(BaseModel):
+    num_cpus: int = 2
+
+    padding_factor: float = 0.15
+
+    cpu_only: bool = False
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
 class ModelActor(BaseModelDeployment):

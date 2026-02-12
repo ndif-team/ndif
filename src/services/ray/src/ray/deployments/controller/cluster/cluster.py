@@ -1,17 +1,17 @@
 import logging
 import random
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import ray
 from ray._private import services
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
 from .....types import MODEL_KEY, NODE_ID
-from .evaluator import ModelEvaluator
-from .node import CandidateLevel, Node, Resources
+from .evaluator import GPUResourceEvaluator
+from ..modeling.base import DeploymentResourceConfig
+from .node import CandidateLevel, CPUResource, GPUResource, Node
 
 logger = logging.getLogger("ndif")
 
@@ -19,16 +19,16 @@ logger = logging.getLogger("ndif")
 class Cluster:
     def __init__(
         self,
-        minimum_deployment_time_seconds: float = None,
+        minimum_deployment_time_seconds: float | None = None,
         model_cache_percentage: float = 0.5,
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
-        self.evaluator = ModelEvaluator()
+        self.gpu_resource_evaluator = GPUResourceEvaluator()
 
         self._state = None
 
-        self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
+        self.minimum_deployment_time_seconds: float | None = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
 
     @property
@@ -51,7 +51,7 @@ class Cluster:
 
         state = {
             "nodes": [node.get_state() for node in self.nodes.values()],
-            "evaluator": self.evaluator.get_state(),
+            "gpu_resource_evaluator": self.gpu_resource_evaluator.get_state(),
         }
 
         if include_ray_state:
@@ -60,6 +60,7 @@ class Cluster:
 
         return state
 
+
     def update_nodes(self):
         logger.info("Updating nodes...")
 
@@ -67,9 +68,6 @@ class Cluster:
         current_nodes = set()
 
         for node in nodes:
-            if "GPU" not in node.resources_total:
-                # We currently only do resource management for nodes with GPUs
-                continue
 
             id = node.node_id
             name = node.node_name
@@ -77,12 +75,15 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
-                total_gpus = node.resources_total["GPU"]
-                gpu_type = "TEST"
-                # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (
-                    (node.resources_total["cuda_memory_bytes"]) / total_gpus
-                )
+                # Get gpu resources
+                total_gpus = 0
+                gpu_memory_bytes = 0
+                if "GPU" in node.resources_total:
+                    # Real GPU node
+                    total_gpus = node.resources_total["GPU"]
+                    gpu_memory_bytes = node.resources_total["cuda_memory_bytes"] / total_gpus
+
+                # Get cpu resources
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
@@ -91,19 +92,20 @@ class Cluster:
                 self.nodes[id] = Node(
                     id,
                     name,
-                    Resources(
-                        total_gpus=total_gpus,
-                        gpu_type=gpu_type,
-                        gpu_memory_bytes=gpu_memory_bytes,
+                    cpu_resource=CPUResource(
                         cpu_memory_bytes=cpu_memory_bytes,
                         available_cpu_memory_bytes=cpu_memory_bytes,
+                    ),
+                    gpu_resource=GPUResource(
+                        total_gpus=total_gpus,
+                        gpu_memory_bytes=gpu_memory_bytes,
                         available_gpus=list(range(int(total_gpus))),
                     ),
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
 
             logger.info(
-                f"=> Node {name} updated with resources: {self.nodes[id].resources}"
+                f"=> Node {name} updated with resources: cpu={self.nodes[id].cpu_resource}, gpu={self.nodes[id].gpu_resource}"
             )
 
         for node_id in self.nodes.keys():
@@ -113,13 +115,13 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
-    def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
+    def deploy(self, model_keys: List[MODEL_KEY], dedicated: bool = False, resources: Dict[MODEL_KEY, DeploymentResourceConfig] | None = None):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
 
         Args:
             model_keys (List[MODEL_KEY]): List of model keys to deploy
-            dedicated (Optional[bool], optional): Whether to deploy the models as dedicated. Defaults to False.
+            dedicated (bool): Whether to deploy the models as dedicated. Defaults to False.
 
         Returns:
             Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
@@ -133,12 +135,12 @@ class Cluster:
 
         change = False
 
-        # First get the size of the models in bytes
-        model_sizes_in_bytes = {
-            model_key: self.evaluator(model_key) for model_key in model_keys
-        }
-
-        for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
+        # Get the size of the models in bytes
+        model_sizes_in_bytes = {}
+        for model_key in model_keys:
+            resource_config = resources.get(model_key, DeploymentResourceConfig())
+            padding_factor = resource_config.padding_factor
+            size_in_bytes = self.gpu_resource_evaluator(model_key, padding_factor=padding_factor)
             if isinstance(size_in_bytes, Exception):
                 tb = "".join(
                     traceback.format_exception(
@@ -147,9 +149,10 @@ class Cluster:
                 )
                 logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
 
-                del model_sizes_in_bytes[model_key]
-
                 results["result"][model_key] = f"{size_in_bytes}\n{tb}"
+
+            else:
+                model_sizes_in_bytes[model_key] = size_in_bytes
 
         # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
         if dedicated:
@@ -179,6 +182,8 @@ class Cluster:
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
             )
 
+            resource_config = resources.get(model_key, DeploymentResourceConfig())
+            cpu_only = resource_config.cpu_only
             candidates = {}
 
             # Check each node to see if the model can be deployed on it.
@@ -188,7 +193,9 @@ class Cluster:
                 )
 
                 # Evaluate the node to see if the model can be deployed on it.
-                candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated)
+                candidate = node.evaluate(
+                    model_key, size_in_bytes, dedicated=dedicated, cpu_only=cpu_only
+                )
 
                 logger.info(
                     f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
@@ -217,36 +224,39 @@ class Cluster:
                         candidates = {node.id: candidate}
 
             # Pick a random node from the candidates.
-            node_id, candidate = random.choice(list(candidates.items()))
-
-            candidate_level = candidate.candidate_level
-
-            results["result"][model_key] = candidate_level.name
-
-            if candidate_level == CandidateLevel.DEPLOYED:
-                logger.info(
-                    f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
-                )
-
-            elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
+            if len(candidates) == 0:
+                results["result"][model_key] = "CANT_ACCOMMODATE"
                 logger.error(f"=> {model_key} cannot be deployed on any node")
-
             else:
-                logger.info(
-                    f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
-                )
+                node_id, candidate = random.choice(list(candidates.items()))
+                candidate_level = candidate.candidate_level
+                results["result"][model_key] = candidate_level.name
 
-                self.nodes[node_id].deploy(
-                    model_key,
-                    candidate,
-                    size_in_bytes,
-                    dedicated=dedicated,
-                    exclude=set(model_keys),
-                )
+                if candidate_level == CandidateLevel.DEPLOYED:
+                    logger.info(
+                        f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
+                    )
 
-                results["evictions"].update(candidate.evictions)
+                elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
+                    logger.error(f"=> {model_key} cannot be deployed on any node")
 
-                change = True
+                else:
+                    logger.info(
+                        f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
+                    )
+
+                    self.nodes[node_id].deploy(
+                        model_key,
+                        candidate,
+                        size_in_bytes,
+                        dedicated=dedicated,
+                        cpu_only=cpu_only,
+                        exclude=set(model_keys),
+                    )
+
+                    results["evictions"].update(candidate.evictions)
+
+                    change = True
 
         return results, change
 
@@ -259,7 +269,7 @@ class Cluster:
             - change: bool indicating if cluster state changed
         """
         change = False
-        results = {}
+        results: Dict[MODEL_KEY, Dict[str, Any]] = {}
 
         for model_key in model_keys:
             found = False
