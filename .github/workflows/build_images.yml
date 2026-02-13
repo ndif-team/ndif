@@ -59,7 +59,6 @@ jobs:
             type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
           cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
 
-      # ---- Ray image ----
       - name: Tag the Ray image
         id: ray
         uses: docker/metadata-action@v5

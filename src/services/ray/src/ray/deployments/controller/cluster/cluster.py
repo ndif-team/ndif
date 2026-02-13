@@ -21,6 +21,7 @@ class Cluster:
         self,
         minimum_deployment_time_seconds: float | None = None,
         model_cache_percentage: float = 0.5,
+        skip_head_node_for_deployment: bool = True,
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
@@ -30,6 +31,7 @@ class Cluster:
 
         self.minimum_deployment_time_seconds: float | None = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
+        self.skip_head_node_for_deployment = skip_head_node_for_deployment
 
     @property
     def state(self):
@@ -88,6 +90,8 @@ class Cluster:
                     * self.model_cache_percentage
                 )
 
+                is_head_node = node.resources_total.get("head", 0) > 0
+
                 self.nodes[id] = Node(
                     id,
                     name,
@@ -101,6 +105,7 @@ class Cluster:
                         available_gpus=list(range(int(total_gpus))),
                     ),
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
+                    is_head_node=is_head_node,
                 )
 
             logger.info(
@@ -114,7 +119,7 @@ class Cluster:
 
                 logger.info(f"=> Node {node_id} removed from cluster")
 
-    def deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
+    def deploy(self, models: List[DeploymentConfig]):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
 
@@ -129,9 +134,8 @@ class Cluster:
         logger.info(
             "Cluster deploying models \n" + "\n".join(
                 [
-                    f"  - {model_key}: {deployment_cfg}"
-                    for model_key, deployment_cfg 
-                    in models.items()
+                    f"  - {deployment_cfg.model_key}: {deployment_cfg}"
+                    for deployment_cfg in models
                 ]
             )
         )
@@ -141,8 +145,9 @@ class Cluster:
         change = False
 
         # Get the size of the models in bytes
-        model_sizes_in_bytes = {}
-        for model_key, deployment_cfg in models.items():
+        model_sizes_in_bytes: Dict[MODEL_KEY, int] = {}
+        for deployment_cfg in models:
+            model_key = deployment_cfg.model_key
             padding_factor = deployment_cfg.padding_factor
             size_in_bytes = self.resource_evaluator(model_key, padding_factor=padding_factor)
             if isinstance(size_in_bytes, Exception):
@@ -158,43 +163,51 @@ class Cluster:
             else:
                 model_sizes_in_bytes[model_key] = size_in_bytes
 
-        # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
-        dedicated_models = {
-            model_key for model_key, deployment_cfg in models.items() if deployment_cfg.dedicated
-        }
+        dedicated_models: List[DeploymentConfig] = [
+            deployment_cfg for deployment_cfg in models if deployment_cfg.dedicated
+        ]
 
+        # If there are dedicated models to deploy, evict currently dedicated models that aren't in this set.
         if len(dedicated_models) > 0:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
                 for model_key, deployment in list(node.deployments.items()):
-                    if deployment.dedicated and model_key not in model_sizes_in_bytes:
+                    if deployment.dedicated and deployment not in dedicated_models:
                         logger.info(
                             f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                         )
 
                         results["evictions"].add(model_key)
 
-                        node.evict(model_key, exclude=dedicated_models)
+                        node.evict(model_key, exclude=set(dedicated_models))
 
                         change = True
 
-        # Sort models by size in descending order (deploy biggest ones first)
+        # Sort models in descending order by size, dedicated models first
         sorted_models = sorted(
-            model_sizes_in_bytes.items(), key=lambda x: x[1], reverse=True
+            models, key=lambda x: (x.dedicated, model_sizes_in_bytes[x.model_key]), reverse=True
         )
 
         # For each model to deploy, find the best node to deploy it on, if possible.
-        for model_key, size_in_bytes in sorted_models:
+        for deployment_cfg in sorted_models:
+            model_key = deployment_cfg.model_key
+            size_in_bytes = model_sizes_in_bytes[model_key]
             logger.info(
-                f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
+                f"=> Analyzing deployment of {deployment_cfg.model_key} with size {size_in_bytes}..."
             )
 
-            deployment_cfg = models.get(model_key, DeploymentConfig())
             candidates = {}
 
             # Check each node to see if the model can be deployed on it.
             for node in self.nodes.values():
+                # Skip head node if configured to do so
+                if self.skip_head_node_for_deployment and node.is_head_node:
+                    logger.info(
+                        f"==> Skipping head node {node.name} for deployment"
+                    )
+                    continue
+
                 logger.info(
                     f"==> Analyzing deployment of {model_key} for node {node.name}..."
                 )
@@ -257,7 +270,7 @@ class Cluster:
                         candidate,
                         size_in_bytes,
                         deployment_cfg=deployment_cfg,
-                        exclude=set(models.keys()),
+                        exclude=set(dedicated_models),
                     )
 
                     results["evictions"].update(candidate.evictions)

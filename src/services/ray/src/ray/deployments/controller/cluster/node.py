@@ -79,7 +79,10 @@ class GPUResource:
 
         return int(model_size_in_bytes // self.gpu_memory_bytes + 1)
 
-    def assign_gpus(self, gpus_required: int) -> list[int]:
+    def assign_gpus(self, gpus_required: int | None = None) -> list[int]:
+        if gpus_required is None:
+            return []
+
         if gpus_required > len(self.available_gpus):
             raise ValueError(
                 f"Not enough GPUs available to assign {gpus_required} GPUs"
@@ -108,12 +111,14 @@ class Node:
         cpu_resource: CPUResource,
         gpu_resource: GPUResource,
         minimum_deployment_time_seconds: float | None = None,
+        is_head_node: bool = False,
     ):
         self.id = id
         self.name = name
         self.cpu_resource = cpu_resource
         self.gpu_resource = gpu_resource
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
+        self.is_head_node = is_head_node
 
         self.deployments: Dict[MODEL_KEY, Deployment] = {}
         self.cache: Dict[MODEL_KEY, Deployment] = {}
@@ -175,11 +180,11 @@ class Node:
             # CPU memory accounting doesn't change since the model remains in CPU memory.
             del self.deployments[model_key]
             self.cache[model_key] = Deployment(
-                model_key=deployment.model_key,
+                model_key=model_key,
                 deployment_level=DeploymentLevel.WARM,
                 gpus=[],
                 size_bytes=deployment.size_bytes,
-                dedicated=False,
+                node_id=self.id,
             )
             return
 
@@ -227,7 +232,7 @@ class Node:
             self.cpu_resource.available_cpu_memory_bytes -= deployment.size_bytes
 
             self.cache[model_key] = Deployment(
-                model_key=deployment.model_key,
+                model_key=model_key,
                 deployment_level=DeploymentLevel.WARM,
                 gpus=[],
                 size_bytes=deployment.size_bytes,
@@ -332,8 +337,8 @@ class Node:
 
         # 1) If the model is already deployed and is marked dedicated
         if model_key in self.deployments:
-            if deployment_cfg.dedicated:
-                self.deployments[model_key].dedicated = True
+            if deployment_cfg.dedicated and self.deployments[model_key].deployment_cfg:
+                self.deployments[model_key].deployment_cfg.dedicated = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 

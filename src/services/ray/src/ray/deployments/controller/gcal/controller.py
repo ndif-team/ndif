@@ -82,7 +82,7 @@ class SchedulingControllerActorArgs(ControllerDeploymentArgs):
 def app(**kwargs):
     args = SchedulingControllerActorArgs(**kwargs)
 
-    actor = SchedulingControllerActor.options(
+    SchedulingControllerActor.options(
         name="Controller",
         namespace="NDIF",
         lifetime="detached",

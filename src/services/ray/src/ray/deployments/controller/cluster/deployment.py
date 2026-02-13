@@ -48,11 +48,15 @@ class Deployment:
         self.deployment_cfg = deployment_cfg
 
     @property
-    def cpu_only(self):
+    def cpu_only(self) -> bool:
+        if self.deployment_cfg is None:
+            return False
         return self.deployment_cfg.device_map == "cpu"
-    
+
     @property
-    def dedicated(self):
+    def dedicated(self) -> bool:
+        if self.deployment_cfg is None:
+            return False
         return self.deployment_cfg.dedicated
 
     @property
@@ -114,6 +118,9 @@ class Deployment:
             return None
 
     def create(self, node_name: str):
+        if self.deployment_cfg is None:
+            raise ValueError("Deployment config is required")
+            
         try:
             env_vars = {
                 # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor
@@ -136,7 +143,6 @@ class Deployment:
                     "env_vars": env_vars,
                 },
             ).remote(
-                model_key=self.model_key,
                 target_gpus=self.gpus,
                 **self.deployment_cfg.model_dump()
             )

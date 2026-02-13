@@ -31,10 +31,11 @@ class DeploymentDelta:
 class _ControllerActor:
     def __init__(
         self,
-        deployments: Dict[MODEL_KEY, DeploymentConfig],
+        deployments: List[MODEL_KEY],
         model_import_path: str,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
+        skip_head_node_for_deployment: bool = True,
     ):
         super().__init__()
 
@@ -49,12 +50,15 @@ class _ControllerActor:
         self.cluster = Cluster(
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
+            skip_head_node_for_deployment=skip_head_node_for_deployment,
         )
 
         self.cluster.update_nodes()
 
         if len(deployments) > 0:
-            self._deploy(deployments)
+            self._deploy([
+                DeploymentConfig(model_key=mk) for mk in deployments if mk
+            ])
 
         asyncio.create_task(self.check_nodes())
 
@@ -84,7 +88,7 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
+    def _deploy(self, models: List[DeploymentConfig]):
         self.logger.info(
             "Deploying models \n" + "\n".join(
                 [
@@ -102,7 +106,7 @@ class _ControllerActor:
 
         return results
 
-    async def deploy(self, models: Dict[MODEL_KEY, DeploymentConfig]):
+    async def deploy(self, models: List[DeploymentConfig]):
         return self._deploy(models)
 
     def evict(self, model_keys: List[MODEL_KEY]):
@@ -482,6 +486,9 @@ class ControllerDeploymentArgs(BaseModel):
     )
     model_cache_percentage: Optional[float] = float(
         os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
+    )
+    skip_head_node_for_deployment: bool = (
+        os.environ.get("NDIF_SKIP_HEAD_NODE_FOR_DEPLOYMENT", "true").lower() != "false"
     )
 
 

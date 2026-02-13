@@ -1,8 +1,17 @@
 import os
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, model_validator
 import torch
 
+from cli.lib.util import get_model_key
+from ..types import MODEL_KEY
+
 class DeploymentConfig(BaseModel):
+    """Model key for the deployment."""
+    model_key: MODEL_KEY
+
+    """Model revision/branch to deploy."""
+    revision: str = "main"
+
     """Number of CPUs to allocate."""
     num_cpus: int = 2
 
@@ -26,12 +35,10 @@ class DeploymentConfig(BaseModel):
     """Whether to dispatch the deployment on spawn."""
     dispatch: bool = True
 
-    # This was on BaseModelDeploymentArgs but unused, moved it here but commenting out for now 
-    # model_config = ConfigDict(arbitrary_types_allowed=True)
-
     def __str__(self):
         return (
             "DeploymentConfig("
+            f"revision={self.revision}, "
             f"num_cpus={self.num_cpus}, "
             f"padding_factor={self.padding_factor}, "
             f"device_map={self.device_map}, "
@@ -41,3 +48,8 @@ class DeploymentConfig(BaseModel):
             f"dispatch={self.dispatch}"
             ")"
         )
+
+    @model_validator(mode="after")
+    def resolve_model_key(self) -> "DeploymentConfig":
+        self.model_key = get_model_key(self.model_key, self.revision)
+        return self

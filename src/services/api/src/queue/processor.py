@@ -28,6 +28,8 @@ from typing import Optional
 
 import ray
 
+from src.common.schema import DeploymentConfig
+
 from ..schema import BackendRequestModel, BackendResponseModel
 
 from .config import QueueConfig
@@ -292,7 +294,7 @@ class Processor:
                     self.status = ProcessorStatus.CANCELLED
                     return
 
-            result = await submit(controller, "deploy", [self.model_key])
+            result = await submit(controller, "deploy", [DeploymentConfig(model_key=self.model_key)])
 
         except Exception as e:
             self.eviction_queue.put_nowait(
