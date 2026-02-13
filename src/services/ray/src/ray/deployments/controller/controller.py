@@ -15,7 +15,7 @@ from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....types import MODEL_KEY
-from src.common.schema import DeploymentConfig
+from ....schema import DeploymentConfig
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
 
@@ -105,7 +105,11 @@ class _ControllerActor:
 
         return results
 
-    async def deploy(self, models: List[DeploymentConfig]):
+    async def deploy(self, models: List[DeploymentConfig | dict]):
+        models = [
+            m if isinstance(m, DeploymentConfig) else DeploymentConfig(**m)
+            for m in models
+        ]
         return self._deploy(models)
 
     def evict(self, model_keys: List[MODEL_KEY]):
@@ -494,7 +498,7 @@ class ControllerDeploymentArgs(BaseModel):
 def app(**kwargs):
     args = ControllerDeploymentArgs(**kwargs)
 
-    ControllerActor.options(
+    actor = ControllerActor.options(
         name="Controller",
         namespace="NDIF",
         lifetime="detached",

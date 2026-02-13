@@ -9,7 +9,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from .....types import MODEL_KEY
 from .....providers.mailgun import MailgunProvider
-from src.common.schema import DeploymentConfig
+from .....schema import DeploymentConfig
 from ..cluster.node import CandidateLevel
 
 logger = logging.getLogger("ndif")

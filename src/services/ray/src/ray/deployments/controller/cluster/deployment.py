@@ -11,7 +11,7 @@ from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
 from .....types import MODEL_KEY
 from ...modeling.base import ModelActor
-from src.common.schema import DeploymentConfig
+from .....schema import DeploymentConfig
 
 logger = logging.getLogger("ndif")
 

@@ -9,8 +9,8 @@ from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
 from .....types import MODEL_KEY, NODE_ID
+from .....schema import DeploymentConfig
 from .evaluator import ResourceEvaluator
-from src.common.schema import DeploymentConfig
 from .node import CandidateLevel, CPUResource, GPUResource, Node
 
 logger = logging.getLogger("ndif")

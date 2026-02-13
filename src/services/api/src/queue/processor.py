@@ -28,9 +28,7 @@ from typing import Optional
 
 import ray
 
-from src.common.schema import DeploymentConfig
-
-from ..schema import BackendRequestModel, BackendResponseModel
+from ..schema import BackendRequestModel, BackendResponseModel, DeploymentConfig
 
 from .config import QueueConfig
 from .util import controller_handle, get_actor_handle, submit

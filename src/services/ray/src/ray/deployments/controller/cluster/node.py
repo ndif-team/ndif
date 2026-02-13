@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Set
 
 from .....types import MODEL_KEY, NODE_ID
 from .deployment import Deployment, DeploymentLevel
-from src.common.schema import DeploymentConfig
+from .....schema import DeploymentConfig
 
 logger = logging.getLogger("ndif")
 

@@ -1,8 +1,9 @@
 import os
 from pydantic import BaseModel, Field
-import torch
+from typing import Literal
 
-from ..types import MODEL_KEY
+# Type alias for model keys
+MODEL_KEY = str
 
 class DeploymentConfig(BaseModel):
     """Model key for the deployment."""
@@ -24,7 +25,7 @@ class DeploymentConfig(BaseModel):
     dedicated: bool = False
 
     """Data type for the deployment."""
-    dtype: str | torch.dtype = "bfloat16"
+    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     """Execution timeout for the deployment."""
     execution_timeout_seconds: float = Field(

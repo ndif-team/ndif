@@ -5,9 +5,3 @@ gpt2:
   device_map: cpu
   dedicated: false
   revision: main
-
-meta-llama/Llama-2-7b-hf:
-  device_map: auto
-  dedicated: false
-  padding_factor: 0.15
-  revision: main
