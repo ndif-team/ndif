@@ -4,7 +4,8 @@ import threading
 import time
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Optional, Set
+
 
 import ray
 import torch
@@ -29,7 +30,7 @@ from ....metrics import (
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
 from ....schema import BackendRequestModel, BackendResponseModel, BackendResultModel
-from ....types import MODEL_KEY
+from ....types import MODEL_KEY, REPLICA_ID
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
 from ...nn.security.protected_environment import (
@@ -45,10 +46,13 @@ class BaseModelDeployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
         execution_timeout: float | None,
+        gpu_memory_fraction: float | None,
         dispatch: bool,
         dtype: str | torch.dtype,
-        target_gpus: List[int] | None = None,
+        gpu_mem_bytes_by_id: Dict[int, int] | None = None,
+
         *args,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
@@ -59,11 +63,13 @@ class BaseModelDeployment:
         SioProvider.connect()
 
         self.model_key = model_key
+        self.replica_id = replica_id
         self.execution_timeout = execution_timeout
+        self.gpu_memory_fraction = gpu_memory_fraction
         self.dispatch = dispatch
         self.dtype = dtype
         self.extra_kwargs = extra_kwargs
-        self.target_gpus = target_gpus or []
+        self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
 
         self.cached = False
 
@@ -79,8 +85,18 @@ class BaseModelDeployment:
         # Set the default CUDA device to the first target GPU BEFORE any CUDA
         # call. This ensures the CUDA context (~400MiB) is created on the
         # target GPU rather than always landing on GPU 0.
-        if self.target_gpus:
-            torch.cuda.set_device(self.target_gpus[0])
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            torch.cuda.set_device(list(self.gpu_mem_bytes_by_id.keys())[0])
+
+        if self.gpu_memory_fraction and torch.cuda.is_available():
+            try:
+                fraction = min(0.99, max(0.01, self.gpu_memory_fraction))
+                device = list(self.gpu_mem_bytes_by_id.keys())[0] if self.gpu_mem_bytes_by_id else 0
+                torch.cuda.set_per_process_memory_fraction(
+                    fraction, device=device
+                )
+            except Exception:
+                self.logger.exception("Error setting per-process GPU memory fraction.")
 
         self.model = self.load_from_disk()
 
@@ -107,21 +123,21 @@ class BaseModelDeployment:
         StreamTracer.register(self.stream_send, self.stream_receive)
 
     def _build_max_memory(self) -> Optional[Dict[int, int]]:
-        """Build a max_memory dict that restricts model placement to target GPUs.
+        """Build a max_memory dict based on gpu_mem_bytes_by_id.
 
         Returns a dict mapping GPU index to max memory in bytes. Non-target GPUs
-        get 0 bytes to prevent any allocation. Returns None if no target GPUs
-        are set, which lets accelerate use all available GPUs.
+        get 0 bytes to prevent any allocation. Returns None if no GPU map
+        is set, which lets accelerate use all available GPUs.
         """
-        if not self.target_gpus:
+        if not self.gpu_mem_bytes_by_id or not torch.cuda.is_available():
             return None
 
         num_gpus = torch.cuda.device_count()
-        target_set = set(self.target_gpus)
         max_memory = {}
         for i in range(num_gpus):
-            if i in target_set:
-                max_memory[i] = torch.cuda.get_device_properties(i).total_memory
+            if i in self.gpu_mem_bytes_by_id:
+                total = torch.cuda.get_device_properties(i).total_memory
+                max_memory[i] = min(self.gpu_mem_bytes_by_id[i], total)
             else:
                 max_memory[i] = 0
         return max_memory
@@ -141,12 +157,12 @@ class BaseModelDeployment:
             f"Model loaded from {source} on devices: {devices}"
         )
 
-        if self.target_gpus:
-            expected = {f"cuda:{gpu}" for gpu in self.target_gpus}
+        if self.gpu_mem_bytes_by_id:
+            expected = {f"cuda:{gpu}" for gpu in list(self.gpu_mem_bytes_by_id.keys())}
             actual_cuda = {d for d in devices if d.startswith("cuda:")}
             if actual_cuda and not actual_cuda.issubset(expected):
                 self.logger.warning(
-                    f"Device placement mismatch! Expected GPUs {self.target_gpus}, "
+                    f"Device placement mismatch! Expected GPUs {list(self.gpu_mem_bytes_by_id.keys())}, "
                     f"but model is on {actual_cuda}"
                 )
 
@@ -155,7 +171,7 @@ class BaseModelDeployment:
         torch.cuda.synchronize()
         self.logger.info(
             f"Loading model from disk for model key {self.model_key} "
-            f"targeting GPUs {self.target_gpus}..."
+            f"targeting GPUs {list(self.gpu_mem_bytes_by_id.keys())}..."
         )
 
         max_memory = self._build_max_memory()
@@ -194,10 +210,15 @@ class BaseModelDeployment:
         # torch.cuda.synchronize()
         gc.collect()
         torch.cuda.empty_cache()
+        # reset the memory fraction
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            for gpu_id in self.gpu_mem_bytes_by_id:
+                torch.cuda.set_per_process_memory_fraction(1.0, device=gpu_id)
 
         self.cached = True
 
-    def from_cache(self, target_gpus: List[int]):
+
+    def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int]):
         """Restore model from CPU cache onto the specified GPU(s).
 
         Uses max_memory targeting to ensure the model is placed on exactly
@@ -205,20 +226,39 @@ class BaseModelDeployment:
         (which cannot be changed after CUDA context initialization).
 
         Args:
-            target_gpus: List of physical GPU indices to place the model on.
+            gpu_mem_bytes_by_id: Map of physical GPU indices to max bytes.
         """
-        self.target_gpus = target_gpus
+        self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
 
-        # Switch default CUDA device to the new target GPU before any CUDA ops
-        if self.target_gpus:
-            torch.cuda.set_device(self.target_gpus[0])
+        # Switch default CUDA device to the new target GPU before any CUDA ops.
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            torch.cuda.set_device(list(self.gpu_mem_bytes_by_id.keys())[0])
+
+        # Set cap on memory allocation for each GPU (best-effort).
+        if self.gpu_mem_bytes_by_id and torch.cuda.is_available():
+            for gpu_id, bytes_cap in self.gpu_mem_bytes_by_id.items():
+                if bytes_cap <= 0:
+                    continue
+                try:
+                    total = torch.cuda.get_device_properties(gpu_id).total_memory
+                    if total <= 0:
+                        continue
+                    fraction = min(0.99, max(0.01, bytes_cap / total))
+                    torch.cuda.set_per_process_memory_fraction(
+                        fraction, device=gpu_id
+                    )
+                except Exception:
+                    self.logger.exception(
+                        "Error setting per-process GPU memory fraction for gpu_id=%s.",
+                        gpu_id,
+                    )
 
         torch.cuda.synchronize()
         start = time.time()
 
         self.logger.info(
             f"Loading model from cache for model key {self.model_key} "
-            f"onto GPUs {target_gpus}..."
+            f"onto GPUs {list(self.gpu_mem_bytes_by_id.keys())}..."
         )
 
         max_memory = self._build_max_memory()
@@ -259,6 +299,11 @@ class BaseModelDeployment:
 
         if self.cached:
             raise LookupError("Failed to look up actor")
+
+        self.logger.info(
+            f"Serving request id={getattr(request, 'id', None)} "
+            f"model_key={self.model_key} replica_id={self.replica_id} "
+        )
 
         self.request = request
 
@@ -413,7 +458,7 @@ class BaseModelDeployment:
         or other critical failures that require a fresh replica state.
         """
         ray.kill(
-            ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"),
+            ray.get_actor(f"ModelActor:{self.model_key}:{self.replica_id}", namespace="NDIF"),
             no_restart=False,
         )
 
@@ -509,15 +554,18 @@ class BaseModelDeploymentArgs(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
+    replica_id: REPLICA_ID
+    gpu_mem_bytes_by_id: Dict[int, int]
+
 
     execution_timeout: float | None = None
+    gpu_memory_fraction: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
-    target_gpus: List[int] | None = None
 
 
-@ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
+@ray.remote(num_cpus=0, num_gpus=0, max_restarts=-1)
 class ModelActor(BaseModelDeployment):
     """Ray remote actor for model execution.
 

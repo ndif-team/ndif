@@ -4,6 +4,8 @@ import ray
 from ray.util.client import ray as client_ray
 from ray.util.client.common import return_refs
 
+from ..types import REPLICA_ID
+
 
 def patch():
     # We patch the _async_send method to avoid a nasty deadlock bug in Ray.
@@ -37,3 +39,14 @@ def get_actor_handle(name: str) -> ray.actor.ActorHandle:
 
 def controller_handle():
     return get_actor_handle("Controller")
+
+def model_actor_name(model_key: str, replica_id: REPLICA_ID) -> str:
+    return f"ModelActor:{model_key}:{replica_id}"
+
+def get_model_actor_handle(
+    model_key: str, replica_id: REPLICA_ID
+) -> ray.actor.ActorHandle:
+    try:
+        return get_actor_handle(model_actor_name(model_key, replica_id))
+    except Exception:
+        raise RuntimeError(f"ModelActor {model_actor_name(model_key, replica_id)} not found")

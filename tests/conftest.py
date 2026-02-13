@@ -35,6 +35,7 @@ def configure_nnsight(ndif_host):
 
     CONFIG.API.HOST = ndif_host
     # Disable verbose logging during tests
+    
     CONFIG.APP.REMOTE_LOGGING = False
 
 
