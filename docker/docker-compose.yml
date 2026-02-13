@@ -25,17 +25,17 @@ services:
       - ${NDIF_RAY_SERVE_PORT}:8262
     deploy:
       replicas: 1
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${N_DEVICES}
-              capabilities: [ gpu ]
+      # resources:
+      #   reservations:
+      #     devices:
+      #       - driver: nvidia
+      #         count: ${N_DEVICES}
+      #         capabilities: [ gpu ]
     environment:
-      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
-      - NDIF_OBJECT_STORE_URL=http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
-      - NDIF_API_URL=http://${HOST_IP}:${NDIF_API_PORT}
-      - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      - LOKI_URL=http://host.docker.internal:${DEV_LOKI_PORT}/loki/api/v1/push
+      - NDIF_OBJECT_STORE_URL=http://host.docker.internal:${NDIF_OBJECT_STORE_PORT}
+      - NDIF_API_URL=http://host.docker.internal:${NDIF_API_PORT}
+      - INFLUXDB_ADDRESS=http://host.docker.internal:${DEV_INFLUXDB_PORT}
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
       - INFLUXDB_ORG=${INFLUXDB_ORG}
       - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
@@ -50,21 +50,23 @@ services:
       - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   api:
     image: api:${API_VERSION}
     ports:
       - ${NDIF_API_PORT}:${NDIF_API_PORT}
     environment:
-      NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
-      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+      NDIF_OBJECT_STORE_URL: http://host.docker.internal:${NDIF_OBJECT_STORE_PORT}
+      NDIF_BROKER_URL: redis://host.docker.internal:${NDIF_BROKER_PORT}
       NDIF_API_WORKERS: ${NDIF_API_WORKERS}
-      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
-      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_API_URL: http://host.docker.internal:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://host.docker.internal:${NDIF_RAY_CLIENT_PORT}
       NDIF_DEV_MODE: ${NDIF_DEV_MODE}
-      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      LOKI_URL: http://host.docker.internal:${DEV_LOKI_PORT}/loki/api/v1/push
       RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
-      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADDRESS: http://host.docker.internal:${DEV_INFLUXDB_PORT}
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
@@ -77,10 +79,13 @@ services:
       DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
     env_file:
       - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_PROMETHEUS_PORT}:${PROMETHEUS_INTERNAL_PORT}
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--web.enable-remote-write-receiver'
@@ -94,7 +99,8 @@ services:
 
   influxdb:
     image: influxdb:${INFLUXDB_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_INFLUXDB_PORT}:${INFLUXDB_INTERNAL_PORT}
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: ${SECRET_INFLUXDB_ADMIN_USERNAME}
@@ -108,7 +114,8 @@ services:
 
   grafana:
     image: grafana/grafana:${GRAFANA_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_GRAFANA_PORT}:${GRAFANA_INTERNAL_PORT}
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
@@ -123,7 +130,8 @@ services:
 
   loki:
     image: grafana/loki:${LOKI_VERSION}
-    network_mode: "host"
+    ports:
+      - ${DEV_LOKI_PORT}:${LOKI_INTERNAL_PORT}
     volumes:
       - loki-data:/loki
 

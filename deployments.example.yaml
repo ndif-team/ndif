@@ -1,0 +1,7 @@
+# Example deployment config for: ndif deploy gpt2 meta-llama/Llama-2-7b-hf --deployment-config deployments.example.yaml
+# Only models passed on the CLI are deployed; entries here just override their DeploymentConfig.
+
+gpt2:
+  device_map: cpu
+  dedicated: false
+  revision: main
