@@ -92,9 +92,8 @@ class _ControllerActor:
         self.logger.info(
             "Deploying models \n" + "\n".join(
                 [
-                    f"  - {model_key}: {deployment_cfg}"
-                    for model_key, deployment_cfg 
-                    in models.items()
+                    f"  - {deployment_cfg.model_key}: {deployment_cfg}"
+                    for deployment_cfg in models
                 ]
             )
         )
@@ -488,7 +487,7 @@ class ControllerDeploymentArgs(BaseModel):
         os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
     )
     skip_head_node_for_deployment: bool = (
-        os.environ.get("NDIF_SKIP_HEAD_NODE_FOR_DEPLOYMENT", "true").lower() != "false"
+        os.environ.get("NDIF_SKIP_HEAD_NODE_FOR_DEPLOYMENT", "false").lower() != "false"
     )
 
 

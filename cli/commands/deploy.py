@@ -8,7 +8,7 @@ import click
 import ray
 import yaml
 
-from ..lib.util import get_controller_actor_handle, notify_dispatcher
+from ..lib.util import get_controller_actor_handle, notify_dispatcher, get_model_key
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 from src.common.schema import DeploymentConfig
@@ -79,10 +79,11 @@ def deploy(
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)
 
         config = _load_yaml_config(config_path) if config_path else {}
-        models = [DeploymentConfig(model_key=checkpoint, **config.get(checkpoint, {})) for checkpoint in checkpoints]
-        if dedicated:
-            for model in models:
-                model.dedicated = True
+        models = []
+        for checkpoint in checkpoints:
+            checkpoint_config = config.get(checkpoint, {})
+            model_key = get_model_key(checkpoint, checkpoint_config.get("revision", "main"))
+            models.append(DeploymentConfig(model_key=model_key, **checkpoint_config))
 
         click.echo(f"Deploying {len(models)} model(s)...")
 

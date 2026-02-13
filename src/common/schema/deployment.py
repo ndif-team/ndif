@@ -1,8 +1,7 @@
 import os
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 import torch
 
-from cli.lib.util import get_model_key
 from ..types import MODEL_KEY
 
 class DeploymentConfig(BaseModel):
@@ -48,8 +47,3 @@ class DeploymentConfig(BaseModel):
             f"dispatch={self.dispatch}"
             ")"
         )
-
-    @model_validator(mode="after")
-    def resolve_model_key(self) -> "DeploymentConfig":
-        self.model_key = get_model_key(self.model_key, self.revision)
-        return self

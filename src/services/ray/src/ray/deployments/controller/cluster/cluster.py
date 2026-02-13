@@ -124,8 +124,7 @@ class Cluster:
         Deploy models on the cluster. This updates our internal state of the cluster.
 
         Args:
-            model_keys (List[MODEL_KEY]): List of model keys to deploy
-            dedicated (bool): Whether to deploy the models as dedicated. Defaults to False.
+            models (List[DeploymentConfig]): List of deployment configurations to deploy
 
         Returns:
             Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
@@ -163,30 +162,31 @@ class Cluster:
             else:
                 model_sizes_in_bytes[model_key] = size_in_bytes
 
-        dedicated_models: List[DeploymentConfig] = [
-            deployment_cfg for deployment_cfg in models if deployment_cfg.dedicated
-        ]
 
+        dedicated_model_keys: set[MODEL_KEY] = {
+            deployment_cfg.model_key for deployment_cfg in models if deployment_cfg.dedicated
+        }
         # If there are dedicated models to deploy, evict currently dedicated models that aren't in this set.
-        if len(dedicated_models) > 0:
+        if len(dedicated_model_keys) > 0:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
                 for model_key, deployment in list(node.deployments.items()):
-                    if deployment.dedicated and deployment not in dedicated_models:
+                    if deployment.dedicated and model_key not in dedicated_model_keys:
                         logger.info(
                             f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                         )
 
                         results["evictions"].add(model_key)
 
-                        node.evict(model_key, exclude=set(dedicated_models))
+                        node.evict(model_key, exclude=dedicated_model_keys)
 
                         change = True
 
-        # Sort models in descending order by size, dedicated models first
+        # Filter to only models that passed evaluation, then sort by size descending, dedicated first
+        evaluated_models = [m for m in models if m.model_key in model_sizes_in_bytes]
         sorted_models = sorted(
-            models, key=lambda x: (x.dedicated, model_sizes_in_bytes[x.model_key]), reverse=True
+            evaluated_models, key=lambda x: (x.dedicated, model_sizes_in_bytes[x.model_key]), reverse=True
         )
 
         # For each model to deploy, find the best node to deploy it on, if possible.
@@ -249,7 +249,9 @@ class Cluster:
                 logger.error(f"=> {model_key} cannot be deployed on any node")
             else:
                 node_id, candidate = random.choice(list(candidates.items()))
+
                 candidate_level = candidate.candidate_level
+
                 results["result"][model_key] = candidate_level.name
 
                 if candidate_level == CandidateLevel.DEPLOYED:
@@ -270,7 +272,7 @@ class Cluster:
                         candidate,
                         size_in_bytes,
                         deployment_cfg=deployment_cfg,
-                        exclude=set(dedicated_models),
+                        exclude=dedicated_model_keys,
                     )
 
                     results["evictions"].update(candidate.evictions)

@@ -1,7 +1,6 @@
 """Status command for NDIF - view cluster and deployment status."""
 
 import json
-import os
 import time
 import click
 import ray

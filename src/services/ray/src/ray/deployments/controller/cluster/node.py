@@ -176,8 +176,8 @@ class Node:
         deployment = self.deployments[model_key]
 
         if deployment.cpu_only:
-            # Move to cache: model stays on CPU, just transitions from HOT to WARM.
-            # CPU memory accounting doesn't change since the model remains in CPU memory.
+            # Model stays on CPU, just transitions from HOT to WARM.
+            # Do *not* protect the CPU status (e.g. pass a cfg with device_map="cpu")
             del self.deployments[model_key]
             self.cache[model_key] = Deployment(
                 model_key=model_key,
