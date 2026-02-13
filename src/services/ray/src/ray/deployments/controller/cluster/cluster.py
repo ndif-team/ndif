@@ -11,7 +11,7 @@ from ray.util.state import list_nodes
 
 from .....types import MODEL_KEY, NODE_ID
 from .evaluator import ModelEvaluator
-from .node import CandidateLevel, Node, Resources
+from .node import CandidateLevel, CPUResource, GPUResource, Node
 
 logger = logging.getLogger("ndif")
 
@@ -78,8 +78,6 @@ class Cluster:
 
             if id not in self.nodes:
                 total_gpus = node.resources_total["GPU"]
-                gpu_type = "TEST"
-                # gpu_type = node.resources_total["GPU_TYPE"]
                 gpu_memory_bytes = (
                     (node.resources_total["cuda_memory_bytes"]) / total_gpus
                 )
@@ -91,19 +89,20 @@ class Cluster:
                 self.nodes[id] = Node(
                     id,
                     name,
-                    Resources(
-                        total_gpus=total_gpus,
-                        gpu_type=gpu_type,
-                        gpu_memory_bytes=gpu_memory_bytes,
+                    cpu_resource=CPUResource(
                         cpu_memory_bytes=cpu_memory_bytes,
                         available_cpu_memory_bytes=cpu_memory_bytes,
+                    ),
+                    gpu_resource=GPUResource(
+                        total_gpus=total_gpus,
+                        gpu_memory_bytes=gpu_memory_bytes,
                         available_gpus=list(range(int(total_gpus))),
                     ),
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
 
             logger.info(
-                f"=> Node {name} updated with resources: {self.nodes[id].resources}"
+                f"=> Node {name} updated with resources: cpu={self.nodes[id].cpu_resource}, gpu={self.nodes[id].gpu_resource}"
             )
 
         for node_id in self.nodes.keys():
