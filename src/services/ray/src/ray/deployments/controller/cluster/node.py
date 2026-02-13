@@ -23,11 +23,11 @@ class Candidate:
     def __init__(
         self,
         candidate_level: CandidateLevel,
-        gpus_required: Optional[int] = None,
+        model_size_in_bytes: Optional[int] = None,
         evictions: Optional[List[MODEL_KEY]] = None,
     ):
         self.candidate_level = candidate_level
-        self.gpus_required = gpus_required
+        self.model_size_in_bytes = model_size_in_bytes
         self.evictions = evictions if evictions else []
 
 
@@ -35,13 +35,22 @@ class Candidate:
 class GPU:
     index: int
     memory_bytes: int
+    available_memory_bytes: int = None
+
+    def __post_init__(self):
+        if self.available_memory_bytes is None:
+            self.available_memory_bytes = self.memory_bytes
 
 
 @dataclass
 class GPUResources:
     gpu_type: str
     gpus: list[GPU]
-    available: list[int]
+
+    @property
+    def available(self) -> list[int]:
+        """GPUs with full memory free (backward compat)."""
+        return [gpu.index for gpu in self.gpus if gpu.available_memory_bytes == gpu.memory_bytes]
 
     @property
     def total(self) -> int:
@@ -57,18 +66,67 @@ class GPUResources:
 
         return int(model_size_in_bytes // self.memory_bytes + 1)
 
-    def assign(self, count: int) -> list[int]:
-        if count > len(self.available):
-            raise ValueError(
-                f"Not enough GPUs available to assign {count} GPUs"
-            )
+    def can_fit(self, model_size_bytes: int) -> bool:
+        """Check if the model can fit on any single GPU without eviction."""
+        return any(gpu.available_memory_bytes >= model_size_bytes for gpu in self.gpus)
 
-        gpus = self.available[:count]
-        self.available = self.available[count:]
-        return gpus
+    def assign(self, model_size_bytes: int) -> dict[int, int]:
+        """Assign GPU memory for a model.
 
-    def release(self, indices: list[int]) -> None:
-        self.available.extend(indices)
+        Single-GPU (size <= memory_bytes): best-fit bin-pack onto the GPU with
+        the least free memory that still fits the model.
+
+        Multi-GPU (size > memory_bytes): use N fully-free GPUs, split evenly.
+
+        Returns:
+            dict mapping gpu_index -> bytes_allocated on that GPU.
+        """
+        if model_size_bytes <= self.memory_bytes:
+            # Single-GPU: best-fit bin-pack
+            best_gpu = None
+            for gpu in self.gpus:
+                if gpu.available_memory_bytes >= model_size_bytes:
+                    if best_gpu is None or gpu.available_memory_bytes < best_gpu.available_memory_bytes:
+                        best_gpu = gpu
+
+            if best_gpu is None:
+                raise ValueError(
+                    f"No single GPU has {model_size_bytes} bytes available"
+                )
+
+            best_gpu.available_memory_bytes -= model_size_bytes
+            return {best_gpu.index: model_size_bytes}
+        else:
+            # Multi-GPU: need fully-free GPUs
+            gpus_needed = self.required(model_size_bytes)
+            free_gpus = [gpu for gpu in self.gpus if gpu.available_memory_bytes == gpu.memory_bytes]
+
+            if len(free_gpus) < gpus_needed:
+                raise ValueError(
+                    f"Not enough free GPUs available: need {gpus_needed}, have {len(free_gpus)}"
+                )
+
+            selected = free_gpus[:gpus_needed]
+            per_gpu = model_size_bytes // gpus_needed
+            remainder = model_size_bytes % gpus_needed
+
+            allocation = {}
+            for i, gpu in enumerate(selected):
+                alloc = per_gpu + (1 if i < remainder else 0)
+                gpu.available_memory_bytes -= alloc
+                allocation[gpu.index] = alloc
+
+            return allocation
+
+    def release(self, allocation: dict[int, int]) -> None:
+        """Release GPU memory from a previous allocation.
+
+        Args:
+            allocation: dict mapping gpu_index -> bytes to release.
+        """
+        gpu_map = {gpu.index: gpu for gpu in self.gpus}
+        for idx, bytes_allocated in allocation.items():
+            gpu_map[idx].available_memory_bytes += bytes_allocated
 
 
 @dataclass
@@ -114,6 +172,14 @@ class Node:
                 "available_gpus": self.gpu_resources.available,
                 "cpu_memory_bytes": self.cpu_resources.memory_bytes,
                 "available_cpu_memory_bytes": self.cpu_resources.available_memory_bytes,
+                "gpu_details": [
+                    {
+                        "index": gpu.index,
+                        "memory_bytes": gpu.memory_bytes,
+                        "available_memory_bytes": gpu.available_memory_bytes,
+                    }
+                    for gpu in self.gpu_resources.gpus
+                ],
             },
             "deployments": [
                 deployment.get_state() for deployment in self.deployments.values()
@@ -141,7 +207,7 @@ class Node:
         self.deployments[model_key] = Deployment(
             model_key=model_key,
             deployment_level=DeploymentLevel.HOT,
-            gpus=self.gpu_resources.assign(candidate.gpus_required),
+            gpus=self.gpu_resources.assign(candidate.model_size_in_bytes),
             size_bytes=size_bytes,
             dedicated=dedicated,
             node_id=self.id,
@@ -201,37 +267,102 @@ class Node:
             self.cache[model_key] = Deployment(
                 model_key=deployment.model_key,
                 deployment_level=DeploymentLevel.WARM,
-                gpus=[],
+                gpus={},
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
                 node_id=self.id,
             )
 
-    def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
-        deployments = sorted(list(self.deployments.values()), key=lambda x: len(x.gpus))
+    def _is_evictable(self, deployment: Deployment, dedicated: bool) -> bool:
+        """Check if a deployment can be evicted."""
+        if deployment.dedicated:
+            return False
+        if (
+            not dedicated
+            and self.minimum_deployment_time_seconds is not None
+            and time.time() - deployment.deployed < self.minimum_deployment_time_seconds
+        ):
+            return False
+        return True
 
-        gpus_needed = gpus_required - len(self.gpu_resources.available)
+    def evictions_for_fractional(self, model_size_bytes: int, dedicated: bool = False) -> List[MODEL_KEY]:
+        """Find cheapest evictions to free enough memory on a single GPU for a fractional model.
 
-        evictions = []
-
-        for deployment in deployments:
-            if deployment.dedicated:
+        For each GPU, find the cheapest set of evictions to free enough memory.
+        Pick the GPU needing the fewest evictions.
+        """
+        # Build mapping: gpu_index -> list of (model_key, bytes_on_this_gpu)
+        occupants_by_gpu: Dict[int, List[tuple]] = {gpu.index: [] for gpu in self.gpu_resources.gpus}
+        for mk, dep in self.deployments.items():
+            if not self._is_evictable(dep, dedicated):
                 continue
+            for gpu_idx, alloc_bytes in dep.gpus.items():
+                occupants_by_gpu[gpu_idx].append((mk, alloc_bytes))
 
-            if (
-                not dedicated
-                and self.minimum_deployment_time_seconds is not None
-                and time.time() - deployment.deployed
-                < self.minimum_deployment_time_seconds
-            ):
+        best_evictions = None
+
+        for gpu in self.gpu_resources.gpus:
+            needed = model_size_bytes - gpu.available_memory_bytes
+            if needed <= 0:
+                # Already fits, no evictions needed
+                return []
+
+            # Sort occupants by bytes ascending (cheapest evictions first)
+            occupants = sorted(occupants_by_gpu[gpu.index], key=lambda x: x[1])
+            freed = 0
+            candidate_evictions = []
+            for mk, alloc_bytes in occupants:
+                # Evicting this model frees ALL its GPU memory (across all GPUs),
+                # but we only care about this GPU's contribution for the needed check
+                candidate_evictions.append(mk)
+                freed += alloc_bytes
+                if freed >= needed:
+                    break
+
+            if freed >= needed:
+                if best_evictions is None or len(candidate_evictions) < len(best_evictions):
+                    best_evictions = candidate_evictions
+
+        return best_evictions if best_evictions is not None else []
+
+    def evictions_for_whole_gpus(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+        """Find evictions to free enough whole GPUs for a multi-GPU model.
+
+        Find GPUs with fewest occupants, evict all occupants from those GPUs
+        until enough are fully free.
+        """
+        available_count = len(self.gpu_resources.available)
+        if available_count >= gpus_required:
+            return []
+
+        gpus_still_needed = gpus_required - available_count
+
+        # Build mapping: gpu_index -> set of model_keys occupying it
+        occupants_by_gpu: Dict[int, Set[MODEL_KEY]] = {gpu.index: set() for gpu in self.gpu_resources.gpus}
+        for mk, dep in self.deployments.items():
+            if not self._is_evictable(dep, dedicated):
                 continue
+            for gpu_idx in dep.gpus.keys():
+                occupants_by_gpu[gpu_idx].add(mk)
 
-            evictions.append(deployment.model_key)
+        # Only consider non-free GPUs that have evictable occupants
+        non_free_gpus = [
+            (gpu.index, occupants_by_gpu[gpu.index])
+            for gpu in self.gpu_resources.gpus
+            if gpu.available_memory_bytes < gpu.memory_bytes and len(occupants_by_gpu[gpu.index]) > 0
+        ]
 
-            gpus_needed -= len(deployment.gpus)
+        # Sort by fewest occupants first (cheapest to fully free)
+        non_free_gpus.sort(key=lambda x: len(x[1]))
 
-            if gpus_needed <= 0:
-                return evictions
+        evictions = set()
+        freed_gpus = 0
+
+        for gpu_idx, occupant_keys in non_free_gpus:
+            evictions.update(occupant_keys)
+            freed_gpus += 1
+            if freed_gpus >= gpus_still_needed:
+                return list(evictions)
 
         return list()
 
@@ -246,33 +377,54 @@ class Node:
 
         cached = model_key in self.cache
 
-        gpus_required = self.gpu_resources.required(model_size_in_bytes)
+        is_single_gpu = model_size_in_bytes <= self.gpu_resources.memory_bytes
 
-        if gpus_required <= len(self.gpu_resources.available):
-            return Candidate(
-                candidate_level=(
-                    CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
-                ),
-                gpus_required=gpus_required,
-            )
-
-        elif gpus_required <= self.gpu_resources.total:
-            candidate = Candidate(
-                candidate_level=(
-                    CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
-                ),
-                gpus_required=gpus_required,
-            )
-
-            candidate.evictions = self.evictions(gpus_required, dedicated=dedicated)
-
-            if len(candidate.evictions) == 0:
-                candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
-
-            return candidate
-
+        if is_single_gpu:
+            # Single-GPU (fractional): check if any GPU has room
+            if self.gpu_resources.can_fit(model_size_in_bytes):
+                return Candidate(
+                    candidate_level=(
+                        CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
+                    ),
+                    model_size_in_bytes=model_size_in_bytes,
+                )
+            else:
+                # Need evictions on a single GPU
+                candidate = Candidate(
+                    candidate_level=(
+                        CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
+                    ),
+                    model_size_in_bytes=model_size_in_bytes,
+                )
+                candidate.evictions = self.evictions_for_fractional(model_size_in_bytes, dedicated=dedicated)
+                if len(candidate.evictions) == 0:
+                    candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
+                return candidate
         else:
-            return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)
+            # Multi-GPU: need whole dedicated GPUs
+            gpus_required = self.gpu_resources.required(model_size_in_bytes)
+
+            if gpus_required > self.gpu_resources.total:
+                return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)
+
+            if gpus_required <= len(self.gpu_resources.available):
+                return Candidate(
+                    candidate_level=(
+                        CandidateLevel.CACHED_AND_FREE if cached else CandidateLevel.FREE
+                    ),
+                    model_size_in_bytes=model_size_in_bytes,
+                )
+            else:
+                candidate = Candidate(
+                    candidate_level=(
+                        CandidateLevel.CACHED_AND_FULL if cached else CandidateLevel.FULL
+                    ),
+                    model_size_in_bytes=model_size_in_bytes,
+                )
+                candidate.evictions = self.evictions_for_whole_gpus(gpus_required, dedicated=dedicated)
+                if len(candidate.evictions) == 0:
+                    candidate.candidate_level = CandidateLevel.CANT_ACCOMMODATE
+                return candidate
 
     def purge(self):
         for deployment in self.deployments.values():

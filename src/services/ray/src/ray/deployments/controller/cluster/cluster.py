@@ -98,7 +98,6 @@ class Cluster:
                 gpu_resources = GPUResources(
                     gpu_type=gpu_type,
                     gpus=gpus,
-                    available=list(range(total_gpus)),
                 )
 
                 cpu_resources = CPUResources(
@@ -204,7 +203,7 @@ class Cluster:
                 candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated)
 
                 logger.info(
-                    f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
+                    f"==> Candidate: {candidate.candidate_level.name}, model_size_in_bytes: {candidate.model_size_in_bytes}, evictions: {candidate.evictions}"
                 )
 
                 # If the model is already deployed on this node, we can stop looking for nodes.
@@ -290,6 +289,7 @@ class Cluster:
                         "status": "evicted",
                         "node": node.name,
                         "freed_gpus": len(deployment.gpus),
+                        "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
                         "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
                     }
                     change = True

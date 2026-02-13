@@ -26,7 +26,7 @@ class Deployment:
         self,
         model_key: MODEL_KEY,
         deployment_level: DeploymentLevel,
-        gpus: list[int],
+        gpus: dict[int, int],
         size_bytes: int,
         dedicated: bool = False,
         node_id: str = None,
@@ -102,8 +102,8 @@ class Deployment:
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
         try:
-            # Inject the assigned GPU indices so the actor knows which GPUs to target
-            deployment_args.target_gpus = self.gpus
+            # Inject the assigned GPU memory allocation so the actor knows which GPUs to target
+            deployment_args.gpu_mem_bytes_by_id = self.gpus
 
             env_vars = {
                 # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor

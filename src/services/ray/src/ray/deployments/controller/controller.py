@@ -459,10 +459,19 @@ class _ControllerActor:
                             "total_gpus": node.gpu_resources.total,
                             "gpu_memory_bytes": node.gpu_resources.memory_bytes,
                             "available_gpus": node.gpu_resources.available,
+                            "gpu_details": [
+                                {
+                                    "index": gpu.index,
+                                    "memory_bytes": gpu.memory_bytes,
+                                    "available_memory_bytes": gpu.available_memory_bytes,
+                                }
+                                for gpu in node.gpu_resources.gpus
+                            ],
                         },
                         "deployments": {
                             model_key: {
-                                "gpus_required": len(deployment.gpus),
+                                "gpus": len(deployment.gpus),
+                                "gpu_mem_bytes_by_id": deployment.gpus,
                             }
                             for model_key, deployment in node.deployments.items()
                         },
