@@ -1,6 +1,6 @@
 # Model Replica Logic Walkthrough
 
-This document explains how model replicas are identified, created, tracked, used for requests, scaled, and evicted across the API queue layer and the Ray controller layer.
+End-to-end walkthrough of how model replicas are identified, created, tracked, used for requests, scaled, and evicted across the API queue layer and the Ray controller layer.
 
 ## Scope
 
@@ -8,9 +8,9 @@ Covered components:
 
 - API queue layer:
   - `src/services/api/src/queue/util.py`
+  - `src/services/api/src/queue/replicas.py`
   - `src/services/api/src/queue/processor.py`
   - `src/services/api/src/queue/dispatcher.py`
-  - `src/services/api/src/queue/config.py`
 - Ray deployment layer:
   - `src/services/ray/src/ray/deployments/controller/controller.py`
   - `src/services/ray/src/ray/deployments/controller/cluster/cluster.py`
@@ -18,17 +18,16 @@ Covered components:
   - `src/services/ray/src/ray/deployments/controller/cluster/deployment.py`
   - `src/services/ray/src/ray/deployments/modeling/base.py`
   - `src/services/ray/src/ray/deployments/controller/gcal/controller.py`
-- External control entrypoints:
-  - `cli/commands/deploy.py`
-  - `cli/commands/evict.py`
-  - `cli/commands/scale.py`
-  - `cli/lib/util.py`
 
 ## Replica Identity Contract
 
 Every replica is a Ray actor named:
 
-`ModelActor:<model_key>:<replica_id>`
+```
+ModelActor:<model_key>:<replica_id>
+```
+
+`replica_id` is a UUID hex string (e.g., `a1b2c3d4e5f6...`). IDs are opaque — code should treat them as strings and never assume ordering or numeric values.
 
 This naming contract is shared consistently by:
 
@@ -51,84 +50,102 @@ When the dispatcher sees the first request for a `model_key`, it creates a `Proc
 
 - `queue/dispatcher.py::dispatch()`
 
-Replica initialization in `Processor.__init__`:
-
-- `replica_count` is:
-  - explicit argument if provided, otherwise
-  - defaults to `1`
-- `replica_ids = [0..replica_count-1]`
-- per-replica execution tracking dicts are initialized
+The `Processor.__init__` receives `replica_count` (default 1) and creates an empty `Replicas` collection. Replica IDs are not assigned until provisioning completes.
 
 ### 2. Provisioning via Controller
 
-`Processor.processor_worker()` calls `provision()` (unless created from an external deploy event with `provision=False`).
-
-Provisioning calls:
-
-- `Controller.deploy([model_key], replicas=replica_count)`
-
-in:
+`Processor.processor_worker()` calls `provision()`:
 
 - `queue/processor.py::provision()`
-- `controller/controller.py::deploy()` -> `_deploy()`
+- `controller/controller.py::deploy()` → `_deploy()`
 
-Controller `_deploy()`:
+**Processor.provision()**:
+1. Checks if the model has a dedicated (scheduled) deployment
+2. Filters queue to remove invalid requests (non-hotswap on non-dedicated)
+3. Calls `Controller.deploy([model_key], replica_count)` via Ray RPC
+4. Syncs returned replica IDs into the `Replicas` collection via `set_replica_ids()`
+5. Forwards eviction events to the dispatcher
+6. Removes replicas that returned `CANT_ACCOMMODATE` or error statuses
 
-- stores desired replicas in `self.desired_replicas[model_key]`
-- calls `cluster.deploy(model_keys, replicas=...)`
-- calls `apply()` if cluster state changed
+**Controller._deploy()**:
+1. Stores `desired_replicas[model_key] = replicas`
+2. Calls `cluster.deploy(model_keys, replicas=...)` — returns `(results, change)`
+3. Adjusts `desired_replicas` down for any replicas that couldn't be placed
+4. Calls `apply()` if cluster state changed
 
 ### 3. Replica placement and actor creation
 
-`Cluster.deploy()` computes target replica IDs per model:
+**Cluster.deploy()** computes target replica IDs per model:
 
-- if none exist: `[0..replicas-1]`
-- if some exist and target is larger: appends new IDs after max existing ID
-- if existing count already >= target: keeps existing IDs (no downscale) [TODO: just remove last few replicas for now]
+1. Scans all nodes to collect `deployed_replica_ids` and `cached_replica_ids`
+2. Calls `target_replica_ids_for()`:
+   - `needed = max(0, replicas - len(deployed_replica_ids))`
+   - Reuses cached IDs first (up to `needed`) — so a WARM replica gets promoted back to HOT without creating a new actor
+   - Generates new UUIDs for the remainder, avoiding collisions with all existing IDs
+3. Evaluates model sizes via `self.evaluator(model_key)` (loads on meta device, no GPU)
+4. For each target replica, evaluates all nodes:
+   - Each node returns a `Candidate` with a `CandidateLevel` (priority: `DEPLOYED=0` < `CACHED_AND_FREE=1` < `FREE=2` < `CACHED_AND_FULL=3` < `FULL=4` < `CANT_ACCOMMODATE=5`)
+   - Among tied candidates, one is chosen randomly
+5. Calls `node.deploy()` for placed replicas to update resource accounting
 
-`Node.evaluate()` and `Node.deploy()` decide placement per replica:
+**Node.deploy()** and **Node.evaluate()** decide placement per replica:
+- Full-GPU placement, single-GPU fractional placement, or multi-GPU placement
+- Optional eviction of non-dedicated replicas to make room
+- See `gpu-fraction-deployment.md` for the full decision tree
 
-- full-GPU placement or single-GPU memory-fraction placement
-- optional eviction of non-dedicated replicas to make room
+New hot deployments are materialized into actors during **Controller.apply()**:
 
-New hot deployments are materialized into actors during `Controller.apply()`:
+- `build()` diffs `self.state` against current cluster nodes to produce a `DeploymentDelta`:
 
-- `Deployment.create()` -> `ModelActor.options(...).remote(...)`
-- actor name uses the replica identity contract above
+| Category | Condition | Action |
+|----------|-----------|--------|
+| `deployments_to_create` | Not in `state`, now in node's `deployments` | Create new `ModelActor` |
+| `deployments_from_cache` | Was WARM in `state`, now in node's `deployments` | Call `ModelActor.from_cache(gpu_mem_bytes_by_id)` |
+| `deployments_to_cache` | Was HOT in `state`, now in node's `cache` | Call `ModelActor.to_cache()` |
+| `deployments_to_delete` | In `state` but absent from new cluster view | Kill the actor |
+
+- Cache operations run synchronously (must complete before `from_cache` can reuse freed GPU)
+- Create and from-cache are monitored via async tasks; failures trigger `deployment.delete()` and `_remove_deployment_from_state()`
+
+`Deployment.create()` spawns the actor:
+- `ModelActor.options(name="ModelActor:<model_key>:<replica_id>", ...).remote(**deployment_args)`
+- Uses `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1` so the actor sees all GPUs; targeting is done via `max_memory`
 
 ### 4. Readiness gate
 
 After provisioning:
 
-- `Processor.initialize()` starts `initialize_replica(replica_id)` tasks for all `replica_ids`
-- each task loops until actor lookup + `__ray_ready__` succeeds
-- the processor waits for all initialization tasks to finish, then proceeds if at least one replica remains
+- `Processor.initialize()` starts `_initialize_and_start_replica(replica_id)` tasks for all `replica_ids`
+- Each task calls `replica.wait_until_ready()`, which polls `__ray_ready__` on the Ray actor
+- The processor proceeds as long as **at least one** replica succeeds
+- Failed replicas are removed via `remove_replica()` without cancelling the processor
 
 ### 5. Request execution across replicas
 
-For each replica, processor starts one worker coroutine:
+For each replica, the processor starts one worker coroutine via `_start_replica_worker()`:
 
-- `queue/processor.py::_start_replica_worker()`
-- `queue/processor.py::replica_worker()`
+```
+_replica_worker(replica_id):
+    loop:
+        request = await queue.get()          # shared queue — whichever replica is idle first wins
+        replicas.begin_request(replica_id)
+        status = BUSY
+        try:
+            _execute_on_replica(replica_id, request)
+        finally:
+            replicas.end_request(replica_id)
+            if in_flight == 0: status = READY
+```
 
-Each replica worker:
+**_execute_on_replica()**:
+1. Sets `replica.current_request_id` and `current_request_started_at`
+2. Sends a `DISPATCHED` response to the user
+3. Resolves actor handle by exact `(model_key, replica_id)` and calls `ModelActor.__call__`
+4. In `finally`: clears the current request tracking
 
-- pulls from the shared model queue
-- updates per-processor execution bookkeeping:
-  - increments `in_flight`
-  - adds `replica_id` to `busy_replicas`
-  - sets `status=BUSY` and calls `reply()` so queued users see progress
-- calls `execute(request, replica_id)`
-
-Execution:
-
-- actor handle resolved by exact `(model_key, replica_id)`
-- request sent to `ModelActor.__call__`
-- per-replica `current_request_ids[replica_id]` and `current_request_started_ats[replica_id]` are set before dispatch and cleared in a `finally` block
-- on success, the replica worker decrements `in_flight`, removes `replica_id` from `busy_replicas`, and sets `status=READY` when `in_flight==0`
-- on error:
-  - if the error looks like actor eviction (`Failed to look up actor...`), the processor enqueues an eviction event for that replica, decreases desired replicas via controller `evict`, and sets `status=CANCELLED`
-  - otherwise, it reports the exception to the dispatcher's `error_queue`; the dispatcher later logs it and (if no reconnect) resets the processor back to `READY`
+Error handling:
+- **"Failed to look up actor"**: enqueues replica eviction to dispatcher, sets `CANCELLED`
+- **Other errors**: reported to dispatcher's `error_queue`; dispatcher resets processor to `READY`
 
 ## Runtime Behavior Inside a Replica (ModelActor)
 
@@ -136,152 +153,99 @@ Execution:
 
 Important replica behaviors:
 
-- `__call__`:
-  - rejects work if replica is in cached mode (`self.cached`)
-  - runs pre -> execute -> post pipeline
-  - supports timeout and cancellation (kill switch)
-- `cancel()`:
-  - triggers in-flight cancellation
-- `to_cache()`:
-  - cancels current work, moves model to CPU, marks replica cached
-- `from_cache(gpu_mem_bytes_by_id)`:
-  - moves cached model back to GPU
-- `restart()`:
-  - kills the specific replica actor with `no_restart=False`
+- **`__call__`**: rejects work if replica is in cached mode (`self.cached`); runs pre → execute → post pipeline; supports timeout and cancellation (kill switch)
+- **`cancel()`**: triggers in-flight cancellation
+- **`to_cache()`**: cancels current work, removes accelerate hooks, moves model to CPU, resets memory fraction to 1.0, marks replica cached
+- **`from_cache(gpu_mem_bytes_by_id)`**: updates GPU targets, sets memory fraction caps, re-dispatches model via `accelerate.dispatch_model`
+- **`restart()`**: kills the specific replica actor with `no_restart=False`
 
 ## Eviction and Failure Paths
 
 ### Planned or pressure-driven evictions
 
-`Cluster.deploy()` may evict existing replicas to make space; it returns:
+`Cluster.deploy()` may evict existing non-dedicated replicas to make space; it returns `results["evictions"]` as `(model_key, replica_id)` pairs.
 
-- `results["evictions"]` as `(model_key, replica_id)` pairs
-
-`Processor.provision()` forwards those to dispatcher's eviction queue.
+`Processor.provision()` forwards those to the dispatcher's eviction queue.
 
 Dispatcher handling:
-
-- if `replica_id is None`: remove entire processor
-- else: call `processor.remove_replica(replica_id, reason)`
+- If `replica_id is None`: remove entire processor
+- Else: call `processor.remove_replica(replica_id, reason)`
 
 ### Explicit evictions
 
 Controller eviction API supports:
-
-- whole-model eviction (`model_keys=[...]`)
-- single-replica eviction (`replica_keys=[(model_key, replica_id)]`)
+- Whole-model eviction (`model_keys=[...]`)
+- Single-replica eviction (`replica_keys=[(model_key, replica_id)]`)
 
 Controller side:
+- `controller.evict()` updates `desired_replicas`:
+  - If evicting specific replicas: decrements the desired count per model
+  - If evicting whole models: sets desired replicas to `0`
+- Calls `cluster.evict(...)` and, if state changed, calls `apply()`
 
-- `controller/controller.py::evict()` updates `desired_replicas`:
-  - if evicting specific replicas, it decrements the desired count for that model
-  - if evicting whole models, it sets desired replicas to `0`
-- it then calls `cluster.evict(...)` and, if the cluster reports `change=True`, it calls `controller.apply()` to materialize the new state in Ray actors.
-
-Cluster side:
-
-- `cluster.evict()` updates node resources and optionally moves to warm cache
-
-Apply / state materialization:
-
-`controller.apply()` diffs controller-tracked state against the latest `cluster.nodes` view and triggers the actual actor-side operations:
-
-- HOT -> WARM (evict with `cache=True`): `build()` classifies the replica into `deployments_to_cache`, and `apply()` calls `Deployment.cache()` which invokes `ModelActor.to_cache()` (move weights to CPU, mark cached).
-- WARM -> HOT (redeploy from cache): `build()` classifies into `deployments_from_cache`, and `apply()` calls `Deployment.from_cache()` which invokes `ModelActor.from_cache(gpu_mem_bytes_by_id)` (move back to GPU).
-- Removed replicas (no longer present in deployments or cache): `build()` classifies into `deployments_to_delete`, and `apply()` calls `Deployment.delete()` (kills the actor).
-
-Queue side sync:
-
-- CLI `deploy` / `evict` emits redis events to `dispatcher:events`
-- dispatcher events worker updates processor metadata accordingly
+Node side:
+- Returns GPU memory to resources
+- If sufficient CPU memory: moves deployment to warm cache
+- If not: evicts cached deployments (smallest first) to make room
 
 ### Runtime failures
 
-Key processor failure handling:
+- **Actor lookup failure during execute**: enqueues replica eviction, calls processor `CANCELLED`
+- **Initialization failure**: removes failed replica, decreases desired replicas
+- **CUDA device-side assertion**: triggers actor restart via `ray.kill(actor, no_restart=False)`
 
-- actor lookup failure during execute:
-  - enqueue replica eviction
-  - call `_decrease_desired_replica(replica_id)` (controller `evict`)
-  - set processor status to `CANCELLED`
-- initialization failure:
-  - enqueue replica eviction
-  - decrease desired
-  - remove failed replica metadata
+## Data Structures
 
-## Control Planes
+### `Deployment` (`cluster/deployment.py`)
 
-There are two control planes for replicas:
+Per-replica deployment record:
+- `model_key`, `replica_id`, `node_id`
+- `deployment_level`: HOT / WARM / COLD
+- `gpu_mem_bytes_by_id: Dict[int, int]` — per-GPU memory allocation
+- `gpu_memory_fraction: float | None` — fraction passed to `torch.cuda.set_per_process_memory_fraction`
+- `size_bytes` — model size for CPU cache accounting
+- `dedicated: bool` — dedicated deployments are not evictable by pressure
 
-1. Controller RPC plane (Ray actor methods)
-- `deploy`
-- `scale`
-- `scale_up`
-- `evict`
+### `Node` (`cluster/node.py`)
 
-2. Dispatcher event plane (Redis stream `dispatcher:events`)
-- `deploy`
-- `evict`
-- `kill_request`
-- `queue_state_request`
+Per-worker-node state:
+- `deployments: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]]` — two-level map of hot deployments
+- `cache: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]]` — two-level map of warm-cached deployments
+- `resources: Resources` — GPU/CPU memory accounting
 
-The event plane keeps queue-side `Processor` metadata aligned with cluster changes for
-operations that publish those events.
+### `Replicas` / `Replica` (`queue/replicas.py`)
+
+API-side replica state:
+- `Replica`: per-replica busy flag, worker task, current request tracking, actor handle
+- `Replicas`: collection with `in_flight` counter, atomic `set_replica_ids()`, `begin_request`/`end_request`
 
 ## Configuration That Affects Replicas
 
 From `queue/config.py`:
-
-- `COORDINATOR_PROCESSOR_REPLY_FREQ_S`
-  - progress update frequency while provisioning/deploying
-
-Request-driven processors default to a single replica and begin serving once
-that replica is ready.
+- `COORDINATOR_PROCESSOR_REPLY_FREQ_S` — progress update frequency while provisioning/deploying
 
 From node resource logic:
+- `min_available_gpu_fraction` in `Resources` (default 0.3) — threshold to consider a GPU available
+- `gpu_fraction_factor` (3.0) and `fraction_largest_possible` (0.8) in `Node.evaluate()` — control fractional vs full allocation
 
-- `min_available_gpu_fraction` in `Resources` determines when a GPU remains in "available" set
-- `gpu_memory_coefficient` and `gpu_memory_buffer_bytes` affect fraction-based placement
-
-## Current Behavior and Operational Notes
-
-- `scale`/`scale_up` are scale-up only in practice:
-  - if target replicas <= current replicas, no downscale occurs
-- Replica IDs are monotonic per model:
-  - new replicas are assigned starting at `max(existing)+1`
-- Dispatcher deploy event handler only adds replicas for existing processors:
-  - it does not remove extras when lower replica count is requested
-- `scale`/`scale_up` CLI paths call controller RPC directly and do not publish dispatcher deploy events:
-  - queue-side processor replica metadata may stay stale until another event/request path updates it
-- `desired_replicas` is tracked in controller, but there is no separate reconciliation loop enforcing it
-- Queue throughput for a model grows with count of replica workers, since each replica has one worker consuming the shared request queue
+Request-driven processors default to a single replica and begin serving once that replica is ready.
 
 ## File-Level Map
 
 Replica identity and lookup:
-
 - `src/services/api/src/queue/util.py`
 - `src/services/ray/src/ray/deployments/controller/cluster/deployment.py`
 
 Queue-side lifecycle and request routing:
-
+- `src/services/api/src/queue/replicas.py`
 - `src/services/api/src/queue/processor.py`
 - `src/services/api/src/queue/dispatcher.py`
 - `src/services/api/src/queue/config.py`
 
 Controller/cluster placement and eviction:
-
 - `src/services/ray/src/ray/deployments/controller/controller.py`
 - `src/services/ray/src/ray/deployments/controller/cluster/cluster.py`
 - `src/services/ray/src/ray/deployments/controller/cluster/node.py`
-- `src/services/ray/src/ray/deployments/controller/cluster/evaluator.py`
 
 Replica runtime implementation:
-
 - `src/services/ray/src/ray/deployments/modeling/base.py`
-
-External ops and dispatcher notifications:
-
-- `cli/commands/deploy.py`
-- `cli/commands/evict.py`
-- `cli/commands/scale.py`
-- `cli/lib/util.py`
