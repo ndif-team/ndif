@@ -1,3 +1,7 @@
+# Load .env.example for defaults, .env for overrides
+-include .env.example
+-include .env
+export
 
 IP_ADDR := $(shell hostname -I | awk '{print $$1}')
 N_DEVICES := $(shell command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L | wc -l || echo 0)
