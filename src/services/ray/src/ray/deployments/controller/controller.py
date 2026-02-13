@@ -303,9 +303,9 @@ class _ControllerActor:
                 "nodes": {
                     node_id: {
                         "resources": {
-                            "total_gpus": node.resources.total_gpus,
-                            "gpu_memory_bytes": node.resources.gpu_memory_bytes,
-                            "available_gpus": node.resources.available_gpus,
+                            "total_gpus": node.gpu_resource.total_gpus,
+                            "gpu_memory_bytes": node.gpu_resource.gpu_memory_bytes,
+                            "available_gpus": node.gpu_resource.available_gpus,
                         },
                         "deployments": {
                             model_key: {
