@@ -304,11 +304,11 @@ class _ControllerActor:
             node = self.cluster.nodes[deployment.node_id]
             if deployment.model_key in node.deployments:
                 # Return GPUs to the node
-                node.gpu_resource.available_gpus.extend(deployment.gpus)
+                node.gpu_resources.release(deployment.gpus)
                 del node.deployments[deployment.model_key]
             if deployment.model_key in node.cache:
                 # Return CPU memory to the node
-                node.cpu_resource.available_cpu_memory_bytes += deployment.size_bytes
+                node.cpu_resources.release(deployment.size_bytes)
                 del node.cache[deployment.model_key]
 
     def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
@@ -456,9 +456,9 @@ class _ControllerActor:
                 "nodes": {
                     node_id: {
                         "resources": {
-                            "total_gpus": node.gpu_resource.total_gpus,
-                            "gpu_memory_bytes": node.gpu_resource.gpu_memory_bytes,
-                            "available_gpus": node.gpu_resource.available_gpus,
+                            "total_gpus": node.gpu_resources.total,
+                            "gpu_memory_bytes": node.gpu_resources.memory_bytes,
+                            "available_gpus": node.gpu_resources.available,
                         },
                         "deployments": {
                             model_key: {
