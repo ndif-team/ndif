@@ -27,8 +27,14 @@ from enum import Enum
 from typing import Optional
 
 import ray
+from opentelemetry import trace
 
 from ..schema import BackendRequestModel, BackendResponseModel
+from ..tracing import (
+    TracingContext,
+    set_request_attributes,
+    trace_span,
+)
 
 from .config import QueueConfig
 from .util import controller_handle, get_actor_handle, submit
@@ -255,96 +261,103 @@ class Processor:
             Any models evicted by the Controller to make room for this deployment
             are reported to the eviction_queue for the Dispatcher to handle.
         """
-        try:
-            controller = controller_handle()
+        with trace_span("processor.provision", attributes={"ndif.model.key": self.model_key}) as span:
+            try:
+                controller = controller_handle()
 
-            self.dedicated = await self.check_dedicated(controller)
+                self.dedicated = await self.check_dedicated(controller)
 
-            if not self.dedicated:
-                hotswap = False
+                if not self.dedicated:
+                    hotswap = False
 
-                valid_queue = list()
+                    valid_queue = list()
 
-                while not self.queue.empty():
-                    request = self.queue.get_nowait()
+                    while not self.queue.empty():
+                        request = self.queue.get_nowait()
 
-                    if request.hotswapping:
-                        hotswap = True
+                        if request.hotswapping:
+                            hotswap = True
 
-                        valid_queue.append(request)
-                    else:
-                        request.create_response(
-                            BackendResponseModel.JobStatus.ERROR,
-                            logger,
-                            "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
-                        ).respond()
+                            valid_queue.append(request)
+                        else:
+                            request.create_response(
+                                BackendResponseModel.JobStatus.ERROR,
+                                logger,
+                                "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                            ).respond()
 
-                for request in valid_queue:
-                    self.queue.put_nowait(request)
+                    for request in valid_queue:
+                        self.queue.put_nowait(request)
 
-                if not hotswap:
+                    if not hotswap:
+                        self.eviction_queue.put_nowait(
+                            (
+                                self.model_key,
+                                "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                            )
+                        )
+                        self.status = ProcessorStatus.CANCELLED
+                        return
+
+                span.add_event("controller_deploy_requested")
+
+                result = await submit(controller, "deploy", [self.model_key])
+
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                self.eviction_queue.put_nowait(
+                    (
+                        self.model_key,
+                        "Error provisioning model deployment. Please try again later. Sorry for the inconvenience.",
+                    )
+                )
+                self.status = ProcessorStatus.CANCELLED
+                self.error_queue.put_nowait((self.model_key, e))
+
+                return
+
+            deployment_statuses = result["result"]
+
+            evictions = result["evictions"]
+
+            for model_key in evictions:
+                self.eviction_queue.put_nowait(
+                    (
+                        model_key,
+                        "Model deployment evicted. Please try again later. Sorry for the inconvenience.",
+                    )
+                )
+
+            for model_key, status in deployment_statuses.items():
+                status_str = str(status).lower()
+
+                try:
+                    deployment_status = DeploymentStatus(status_str)
+
+                except ValueError:
                     self.eviction_queue.put_nowait(
                         (
-                            self.model_key,
-                            "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                            model_key,
+                            f"{status_str}\n\nThere was an error provisioning the model deployment. Please try again later. Sorry for the inconvenience.",
                         )
                     )
                     self.status = ProcessorStatus.CANCELLED
+
                     return
 
-            result = await submit(controller, "deploy", [self.model_key])
-
-        except Exception as e:
-            self.eviction_queue.put_nowait(
-                (
-                    self.model_key,
-                    "Error provisioning model deployment. Please try again later. Sorry for the inconvenience.",
-                )
-            )
-            self.status = ProcessorStatus.CANCELLED
-            self.error_queue.put_nowait((self.model_key, e))
-
-            return
-
-        deployment_statuses = result["result"]
-
-        evictions = result["evictions"]
-
-        for model_key in evictions:
-            self.eviction_queue.put_nowait(
-                (
-                    model_key,
-                    "Model deployment evicted. Please try again later. Sorry for the inconvenience.",
-                )
-            )
-
-        for model_key, status in deployment_statuses.items():
-            status_str = str(status).lower()
-
-            try:
-                deployment_status = DeploymentStatus(status_str)
-
-            except ValueError:
-                self.eviction_queue.put_nowait(
-                    (
-                        model_key,
-                        f"{status_str}\n\nThere was an error provisioning the model deployment. Please try again later. Sorry for the inconvenience.",
+                if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
+                    self.eviction_queue.put_nowait(
+                        (
+                            model_key,
+                            "Model deployment cannot be accomodated at this time. Please try again later. Sorry for the inconvenience.",
+                        )
                     )
-                )
-                self.status = ProcessorStatus.CANCELLED
+                    self.status = ProcessorStatus.CANCELLED
 
-                return
+                    return
 
-            if deployment_status == DeploymentStatus.CANT_ACCOMMODATE:
-                self.eviction_queue.put_nowait(
-                    (
-                        model_key,
-                        "Model deployment cannot be accomodated at this time. Please try again later. Sorry for the inconvenience.",
-                    )
-                )
-                self.status = ProcessorStatus.CANCELLED
-
-                return
+            span.add_event("controller_deploy_completed", {"deployment_status": status_str})
 
     async def initialize(self) -> None:
         """Wait for the model deployment to complete initialization.
@@ -361,32 +374,35 @@ class Processor:
             No exceptions are raised; errors are reported via the error_queue
             and the processor status is set to CANCELLED.
         """
-        while True:
-            try:
-                handle = self.handle
+        with trace_span("processor.initialize", attributes={"ndif.model.key": self.model_key}) as span:
+            while True:
+                try:
+                    handle = self.handle
 
-                await submit(handle, "__ray_ready__")
+                    await submit(handle, "__ray_ready__")
 
-                return  # Success - model is ready
+                    return  # Success - model is ready
 
-            except Exception as e:
-                error_str = str(e)
+                except Exception as e:
+                    error_str = str(e)
 
-                # Actor doesn't exist yet - keep waiting
-                if error_str.startswith("Failed to look up actor"):
-                    await asyncio.sleep(1)
-                    continue
+                    # Actor doesn't exist yet - keep waiting
+                    if error_str.startswith("Failed to look up actor"):
+                        await asyncio.sleep(1)
+                        continue
 
-                # Actual initialization error - report to user and stop
-                self.eviction_queue.put_nowait(
-                    (
-                        self.model_key,
-                        f"Error initializing model deployment: {error_str}",
+                    # Actual initialization error - report to user and stop
+                    span.set_status(trace.StatusCode.ERROR, error_str)
+                    span.record_exception(e)
+                    self.eviction_queue.put_nowait(
+                        (
+                            self.model_key,
+                            f"Error initializing model deployment: {error_str}",
+                        )
                     )
-                )
-                self.error_queue.put_nowait((self.model_key, e))
-                self.status = ProcessorStatus.CANCELLED
-                return
+                    self.error_queue.put_nowait((self.model_key, e))
+                    self.status = ProcessorStatus.CANCELLED
+                    return
 
     async def execute(self, request: BackendRequestModel) -> None:
         """Execute a single inference request on the model deployment.
@@ -407,46 +423,58 @@ class Processor:
             On other errors, the error is reported but the processor remains
             BUSY until the Dispatcher clears the error.
         """
-        self.current_request_id = request.id
-        self.current_request_started_at = time.time()
+        parent_ctx = TracingContext.extract(request.trace_context)
 
-        try:
-            handle = self.handle
+        with trace_span("processor.execute", parent_context=parent_ctx) as span:
+            set_request_attributes(span, request)
+            self.current_request_id = request.id
+            self.current_request_started_at = time.time()
 
-            request.create_response(
-                BackendResponseModel.JobStatus.DISPATCHED,
-                logger,
-                "Your job has been sent to the model deployment.",
-            ).respond()
+            try:
+                handle = self.handle
 
-            result = submit(handle, "__call__", request)
+                request.create_response(
+                    BackendResponseModel.JobStatus.DISPATCHED,
+                    logger,
+                    "Your job has been sent to the model deployment.",
+                ).respond()
 
-            result = await result
+                span.add_event("dispatched_to_model_actor")
 
-        except Exception as e:
-            request.create_response(
-                BackendResponseModel.JobStatus.ERROR,
-                logger,
-                "Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.",
-            ).respond()
+                # Re-inject context so Ray actor gets the current span as parent
+                request.trace_context = TracingContext.inject()
 
-            if str(e).startswith("Failed to look up actor"):
-                self.eviction_queue.put_nowait(
-                    (
-                        self.model_key,
-                        "Model deployment evicted. Please try again later. Sorry for the inconvenience.",
+                result = submit(handle, "__call__", request)
+
+                result = await result
+
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+
+                request.create_response(
+                    BackendResponseModel.JobStatus.ERROR,
+                    logger,
+                    "Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.",
+                ).respond()
+
+                if str(e).startswith("Failed to look up actor"):
+                    self.eviction_queue.put_nowait(
+                        (
+                            self.model_key,
+                            "Model deployment evicted. Please try again later. Sorry for the inconvenience.",
+                        )
                     )
-                )
-                self.status = ProcessorStatus.CANCELLED
+                    self.status = ProcessorStatus.CANCELLED
+                else:
+                    self.error_queue.put_nowait((self.model_key, e))
+
             else:
-                self.error_queue.put_nowait((self.model_key, e))
+                self.status = ProcessorStatus.READY
 
-        else:
-            self.status = ProcessorStatus.READY
-
-        finally:
-            self.current_request_id = None
-            self.current_request_started_at = None
+            finally:
+                self.current_request_id = None
+                self.current_request_started_at = None
 
     async def processor_worker(self, provision: bool = True) -> None:
         """Main asyncio task managing the processor lifecycle and request loop.

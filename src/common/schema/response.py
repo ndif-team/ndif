@@ -9,7 +9,6 @@ from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusTimeMetric
 from ..providers.mailgun import MailgunProvider
 from ..providers.socketio import SioProvider
 from .mixins import ObjectStorageMixin, TelemetryMixin
@@ -70,24 +69,3 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
     @field_serializer("status")
     def sstatus(self, value, _info):
         return value.value
-
-    def update_metric(
-        self,
-        request: "BackendRequestModel",
-    ) -> Self:
-        """Updates the telemetry gauge to track the status of a request or response.
-
-        Args:
-
-        - gauge (NDIFGauge): Telemetry Gauge.
-        - request (RequestModel): user request.
-        - status (ResponseModel.JobStatus): status of the user request.
-        - kwargs: key word arguments to NDIFGauge.update().
-
-        Returns:
-            Self.
-        """
-
-        RequestStatusTimeMetric.update(request, self)
-
-        return self

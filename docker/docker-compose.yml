@@ -49,6 +49,7 @@ services:
       - NDIF_CONTROLLER_IMPORT_PATH=${NDIF_CONTROLLER_IMPORT_PATH}
       - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
 
   api:
@@ -75,6 +76,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
       DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:4317
     env_file:
       - .env
 
@@ -126,6 +128,15 @@ services:
     network_mode: "host"
     volumes:
       - loki-data:/loki
+
+  jaeger:
+    image: jaegertracing/jaeger:${JAEGER_VERSION}
+    ports:
+      - ${JAEGER_UI_PORT}:16686
+      - ${JAEGER_OTLP_GRPC_PORT}:4317
+      - ${JAEGER_OTLP_HTTP_PORT}:4318
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
 
 volumes:
   grafana-storage:
