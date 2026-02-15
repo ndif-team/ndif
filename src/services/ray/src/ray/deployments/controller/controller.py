@@ -42,7 +42,7 @@ class _ControllerActor:
     ):
         super().__init__()
 
-        init_tracing("ndif-controller")
+        init_tracing("ndif-ray")
 
         self.model_import_path = model_import_path
         self.execution_timeout_seconds = execution_timeout_seconds

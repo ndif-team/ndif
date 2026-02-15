@@ -109,7 +109,7 @@ class Dispatcher:
 
         self.logger = set_logger("coordinator")
 
-        init_tracing("ndif-dispatcher")
+        init_tracing("ndif-queue")
 
         patch()
 
