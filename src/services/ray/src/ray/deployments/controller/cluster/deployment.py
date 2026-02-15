@@ -10,7 +10,7 @@ from opentelemetry import trace
 from .....providers.mailgun import MailgunProvider
 from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
-from .....tracing import trace_span
+from .....tracing import TracingContext, trace_span
 from .....types import MODEL_KEY
 from ...modeling.base import BaseModelDeploymentArgs, ModelActor
 
@@ -104,7 +104,7 @@ class Deployment:
         }) as span:
             try:
                 actor = self.actor
-                return actor.from_cache.remote(self.gpus)
+                return actor.from_cache.remote(self.gpus, TracingContext.inject())
             except Exception:
                 span.set_status(trace.StatusCode.ERROR)
                 logger.exception(f"Error removing actor {self.model_key} from cache.")
@@ -119,6 +119,7 @@ class Deployment:
             try:
                 # Inject the assigned GPU indices so the actor knows which GPUs to target
                 deployment_args.target_gpus = self.gpus
+                deployment_args.trace_context = TracingContext.inject()
 
                 env_vars = {
                     # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor

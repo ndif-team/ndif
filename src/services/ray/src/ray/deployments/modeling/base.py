@@ -57,63 +57,78 @@ class BaseModelDeployment:
         dtype: str | torch.dtype,
         target_gpus: List[int] | None = None,
         *args,
+        trace_context: Optional[Dict[str, str]] = None,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
     ) -> None:
         super().__init__()
 
-        init_tracing("ndif-model-actor")
+        init_tracing("ndif-ray")
 
-        ObjectStoreProvider.connect()
-        SioProvider.connect()
+        parent_ctx = TracingContext.extract(trace_context)
 
-        self.model_key = model_key
-        self.execution_timeout = execution_timeout
-        self.dispatch = dispatch
-        self.dtype = dtype
-        self.extra_kwargs = extra_kwargs
-        self.target_gpus = target_gpus or []
+        with trace_span("model_actor.init", parent_context=parent_ctx, attributes={
+            "ndif.model.key": model_key,
+            "ndif.model.target_gpus": str(target_gpus or []),
+            "ndif.model.dispatch": dispatch,
+            "ndif.model.dtype": str(dtype),
+        }) as span:
+            self._init_trace_context = trace_context
 
-        self.cached = False
+            span.add_event("connecting_providers")
+            ObjectStoreProvider.connect()
+            SioProvider.connect()
 
-        self.logger = set_logger(model_key)
+            self.model_key = model_key
+            self.execution_timeout = execution_timeout
+            self.dispatch = dispatch
+            self.dtype = dtype
+            self.extra_kwargs = extra_kwargs
+            self.target_gpus = target_gpus or []
 
-        self.runtime_context = ray.get_runtime_context()
+            self.cached = False
 
-        if isinstance(dtype, str):
-            dtype = getattr(torch, dtype)
+            self.logger = set_logger(model_key)
 
-        torch.set_default_dtype(torch.bfloat16)
+            span.add_event("getting_ray_runtime_context")
+            self.runtime_context = ray.get_runtime_context()
 
-        # Set the default CUDA device to the first target GPU BEFORE any CUDA
-        # call. This ensures the CUDA context (~400MiB) is created on the
-        # target GPU rather than always landing on GPU 0.
-        if self.target_gpus:
-            torch.cuda.set_device(self.target_gpus[0])
+            if isinstance(dtype, str):
+                dtype = getattr(torch, dtype)
 
-        self.model = self.load_from_disk()
+            torch.set_default_dtype(torch.bfloat16)
 
-        self.persistent_objects = self.model._remoteable_persistent_objects()
+            # Set the default CUDA device to the first target GPU BEFORE any CUDA
+            # call. This ensures the CUDA context (~400MiB) is created on the
+            # target GPU rather than always landing on GPU 0.
+            if self.target_gpus:
+                torch.cuda.set_device(self.target_gpus[0])
 
-        for key, value in self.persistent_objects.items():
-            if isinstance(value, torch.nn.Module):
-                self.persistent_objects[key] = protect(value)
+            span.add_event("loading_model")
+            self.model = self.load_from_disk()
 
-        self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
+            span.add_event("building_persistent_objects")
+            self.persistent_objects = self.model._remoteable_persistent_objects()
 
-        if dispatch:
-            self.model._module.requires_grad_(False)
+            for key, value in self.persistent_objects.items():
+                if isinstance(value, torch.nn.Module):
+                    self.persistent_objects[key] = protect(value)
 
-        torch.cuda.empty_cache()
+            self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
-        self.request: BackendRequestModel
+            if dispatch:
+                self.model._module.requires_grad_(False)
 
-        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+            torch.cuda.empty_cache()
 
-        self.kill_switch = asyncio.Event()
-        self.execution_ident = None
+            self.request: BackendRequestModel
 
-        StreamTracer.register(self.stream_send, self.stream_receive)
+            self.thread_pool = ThreadPoolExecutor(max_workers=1)
+
+            self.kill_switch = asyncio.Event()
+            self.execution_ident = None
+
+            StreamTracer.register(self.stream_send, self.stream_receive)
 
     def _build_max_memory(self) -> Optional[Dict[int, int]]:
         """Build a max_memory dict that restricts model placement to target GPUs.
@@ -160,7 +175,8 @@ class BaseModelDeployment:
                 )
 
     def load_from_disk(self):
-        with trace_span("model_actor.load", attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "disk"}) as span:
+        parent_ctx = TracingContext.extract(self._init_trace_context)
+        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "disk"}) as span:
             start = time.time()
             torch.cuda.synchronize()
             self.logger.info(
@@ -208,7 +224,7 @@ class BaseModelDeployment:
 
         self.cached = True
 
-    def from_cache(self, target_gpus: List[int]):
+    def from_cache(self, target_gpus: List[int], trace_context: Optional[Dict[str, str]] = None):
         """Restore model from CPU cache onto the specified GPU(s).
 
         Uses max_memory targeting to ensure the model is placed on exactly
@@ -217,8 +233,10 @@ class BaseModelDeployment:
 
         Args:
             target_gpus: List of physical GPU indices to place the model on.
+            trace_context: Optional trace context for distributed tracing.
         """
-        with trace_span("model_actor.load", attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "cache"}) as span:
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "cache"}) as span:
             self.target_gpus = target_gpus
 
             # Switch default CUDA device to the new target GPU before any CUDA ops
@@ -541,6 +559,7 @@ class BaseModelDeploymentArgs(BaseModel):
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
     target_gpus: List[int] | None = None
+    trace_context: Optional[Dict[str, str]] = None
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)
