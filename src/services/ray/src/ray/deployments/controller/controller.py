@@ -303,10 +303,12 @@ class _ControllerActor:
             "ndif.deploy.operation": operation,
         }) as span:
             try:
+                span.add_event("waiting_for_ray_actor")
                 # Use asyncio to wait for the ray future without blocking
                 await asyncio.get_event_loop().run_in_executor(
                     None, lambda: ray.get(future)
                 )
+                span.add_event("ray_actor_ready")
                 self.logger.info(
                     f"Deployment {deployment.model_key} completed {operation} successfully"
                 )
