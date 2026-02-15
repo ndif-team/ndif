@@ -225,9 +225,10 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
     Returns:
         BackendResponseModel: Response.
     """
-
-    # Load response from client given id.
-    return BackendResponseModel.load(id)
+    with trace_span("api.response.load", attributes={
+        "ndif.request.id": str(id),
+    }):
+        return BackendResponseModel.load(id)
 
 
 @app.get("/ping", status_code=200)
