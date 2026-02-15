@@ -10,10 +10,13 @@ import ray
 from pydantic import BaseModel
 from ray.util.state import list_actors
 
+from opentelemetry import trace
+
 from ....logging.logger import set_logger
 from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
+from ....tracing import init_tracing, trace_span
 from ....types import MODEL_KEY
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
@@ -38,6 +41,8 @@ class _ControllerActor:
         minimum_deployment_time_seconds: float,
     ):
         super().__init__()
+
+        init_tracing("ndif-controller")
 
         self.model_import_path = model_import_path
         self.execution_timeout_seconds = execution_timeout_seconds
@@ -87,14 +92,24 @@ class _ControllerActor:
             )
 
     def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
-        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
+        with trace_span("controller.deploy", attributes={
+            "ndif.model.keys": str(model_keys),
+            "ndif.deploy.dedicated": dedicated,
+        }) as span:
+            self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
 
-        results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
+            results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
 
-        if change:
-            self.apply()
+            span.set_attribute("ndif.deploy.changed", change)
+            for model_key, status in results.get("result", {}).items():
+                span.add_event("deploy_result", {"model_key": model_key, "status": str(status)})
+            for evicted_key in results.get("evictions", set()):
+                span.add_event("deploy_eviction", {"model_key": evicted_key})
 
-        return results
+            if change:
+                self.apply()
+
+            return results
 
     async def deploy(
         self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False
@@ -103,147 +118,168 @@ class _ControllerActor:
 
     def evict(self, model_keys: List[MODEL_KEY]):
         """Evict models from the cluster."""
-        results, change = self.cluster.evict(model_keys)
+        with trace_span("controller.evict", attributes={"ndif.model.keys": str(model_keys)}) as span:
+            results, change = self.cluster.evict(model_keys)
 
-        if change:
-            self.apply()
+            span.set_attribute("ndif.evict.changed", change)
 
-        return results
+            if change:
+                self.apply()
+
+            return results
 
     def build(self):
-        new_state = {}
+        with trace_span("controller.build") as span:
+            new_state = {}
 
-        deployments_to_cache = []
-        deployments_from_cache = []
-        deployments_to_create = []
-        deployments_to_delete = []
+            deployments_to_cache = []
+            deployments_from_cache = []
+            deployments_to_create = []
+            deployments_to_delete = []
 
-        # For every node
-        for id, node in self.cluster.nodes.items():
-            # For every cached deployment
-            for model_key, cached in node.cache.items():
-                # It will always exist in the state if its now cached.
-                existing_deployment = self.state.pop((id, model_key))
+            # For every node
+            for id, node in self.cluster.nodes.items():
+                # For every cached deployment
+                for model_key, cached in node.cache.items():
+                    # It will always exist in the state if its now cached.
+                    existing_deployment = self.state.pop((id, model_key))
 
-                # If the deployment is hot, we need to actually cache it.
-                if existing_deployment.deployment_level == DeploymentLevel.HOT:
-                    deployments_to_cache.append(cached)
+                    # If the deployment is hot, we need to actually cache it.
+                    if existing_deployment.deployment_level == DeploymentLevel.HOT:
+                        deployments_to_cache.append(cached)
 
-                # Update state.
-                new_state[(id, model_key)] = cached
+                    # Update state.
+                    new_state[(id, model_key)] = cached
 
-            # For every deployed deployment
-            for model_key, deployment in node.deployments.items():
-                existing_deployment = self.state.pop((id, model_key), None)
+                # For every deployed deployment
+                for model_key, deployment in node.deployments.items():
+                    existing_deployment = self.state.pop((id, model_key), None)
 
-                # If the deployment didn't exist before, we need to create it.
-                if existing_deployment is None:
-                    deployments_to_create.append((node.name, deployment))
-                # If the deployment is warm, we need to move it from cache.
-                elif existing_deployment.deployment_level == DeploymentLevel.WARM:
-                    deployments_from_cache.append(deployment)
-                # Update state.
-                new_state[(id, model_key)] = deployment
+                    # If the deployment didn't exist before, we need to create it.
+                    if existing_deployment is None:
+                        deployments_to_create.append((node.name, deployment))
+                    # If the deployment is warm, we need to move it from cache.
+                    elif existing_deployment.deployment_level == DeploymentLevel.WARM:
+                        deployments_from_cache.append(deployment)
+                    # Update state.
+                    new_state[(id, model_key)] = deployment
 
-        # For every deployment that doesn't exist in the new state, we need to delete it.
-        for (id, model_key), deployment in self.state.items():
-            deployments_to_delete.append(deployment)
+            # For every deployment that doesn't exist in the new state, we need to delete it.
+            for (id, model_key), deployment in self.state.items():
+                deployments_to_delete.append(deployment)
 
-        # Update state.
-        self.state = new_state
+            # Update state.
+            self.state = new_state
 
-        return DeploymentDelta(
-            deployments_to_cache=deployments_to_cache,
-            deployments_from_cache=deployments_from_cache,
-            deployments_to_create=deployments_to_create,
-            deployments_to_delete=deployments_to_delete,
-        )
-
-    def apply(self):
-        self.logger.info(f"Applying state: {self.state}")
-
-        deployment_delta = self.build()
-
-        # Delete deployments
-        for deployment in deployment_delta.deployments_to_delete:
-            deployment.delete()
-
-        # Cache deployments - must complete before from_cache can proceed to free up resources
-        cache_futures = []
-        cache_deployments = []
-        for deployment in deployment_delta.deployments_to_cache:
-            cache_future = deployment.cache()
-
-            if cache_future is not None:
-                cache_futures.append(cache_future)
-                cache_deployments.append(deployment)
-            else:
-                # cache() failed immediately - clean up
-                self.logger.error(
-                    f"Failed to initiate cache for {deployment.model_key}"
-                )
-                try:
-                    deployment.delete()
-                except Exception:
-                    pass
-                self._remove_deployment_from_state(deployment)
-
-        # Wait for all cache operations to complete before proceeding
-        for future, deployment in zip(cache_futures, cache_deployments):
-            try:
-                ray.get(future)
-                self.logger.info(
-                    f"Deployment {deployment.model_key} completed cache successfully"
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Deployment {deployment.model_key} failed during cache: {e}"
-                )
-                try:
-                    deployment.delete()
-                except Exception:
-                    pass
-                self._remove_deployment_from_state(deployment)
-
-        # Deploy models from cache - spawn monitoring tasks
-        for deployment in deployment_delta.deployments_from_cache:
-            future = deployment.from_cache()
-            if future is not None:
-                asyncio.create_task(
-                    self._monitor_deployment(future, deployment, "from_cache")
-                )
-            else:
-                # from_cache() failed immediately - clean up
-                self.logger.error(
-                    f"Failed to initiate from_cache for {deployment.model_key}"
-                )
-                deployment.delete()
-                self._remove_deployment_from_state(deployment)
-
-        # Create models from disk - spawn monitoring tasks
-        for name, deployment in deployment_delta.deployments_to_create:
-            deployment_args = BaseModelDeploymentArgs(
-                model_key=deployment.model_key,
-                execution_timeout=self.execution_timeout_seconds,
+            delta = DeploymentDelta(
+                deployments_to_cache=deployments_to_cache,
+                deployments_from_cache=deployments_from_cache,
+                deployments_to_create=deployments_to_create,
+                deployments_to_delete=deployments_to_delete,
             )
 
-            # create() returns None always, but may fail internally
-            deployment.create(name, deployment_args)
+            span.set_attribute("ndif.delta.to_cache", len(delta.deployments_to_cache))
+            span.set_attribute("ndif.delta.from_cache", len(delta.deployments_from_cache))
+            span.set_attribute("ndif.delta.to_create", len(delta.deployments_to_create))
+            span.set_attribute("ndif.delta.to_delete", len(delta.deployments_to_delete))
 
-            # Get the actor handle and monitor its ready state
-            try:
-                actor = deployment.actor
-                ready_future = actor.__ray_ready__.remote()
-                asyncio.create_task(
-                    self._monitor_deployment(ready_future, deployment, "create")
-                )
-            except Exception as e:
-                # create() failed or actor not available - clean up
-                self.logger.error(
-                    f"Failed to get actor handle for {deployment.model_key}: {e}"
-                )
+            return delta
+
+    def apply(self):
+        with trace_span("controller.apply") as span:
+            self.logger.info(f"Applying state: {self.state}")
+
+            deployment_delta = self.build()
+
+            # Delete deployments
+            for deployment in deployment_delta.deployments_to_delete:
+                span.add_event("deleting_deployment", {"model_key": deployment.model_key})
                 deployment.delete()
-                self._remove_deployment_from_state(deployment)
+
+            # Cache deployments - must complete before from_cache can proceed to free up resources
+            cache_futures = []
+            cache_deployments = []
+            for deployment in deployment_delta.deployments_to_cache:
+                span.add_event("caching_deployment", {"model_key": deployment.model_key})
+                cache_future = deployment.cache()
+
+                if cache_future is not None:
+                    cache_futures.append(cache_future)
+                    cache_deployments.append(deployment)
+                else:
+                    # cache() failed immediately - clean up
+                    self.logger.error(
+                        f"Failed to initiate cache for {deployment.model_key}"
+                    )
+                    span.add_event("cache_failed", {"model_key": deployment.model_key})
+                    try:
+                        deployment.delete()
+                    except Exception:
+                        pass
+                    self._remove_deployment_from_state(deployment)
+
+            # Wait for all cache operations to complete before proceeding
+            for future, deployment in zip(cache_futures, cache_deployments):
+                try:
+                    ray.get(future)
+                    self.logger.info(
+                        f"Deployment {deployment.model_key} completed cache successfully"
+                    )
+                    span.add_event("cache_completed", {"model_key": deployment.model_key})
+                except Exception as e:
+                    self.logger.error(
+                        f"Deployment {deployment.model_key} failed during cache: {e}"
+                    )
+                    span.add_event("cache_failed", {"model_key": deployment.model_key, "error": str(e)})
+                    try:
+                        deployment.delete()
+                    except Exception:
+                        pass
+                    self._remove_deployment_from_state(deployment)
+
+            # Deploy models from cache - spawn monitoring tasks
+            for deployment in deployment_delta.deployments_from_cache:
+                span.add_event("restoring_from_cache", {"model_key": deployment.model_key})
+                future = deployment.from_cache()
+                if future is not None:
+                    asyncio.create_task(
+                        self._monitor_deployment(future, deployment, "from_cache")
+                    )
+                else:
+                    # from_cache() failed immediately - clean up
+                    self.logger.error(
+                        f"Failed to initiate from_cache for {deployment.model_key}"
+                    )
+                    span.add_event("from_cache_failed", {"model_key": deployment.model_key})
+                    deployment.delete()
+                    self._remove_deployment_from_state(deployment)
+
+            # Create models from disk - spawn monitoring tasks
+            for name, deployment in deployment_delta.deployments_to_create:
+                span.add_event("creating_deployment", {"model_key": deployment.model_key, "node": name})
+                deployment_args = BaseModelDeploymentArgs(
+                    model_key=deployment.model_key,
+                    execution_timeout=self.execution_timeout_seconds,
+                )
+
+                # create() returns None always, but may fail internally
+                deployment.create(name, deployment_args)
+
+                # Get the actor handle and monitor its ready state
+                try:
+                    actor = deployment.actor
+                    ready_future = actor.__ray_ready__.remote()
+                    asyncio.create_task(
+                        self._monitor_deployment(ready_future, deployment, "create")
+                    )
+                except Exception as e:
+                    # create() failed or actor not available - clean up
+                    self.logger.error(
+                        f"Failed to get actor handle for {deployment.model_key}: {e}"
+                    )
+                    span.add_event("create_failed", {"model_key": deployment.model_key, "error": str(e)})
+                    deployment.delete()
+                    self._remove_deployment_from_state(deployment)
 
     async def _monitor_deployment(
         self,
@@ -260,27 +296,33 @@ class _ControllerActor:
             deployment: The Deployment object being monitored.
             operation: Name of the operation for logging.
         """
-        try:
-            # Use asyncio to wait for the ray future without blocking
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: ray.get(future)
-            )
-            self.logger.info(
-                f"Deployment {deployment.model_key} completed {operation} successfully"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"Deployment {deployment.model_key} failed during {operation}: {e}"
-            )
-            # Delete the failed deployment to return resources
-            # Wrap in try-catch as the actor may already be gone
+        with trace_span("controller.monitor_deployment", attributes={
+            "ndif.model.key": deployment.model_key,
+            "ndif.deploy.operation": operation,
+        }) as span:
             try:
-                deployment.delete()
-            except Exception as delete_error:
-                self.logger.debug(
-                    f"Error deleting failed deployment {deployment.model_key}: {delete_error}"
+                # Use asyncio to wait for the ray future without blocking
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: ray.get(future)
                 )
-            self._remove_deployment_from_state(deployment)
+                self.logger.info(
+                    f"Deployment {deployment.model_key} completed {operation} successfully"
+                )
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                self.logger.error(
+                    f"Deployment {deployment.model_key} failed during {operation}: {e}"
+                )
+                # Delete the failed deployment to return resources
+                # Wrap in try-catch as the actor may already be gone
+                try:
+                    deployment.delete()
+                except Exception as delete_error:
+                    self.logger.debug(
+                        f"Error deleting failed deployment {deployment.model_key}: {delete_error}"
+                    )
+                self._remove_deployment_from_state(deployment)
 
     def _remove_deployment_from_state(self, deployment: Deployment) -> None:
         """Remove a deployment from the internal state.
