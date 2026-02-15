@@ -91,7 +91,7 @@ class Deployment:
         with trace_span("deployment.cache", attributes={"ndif.model.key": self.model_key}) as span:
             try:
                 actor = self.actor
-                return actor.to_cache.remote()
+                return actor.to_cache.remote(TracingContext.inject())
             except Exception:
                 span.set_status(trace.StatusCode.ERROR)
                 logger.exception(f"Error adding actor {self.model_key} to cache.")

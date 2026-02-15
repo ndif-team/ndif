@@ -210,19 +210,25 @@ class BaseModelDeployment:
 
             return model
 
-    async def to_cache(self):
-        self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-        # torch.cuda.synchronize()
-        await self.cancel()
+    async def to_cache(self, trace_context: Optional[Dict[str, str]] = None):
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("model_actor.to_cache", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key}) as span:
+            self.logger.info(f"Saving model to cache for model key {self.model_key}...")
+            # torch.cuda.synchronize()
+            await self.cancel()
 
-        remove_accelerate_hooks(self.model._module)
+            span.add_event("remove_accelerate_hooks")
+            remove_accelerate_hooks(self.model._module)
 
-        self.model._module = self.model._module.cpu()
-        # torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
+            span.add_event("move_to_cpu")
+            self.model._module = self.model._module.cpu()
+            # torch.cuda.synchronize()
 
-        self.cached = True
+            span.add_event("gc_collect")
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            self.cached = True
 
     def from_cache(self, target_gpus: List[int], trace_context: Optional[Dict[str, str]] = None):
         """Restore model from CPU cache onto the specified GPU(s).
