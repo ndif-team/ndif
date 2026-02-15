@@ -11,6 +11,7 @@ from .types import API_KEY
 from .db import api_key_store
 from .schema import BackendRequestModel
 from .providers.redis import RedisProvider
+from .tracing import trace_span
 
 
 async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
@@ -165,20 +166,28 @@ async def validate_request(raw_request: Request) -> BackendRequestModel:
     Raises:
         HTTPException: If any validation fails.
     """
-    # Extract values from headers
-    api_key = raw_request.headers.get("ndif-api-key", "")
-    nnsight_version = raw_request.headers.get("nnsight-version", "")
-    python_version = raw_request.headers.get("python-version", "")
+    with trace_span("api.validate_request") as span:
+        # Extract values from headers
+        api_key = raw_request.headers.get("ndif-api-key", "")
+        nnsight_version = raw_request.headers.get("nnsight-version", "")
+        python_version = raw_request.headers.get("python-version", "")
 
-    # # Validate using existing dependency functions (call them directly, not as dependencies)
-    await authenticate_api_key(api_key)
-    await validate_nnsight_version(nnsight_version)
-    await validate_python_version(python_version)
+        span.set_attribute("ndif.client.nnsight_version", nnsight_version)
+        span.set_attribute("ndif.client.python_version", python_version)
 
-    # Create BackendRequestModel
-    backend_request = BackendRequestModel.from_request(raw_request)
+        # # Validate using existing dependency functions (call them directly, not as dependencies)
+        await authenticate_api_key(api_key)
+        await validate_nnsight_version(nnsight_version)
+        await validate_python_version(python_version)
 
-    # Populate hotswapping access
-    backend_request.hotswapping = await check_hotswapping_access(api_key)
+        # Create BackendRequestModel
+        backend_request = BackendRequestModel.from_request(raw_request)
 
-    return backend_request
+        # Populate hotswapping access
+        backend_request.hotswapping = await check_hotswapping_access(api_key)
+
+        span.set_attribute("ndif.request.id", str(backend_request.id))
+        if backend_request.model_key:
+            span.set_attribute("ndif.model.key", str(backend_request.model_key))
+
+        return backend_request

@@ -20,6 +20,7 @@ from pydantic import BaseModel, PrivateAttr
 from typing_extensions import Self
 
 from ..providers.objectstore import ObjectStoreProvider
+from ..tracing import trace_span
 
 
 class TensorStoragePickler(pickle.Pickler):
@@ -207,38 +208,45 @@ class ObjectStorageMixin(BaseModel):
         Returns:
             Self for method chaining.
         """
-        if self._file_extension == "json":
-            data = BytesIO(self.model_dump_json().encode("utf-8"))
-            content_type = "application/json"
+        with trace_span("objectstore.save", attributes={
+            "ndif.objectstore.id": str(self.id),
+            "ndif.objectstore.folder": self._folder_name,
+            "ndif.objectstore.format": self._file_extension,
+            "ndif.objectstore.compress": compress,
+        }) as span:
+            if self._file_extension == "json":
+                data = BytesIO(self.model_dump_json().encode("utf-8"))
+                content_type = "application/json"
 
-        elif self._file_extension == "pt":
-            data = BytesIO()
+            elif self._file_extension == "pt":
+                data = BytesIO()
 
-            # Extract all instance attributes, excluding metadata
-            payload = {**self.__dict__, **self.model_extra}
-            payload.pop("id", None)
-            payload.pop("_size", None)
+                # Extract all instance attributes, excluding metadata
+                payload = {**self.__dict__, **self.model_extra}
+                payload.pop("id", None)
+                payload.pop("_size", None)
 
-            # Use custom pickle module to handle GPU tensors
-            torch.save(payload, data, pickle_module=cpu_pickle_module)
+                # Use custom pickle module to handle GPU tensors
+                torch.save(payload, data, pickle_module=cpu_pickle_module)
 
-            if compress:
-                cctx = zstd.ZstdCompressor(level=6)
-                compressed = BytesIO()
+                if compress:
+                    cctx = zstd.ZstdCompressor(level=6)
+                    compressed = BytesIO()
 
-                with cctx.stream_writer(compressed, closefd=False) as writer:
-                    data.seek(0)
-                    while chunk := data.read(64 * 1024):
-                        writer.write(chunk)
+                    with cctx.stream_writer(compressed, closefd=False) as writer:
+                        data.seek(0)
+                        while chunk := data.read(64 * 1024):
+                            writer.write(chunk)
 
-                data = compressed
+                    data = compressed
 
-            content_type = "application/octet-stream"
+                content_type = "application/octet-stream"
 
-        self._size = data.getbuffer().nbytes
-        self._save(data, content_type)
+            self._size = data.getbuffer().nbytes
+            span.set_attribute("ndif.objectstore.size_bytes", self._size)
+            self._save(data, content_type)
 
-        return self
+            return self
 
     @classmethod
     def load(
@@ -256,18 +264,24 @@ class ObjectStorageMixin(BaseModel):
             If 'json' format: Deserialized model instance.
             If 'pt' format: Dictionary of the stored payload.
         """
-        object_data = cls._load(id, stream=stream)
+        with trace_span("objectstore.load", attributes={
+            "ndif.objectstore.id": str(id),
+            "ndif.objectstore.folder": cls._folder_name,
+            "ndif.objectstore.format": cls._file_extension,
+            "ndif.objectstore.stream": stream,
+        }) as span:
+            object_data = cls._load(id, stream=stream)
 
-        if stream:
-            return object_data
+            if stream:
+                return object_data
 
-        if cls._file_extension == "json":
-            return cls.model_validate_json(object_data.decode("utf-8"))
+            if cls._file_extension == "json":
+                return cls.model_validate_json(object_data.decode("utf-8"))
 
-        elif cls._file_extension == "pt":
-            return torch.load(
-                BytesIO(object_data), map_location="cpu", weights_only=False
-            )
+            elif cls._file_extension == "pt":
+                return torch.load(
+                    BytesIO(object_data), map_location="cpu", weights_only=False
+                )
 
     @classmethod
     def delete(cls, id: str) -> None:

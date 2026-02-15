@@ -12,9 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
 
 
+from opentelemetry import trace
+
 from nnsight.schema.response import ResponseModel
 
 from .logging import set_logger
+from .tracing import TracingContext, init_tracing, set_request_attributes, trace_span
 from .types import REQUEST_ID, SESSION_ID
 
 logger = set_logger("API")
@@ -26,6 +29,9 @@ from .providers.objectstore import ObjectStoreProvider
 from .providers.redis import RedisProvider
 from .schema import BackendRequestModel, BackendResponseModel
 
+# Init tracing
+init_tracing("ndif-api")
+
 # Init FastAPI app
 app = FastAPI()
 
@@ -35,6 +41,13 @@ try:
     # Prometheus instrumentation (for metrics)
     Instrumentator().instrument(app).expose(app)
 except ImportError as e:
+    pass
+
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
+except ImportError:
     pass
 
 
@@ -78,33 +91,49 @@ async def request(
         BackendResponseModel: Response to the user request containing job status and metadata.
     """
 
-    # process the request
-    try:
-        response = backend_request.create_response(
-            status=ResponseModel.JobStatus.RECEIVED,
-            description="Your job has been received and is waiting to be queued.",
-            logger=logger,
-        )
+    with trace_span(
+        "api.request.receive", kind=trace.SpanKind.SERVER
+    ) as span:
+        set_request_attributes(span, backend_request)
+        span.set_attribute("ndif.content_length", backend_request.content_length)
 
-        if not response.blocking:
-            response.save()
+        # process the request
+        try:
+            response = backend_request.create_response(
+                status=ResponseModel.JobStatus.RECEIVED,
+                description="Your job has been received and is waiting to be queued.",
+                logger=logger,
+            )
 
-        # Run network status metric update in background
-        background_tasks.add_task(NetworkStatusMetric.update, backend_request)
+            if not response.blocking:
+                response.save()
 
-        backend_request.request = await backend_request.request
+            # Run network status metric update in background
+            background_tasks.add_task(NetworkStatusMetric.update, backend_request)
 
-        await RedisProvider.async_client.lpush("queue", pickle.dumps(backend_request))
+            backend_request.request = await backend_request.request
 
-    except Exception as exception:
-        description = f"{traceback.format_exc()}\n{str(exception)}"
+            # Inject trace context before pickling for cross-process propagation
+            backend_request.trace_context = TracingContext.inject()
 
-        # Create exception response object.
-        response = backend_request.create_response(
-            status=ResponseModel.JobStatus.ERROR,
-            description=description,
-            logger=logger,
-        )
+            await RedisProvider.async_client.lpush(
+                "queue", pickle.dumps(backend_request)
+            )
+
+            span.add_event("request_queued")
+
+        except Exception as exception:
+            span.set_status(trace.StatusCode.ERROR, str(exception))
+            span.record_exception(exception)
+
+            description = f"{traceback.format_exc()}\n{str(exception)}"
+
+            # Create exception response object.
+            response = backend_request.create_response(
+                status=ResponseModel.JobStatus.ERROR,
+                description=description,
+                logger=logger,
+            )
 
     # Return response.
     return response
