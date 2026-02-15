@@ -301,7 +301,6 @@ class BaseModelDeployment:
                 result = None
 
                 inputs = self.pre()
-                span.add_event("pre_processing_complete")
 
                 job_task = asyncio.create_task(asyncio.to_thread(self.execute, inputs))
                 kill_task = asyncio.create_task(self.kill_switch.wait())
@@ -327,7 +326,6 @@ class BaseModelDeployment:
                     )
 
                 self.post(result)
-                span.add_event("post_processing_complete")
 
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
@@ -351,17 +349,18 @@ class BaseModelDeployment:
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
-
-        self.respond(
-            status=BackendResponseModel.JobStatus.RUNNING,
-            description="Your job has started running.",
-        )
-
         """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
-            request = self.request.deserialize(self.persistent_objects)
+        with trace_span("model_actor.pre", attributes={"ndif.model.key": self.model_key}) as span:
+            self.respond(
+                status=BackendResponseModel.JobStatus.RUNNING,
+                description="Your job has started running.",
+            )
 
-        return request
+            span.add_event("deserializing_request")
+            with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+                request = self.request.deserialize(self.persistent_objects)
+
+            return request
 
     def execute(self, request: RequestModel) -> Any:
         """Execute request.
@@ -375,28 +374,32 @@ class BaseModelDeployment:
 
         self.execution_ident = threading.current_thread().ident
 
-        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-            if torch.cuda.is_available():
-                reset_peak_memory_stats()
-                model_memory = memory_allocated()
+        with trace_span("model_actor.execute", attributes={"ndif.model.key": self.model_key}) as span:
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+                if torch.cuda.is_available():
+                    reset_peak_memory_stats()
+                    model_memory = memory_allocated()
 
-            execution_time = time.time()
+                execution_time = time.time()
 
-            # Execute object.
-            with StdoutRedirect(self.log):
-                result = RemoteExecutionBackend(
-                    request.interventions, self.execution_protector
-                )(request.tracer)
+                # Execute object.
+                with StdoutRedirect(self.log):
+                    result = RemoteExecutionBackend(
+                        request.interventions, self.execution_protector
+                    )(request.tracer)
 
-            execution_time = time.time() - execution_time
+                execution_time = time.time() - execution_time
 
-            # Compute GPU memory usage
-            if torch.cuda.is_available():
-                gpu_mem = max_memory_allocated() - model_memory
-            else:
-                gpu_mem = 0
+                # Compute GPU memory usage
+                if torch.cuda.is_available():
+                    gpu_mem = max_memory_allocated() - model_memory
+                else:
+                    gpu_mem = 0
 
-        return result, gpu_mem, execution_time
+            span.set_attribute("ndif.execution_time_s", execution_time)
+            span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
+
+            return result, gpu_mem, execution_time
 
     def post(self, result: Any) -> None:
         """Logic to execute after execution with result from `.execute`.
@@ -405,30 +408,32 @@ class BaseModelDeployment:
             request (BackendRequestModel): Request.
             result (Any): Result.
         """
+        with trace_span("model_actor.post", attributes={"ndif.model.key": self.model_key}) as span:
+            saves = result[0]
+            gpu_mem: int = result[1]
+            execution_time_s: float = result[2]
 
-        saves = result[0]
-        gpu_mem: int = result[1]
-        execution_time_s: float = result[2]
+            span.add_event("saving_result")
+            result_object = BackendResultModel(
+                id=self.request.id,
+                **saves,
+            ).save(compress=self.request.compress)
 
-        result_object = BackendResultModel(
-            id=self.request.id,
-            **saves,
-        ).save(compress=self.request.compress)
+            span.set_attribute("ndif.response_size_bytes", result_object._size)
+            span.set_attribute("ndif.request.compress", self.request.compress)
 
-        self.respond(
-            status=BackendResponseModel.JobStatus.COMPLETED,
-            description="Your job has been completed.",
-            data=(result_object.url(), result_object._size),
-        )
+            span.add_event("sending_response")
+            self.respond(
+                status=BackendResponseModel.JobStatus.COMPLETED,
+                description="Your job has been completed.",
+                data=(result_object.url(), result_object._size),
+            )
 
-        # Record metrics as span attributes
-        span = trace.get_current_span()
-        span.set_attribute("ndif.execution_time_s", execution_time_s)
-        span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
-        span.set_attribute("ndif.response_size_bytes", result_object._size)
+            span.set_attribute("ndif.execution_time_s", execution_time_s)
+            span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
 
-        RequestResponseSizeMetric.update(self.request, result_object._size)
-        GPUMemMetric.update(self.request, gpu_mem)
+            RequestResponseSizeMetric.update(self.request, result_object._size)
+            GPUMemMetric.update(self.request, gpu_mem)
 
     def exception(self, exception: Exception) -> None:
         """Handles exceptions that occur during model execution.
@@ -473,13 +478,19 @@ class BaseModelDeployment:
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
         """
-        self.kill_switch.clear()
-        self.execution_ident = None
+        with trace_span("model_actor.cleanup", attributes={"ndif.model.key": self.model_key}) as span:
+            self.kill_switch.clear()
+            self.execution_ident = None
 
-        self.model._model.zero_grad()
-        self.request = None
-        gc.collect()
-        torch.cuda.empty_cache()
+            span.add_event("zero_grad")
+            self.model._model.zero_grad()
+            self.request = None
+
+            span.add_event("gc_collect")
+            gc.collect()
+
+            span.add_event("cuda_empty_cache")
+            torch.cuda.empty_cache()
 
     def log(self, *data):
         """Logs data during model execution.
