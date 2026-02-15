@@ -273,7 +273,11 @@ class ObjectStorageMixin(BaseModel):
             object_data = cls._load(id, stream=stream)
 
             if stream:
-                return object_data
+                body, content_length = object_data
+                span.set_attribute("ndif.objectstore.size_bytes", content_length)
+                return body, content_length
+
+            span.set_attribute("ndif.objectstore.size_bytes", len(object_data))
 
             if cls._file_extension == "json":
                 return cls.model_validate_json(object_data.decode("utf-8"))
@@ -293,15 +297,19 @@ class ObjectStorageMixin(BaseModel):
         Args:
             id: The unique identifier of the object to delete.
         """
-        client = ObjectStoreProvider.object_store
-        object_name = cls.object_name(id)
+        with trace_span("objectstore.delete", attributes={
+            "ndif.objectstore.id": str(id),
+            "ndif.objectstore.folder": cls._folder_name,
+        }):
+            client = ObjectStoreProvider.object_store
+            object_name = cls.object_name(id)
 
-        try:
-            client.delete_object(
-                Bucket=ObjectStoreProvider.object_store_bucket, Key=object_name
-            )
-        except Exception:
-            pass
+            try:
+                client.delete_object(
+                    Bucket=ObjectStoreProvider.object_store_bucket, Key=object_name
+                )
+            except Exception:
+                pass
 
 
 class TelemetryMixin:
