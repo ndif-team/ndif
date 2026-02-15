@@ -301,7 +301,7 @@ class Processor:
 
                 span.add_event("controller_deploy_requested")
 
-                result = await submit(controller, "deploy", [self.model_key])
+                result = await submit(controller, "deploy", [self.model_key], trace_context=TracingContext.inject())
 
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))

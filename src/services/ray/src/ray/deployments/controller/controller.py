@@ -16,7 +16,7 @@ from ....logging.logger import set_logger
 from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
-from ....tracing import init_tracing, trace_span
+from ....tracing import TracingContext, init_tracing, trace_span
 from ....types import MODEL_KEY
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
@@ -91,8 +91,9 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False):
-        with trace_span("controller.deploy", attributes={
+    def _deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, trace_context: Optional[Dict[str, str]] = None):
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("controller.deploy", parent_context=parent_ctx, attributes={
             "ndif.model.keys": str(model_keys),
             "ndif.deploy.dedicated": dedicated,
         }) as span:
@@ -112,13 +113,14 @@ class _ControllerActor:
             return results
 
     async def deploy(
-        self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False
+        self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, trace_context: Optional[Dict[str, str]] = None
     ):
-        return self._deploy(model_keys, dedicated=dedicated)
+        return self._deploy(model_keys, dedicated=dedicated, trace_context=trace_context)
 
-    def evict(self, model_keys: List[MODEL_KEY]):
+    def evict(self, model_keys: List[MODEL_KEY], trace_context: Optional[Dict[str, str]] = None):
         """Evict models from the cluster."""
-        with trace_span("controller.evict", attributes={"ndif.model.keys": str(model_keys)}) as span:
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("controller.evict", parent_context=parent_ctx, attributes={"ndif.model.keys": str(model_keys)}) as span:
             results, change = self.cluster.evict(model_keys)
 
             span.set_attribute("ndif.evict.changed", change)
