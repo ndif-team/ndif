@@ -26,7 +26,10 @@ def trace_span(
     attributes: Optional[Dict[str, Any]] = None,
     kind: trace.SpanKind = trace.SpanKind.INTERNAL,
 ):
-    """Context manager that creates a span, optionally under a restored parent context."""
+    """Context manager that creates a span, optionally under a restored parent context.
+
+    Automatically sets ERROR status and records exceptions on unhandled errors.
+    """
     tracer = get_tracer()
     ctx = parent_context or context.get_current()
     with tracer.start_as_current_span(
@@ -34,5 +37,7 @@ def trace_span(
         context=ctx,
         kind=kind,
         attributes=attributes or {},
+        record_exception=True,
+        set_status_on_exception=True,
     ) as span:
         yield span

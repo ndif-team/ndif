@@ -76,7 +76,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
       DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
     env_file:
       - .env
 
