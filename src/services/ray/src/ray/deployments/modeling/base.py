@@ -161,28 +161,23 @@ class BaseModelDeployment:
         for param in module.parameters():
             devices.add(f"{param.device.type}:{param.device.index}")
 
-        self.logger.info(
-            f"Model loaded from {source} on devices: {devices}"
-        )
+        span = trace.get_current_span()
+        span.set_attribute("ndif.model.devices", str(sorted(devices)))
 
         if self.target_gpus:
             expected = {f"cuda:{gpu}" for gpu in self.target_gpus}
             actual_cuda = {d for d in devices if d.startswith("cuda:")}
             if actual_cuda and not actual_cuda.issubset(expected):
-                self.logger.warning(
-                    f"Device placement mismatch! Expected GPUs {self.target_gpus}, "
-                    f"but model is on {actual_cuda}"
-                )
+                span.add_event("device_placement_mismatch", {
+                    "expected": str(sorted(expected)),
+                    "actual": str(sorted(actual_cuda)),
+                })
 
     def load_from_disk(self):
         parent_ctx = TracingContext.extract(self._init_trace_context)
         with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "disk"}) as span:
             start = time.time()
             torch.cuda.synchronize()
-            self.logger.info(
-                f"Loading model from disk for model key {self.model_key} "
-                f"targeting GPUs {self.target_gpus}..."
-            )
 
             max_memory = self._build_max_memory()
 
@@ -204,16 +199,11 @@ class BaseModelDeployment:
 
             self._verify_device_placement(model._module, "disk")
 
-            self.logger.info(
-                f"Model loaded from disk in {load_time} seconds"
-            )
-
             return model
 
     async def to_cache(self, trace_context: Optional[Dict[str, str]] = None):
         parent_ctx = TracingContext.extract(trace_context)
         with trace_span("model_actor.to_cache", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key}) as span:
-            self.logger.info(f"Saving model to cache for model key {self.model_key}...")
             # torch.cuda.synchronize()
             await self.cancel()
 
@@ -252,11 +242,6 @@ class BaseModelDeployment:
             torch.cuda.synchronize()
             start = time.time()
 
-            self.logger.info(
-                f"Loading model from cache for model key {self.model_key} "
-                f"onto GPUs {target_gpus}..."
-            )
-
             max_memory = self._build_max_memory()
 
             device_map = _get_device_map(self.model._module, "auto", max_memory, None)
@@ -272,10 +257,6 @@ class BaseModelDeployment:
             load_time = time.time() - start
 
             self._verify_device_placement(self.model._module, "cache")
-
-            self.logger.info(
-                f"Model loaded from cache in {load_time} seconds"
-            )
 
             span.set_attribute("ndif.model.load_time_s", load_time)
             ModelLoadTimeMetric.update(load_time, self.model_key, "cache")

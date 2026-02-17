@@ -97,8 +97,6 @@ class _ControllerActor:
             "ndif.model.keys": str(model_keys),
             "ndif.deploy.dedicated": dedicated,
         }) as span:
-            self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
-
             results, change = self.cluster.deploy(model_keys, dedicated=dedicated)
 
             span.set_attribute("ndif.deploy.changed", change)
@@ -189,7 +187,6 @@ class _ControllerActor:
 
     def apply(self):
         with trace_span("controller.apply") as span:
-            self.logger.info(f"Applying state: {self.state}")
 
             deployment_delta = self.build()
 
@@ -224,9 +221,6 @@ class _ControllerActor:
             for future, deployment in zip(cache_futures, cache_deployments):
                 try:
                     ray.get(future)
-                    self.logger.info(
-                        f"Deployment {deployment.model_key} completed cache successfully"
-                    )
                     span.add_event("cache_completed", {"model_key": deployment.model_key})
                 except Exception as e:
                     self.logger.error(
@@ -309,9 +303,6 @@ class _ControllerActor:
                     None, lambda: ray.get(future)
                 )
                 span.add_event("ray_actor_ready")
-                self.logger.info(
-                    f"Deployment {deployment.model_key} completed {operation} successfully"
-                )
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
