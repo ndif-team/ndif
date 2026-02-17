@@ -9,9 +9,9 @@ from typing_extensions import Self
 
 from nnsight.schema.response import ResponseModel
 
-from ..metrics import RequestStatusTimeMetric
 from ..providers.mailgun import MailgunProvider
 from ..providers.socketio import SioProvider
+from ..tracing import trace_span
 from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
@@ -36,58 +36,48 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
         return self.session_id is not None
 
     def respond(self) -> ResponseModel:
-        if self.blocking:
-            # Emit to socket manager - it will forward to the client (i.e. the user)
-            
-            if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
-                SioProvider.call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
-            else:
-                SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
-        else:
-            if self.callback != "":
-                if is_email(self.callback):
-                    if MailgunProvider.connected():
-                        MailgunProvider.send_email(
-                            self.callback,
-                            f"NDIF Update For Job ID: {self.id}",
-                            self.model_dump_json(
-                                exclude_none=True,
-                                exclude_unset=True,
-                                exclude_defaults=True,
-                                exclude=["value"],
-                            ),
-                        )
-                else:
-                    callback_url = (
-                        f"{self.callback}?status={self.status.value}&id={self.id}"
-                    )
-                    requests.get(callback_url)
-            if self.status != ResponseModel.JobStatus.LOG:
-                self.save()
+        with trace_span("response.deliver", attributes={
+            "ndif.request.id": str(self.id),
+            "ndif.response.status": self.status.name,
+            "ndif.response.blocking": self.blocking,
+        }) as span:
+            if self.blocking:
+                # Emit to socket manager - it will forward to the client (i.e. the user)
+                span.set_attribute("ndif.response.delivery", "socketio")
 
-        return self
+                if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
+                    SioProvider.call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+                else:
+                    SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
+            else:
+                if self.callback != "":
+                    if is_email(self.callback):
+                        span.set_attribute("ndif.response.delivery", "email")
+                        if MailgunProvider.connected():
+                            MailgunProvider.send_email(
+                                self.callback,
+                                f"NDIF Update For Job ID: {self.id}",
+                                self.model_dump_json(
+                                    exclude_none=True,
+                                    exclude_unset=True,
+                                    exclude_defaults=True,
+                                    exclude=["value"],
+                                ),
+                            )
+                    else:
+                        span.set_attribute("ndif.response.delivery", "callback_url")
+                        callback_url = (
+                            f"{self.callback}?status={self.status.value}&id={self.id}"
+                        )
+                        requests.get(callback_url)
+                else:
+                    span.set_attribute("ndif.response.delivery", "objectstore")
+
+                if self.status != ResponseModel.JobStatus.LOG:
+                    self.save()
+
+            return self
 
     @field_serializer("status")
     def sstatus(self, value, _info):
         return value.value
-
-    def update_metric(
-        self,
-        request: "BackendRequestModel",
-    ) -> Self:
-        """Updates the telemetry gauge to track the status of a request or response.
-
-        Args:
-
-        - gauge (NDIFGauge): Telemetry Gauge.
-        - request (RequestModel): user request.
-        - status (ResponseModel.JobStatus): status of the user request.
-        - kwargs: key word arguments to NDIFGauge.update().
-
-        Returns:
-            Self.
-        """
-
-        RequestStatusTimeMetric.update(request, self)
-
-        return self

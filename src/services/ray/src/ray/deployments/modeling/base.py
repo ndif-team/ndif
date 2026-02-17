@@ -19,12 +19,19 @@ from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.modeling.mixins.remoteable import StreamTracer
 from nnsight.schema.request import RequestModel
 
+from opentelemetry import trace
+
 from ....logging import set_logger
 from ....metrics import (
-    ExecutionTimeMetric,
     GPUMemMetric,
     ModelLoadTimeMetric,
     RequestResponseSizeMetric,
+)
+from ....tracing import (
+    TracingContext,
+    init_tracing,
+    set_request_attributes,
+    trace_span,
 )
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
@@ -50,61 +57,78 @@ class BaseModelDeployment:
         dtype: str | torch.dtype,
         target_gpus: List[int] | None = None,
         *args,
+        trace_context: Optional[Dict[str, str]] = None,
         extra_kwargs: Dict[str, Any] = {},
         **kwargs,
     ) -> None:
         super().__init__()
 
-        ObjectStoreProvider.connect()
-        SioProvider.connect()
+        init_tracing("ndif-ray")
 
-        self.model_key = model_key
-        self.execution_timeout = execution_timeout
-        self.dispatch = dispatch
-        self.dtype = dtype
-        self.extra_kwargs = extra_kwargs
-        self.target_gpus = target_gpus or []
+        parent_ctx = TracingContext.extract(trace_context)
 
-        self.cached = False
+        with trace_span("model_actor.init", parent_context=parent_ctx, attributes={
+            "ndif.model.key": model_key,
+            "ndif.model.target_gpus": str(target_gpus or []),
+            "ndif.model.dispatch": dispatch,
+            "ndif.model.dtype": str(dtype),
+        }) as span:
+            self._init_trace_context = trace_context
 
-        self.logger = set_logger(model_key)
+            span.add_event("connecting_providers")
+            ObjectStoreProvider.connect()
+            SioProvider.connect()
 
-        self.runtime_context = ray.get_runtime_context()
+            self.model_key = model_key
+            self.execution_timeout = execution_timeout
+            self.dispatch = dispatch
+            self.dtype = dtype
+            self.extra_kwargs = extra_kwargs
+            self.target_gpus = target_gpus or []
 
-        if isinstance(dtype, str):
-            dtype = getattr(torch, dtype)
+            self.cached = False
 
-        torch.set_default_dtype(torch.bfloat16)
+            self.logger = set_logger(model_key)
 
-        # Set the default CUDA device to the first target GPU BEFORE any CUDA
-        # call. This ensures the CUDA context (~400MiB) is created on the
-        # target GPU rather than always landing on GPU 0.
-        if self.target_gpus:
-            torch.cuda.set_device(self.target_gpus[0])
+            span.add_event("getting_ray_runtime_context")
+            self.runtime_context = ray.get_runtime_context()
 
-        self.model = self.load_from_disk()
+            if isinstance(dtype, str):
+                dtype = getattr(torch, dtype)
 
-        self.persistent_objects = self.model._remoteable_persistent_objects()
+            torch.set_default_dtype(torch.bfloat16)
 
-        for key, value in self.persistent_objects.items():
-            if isinstance(value, torch.nn.Module):
-                self.persistent_objects[key] = protect(value)
+            # Set the default CUDA device to the first target GPU BEFORE any CUDA
+            # call. This ensures the CUDA context (~400MiB) is created on the
+            # target GPU rather than always landing on GPU 0.
+            if self.target_gpus:
+                torch.cuda.set_device(self.target_gpus[0])
 
-        self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
+            span.add_event("loading_model")
+            self.model = self.load_from_disk()
 
-        if dispatch:
-            self.model._module.requires_grad_(False)
+            span.add_event("building_persistent_objects")
+            self.persistent_objects = self.model._remoteable_persistent_objects()
 
-        torch.cuda.empty_cache()
+            for key, value in self.persistent_objects.items():
+                if isinstance(value, torch.nn.Module):
+                    self.persistent_objects[key] = protect(value)
 
-        self.request: BackendRequestModel
+            self.execution_protector = Protector(WHITELISTED_MODULES, builtins=True)
 
-        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+            if dispatch:
+                self.model._module.requires_grad_(False)
 
-        self.kill_switch = asyncio.Event()
-        self.execution_ident = None
+            torch.cuda.empty_cache()
 
-        StreamTracer.register(self.stream_send, self.stream_receive)
+            self.request: BackendRequestModel
+
+            self.thread_pool = ThreadPoolExecutor(max_workers=1)
+
+            self.kill_switch = asyncio.Event()
+            self.execution_ident = None
+
+            StreamTracer.register(self.stream_send, self.stream_receive)
 
     def _build_max_memory(self) -> Optional[Dict[int, int]]:
         """Build a max_memory dict that restricts model placement to target GPUs.
@@ -137,67 +161,66 @@ class BaseModelDeployment:
         for param in module.parameters():
             devices.add(f"{param.device.type}:{param.device.index}")
 
-        self.logger.info(
-            f"Model loaded from {source} on devices: {devices}"
-        )
+        span = trace.get_current_span()
+        span.set_attribute("ndif.model.devices", str(sorted(devices)))
 
         if self.target_gpus:
             expected = {f"cuda:{gpu}" for gpu in self.target_gpus}
             actual_cuda = {d for d in devices if d.startswith("cuda:")}
             if actual_cuda and not actual_cuda.issubset(expected):
-                self.logger.warning(
-                    f"Device placement mismatch! Expected GPUs {self.target_gpus}, "
-                    f"but model is on {actual_cuda}"
-                )
+                span.add_event("device_placement_mismatch", {
+                    "expected": str(sorted(expected)),
+                    "actual": str(sorted(actual_cuda)),
+                })
 
     def load_from_disk(self):
-        start = time.time()
-        torch.cuda.synchronize()
-        self.logger.info(
-            f"Loading model from disk for model key {self.model_key} "
-            f"targeting GPUs {self.target_gpus}..."
-        )
+        parent_ctx = TracingContext.extract(self._init_trace_context)
+        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "disk"}) as span:
+            start = time.time()
+            torch.cuda.synchronize()
 
-        max_memory = self._build_max_memory()
+            max_memory = self._build_max_memory()
 
-        model = load_with_cache_deletion_retry(
-            lambda: RemoteableMixin.from_model_key(
-                self.model_key,
-                device_map="auto",
-                max_memory=max_memory,
-                dispatch=self.dispatch,
-                torch_dtype=self.dtype,
-                **self.extra_kwargs,
+            model = load_with_cache_deletion_retry(
+                lambda: RemoteableMixin.from_model_key(
+                    self.model_key,
+                    device_map="auto",
+                    max_memory=max_memory,
+                    dispatch=self.dispatch,
+                    torch_dtype=self.dtype,
+                    **self.extra_kwargs,
+                )
             )
-        )
-        torch.cuda.synchronize()
-        load_time = time.time() - start
+            torch.cuda.synchronize()
+            load_time = time.time() - start
 
-        ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
+            span.set_attribute("ndif.model.load_time_s", load_time)
+            ModelLoadTimeMetric.update(load_time, self.model_key, "disk")
 
-        self._verify_device_placement(model._module, "disk")
+            self._verify_device_placement(model._module, "disk")
 
-        self.logger.info(
-            f"Model loaded from disk in {load_time} seconds"
-        )
+            return model
 
-        return model
+    async def to_cache(self, trace_context: Optional[Dict[str, str]] = None):
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("model_actor.to_cache", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key}) as span:
+            # torch.cuda.synchronize()
+            await self.cancel()
 
-    async def to_cache(self):
-        self.logger.info(f"Saving model to cache for model key {self.model_key}...")
-        # torch.cuda.synchronize()
-        await self.cancel()
+            span.add_event("remove_accelerate_hooks")
+            remove_accelerate_hooks(self.model._module)
 
-        remove_accelerate_hooks(self.model._module)
+            span.add_event("move_to_cpu")
+            self.model._module = self.model._module.cpu()
+            # torch.cuda.synchronize()
 
-        self.model._module = self.model._module.cpu()
-        # torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
+            span.add_event("gc_collect")
+            gc.collect()
+            torch.cuda.empty_cache()
 
-        self.cached = True
+            self.cached = True
 
-    def from_cache(self, target_gpus: List[int]):
+    def from_cache(self, target_gpus: List[int], trace_context: Optional[Dict[str, str]] = None):
         """Restore model from CPU cache onto the specified GPU(s).
 
         Uses max_memory targeting to ensure the model is placed on exactly
@@ -206,44 +229,39 @@ class BaseModelDeployment:
 
         Args:
             target_gpus: List of physical GPU indices to place the model on.
+            trace_context: Optional trace context for distributed tracing.
         """
-        self.target_gpus = target_gpus
+        parent_ctx = TracingContext.extract(trace_context)
+        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "cache"}) as span:
+            self.target_gpus = target_gpus
 
-        # Switch default CUDA device to the new target GPU before any CUDA ops
-        if self.target_gpus:
-            torch.cuda.set_device(self.target_gpus[0])
+            # Switch default CUDA device to the new target GPU before any CUDA ops
+            if self.target_gpus:
+                torch.cuda.set_device(self.target_gpus[0])
 
-        torch.cuda.synchronize()
-        start = time.time()
+            torch.cuda.synchronize()
+            start = time.time()
 
-        self.logger.info(
-            f"Loading model from cache for model key {self.model_key} "
-            f"onto GPUs {target_gpus}..."
-        )
+            max_memory = self._build_max_memory()
 
-        max_memory = self._build_max_memory()
+            device_map = _get_device_map(self.model._module, "auto", max_memory, None)
 
-        device_map = _get_device_map(self.model._module, "auto", max_memory, None)
+            remove_accelerate_hooks(self.model._module)
 
-        remove_accelerate_hooks(self.model._module)
+            self.model._module = dispatch_model(self.model._module, device_map)
 
-        self.model._module = dispatch_model(self.model._module, device_map)
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
 
-        torch.cuda.synchronize()
-        gc.collect()
-        torch.cuda.empty_cache()
+            load_time = time.time() - start
 
-        load_time = time.time() - start
+            self._verify_device_placement(self.model._module, "cache")
 
-        self._verify_device_placement(self.model._module, "cache")
+            span.set_attribute("ndif.model.load_time_s", load_time)
+            ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
-        self.logger.info(
-            f"Model loaded from cache in {load_time} seconds"
-        )
-
-        ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
-
-        self.cached = False
+            self.cached = False
 
     async def __call__(self, request: BackendRequestModel) -> None:
         """Executes the model service pipeline:
@@ -260,46 +278,52 @@ class BaseModelDeployment:
         if self.cached:
             raise LookupError("Failed to look up actor")
 
-        self.request = request
+        parent_ctx = TracingContext.extract(request.trace_context)
 
-        try:
-            result = None
+        with trace_span("model_actor.call", parent_context=parent_ctx) as span:
+            set_request_attributes(span, request)
+            self.request = request
 
-            inputs = self.pre()
+            try:
+                result = None
 
-            job_task = asyncio.create_task(asyncio.to_thread(self.execute, inputs))
-            kill_task = asyncio.create_task(self.kill_switch.wait())
+                inputs = self.pre()
 
-            done, pending = await asyncio.wait(
-                [job_task, kill_task],
-                timeout=self.execution_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+                job_task = asyncio.create_task(asyncio.to_thread(self.execute, inputs))
+                kill_task = asyncio.create_task(self.kill_switch.wait())
 
-            for task in pending:
-                task.cancel()
-
-            if job_task in done:
-                result = await job_task
-            elif kill_task in done:
-                kill_thread(self.execution_ident)
-                raise Exception("Your job was cancelled or preempted by the server.")
-            else:
-                kill_thread(self.execution_ident)
-                raise Exception(
-                    f"Job took longer than timeout: {self.execution_timeout} seconds"
+                done, pending = await asyncio.wait(
+                    [job_task, kill_task],
+                    timeout=self.execution_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
 
-            self.post(result)
+                for task in pending:
+                    task.cancel()
 
-        except Exception as e:
-            self.exception(e)
+                if job_task in done:
+                    result = await job_task
+                elif kill_task in done:
+                    kill_thread(self.execution_ident)
+                    raise Exception("Your job was cancelled or preempted by the server.")
+                else:
+                    kill_thread(self.execution_ident)
+                    raise Exception(
+                        f"Job took longer than timeout: {self.execution_timeout} seconds"
+                    )
 
-        finally:
-            del request
-            del result
+                self.post(result)
 
-            self.cleanup()
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                self.exception(e)
+
+            finally:
+                del request
+                del result
+
+                self.cleanup()
 
     async def cancel(self):
         if self.execution_ident is not None:
@@ -312,17 +336,18 @@ class BaseModelDeployment:
     ### ABSTRACT METHODS #################################
 
     def pre(self) -> RequestModel:
-
-        self.respond(
-            status=BackendResponseModel.JobStatus.RUNNING,
-            description="Your job has started running.",
-        )
-
         """Logic to execute before execution."""
-        with Protector(WHITELISTED_MODULES_DESERIALIZATION):
-            request = self.request.deserialize(self.persistent_objects)
+        with trace_span("model_actor.pre", attributes={"ndif.model.key": self.model_key}) as span:
+            self.respond(
+                status=BackendResponseModel.JobStatus.RUNNING,
+                description="Your job has started running.",
+            )
 
-        return request
+            span.add_event("deserializing_request")
+            with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+                request = self.request.deserialize(self.persistent_objects)
+
+            return request
 
     def execute(self, request: RequestModel) -> Any:
         """Execute request.
@@ -336,28 +361,32 @@ class BaseModelDeployment:
 
         self.execution_ident = threading.current_thread().ident
 
-        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-            if torch.cuda.is_available():
-                reset_peak_memory_stats()
-                model_memory = memory_allocated()
+        with trace_span("model_actor.execute", attributes={"ndif.model.key": self.model_key}) as span:
+            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+                if torch.cuda.is_available():
+                    reset_peak_memory_stats()
+                    model_memory = memory_allocated()
 
-            execution_time = time.time()
+                execution_time = time.time()
 
-            # Execute object.
-            with StdoutRedirect(self.log):
-                result = RemoteExecutionBackend(
-                    request.interventions, self.execution_protector
-                )(request.tracer)
+                # Execute object.
+                with StdoutRedirect(self.log):
+                    result = RemoteExecutionBackend(
+                        request.interventions, self.execution_protector
+                    )(request.tracer)
 
-            execution_time = time.time() - execution_time
+                execution_time = time.time() - execution_time
 
-            # Compute GPU memory usage
-            if torch.cuda.is_available():
-                gpu_mem = max_memory_allocated() - model_memory
-            else:
-                gpu_mem = 0
+                # Compute GPU memory usage
+                if torch.cuda.is_available():
+                    gpu_mem = max_memory_allocated() - model_memory
+                else:
+                    gpu_mem = 0
 
-        return result, gpu_mem, execution_time
+            span.set_attribute("ndif.execution_time_s", execution_time)
+            span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
+
+            return result, gpu_mem, execution_time
 
     def post(self, result: Any) -> None:
         """Logic to execute after execution with result from `.execute`.
@@ -366,25 +395,32 @@ class BaseModelDeployment:
             request (BackendRequestModel): Request.
             result (Any): Result.
         """
+        with trace_span("model_actor.post", attributes={"ndif.model.key": self.model_key}) as span:
+            saves = result[0]
+            gpu_mem: int = result[1]
+            execution_time_s: float = result[2]
 
-        saves = result[0]
-        gpu_mem: int = result[1]
-        execution_time_s: float = result[2]
+            span.add_event("saving_result")
+            result_object = BackendResultModel(
+                id=self.request.id,
+                **saves,
+            ).save(compress=self.request.compress)
 
-        result_object = BackendResultModel(
-            id=self.request.id,
-            **saves,
-        ).save(compress=self.request.compress)
+            span.set_attribute("ndif.response_size_bytes", result_object._size)
+            span.set_attribute("ndif.request.compress", self.request.compress)
 
-        self.respond(
-            status=BackendResponseModel.JobStatus.COMPLETED,
-            description="Your job has been completed.",
-            data=(result_object.url(), result_object._size),
-        )
+            span.add_event("sending_response")
+            self.respond(
+                status=BackendResponseModel.JobStatus.COMPLETED,
+                description="Your job has been completed.",
+                data=(result_object.url(), result_object._size),
+            )
 
-        RequestResponseSizeMetric.update(self.request, result_object._size)
-        GPUMemMetric.update(self.request, gpu_mem)
-        ExecutionTimeMetric.update(self.request, execution_time_s)
+            span.set_attribute("ndif.execution_time_s", execution_time_s)
+            span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
+
+            RequestResponseSizeMetric.update(self.request, result_object._size)
+            GPUMemMetric.update(self.request, gpu_mem)
 
     def exception(self, exception: Exception) -> None:
         """Handles exceptions that occur during model execution.
@@ -429,13 +465,19 @@ class BaseModelDeployment:
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
         """
-        self.kill_switch.clear()
-        self.execution_ident = None
+        with trace_span("model_actor.cleanup", attributes={"ndif.model.key": self.model_key}) as span:
+            self.kill_switch.clear()
+            self.execution_ident = None
 
-        self.model._model.zero_grad()
-        self.request = None
-        gc.collect()
-        torch.cuda.empty_cache()
+            span.add_event("zero_grad")
+            self.model._model.zero_grad()
+            self.request = None
+
+            span.add_event("gc_collect")
+            gc.collect()
+
+            span.add_event("cuda_empty_cache")
+            torch.cuda.empty_cache()
 
     def log(self, *data):
         """Logs data during model execution.
@@ -515,6 +557,7 @@ class BaseModelDeploymentArgs(BaseModel):
     dispatch: bool = True
     dtype: str | torch.dtype = "bfloat16"
     target_gpus: List[int] | None = None
+    trace_context: Optional[Dict[str, str]] = None
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)

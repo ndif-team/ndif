@@ -4,6 +4,9 @@ python-slugify
 # Telemetry
 prometheus_client
 python-logging-loki
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-grpc
 # Database
 boto3
 influxdb-client

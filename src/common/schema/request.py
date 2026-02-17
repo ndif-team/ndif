@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import ClassVar, Coroutine, Optional, Union
+from typing import ClassVar, Coroutine, Dict, Optional, Union
 
 import ray
 from fastapi import Request
@@ -56,6 +56,7 @@ class BackendRequestModel(ObjectStorageMixin):
     ip_address: Optional[str] = ""
     user_agent: Optional[str] = ""
     id: REQUEST_ID
+    trace_context: Optional[Dict[str, str]] = None
 
     def deserialize(self, persistent_objects: dict = None) -> RequestModel:
         request = self.request
@@ -137,9 +138,5 @@ class BackendRequestModel(ObjectStorageMixin):
         if status != self.last_status and status != ResponseModel.JobStatus.LOG:
             logger.info(f"Updating last status: {status}")
             self.last_status = status
-
-            response.update_metric(
-                self,
-            )
 
         return response

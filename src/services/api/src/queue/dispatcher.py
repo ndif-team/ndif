@@ -36,6 +36,12 @@ from ..providers.ray import RayProvider
 from ..providers.redis import RedisProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel
+from ..tracing import (
+    TracingContext,
+    init_tracing,
+    set_request_attributes,
+    trace_span,
+)
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 from .util import patch, controller_handle, submit
@@ -102,6 +108,8 @@ class Dispatcher:
         self.status_cache_freq_s = QueueConfig.status_cache_freq_s
 
         self.logger = set_logger("coordinator")
+
+        init_tracing("ndif-queue")
 
         patch()
 
@@ -188,16 +196,25 @@ class Dispatcher:
             The processor_worker task runs concurrently and handles the full
             lifecycle of provisioning, deployment, and request execution.
         """
-        if request.model_key not in self.processors:
-            processor = Processor(
-                request.model_key, self.eviction_queue, self.error_queue
-            )
+        parent_ctx = TracingContext.extract(request.trace_context)
 
-            self.processors[request.model_key] = processor
+        with trace_span("dispatcher.dispatch", parent_context=parent_ctx) as span:
+            set_request_attributes(span, request)
 
-            asyncio.create_task(processor.processor_worker())
+            if request.model_key not in self.processors:
+                processor = Processor(
+                    request.model_key, self.eviction_queue, self.error_queue
+                )
 
-        self.processors[request.model_key].enqueue(request)
+                self.processors[request.model_key] = processor
+
+                asyncio.create_task(processor.processor_worker())
+
+                span.add_event("processor_created")
+
+            self.processors[request.model_key].enqueue(request)
+
+            span.add_event("request_enqueued_to_processor")
 
     def remove(self, model_key: str, message: str) -> None:
         """Remove a Processor and notify its queued users.
