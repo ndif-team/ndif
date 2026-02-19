@@ -31,6 +31,8 @@ SESSION_ID: TypeAlias = str
 
 NODE_ID: TypeAlias = str
 
+REPLICA_ID: TypeAlias = str
+
 
 class TIER(Enum):
     """Tier identifier for API keys"""

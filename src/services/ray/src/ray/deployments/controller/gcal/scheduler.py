@@ -145,18 +145,21 @@ class SchedulingActor:
                 configs
             )
             result = result["result"]
+            result_by_model = {}
+            for result_key, value in result.items():
+                model_key = result_key[0]
+                result_by_model.setdefault(model_key, []).append(value)
+
             error_messages = {
-                model_key: value
-                for model_key, value in result.items()
-                if value not in CandidateLevel.__members__
+                model_key: values
+                for model_key, values in result_by_model.items()
+                if any(value not in CandidateLevel.__members__ for value in values)
             }
 
             # Only update the stored hash if there were no errors
             cant_accomodate = False
-            for model_key, value in result.items():
-                print("value: ", value)
-                if value == CandidateLevel.CANT_ACCOMMODATE.name:
-                    print("cant accomate: ", model_key)
+            for model_key, values in result_by_model.items():
+                if any(value == CandidateLevel.CANT_ACCOMMODATE.name for value in values):
                     cant_accomodate = True
                     break
 

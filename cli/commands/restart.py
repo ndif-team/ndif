@@ -14,8 +14,9 @@ from ..lib.session import get_env
 @click.command()
 @click.argument('checkpoint')
 @click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--replica-id', default="0", type=str, help='Replica UID (default: 0)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
-def restart(checkpoint: str, revision: str, ray_address: str):
+def restart(checkpoint: str, revision: str, ray_address: str, replica_id: str):
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -29,6 +30,7 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         ndif restart gpt2
         ndif restart meta-llama/Llama-2-7b-hf --revision main
         ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
+        ndif restart openai-community/gpt2 --replica-id <replica_uid> --ray-address ray://localhost:10001
     """
     # Use session default if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -50,9 +52,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
 
         # Get deployment actor handle and restart it
         click.echo(f"Getting actor handle for {model_key}...")
-        actor = get_actor_handle(model_key)
+        actor = get_actor_handle(model_key, replica_id=replica_id)
 
-        click.echo(f"Restarting deployment for {model_key}...")
+        click.echo(f"Restarting deployment for {model_key} (replica {replica_id})...")
         ray.kill(actor, no_restart=False)
 
         click.echo("✓ Restart successful!")

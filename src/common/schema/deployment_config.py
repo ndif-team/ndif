@@ -13,6 +13,7 @@ class DeploymentConfig(BaseModel):
     dedicated: bool = False
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    replicas: int = 1
 
     @staticmethod
     def normalize(

@@ -1,13 +1,43 @@
 """Deploy command for NDIF - Deploy a model without requiring to submit a request."""
 
-import click
-import ray
 import asyncio
 
+import click
+import ray
+
 from src.common.schema.deployment_config import DeploymentConfig
-from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
+from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
+
+
+def _model_key_in_state(state: dict, model_key: str) -> bool:
+    cluster_state = state.get("cluster", {})
+    nodes = cluster_state.get("nodes", [])
+    node_iter = nodes.values() if isinstance(nodes, dict) else nodes
+    for node in node_iter:
+        for deployment in node.get("deployments", []) or []:
+            if deployment.get("model_key") == model_key:
+                return True
+    return False
+
+
+def _deployment_exists(controller: ray.actor.ActorHandle, model_key: str) -> bool:
+    try:
+        existing = ray.get(controller.get_deployment.remote(model_key))
+    except TypeError as e:
+        message = str(e)
+        if "positional" in message or "keyword" in message:
+            # Compatibility with older controller API: get_deployment() takes no args.
+            state = ray.get(controller.get_state.remote())
+            return _model_key_in_state(state, model_key)
+        raise
+
+    if existing is None:
+        return False
+    if isinstance(existing, dict) and existing.get("deployments_state") == "not_found":
+        return False
+    return True
 
 
 @click.command()
@@ -16,7 +46,9 @@ from ..lib.session import get_env
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str):
+@click.option('--replicas', default=1, help='Number of replicas to deploy (default: 1)')
+
+def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, broker_url: str, replicas: int):
     """Deploy a model without requiring to submit a request.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -25,6 +57,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         ndif deploy gpt2
         ndif deploy meta-llama/Llama-2-7b-hf --revision main
         ndif deploy openai-community/gpt2 --dedicated --ray-address ray://localhost:10001
+        ndif deploy openai-community/gpt2 --replicas 2 --ray-address ray://localhost:10001
     """
 
     # Use session defaults if not provided
@@ -36,7 +69,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
-        
+
         # TODO: revision bug ("main" is not always the default revision)
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
@@ -49,26 +82,61 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         click.echo(f"Getting actor handle for {model_key}...")
         controller = get_controller_actor_handle()
 
-        click.echo(f"Deploying {model_key}...")
-        object_ref = controller._deploy.remote({model_key: DeploymentConfig(dedicated=dedicated)})
+        if _deployment_exists(controller, model_key):
+            click.echo(
+                f"✗ Error: {model_key} already has deployed replicas. "
+                "Use `ndif scale` to add replicas."
+            )
+            raise click.Abort()
+
+        click.echo(f"Deploying {model_key} with {replicas} replicas...")
+        object_ref = controller._deploy.remote({model_key: DeploymentConfig(dedicated=dedicated, replicas=replicas)})
         results = ray.get(object_ref)
-        result_status = results["result"][model_key]
+        result_statuses = [
+            (result_key, status)
+            for (result_key, status) in results["result"].items()
+            if result_key[0] == model_key
+        ]
 
-        if result_status == "CANT_ACCOMMODATE":
-            click.echo(f"✗ Error: {model_key} cannot be deployed on any node. Check the ray controller logs for more details.")
+        success_statuses = {
+            "DEPLOYED",
+            "CACHED_AND_FREE",
+            "FREE",
+            "CACHED_AND_FULL",
+            "FULL",
+        }
 
-        elif result_status == "DEPLOYED":
-            click.echo(f"✓ {model_key} already deployed!")
+        successes = []
+        failures = []
+        for (result_key, status) in result_statuses:
+            _, replica_id = result_key
+            if status in success_statuses:
+                successes.append((replica_id, status))
+            else:
+                failures.append((replica_id, status))
+
+        total = len(result_statuses)
+        if total == 0:
+            click.echo("⚠ No replica results returned from controller.")
         else:
-            click.echo("✓ Deployment successful!")
-            if results["evictions"]:
-                click.echo("• Evictions:")
-                for eviction in results["evictions"]:
-                    click.echo(f"  - {eviction}")
-                    asyncio.run(notify_dispatcher(broker_url, "evict", eviction))
+            click.echo(f"✓ Deployment result: {len(successes)}/{total} replicas succeeded.")
 
-            # Notify dispatcher about deployment
-            asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
+        if failures:
+            click.echo("• Failed replicas:")
+            for replica_id, status in failures:
+                if status == "CANT_ACCOMMODATE":
+                    click.echo(f"  - replica {replica_id}: {status}")
+                else:
+                    click.echo(f"  - replica {replica_id}: error during evaluation/deploy")
+
+        if results["evictions"]:
+            click.echo("• Evictions:")
+            for eviction in results["evictions"]:
+                click.echo(f"  - {eviction}")
+                asyncio.run(notify_dispatcher(broker_url, "evict", eviction[0], replica_id=eviction[1]))
+
+        # Notify dispatcher about deployment
+        asyncio.run(notify_dispatcher(broker_url, "deploy", model_key, replicas=replicas))
 
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)

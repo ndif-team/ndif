@@ -36,6 +36,7 @@ from ..providers.ray import RayProvider
 from ..providers.redis import RedisProvider
 from ..providers.objectstore import ObjectStoreProvider
 from ..schema import BackendRequestModel
+from ..types import REPLICA_ID
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 from .util import patch, controller_handle, submit
@@ -97,7 +98,9 @@ class Dispatcher:
         self.processors: dict[str, Processor] = {}
 
         self.error_queue: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
-        self.eviction_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self.eviction_queue: asyncio.Queue[
+            tuple[str, str, Optional[REPLICA_ID]]
+        ] = asyncio.Queue()
 
         self.status_cache_freq_s = QueueConfig.status_cache_freq_s
 
@@ -244,10 +247,17 @@ class Dispatcher:
             not prevent processing of remaining evictions.
         """
         while not self.eviction_queue.empty():
-            model_key, reason = self.eviction_queue.get_nowait()
+            model_key, reason, replica_id = self.eviction_queue.get_nowait()
 
             try:
-                self.remove(model_key, reason)
+                if replica_id is None:
+                    self.remove(model_key, reason)
+                else:
+                    processor = self.processors.get(model_key)
+                    if processor is not None:
+                        processor.remove_replica(replica_id, reason)
+                        if processor.status == ProcessorStatus.CANCELLED:
+                            self.processors.pop(model_key, None)
             except Exception:
                 self.logger.exception(f"Error handling eviction for `{model_key}`")
 
@@ -492,22 +502,35 @@ class Dispatcher:
     async def _handle_deploy_event(self, event_data: dict) -> None:
         """Handle DEPLOY event"""
         model_key = event_data.get(b"model_key", b"").decode("utf-8")
+        replicas_raw = event_data.get(b"replicas", b"").decode("utf-8")
+        replicas = int(replicas_raw) if replicas_raw else None
+
 
         if model_key not in self.processors:
-            processor = Processor(model_key, self.eviction_queue, self.error_queue)
-            self.processors[model_key] = processor
-            asyncio.create_task(processor.processor_worker(provision=False))
             self.logger.info(
-                f"Created processor for {model_key} due to deployment event"
+                f"Ignoring deploy event for {model_key}; processor not active"
             )
+        else:
+            processor = self.processors[model_key]
+            if replicas is not None:
+                processor.requested_replica_count = max(1, replicas)
 
     async def _handle_evict_event(self, event_data: dict) -> None:
         """Handle EVICT event"""
         model_key = event_data.get(b"model_key", b"").decode("utf-8")
+        replica_id_raw = event_data.get(b"replica_id", b"").decode("utf-8")
+        replica_id: Optional[REPLICA_ID] = replica_id_raw or None
 
         if model_key in self.processors:
-            self.remove(model_key, "Model evicted by external command")
-            self.logger.info(f"Removed processor for {model_key} due to eviction event")
+            if replica_id is None:
+                self.remove(model_key, "Model evicted by external command")
+                self.logger.info(f"Removed processor for {model_key} due to eviction event")
+            else:
+                processor = self.processors[model_key]
+                processor.remove_replica(replica_id, "Model replica removed by external command")
+                if processor.status == ProcessorStatus.CANCELLED:
+                    self.processors.pop(model_key, None)
+                self.logger.info(f"Removed replica {replica_id} for {model_key} due to eviction event")
 
     async def _handle_kill_request(self, event_data: dict) -> None:
         """Handle KILL_REQUEST event"""

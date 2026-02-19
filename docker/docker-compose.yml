@@ -18,6 +18,7 @@ services:
       - ~/.cache/huggingface/:/root/.cache/huggingface
       - ray-data:/tmp/ray/
 
+
     ports:
       - ${NDIF_RAY_HEAD_PORT}:6379
       - ${NDIF_RAY_CLIENT_PORT}:10001
