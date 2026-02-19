@@ -6,7 +6,9 @@ import click
 import ray
 from collections import defaultdict
 
-from .util import get_controller_actor_handle
+from ..lib.util import get_controller_actor_handle
+from ..lib.checks import check_prerequisites
+from ..lib.session import get_env
 
 
 @click.command()
@@ -14,7 +16,7 @@ from .util import get_controller_actor_handle
 @click.option('--verbose', is_flag=True, help='Show detailed cluster state')
 @click.option('--show-cold', is_flag=True, help='List all COLD deployments')
 @click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
+@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_address: str):
     """View cluster and deployment status.
 
@@ -28,9 +30,14 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
         ndif status --json-output      # Raw JSON output
         ndif status --watch            # Real-time monitoring
     """
+    # Use session default if not provided
+    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     try:
-        # Connect to Ray
-        ray.init(address=ray_address, ignore_reinit_error=True)
+        # Check prerequisites silently
+        check_prerequisites(ray_address=ray_address)
+
+        # Connect to Ray (suppress verbose output)
+        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 
         if watch:
             # Watch mode - loop forever
@@ -114,6 +121,10 @@ def format_status_simple(status_data: dict, show_cold: bool):
     click.echo(f"  Total GPUs: {total_gpus} ({available_gpus} available)")
     if total_gpu_memory > 0:
         click.echo(f"  GPU Memory: {total_gpu_memory / (1024**3):.1f} GB per GPU")
+    click.echo()
+
+    # Show Ray nodes directly
+    _show_ray_nodes_summary()
     click.echo()
 
     # Group deployments by level
@@ -233,9 +244,9 @@ def format_state_verbose(state: dict):
 
         resources = node.get('resources', {})
         click.echo("    Resources:")
+        click.echo(f"      GPU Type: {resources.get('gpu_type', 'unknown')}")
         click.echo(f"      Total GPUs: {resources.get('total_gpus', 0)}")
         click.echo(f"      Available GPUs: {resources.get('available_gpus', [])}")
-        click.echo(f"      GPU Type: {resources.get('gpu_type', 'unknown')}")
         click.echo(f"      GPU Memory: {resources.get('gpu_memory_bytes', 0) / (1024**3):.1f} GB")
         click.echo(f"      CPU Memory Total: {resources.get('cpu_memory_bytes', 0) / (1024**3):.1f} GB")
         click.echo(f"      CPU Memory Available: {resources.get('available_cpu_memory_bytes', 0) / (1024**3):.1f} GB")
@@ -297,3 +308,28 @@ def _extract_repo_id_from_model_key(model_key: str) -> str:
     except (ValueError, IndexError):
         pass
     return model_key
+
+
+def _show_ray_nodes_summary():
+    """Show summary of Ray cluster nodes."""
+    try:
+        nodes = ray.nodes()
+        alive_nodes = [n for n in nodes if n.get('Alive', False)]
+
+        if alive_nodes:
+            click.echo("Connected Nodes:")
+            for node in alive_nodes:
+                node_id = node.get('NodeID', 'unknown')[:8]
+                node_ip = node.get('NodeManagerAddress', 'unknown')
+                resources = node.get('Resources', {})
+                cpus = resources.get('CPU', 0)
+                gpus = resources.get('GPU', 0)
+
+                # Determine node type from resources or default
+                is_head = 'node:__internal_head__' in resources
+                node_type_str = "head" if is_head else "worker"
+
+                gpu_str = f", {int(gpus)} GPU" if gpus else ""
+                click.echo(f"  {node_id}... ({node_type_str}) - {node_ip} ({int(cpus)} CPU{gpu_str})")
+    except Exception:
+        pass

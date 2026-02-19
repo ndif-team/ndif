@@ -14,13 +14,13 @@ class RayProvider(Provider):
     @classmethod
     def from_env(cls) -> None:
         super().from_env()
-        cls.ray_url = os.environ.get("RAY_ADDRESS")
+        cls.ray_url = os.environ.get("NDIF_RAY_ADDRESS", "ray://localhost:10001")
 
     @classmethod
     def to_env(cls) -> dict:
         return {
             **super().to_env(),
-            "RAY_ADDRESS": cls.ray_url,
+            "NDIF_RAY_ADDRESS": cls.ray_url,
         }
 
     @classmethod
@@ -42,7 +42,7 @@ class RayProvider(Provider):
             port = int(port)
         else:
             logger.warning(
-                f"RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
+                f"NDIF_RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
             )
             host = addr
             port = 6379  # Default Ray port if not specified
@@ -81,6 +81,34 @@ class RayProvider(Provider):
     @classmethod
     def reset(cls):
         ray.shutdown()
+
+    # Error patterns that indicate a broken Ray connection
+    CONNECTION_ERROR_PATTERNS = (
+        "Ray client has already been disconnected",
+        "Unrecoverable error in data channel",
+        "_MultiThreadedRendezvous",
+        "Failed to reconnect",
+        "session that has already been cleaned up",
+        "Channel for client",
+        "grpc._channel",
+        "Failed during this or a previous request",
+    )
+
+    @classmethod
+    def is_connection_error(cls, error: Exception) -> bool:
+        """Check if an exception indicates a broken Ray connection.
+
+        This is used reactively - when an error occurs, we check if it's
+        a connection error and force reconnection if so.
+
+        Args:
+            error: The exception to check.
+
+        Returns:
+            True if this error indicates the Ray connection is broken.
+        """
+        error_str = str(error)
+        return any(pattern in error_str for pattern in cls.CONNECTION_ERROR_PATTERNS)
 
 
 RayProvider.from_env()

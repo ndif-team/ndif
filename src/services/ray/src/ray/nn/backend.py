@@ -3,11 +3,10 @@ from typing import Any, Callable
 from nnsight.intervention.backends import Backend
 from .security.protected_environment import (
     Protector,
-    WHITELISTED_MODULES,
 )
-from .sandbox import run
 from nnsight.intervention.tracing.globals import Globals
 from nnsight.intervention.tracing.tracer import Tracer
+from nnsight.intervention.tracing.util import wrap_exception
 
 
 class RemoteExecutionBackend(Backend):
@@ -21,18 +20,13 @@ class RemoteExecutionBackend(Backend):
 
         try:
             with self.protector:
-                run(tracer, self.fn)
-
+                saves = tracer.execute(self.fn)
+        except Exception as e:
+            raise wrap_exception(e, tracer.info) from None
         finally:
+            Globals.cache.clear()
+            Globals.saves.clear()
             Globals.exit()
-
-        saves = {
-            key: value
-            for key, value in tracer.info.frame.f_locals.items()
-            if id(value) in Globals.saves
-        }
-
-        Globals.saves.clear()
-        Globals.stack = 0
+            Globals.stack = 0
 
         return saves
