@@ -72,7 +72,7 @@ class BaseModelDeployment:
         self.runtime_context = ray.get_runtime_context()
 
         if isinstance(dtype, str):
-            dtype = getattr(torch, dtype)
+            self.dtype = getattr(torch, dtype)
 
         torch.set_default_dtype(torch.bfloat16)
 
@@ -513,7 +513,7 @@ class BaseModelDeploymentArgs(BaseModel):
     execution_timeout: float | None = None
     device_map: str | None = "auto"
     dispatch: bool = True
-    dtype: str | torch.dtype = "bfloat16"
+    dtype: str | torch.dtype = torch.bfloat16
     target_gpus: List[int] | None = None
 
 
