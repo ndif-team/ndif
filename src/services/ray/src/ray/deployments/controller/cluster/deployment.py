@@ -32,6 +32,7 @@ class Deployment:
         size_bytes: int,
         dedicated: bool = False,
         node_id: str = None,
+        execution_timeout_seconds: float | None = None,
     ):
         self.model_key = model_key
         self.replica_id = replica_id
@@ -41,6 +42,7 @@ class Deployment:
         self.size_bytes = size_bytes
         self.dedicated = dedicated
         self.node_id = node_id
+        self.execution_timeout_seconds = execution_timeout_seconds
         self.deployed = time.time()
 
     @property
@@ -67,6 +69,7 @@ class Deployment:
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
             "node_id": self.node_id,
+            "execution_timeout_seconds": self.execution_timeout_seconds,
             "deployed": self.deployed,
         }
 

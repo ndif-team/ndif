@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import ray
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from .....schema.deployment_config import DeploymentConfig
 from .....types import MODEL_KEY
 from .....providers.mailgun import MailgunProvider
 from ..cluster.node import CandidateLevel
@@ -139,8 +140,9 @@ class SchedulingActor:
                 "Change in model deployment state. Sending deployment request to Controller..."
             )
             # Update the controller with new model keys
+            configs = {key: DeploymentConfig(dedicated=True) for key in model_keys_to_event.keys()}
             result: Dict[str, str] = await self.controller_handle.deploy.remote(
-                list(model_keys_to_event.keys()), dedicated=True
+                configs
             )
             result = result["result"]
             result_by_model = {}

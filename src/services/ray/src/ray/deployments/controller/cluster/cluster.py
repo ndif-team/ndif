@@ -4,16 +4,16 @@ import traceback
 import uuid
 from typing import Any, Dict, List, Optional
 
-import ray
 from ray._private import services
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
+from .....schema.deployment_config import DeploymentConfig
 from .....types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .evaluator import ModelEvaluator
-from .node import CandidateLevel, Node, Resources
-from .utils import gib, gib_map
+from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
+from .utils import gib
 
 logger = logging.getLogger("ndif")
 
@@ -23,10 +23,12 @@ class Cluster:
         self,
         minimum_deployment_time_seconds: float = None,
         model_cache_percentage: float = 0.5,
+        default_padding_factor: float = 0.15,
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
-        self.evaluator = ModelEvaluator()
+        self.default_padding_factor = default_padding_factor
+        self.evaluator = ModelEvaluator(padding_factor=default_padding_factor)
 
         self._state = None
 
@@ -79,37 +81,46 @@ class Cluster:
             current_nodes.add(id)
 
             if id not in self.nodes:
-                total_gpus = node.resources_total["GPU"]
-                gpu_type = "TEST"
-                # gpu_type = node.resources_total["GPU_TYPE"]
-                gpu_memory_bytes = (
-                    (node.resources_total["cuda_memory_bytes"]) / total_gpus
-                )
+                total_gpus = int(node.resources_total["GPU"])
+                gpu_type = node.labels.get("ray.io/accelerator-type", "unknown")
+                per_gpu_memory_bytes = (
+                    node.resources_total["cuda_memory_bytes"]
+                ) / total_gpus
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
                 )
 
+                gpus = [
+                    GPU(index=i, memory_bytes=per_gpu_memory_bytes)
+                    for i in range(total_gpus)
+                ]
+
+                gpu_resources = GPUResources(
+                    gpu_type=gpu_type,
+                    gpus=gpus,
+                    available=list(range(total_gpus)),
+                    gpu_memory_available_bytes_by_id={
+                        i: int(per_gpu_memory_bytes)
+                        for i in range(total_gpus)
+                    },
+                )
+
+                cpu_resources = CPUResources(
+                    memory_bytes=cpu_memory_bytes,
+                    available_memory_bytes=cpu_memory_bytes,
+                )
+
                 self.nodes[id] = Node(
                     id,
                     name,
-                    Resources(
-                        total_gpus=total_gpus,
-                        gpu_type=gpu_type,
-                        gpu_memory_bytes=gpu_memory_bytes,
-                        cpu_memory_bytes=cpu_memory_bytes,
-                        available_cpu_memory_bytes=cpu_memory_bytes,
-                        available_gpus=list(range(int(total_gpus))),
-                        gpu_memory_available_bytes_by_id={
-                            gpu_id: int(gpu_memory_bytes)
-                            for gpu_id in range(int(total_gpus))
-                        },
-                    ),
+                    gpu_resources=gpu_resources,
+                    cpu_resources=cpu_resources,
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
                 )
 
             logger.info(
-                f"=> Node {name} updated with resources: {self.nodes[id].resources}"
+                f"=> Node {name} updated with gpu_resources: {self.nodes[id].gpu_resources}, cpu_resources: {self.nodes[id].cpu_resources}"
             )
 
         for node_id in self.nodes.keys():
@@ -144,36 +155,39 @@ class Cluster:
             avoid.add(replica_id)
 
         return target_replica_ids
-    
-    def deploy(self, model_keys: List[MODEL_KEY], dedicated: Optional[bool] = False, replicas: int = 1):
+
+    def deploy(self, configs: Dict[MODEL_KEY, DeploymentConfig]):
         """
         Deploy models on the cluster. This updates our internal state of the cluster.
 
         Args:
-            model_keys (List[MODEL_KEY]): List of model keys to deploy
-            dedicated (Optional[bool], optional): Whether to deploy the models as dedicated. Defaults to False.
-            replicas (int, optional): Number of replicas to deploy. Defaults to 1.
+            configs: Dict mapping model keys to their DeploymentConfig.
+
         Returns:
-            Dict[MODEL_KEY, str]: Dictionary of model keys and their deployment status
+            (results, change) tuple where:
+            - results: dict with "result" mapping model_key to status and "evictions" set
+            - change: bool indicating if cluster state changed
         """
-        
 
         logger.info(
-            f"Cluster deploying models: {model_keys}, dedicated: {dedicated}..."
+            f"Cluster deploying models: {[(key, cfg.dedicated, cfg.replicas) for key, cfg in configs.items()]}..."
         )
 
         results = {"result": {}, "evictions": set()}
 
         change = False
 
+        all_model_keys = set(configs.keys())
+
+        # Gather deployed and cached replica IDs per model
         deployed_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
-            model_key: set() for model_key in model_keys
+            model_key: set() for model_key in configs
         }
         cached_replica_ids_by_model: dict[MODEL_KEY, set[REPLICA_ID]] = {
-            model_key: set() for model_key in model_keys
+            model_key: set() for model_key in configs
         }
         for node in self.nodes.values():
-            for model_key in model_keys:
+            for model_key in configs:
                 for replica_id in node.deployments.get(model_key, {}):
                     deployed_replica_ids_by_model[model_key].add(replica_id)
                 for replica_id in node.cache.get(model_key, {}):
@@ -183,19 +197,15 @@ class Cluster:
             model_key: self.target_replica_ids_for(
                 cached_replica_ids_by_model[model_key],
                 deployed_replica_ids_by_model[model_key],
-                replicas,
+                config.replicas,
             )
-            for model_key in model_keys
+            for model_key, config in configs.items()
         }
 
-        # First get the size of the models in bytes
-        model_sizes_in_bytes = {
-            model_key: self.evaluator(model_key) for model_key in model_keys
-        }
-
-        
-
-        for model_key, size_in_bytes in list(model_sizes_in_bytes.items()):
+        # Evaluate model sizes
+        evaluated_configs = []
+        for model_key, config in configs.items():
+            size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor)
             if isinstance(size_in_bytes, Exception):
                 tb = "".join(
                     traceback.format_exception(
@@ -204,43 +214,44 @@ class Cluster:
                 )
                 logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
 
-                del model_sizes_in_bytes[model_key]
-
                 for replica_id in target_replica_ids_by_model[model_key]:
                     results["result"][(model_key, replica_id)] = f"{size_in_bytes}\n{tb}"
-                    
-        # If this is a new dedicated set of models, we need to evict the dedicated deployments not found in the new set.
-        if dedicated:
+            else:
+                evaluated_configs.append((model_key, config, size_in_bytes))
+
+        # If any config is dedicated, evict deprecated dedicated deployments not in the new set.
+        has_dedicated = any(cfg.dedicated for _, cfg, _ in evaluated_configs)
+        if has_dedicated:
             logger.info("=> Checking to evict deprecated dedicated deployments...")
 
             for node in self.nodes.values():
                 for model_key, model_map in list(node.deployments.items()):
                     for replica_id, deployment in list(model_map.items()):
-                        if deployment.dedicated and model_key not in model_sizes_in_bytes:
+                        if deployment.dedicated and model_key not in all_model_keys:
                             logger.info(
                                 f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
                             )
 
                             results["evictions"].add((model_key, replica_id))
 
-                            node.evict(model_key, replica_id, exclude=set(model_keys))
+                            node.evict(model_key, replica_id, exclude=all_model_keys)
 
                             change = True
 
         # Sort models by size in descending order (deploy biggest ones first)
-        sorted_models = sorted(
-            model_sizes_in_bytes.items(), key=lambda x: x[1], reverse=True
-        )
+        sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
 
         # Record already-deployed replicas in results (they need no action but
         # downstream consumers must know about them for routing).
-        for model_key in model_keys:
+        for model_key in configs:
             for replica_id in deployed_replica_ids_by_model[model_key]:
                 results["result"][(model_key, replica_id)] = CandidateLevel.DEPLOYED.name
 
         # For each model to deploy, find the best node to deploy it on, if possible.
-        for model_key, size_in_bytes in sorted_models:
+        for model_key, config, size_in_bytes in sorted_configs:
+            dedicated = config.dedicated
             size_gib = gib(size_in_bytes)
+
             logger.info(
                 f"=> Analyzing deployment of {model_key} with size {size_in_bytes} ({size_gib:.2f} GiB)..."
             )
@@ -315,7 +326,8 @@ class Cluster:
                         candidate,
                         size_in_bytes,
                         dedicated=dedicated,
-                        exclude=set(model_keys),
+                        exclude=all_model_keys,
+                        execution_timeout_seconds=config.execution_timeout_seconds,
                     )
                     results["evictions"].update(candidate.evictions)
                     change = True
@@ -349,15 +361,15 @@ class Cluster:
                     deployment = node.deployments.get(model_key, {}).get(replica_id)
                     if deployment is None:
                         continue
-                    logger.info(f"gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}")
+                    logger.info(f"gpu memory before evict: {node.gpu_resources.gpu_memory_available_bytes_by_id}")
                     node.evict(model_key, replica_id)
                     results[model_key, replica_id] = {
                         "status": "evicted",
                         "node": node.name,
                         "freed_gpus": len(deployment.gpus),
-                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024
+                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
                     }
-                    logger.info(f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}")
+                    logger.info(f"eviction results: {results}, gpu after evict: {node.gpu_resources.gpu_memory_available_bytes_by_id}")
                     change = True
                     found = True
                     break
@@ -366,7 +378,7 @@ class Cluster:
                     results[model_key, replica_id] = {
                         "status": "not_found",
                     }
-                
+
             return results, change
 
         for model_key in model_keys:
@@ -382,7 +394,7 @@ class Cluster:
                         continue
                     for deployment_replica_id, deployment in list(model_map.items()):
                         logger.info(
-                            f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.resources.gpu_memory_available_bytes_by_id}"
+                            f"evicting replica: {deployment_model_key} {deployment_replica_id} for node: {node.name} gpu memory before evict: {node.gpu_resources.gpu_memory_available_bytes_by_id}"
                         )
                         node.evict(deployment_model_key, deployment_replica_id)
                         results[deployment_model_key, deployment_replica_id] = {
@@ -392,7 +404,7 @@ class Cluster:
                             "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
                         }
                         logger.info(
-                            f"eviction results: {results}, gpu after evict: {node.resources.gpu_memory_available_bytes_by_id}"
+                            f"eviction results: {results}, gpu after evict: {node.gpu_resources.gpu_memory_available_bytes_by_id}"
                         )
                         change = True
                         found_any = True

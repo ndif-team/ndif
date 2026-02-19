@@ -5,6 +5,7 @@ import asyncio
 import click
 import ray
 
+from src.common.schema.deployment_config import DeploymentConfig
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
@@ -68,7 +69,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         check_prerequisites(broker_url=broker_url, ray_address=ray_address)
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
         click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
-        
+
         # TODO: revision bug ("main" is not always the default revision)
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
@@ -89,7 +90,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
             raise click.Abort()
 
         click.echo(f"Deploying {model_key} with {replicas} replicas...")
-        object_ref = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated, replicas=replicas)
+        object_ref = controller._deploy.remote({model_key: DeploymentConfig(dedicated=dedicated, replicas=replicas)})
         results = ray.get(object_ref)
         result_statuses = [
             (result_key, status)

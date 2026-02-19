@@ -4,7 +4,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from importlib.metadata import distributions, packages_distributions
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import ray
 from pydantic import BaseModel
@@ -14,6 +14,7 @@ from ....logging.logger import set_logger
 from ....providers.mailgun import MailgunProvider
 from ....providers.objectstore import ObjectStoreProvider
 from ....providers.socketio import SioProvider
+from ....schema.deployment_config import DeploymentConfig
 from ....types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
@@ -33,16 +34,18 @@ class _ControllerActor:
         self,
         deployments: List[MODEL_KEY],
         model_import_path: str,
-        execution_timeout_seconds: float,
+        default_execution_timeout_seconds: float,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
+        default_padding_factor: float,
     ):
         super().__init__()
 
         self.model_import_path = model_import_path
-        self.execution_timeout_seconds = execution_timeout_seconds
+        self.default_execution_timeout_seconds = default_execution_timeout_seconds
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
+        self.default_padding_factor = default_padding_factor
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
         self.replica_count = 1
@@ -53,15 +56,16 @@ class _ControllerActor:
         self.cluster = Cluster(
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
+            default_padding_factor=self.default_padding_factor,
         )
 
-        
-        self.cluster.update_nodes()
-        
-        if deployments and deployments != [""]:
-            self._deploy(deployments, dedicated=True)
 
-        
+        self.cluster.update_nodes()
+
+        if deployments and deployments != [""]:
+            self._deploy({key: DeploymentConfig(dedicated=True) for key in deployments})
+
+
 
         asyncio.create_task(self.check_nodes())
 
@@ -70,10 +74,11 @@ class _ControllerActor:
 
         state = {
             "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
-            "execution_timeout_seconds": self.execution_timeout_seconds,
+            "default_execution_timeout_seconds": self.default_execution_timeout_seconds,
             "model_cache_percentage": self.model_cache_percentage,
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "replica_count": self.replica_count,
+            "default_padding_factor": self.default_padding_factor,
         }
 
         if include_ray_state:
@@ -106,13 +111,15 @@ class _ControllerActor:
             )
             self.desired_replicas[model_key] = max(0, current_desired - count)
 
-    def _deploy(self, model_keys: List[MODEL_KEY], replicas: int = 1, dedicated: Optional[bool] = False):
-        self.logger.info(f"Deploying models: {model_keys}, dedicated: {dedicated}")
+    def _deploy(self, deployments: Union[MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]]):
+        configs = DeploymentConfig.normalize(deployments)
 
-        for model_key in model_keys:
-            self.desired_replicas[model_key] = replicas
+        self.logger.info(f"Deploying models: {[(key, cfg.dedicated, cfg.replicas) for key, cfg in configs.items()]}")
 
-        results, change = self.cluster.deploy(model_keys, dedicated=dedicated, replicas=replicas)
+        for model_key, config in configs.items():
+            self.desired_replicas[model_key] = config.replicas
+
+        results, change = self.cluster.deploy(configs)
         self._adjust_desired_for_cant_accommodate(results)
 
         if change:
@@ -120,10 +127,8 @@ class _ControllerActor:
 
         return results
 
-    async def deploy(
-        self, model_keys: List[MODEL_KEY], replicas: int = 1, dedicated: Optional[bool] = False, 
-    ):
-        return self._deploy(model_keys, replicas=replicas, dedicated=dedicated)
+    async def deploy(self, deployments: Union[MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]]):
+        return self._deploy(deployments)
 
     def evict(
         self,
@@ -181,7 +186,7 @@ class _ControllerActor:
 
         self.desired_replicas[model_key] = replicas
         deploy_results, deploy_change = self.cluster.deploy(
-            [model_key], dedicated=dedicated, replicas=replicas
+            {model_key: DeploymentConfig(dedicated=dedicated, replicas=replicas)}
         )
         self._adjust_desired_for_cant_accommodate(deploy_results)
 
@@ -205,7 +210,7 @@ class _ControllerActor:
 
         self.desired_replicas[model_key] = target_replicas
         deploy_results, deploy_change = self.cluster.deploy(
-            [model_key], dedicated=dedicated, replicas=target_replicas
+            {model_key: DeploymentConfig(dedicated=dedicated, replicas=target_replicas)}
         )
         self._adjust_desired_for_cant_accommodate(deploy_results)
 
@@ -341,11 +346,12 @@ class _ControllerActor:
 
         # Create models from disk - spawn monitoring tasks
         for name, deployment in deployment_delta.deployments_to_create:
+            execution_timeout = deployment.execution_timeout_seconds if deployment.execution_timeout_seconds is not None else self.default_execution_timeout_seconds
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
                 replica_id=deployment.replica_id,
                 gpu_mem_bytes_by_id=deployment.gpu_mem_bytes_by_id,
-                execution_timeout=self.execution_timeout_seconds,
+                execution_timeout=execution_timeout,
                 gpu_memory_fraction=deployment.gpu_memory_fraction,
             )
 
@@ -421,14 +427,14 @@ class _ControllerActor:
             model_map = node.deployments.get(deployment.model_key)
             if model_map and deployment.replica_id in model_map:
                 # Return GPUs to the node
-                node.resources.available_gpus.extend(deployment.gpus)
+                node.gpu_resources.release_memory(deployment.gpu_mem_bytes_by_id)
                 del model_map[deployment.replica_id]
                 if not model_map:
                     del node.deployments[deployment.model_key]
             cache_map = node.cache.get(deployment.model_key)
             if cache_map and deployment.replica_id in cache_map:
                 # Return CPU memory to the node
-                node.resources.available_cpu_memory_bytes += deployment.size_bytes
+                node.cpu_resources.release(deployment.size_bytes)
                 del cache_map[deployment.replica_id]
                 if not cache_map:
                     del node.cache[deployment.model_key]
@@ -450,7 +456,7 @@ class _ControllerActor:
         }
         self.logger.error(f"Deployment {model_key} {replica_id} not found")
         return replica_not_found
-    
+
     def get_deployment(self, model_key: MODEL_KEY) -> dict:
         deployments = {}
         for node in self.cluster.nodes.values():
@@ -607,9 +613,9 @@ class _ControllerActor:
                 "nodes": {
                     node_id: {
                         "resources": {
-                            "total_gpus": node.resources.total_gpus,
-                            "gpu_memory_bytes": node.resources.gpu_memory_bytes,
-                            "available_gpus": node.resources.available_gpus,
+                            "total_gpus": node.gpu_resources.total,
+                            "gpu_memory_bytes": node.gpu_resources.memory_bytes,
+                            "available_gpus": node.gpu_resources.available,
                         },
                         "deployments": {
                             f"{deployment.model_key}:{deployment.replica_id}": {
@@ -634,14 +640,17 @@ class ControllerDeploymentArgs(BaseModel):
     deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
     model_import_path: str = "src.ray.deployments.modeling.model:app"
-    execution_timeout_seconds: Optional[float] = float(
-        os.environ.get("NDIF_EXECUTION_TIMEOUT_SECONDS", "3600")
+    default_execution_timeout_seconds: Optional[float] = float(
+        os.environ.get("NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS", "3600")
     )
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")
     )
     model_cache_percentage: Optional[float] = float(
         os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
+    )
+    default_padding_factor: Optional[float] = float(
+        os.environ.get("NDIF_DEFAULT_PADDING_FACTOR", "0.15")
     )
 
 def app(**kwargs):
