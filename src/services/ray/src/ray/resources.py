@@ -28,7 +28,7 @@ def get_total_cudamemory_bytes(return_ids=False) -> int:
     return int(cudamemory)
 
 
-def main(head: bool, name: str = None):
+def main(head: bool, name: str | None = None):
     resources = {}
 
     if head:

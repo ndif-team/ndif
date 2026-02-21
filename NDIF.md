@@ -610,10 +610,11 @@ It is instantiated with configuration from environment variables:
 
 | Parameter | Env Variable | Default | Description |
 |-----------|-------------|---------|-------------|
-| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup |
-| `execution_timeout_seconds` | `NDIF_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request |
+| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (each gets default DeploymentConfig) |
 | `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a model stays deployed before eviction |
 | `model_cache_percentage` | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory available for warm cache |
+
+Execution timeout is per-deployment via `DeploymentConfig.execution_timeout_seconds` (default from `NDIF_EXECUTION_TIMEOUT_SECONDS`).
 
 **Key responsibilities:**
 
@@ -628,8 +629,9 @@ The `Cluster` class maintains the authoritative view of the cluster state:
 
 ```python
 class Cluster:
-    nodes: Dict[NODE_ID, Node]     # All GPU-bearing nodes
-    evaluator: ModelEvaluator       # Model size cache
+    nodes: Dict[NODE_ID, Node]     # GPU and CPU-bearing nodes
+    resource_evaluator: ResourceEvaluator  # Model size cache
+    # Head node is always excluded from model placement
 ```
 
 **Node discovery:**
@@ -637,28 +639,31 @@ class Cluster:
 The `update_nodes()` method polls Ray's `list_nodes()` API every 30 seconds (configurable via `NDIF_CONTROLLER_SYNC_INTERVAL_S`). It:
 
 1. Queries all nodes with `detail=True`
-2. Filters to nodes with GPUs (CPU-only nodes are ignored)
-3. For new nodes: creates a `Node` with resource tracking
-4. For removed nodes: purges all deployments and frees resources
+2. Includes both GPU and CPU-only nodes (CPU nodes support CPU-only deployments)
+3. Marks head node via `resources_total["head"]` (set by `ray start --head --resources`)
+4. For new nodes: creates a `Node` with `CPUResource` and `GPUResource` tracking
+5. For removed nodes: purges all deployments and frees resources
 
-Each `Node` tracks:
+Each `Node` tracks `cpu_resource` and `gpu_resource`:
 
 ```python
 @dataclass
-class Resources:
-    total_gpus: int                    # Total GPU count
-    gpu_type: str                      # GPU type identifier
-    gpu_memory_bytes: int              # Memory per GPU
+class CPUResource:
     cpu_memory_bytes: int              # CPU memory for caching (total * cache_percentage)
     available_cpu_memory_bytes: int    # Remaining CPU cache capacity
+
+@dataclass
+class GPUResource:
+    total_gpus: int                    # Total GPU count
+    gpu_memory_bytes: int              # Memory per GPU
     available_gpus: list[int]          # List of available GPU indices
 ```
 
 **Deployment algorithm:**
 
-When `deploy()` is called with a list of model keys:
+When `deploy()` is called with `Dict[MODEL_KEY, DeploymentConfig]`:
 
-1. **Evaluate** each model's size via `ModelEvaluator` (loads model on meta device, sums parameter sizes, adds 15% padding)
+1. **Evaluate** each model's size via `ResourceEvaluator` (loads model on meta device, sums parameter sizes, adds padding from `DeploymentConfig.padding_factor`)
 2. **Sort** models by size descending (deploy largest first)
 3. For each model, **evaluate every node** as a candidate:
 
@@ -749,12 +754,12 @@ class Deployment:
 
 The Controller enforces a **minimum deployment time** to prevent thrashing. Non-dedicated models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
 
-The eviction algorithm in `Node.evictions()`:
+The eviction algorithm in `Node.get_gpu_evictions()` (and `get_cpu_evictions()` for CPU-only deployments):
 
 ```python
-def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+def get_gpu_evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
     deployments = sorted(self.deployments.values(), key=lambda x: len(x.gpus))
-    gpus_needed = gpus_required - len(self.resources.available_gpus)
+    gpus_needed = gpus_required - len(self.gpu_resource.available_gpus)
     evictions = []
 
     for deployment in deployments:
@@ -861,7 +866,7 @@ async def __call__(self, request: BackendRequestModel) -> None:
 
         done, pending = await asyncio.wait(
             [job_task, kill_task],
-            timeout=self.execution_timeout,
+            timeout=self.execution_timeout_seconds,
             return_when=asyncio.FIRST_COMPLETED,
         )
         # Handle completion, cancellation, or timeout...
@@ -922,7 +927,7 @@ if kill_task in done:
     raise Exception("Your job was cancelled or preempted by the server.")
 elif timeout:
     kill_thread(self.execution_ident)
-    raise Exception(f"Job took longer than timeout: {self.execution_timeout} seconds")
+    raise Exception(f"Job took longer than timeout: {self.execution_timeout_seconds} seconds")
 ```
 
 `kill_thread()` uses `ctypes` to raise a `SystemExit` exception in the target thread. This is a last resort — it's not clean, but it prevents runaway execution from blocking the actor.
@@ -1486,7 +1491,7 @@ All configuration values are loaded from environment variables at session creati
 | `ndif stop` | Stop all running services |
 | `ndif restart [service]` | Restart services |
 | `ndif status` | Show cluster status (models, resources) |
-| `ndif deploy <model_key>` | Deploy a model to the cluster |
+| `ndif deploy --deployment-config <file>` | Deploy models from a JSON/YAML config file (per-model settings) |
 | `ndif evict <model_key>` | Evict a model from the cluster |
 | `ndif logs <service>` | View service logs |
 | `ndif queue` | Show queue state (pending requests per model) |
@@ -1619,7 +1624,7 @@ All configuration is via environment variables. Defaults are in `.env.example`:
 |----------|---------|-------------|
 | `NDIF_CONTROLLER_IMPORT_PATH` | `src.ray.deployments.controller.controller` | Python path to Controller module |
 | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup |
-| `NDIF_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request |
+| `NDIF_EXECUTION_TIMEOUT_SECONDS` | `3600` | Default execution timeout per request (per-deployment in DeploymentConfig) |
 | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time before a model can be evicted |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory for warm cache |
 | `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | Interval for node discovery polling |

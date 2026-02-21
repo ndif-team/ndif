@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install base utilities in single layer with cleanup
 RUN apt-get update -y \
-    && apt-get install -y build-essential \
+    && apt-get install -y build-essential git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

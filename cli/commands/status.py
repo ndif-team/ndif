@@ -222,7 +222,6 @@ def format_state_verbose(state: dict):
     cluster_data = state.get('cluster', {})
     metadata = {
         'datetime': state.get('datetime'),
-        'execution_timeout_seconds': state.get('execution_timeout_seconds'),
         'model_cache_percentage': state.get('model_cache_percentage'),
         'minimum_deployment_time_seconds': state.get('minimum_deployment_time_seconds'),
     }
@@ -242,15 +241,16 @@ def format_state_verbose(state: dict):
         click.echo(f"  Node: {node.get('name', 'unknown')}")
         click.echo(f"    ID: {node.get('id', 'unknown')[:16]}...")
 
-        resources = node.get('resources', {})
+        cpu_res = node.get('cpu_resource', {})
+        gpu_res = node.get('gpu_resource', {})
         click.echo("    Resources:")
-        click.echo(f"      GPU Type: {resources.get('gpu_type', 'unknown')}")
-        click.echo(f"      Total GPUs: {resources.get('total_gpus', 0)}")
-        click.echo(f"      Available GPUs: {resources.get('available_gpus', [])}")
-        click.echo(f"      GPU Memory: {resources.get('gpu_memory_bytes', 0) / (1024**3):.1f} GB")
-        click.echo(f"      CPU Memory Total: {resources.get('cpu_memory_bytes', 0) / (1024**3):.1f} GB")
-        click.echo(f"      CPU Memory Available: {resources.get('available_cpu_memory_bytes', 0) / (1024**3):.1f} GB")
+        click.echo(f"      Total GPUs: {gpu_res.get('total_gpus', 0)}")
+        click.echo(f"      Available GPUs: {gpu_res.get('available_gpus', [])}")
+        click.echo(f"      GPU Memory: {gpu_res.get('gpu_memory_bytes', 0) / (1024**3):.1f} GB")
+        click.echo(f"      CPU Memory Total: {cpu_res.get('cpu_memory_bytes', 0) / (1024**3):.1f} GB")
+        click.echo(f"      CPU Memory Available: {cpu_res.get('available_cpu_memory_bytes', 0) / (1024**3):.1f} GB")
 
+        # TODO(cadentj): Execution timeout was moved to DeploymentConfig, should maybe list here?
         deployments = node.get('deployments', [])
         click.echo(f"    Deployments ({node.get('num_deployments', 0)}):")
         if deployments:
@@ -277,14 +277,14 @@ def format_state_verbose(state: dict):
 
         click.echo()
 
-    # Evaluator cache
-    evaluator = state.get('evaluator', {})
-    eval_cache = evaluator.get('cache', {})
+    # Resource evaluator cache
+    resource_evaluator = cluster_data.get('resource_evaluator', state.get('evaluator', {}))
+    eval_cache = resource_evaluator.get('cache', {})
     click.echo(f"Evaluator Cache ({len(eval_cache)} models):")
     if eval_cache:
         for model_key, model_info in list(eval_cache.items())[:5]:  # Show first 5
             repo_id = _extract_repo_id_from_model_key(model_key)
-            size_bytes = model_info.get('size_in_bytes', 0)
+            size_bytes = model_info.get('size_in_bytes_pre_padding', 0)
             click.echo(f"  • {repo_id}: {size_bytes / (1024**3):.2f} GB")
         if len(eval_cache) > 5:
             click.echo(f"  ... and {len(eval_cache) - 5} more")

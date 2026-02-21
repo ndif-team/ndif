@@ -5,6 +5,8 @@ from typing import Callable
 from accelerate.hooks import remove_hook_from_module
 from huggingface_hub import scan_cache_dir
 from huggingface_hub.utils._cache_manager import CachedRepoInfo
+import threading
+import ctypes
 
 import logging
 
@@ -94,9 +96,6 @@ def get_downloaded_models():
 
     return [repo.repo_id for repo in hf_info.repos if downloaded(repo)]
 
-
-import threading
-import ctypes
 
 
 def kill_thread(ident: int, exc_type=SystemExit):
