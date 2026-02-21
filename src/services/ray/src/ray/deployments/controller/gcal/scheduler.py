@@ -2,14 +2,14 @@ import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import ray
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from .....schema.deployment_config import DeploymentConfig
 from .....types import MODEL_KEY
 from .....providers.mailgun import MailgunProvider
+from .....schema import DeploymentConfig
 from ..cluster.node import CandidateLevel
 
 logger = logging.getLogger("ndif")
@@ -140,10 +140,8 @@ class SchedulingActor:
                 "Change in model deployment state. Sending deployment request to Controller..."
             )
             # Update the controller with new model keys
-            configs = {key: DeploymentConfig(dedicated=True) for key in model_keys_to_event.keys()}
-            result: Dict[str, str] = await self.controller_handle.deploy.remote(
-                configs
-            )
+            models = [DeploymentConfig(model_key=mk, dedicated=True) for mk in model_keys_to_event.keys()]
+            result: Dict[str, str] = await self.controller_handle.deploy.remote(models)
             result = result["result"]
             error_messages = {
                 model_key: value
