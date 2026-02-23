@@ -4,6 +4,7 @@ import click
 import ray
 import asyncio
 
+from src.common.schema.deployment_config import DeploymentConfig
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
@@ -49,7 +50,7 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, br
         controller = get_controller_actor_handle()
 
         click.echo(f"Deploying {model_key}...")
-        object_ref = controller._deploy.remote(model_keys=[model_key], dedicated=dedicated)
+        object_ref = controller._deploy.remote({model_key: DeploymentConfig(dedicated=dedicated)})
         results = ray.get(object_ref)
         result_status = results["result"][model_key]
 

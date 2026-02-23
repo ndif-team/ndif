@@ -218,6 +218,12 @@ modules:
   - name: __future__
     strict: false
 
+  - name: diffusers
+    strict: false
+
+  - name: transformers.modeling_utils
+    strict: false
+
 # =============================================================================
 # DESERIALIZATION MODULES
 # =============================================================================

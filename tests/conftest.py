@@ -40,8 +40,7 @@ def configure_nnsight(ndif_host):
 
 def pytest_collection_modifyitems(config, items):
     """Skip remote tests unless --run-remote is specified."""
-    if config.getoption("--run-remote"):
-        return
+    run_remote = config.getoption("--run-remote")
 
     skip_remote = pytest.mark.skip(reason="Need --run-remote option to run")
 
@@ -62,9 +61,16 @@ def pytest_collection_modifyitems(config, items):
         "TestAdhocModules",
         "TestEdgeCases",
         "TestPrintAndDebug",
+        # Fractional GPU / hotswapping tests
+        "TestFractionalSingleGPU",
+        "TestMultiGPUDeployment",
+        "TestEvictionTransitions",
+        "TestHotswapping",
+        "TestGPUResourceAccounting",
     }
 
     for item in items:
         # Skip tests in classes that need remote execution
         if item.cls and item.cls.__name__ in remote_test_classes:
-            item.add_marker(skip_remote)
+            if not run_remote:
+                item.add_marker(skip_remote)
