@@ -91,10 +91,17 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(self, deployments: Union[MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]]):
+    def _deploy(
+        self,
+        deployments: Union[
+            MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
+        ],
+    ):
         configs = DeploymentConfig.normalize(deployments)
 
-        self.logger.info(f"Deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}")
+        self.logger.info(
+            f"Deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}"
+        )
 
         results, change = self.cluster.deploy(configs)
 
@@ -103,7 +110,12 @@ class _ControllerActor:
 
         return results
 
-    async def deploy(self, deployments: Union[MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]]):
+    async def deploy(
+        self,
+        deployments: Union[
+            MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
+        ],
+    ):
         return self._deploy(deployments)
 
     def evict(self, model_keys: List[MODEL_KEY]):
@@ -227,7 +239,11 @@ class _ControllerActor:
 
         # Create models from disk - spawn monitoring tasks
         for name, deployment in deployment_delta.deployments_to_create:
-            execution_timeout = deployment.execution_timeout_seconds if deployment.execution_timeout_seconds is not None else self.default_execution_timeout_seconds
+            execution_timeout = (
+                deployment.execution_timeout_seconds
+                if deployment.execution_timeout_seconds is not None
+                else self.default_execution_timeout_seconds
+            )
             deployment_args = BaseModelDeploymentArgs(
                 model_key=deployment.model_key,
                 execution_timeout=execution_timeout,
@@ -456,13 +472,18 @@ class _ControllerActor:
                 "nodes": {
                     node_id: {
                         "resources": {
-                            "total_gpus": node.gpu_resources.total,
-                            "gpu_memory_bytes": node.gpu_resources.memory_bytes,
-                            "available_gpus": node.gpu_resources.available,
+                            "gpu_details": [
+                                {
+                                    "index": gpu.index,
+                                    "memory_bytes": gpu.memory_bytes,
+                                    "available_memory_bytes": gpu.available_memory_bytes,
+                                }
+                                for gpu in node.gpu_resources.gpus
+                            ],
                         },
                         "deployments": {
                             model_key: {
-                                "gpus_required": len(deployment.gpus),
+                                "gpus": deployment.gpus,
                             }
                             for model_key, deployment in node.deployments.items()
                         },

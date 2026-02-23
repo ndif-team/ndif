@@ -82,9 +82,9 @@ class Cluster:
             if id not in self.nodes:
                 total_gpus = int(node.resources_total["GPU"])
                 gpu_type = node.labels.get("ray.io/accelerator-type", "unknown")
-                per_gpu_memory_bytes = (
+                per_gpu_memory_bytes = int(
                     node.resources_total["cuda_memory_bytes"]
-                ) / total_gpus
+                ) // total_gpus
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
@@ -98,7 +98,6 @@ class Cluster:
                 gpu_resources = GPUResources(
                     gpu_type=gpu_type,
                     gpus=gpus,
-                    available=list(range(total_gpus)),
                 )
 
                 cpu_resources = CPUResources(
@@ -201,10 +200,10 @@ class Cluster:
                 )
 
                 # Evaluate the node to see if the model can be deployed on it.
-                candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated)
+                candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated, exclude=all_model_keys)
 
                 logger.info(
-                    f"==> Candidate: {candidate.candidate_level.name}, gpus_required: {candidate.gpus_required}, evictions: {candidate.evictions}"
+                    f"==> Candidate: {candidate.candidate_level.name}, gpus: {candidate.gpus}, evictions: {candidate.evictions}"
                 )
 
                 # If the model is already deployed on this node, we can stop looking for nodes.
@@ -290,6 +289,7 @@ class Cluster:
                         "status": "evicted",
                         "node": node.name,
                         "freed_gpus": len(deployment.gpus),
+                        "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
                         "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
                     }
                     change = True

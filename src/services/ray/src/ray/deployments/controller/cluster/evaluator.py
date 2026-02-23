@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Dict, Union, Any
 
 import torch
@@ -79,7 +80,7 @@ class ModelEvaluator:
             logger.info(f"=> New model evaluated: {model_key} base_size: {base_size_bytes}")
 
         entry = self.cache[model_key]
-        padded_size = entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding
+        padded_size = math.ceil(entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding)
 
         logger.info(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding})")
 
