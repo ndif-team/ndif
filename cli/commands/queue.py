@@ -107,7 +107,12 @@ def format_queue_state_simple(queue_data: dict):
     processors = queue_data.get('processors', {})
     num_processors = len(processors)
     total_queue_depth = sum(len(p.get('request_ids', [])) for p in processors.values())
-    executing_requests = sum(1 for p in processors.values() if p.get('current_request_id') is not None)
+    executing_requests = sum(
+        1
+        for p in processors.values()
+        if p.get('in_flight', 0) > 0 or (p.get('current_request_ids') or {})
+    )
+
 
     click.echo("Queue Overview:")
     click.echo(f"  Active Processors: {num_processors}")
@@ -133,11 +138,14 @@ def format_queue_state_simple(queue_data: dict):
 def _print_processor(processor: dict):
     """Print a single processor's state."""
     status = processor.get('status', 'unknown')
-    current_request = processor.get('current_request_id')
+    # current_request = processor.get('current_request_id')
+    current_request_ids = processor.get('current_request_ids', {})
+    current_request_started_ats = processor.get('current_request_started_ats', {})
     dedicated = processor.get('dedicated')
     request_ids = processor.get('request_ids', [])
     status_changed_at = processor.get('status_changed_at')
-    current_request_started_at = processor.get('current_request_started_at')
+    # current_request_started_at = processor.get('current_request_started_at')
+    replica_count = processor.get('replica_count')
 
     # Extract repo_id from model_key for display
     repo_id = _extract_repo_id_from_model_key(processor.get('model_key', 'unknown'))
@@ -160,18 +168,24 @@ def _print_processor(processor: dict):
         duration = str(timedelta(seconds=int(time.time() - status_changed_at)))
         status_display = f"{status_display} (for {duration})"
     click.echo(f"    Status: {status_display}")
+    if replica_count is not None:
+        click.echo(f"    Replica Count: {replica_count}")
 
     if dedicated is not None:
         click.echo(f"    Dedicated: {'Yes' if dedicated else 'No'}")
 
     click.echo(f"    Queue Depth: {len(request_ids)}")
 
-    if current_request:
-        exec_display = current_request
-        if current_request_started_at:
-            exec_duration = str(timedelta(seconds=int(time.time() - current_request_started_at)))
-            exec_display = f"{exec_display} (executing for {exec_duration})"
-        click.echo(f"    Currently Executing: {exec_display}")
+    if current_request_ids:
+        exec_items = []
+        for replica_id, request_id in current_request_ids.items():
+            exec_display = request_id
+            start_at = current_request_started_ats.get(replica_id)
+            if start_at:
+                exec_duration = str(timedelta(seconds=int(time.time() - start_at)))
+                exec_display = f"{exec_display} (executing for {exec_duration})"
+            exec_items.append(f"replica {replica_id}: {exec_display}")
+        click.echo(f"    Currently Executing: {', '.join(exec_items)}")
 
     if request_ids:
         # Show first few request IDs

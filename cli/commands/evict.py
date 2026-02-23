@@ -15,7 +15,9 @@ from ..lib.session import get_env
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all deployments')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str):
+@click.option('--replica-id', default=None, type=str, help='Replica UID to evict (default: None, evict all replicas)')
+
+def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, broker_url: str, replica_id: str | None):
     """Evict (remove) a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -27,7 +29,8 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         ndif evict gpt2
         ndif evict meta-llama/Llama-2-7b-hf --revision main
         ndif evict --all                               # Evict all deployments
-        ndif evict openai-community/gpt2 --ray-address ray://localhost:10001
+        ndif evict openai-community/gpt2 --ray-address ray://localhost:10001 
+        ndif evict openai-community/gpt2 --replica-id <replica_uid> --ray-address ray://localhost:10001
     """
     # Use session defaults if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -46,6 +49,10 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
             click.echo("✗ Error: Cannot use both CHECKPOINT and --all flag", err=True)
             raise click.Abort()
 
+        if evict_all and replica_id is not None:
+            click.echo("✗ Error: Cannot use both --all and --replica-id flag", err=True)
+            raise click.Abort()
+
         # Connect to Ray (suppress verbose output)
         click.echo(f"Connecting to Ray at {ray_address}...")
         ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
@@ -55,6 +62,7 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         controller = get_controller_actor_handle()
 
         # Determine which model keys to evict
+        replica_keys = None
         if evict_all:
             # Get all deployed models from status
             click.echo("Fetching all deployments...")
@@ -80,6 +88,9 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
             # TODO: revision bug ("main" is not always the default revision)
             model_key = get_model_key(checkpoint, revision)
 
+            if replica_id is not None:
+                replica_keys = [(model_key, replica_id)]
+
             model_keys = [model_key]
 
         # Evict the models
@@ -88,7 +99,9 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         else:
             click.echo(f"Evicting {len(model_keys)} model(s)...")
 
-        object_ref = controller.evict.remote(model_keys=model_keys)
+        object_ref = controller.evict.remote(
+            model_keys=model_keys, replica_keys=replica_keys
+        )
         results = ray.get(object_ref)
 
         # Display results
@@ -97,7 +110,9 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
         evicted_count = 0
         not_found_count = 0
 
-        for model_key, result in results.items():
+        for result_key, result in results.items():
+            model_key, result_replica_id = result_key
+            has_replica_id = result_replica_id is not None
             # Extract repo_id for display from deployments dict if available
             if evict_all:
                 repo_id = next(
@@ -109,24 +124,36 @@ def evict(checkpoint: str, revision: str, evict_all: bool, ray_address: str, bro
 
             if result["status"] == "not_found":
                 if len(model_keys) == 1:
-                    click.echo(f"✗ {repo_id} not found")
+                    if has_replica_id:
+                        click.echo(f"✗ {repo_id} (replica {result_replica_id}) not found")
+                    else:
+                        click.echo(f"✗ {repo_id} not found")
                 else:
                     click.echo(f"  ✗ {repo_id}: not found")
                 not_found_count += 1
             else:
                 if len(model_keys) == 1:
-                    click.echo(f"✓ Evicted {repo_id}")
+                    if has_replica_id:
+                        click.echo(f"✓ Evicted {repo_id} (replica {result_replica_id})")
+                    else:
+                        click.echo(f"✓ Evicted {repo_id}")
                     click.echo(f"  GPUs freed: {result['freed_gpus']}")
                     click.echo(f"  Memory freed: {round(result['freed_memory_gbs'], 4)} GB")
                 else:
-                    click.echo(f"  ✓ {repo_id}: evicted")
+                    if has_replica_id:
+                        click.echo(f"  ✓ {repo_id} (replica {result_replica_id}): evicted")
+                    else:
+                        click.echo(f"  ✓ {repo_id}: evicted")
 
                 total_gpus_freed += result['freed_gpus']
                 total_memory_freed += result['freed_memory_gbs']
                 evicted_count += 1
 
                 # Notify dispatcher about eviction
-                asyncio.run(notify_dispatcher(broker_url, "evict", model_key))
+                if has_replica_id:
+                    asyncio.run(notify_dispatcher(broker_url, "evict", model_key, replica_id=result_replica_id))
+                else:
+                    asyncio.run(notify_dispatcher(broker_url, "evict", model_key))
 
         # Summary (only for multiple models)
         if len(model_keys) > 1:

@@ -9,7 +9,7 @@ import ray
 from .....providers.mailgun import MailgunProvider
 from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
-from .....types import MODEL_KEY
+from .....types import MODEL_KEY, REPLICA_ID
 from ...modeling.base import BaseModelDeploymentArgs, ModelActor
 
 logger = logging.getLogger("ndif")
@@ -25,6 +25,7 @@ class Deployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
         deployment_level: DeploymentLevel,
         gpus: dict[int, int],
         size_bytes: int,
@@ -33,6 +34,7 @@ class Deployment:
         execution_timeout_seconds: float | None = None,
     ):
         self.model_key = model_key
+        self.replica_id = replica_id
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
@@ -43,7 +45,7 @@ class Deployment:
 
     @property
     def name(self):
-        return f"ModelActor:{self.model_key}"
+        return f"ModelActor:{self.model_key}:{self.replica_id}"
 
     @property
     def actor(self):
@@ -54,6 +56,7 @@ class Deployment:
 
         return {
             "model_key": self.model_key,
+            "replica_id": self.replica_id,
             "deployment_level": self.deployment_level.value,
             "gpus": self.gpus,
             "size_bytes": self.size_bytes,

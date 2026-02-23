@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set
 
-from .....types import MODEL_KEY, NODE_ID
+from .....types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .deployment import Deployment, DeploymentLevel
 
 logger = logging.getLogger("ndif")
@@ -25,7 +25,7 @@ class Candidate:
         self,
         candidate_level: CandidateLevel,
         gpus: Optional[Dict[int, int]] = None,
-        evictions: Optional[List[MODEL_KEY]] = None,
+        evictions: Optional[List[tuple[MODEL_KEY, REPLICA_ID]]] = None,
     ):
         self.candidate_level = candidate_level
         self.gpus = gpus if gpus else {}
@@ -120,11 +120,63 @@ class Node:
         self.cpu_resources = cpu_resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
 
-        self.deployments: Dict[MODEL_KEY, Deployment] = {}
-        self.cache: Dict[MODEL_KEY, Deployment] = {}
+        self.deployments: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]] = {}
+        self.cache: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]] = {}
+
+    def _get_from_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+    ) -> Optional[Deployment]:
+        return store.get(model_key, {}).get(replica_id)
+
+    def _set_in_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
+        deployment: Deployment,
+    ) -> None:
+        store.setdefault(deployment.model_key, {})[deployment.replica_id] = deployment
+
+    def _remove_from_map(
+        self,
+        store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]],
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+    ) -> Optional[Deployment]:
+        model_map = store.get(model_key)
+        if not model_map:
+            return None
+        deployment = model_map.pop(replica_id, None)
+        if not model_map:
+            del store[model_key]
+        return deployment
+
+    def _flatten_map(
+        self, store: Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]]
+    ) -> List[Deployment]:
+        return [
+            deployment
+            for model_map in store.values()
+            for deployment in model_map.values()
+        ]
 
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the node."""
+
+        deployments_state: List[Dict[str, Any]] = []
+        num_deployments = 0
+        for model_map in self.deployments.values():
+            for deployment in model_map.values():
+                deployments_state.append(deployment.get_state())
+                num_deployments += 1
+
+        cache_state: List[Dict[str, Any]] = []
+        cache_size = 0
+        for model_map in self.cache.values():
+            for deployment in model_map.values():
+                cache_state.append(deployment.get_state())
+                cache_size += deployment.size_bytes
 
         return {
             "id": self.id,
@@ -144,19 +196,16 @@ class Node:
                     for gpu in self.gpu_resources.gpus
                 ],
             },
-            "deployments": [
-                deployment.get_state() for deployment in self.deployments.values()
-            ],
-            "num_deployments": len(self.deployments),
-            "cache": [deployment.get_state() for deployment in self.cache.values()],
-            "cache_size": sum(
-                [deployment.size_bytes for deployment in self.cache.values()]
-            ),
+            "deployments": deployments_state,
+            "num_deployments": num_deployments,
+            "cache": cache_state,
+            "cache_size": cache_size,
         }
 
     def deploy(
         self,
         model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
         candidate: Candidate,
         size_bytes: int,
         dedicated: Optional[bool] = None,
@@ -164,23 +213,27 @@ class Node:
         execution_timeout_seconds: Optional[float] = None,
     ):
         # Evict the models from GPU that are needed to deploy the new model
-        for eviction in candidate.evictions:
-            self.evict(eviction, exclude=exclude)
+        for eviction_model_key, eviction_replica_id in candidate.evictions:
+            self.evict(eviction_model_key, eviction_replica_id, exclude=exclude)
 
         self.gpu_resources.allocate(candidate.gpus)
 
-        self.deployments[model_key] = Deployment(
-            model_key=model_key,
-            deployment_level=DeploymentLevel.HOT,
-            gpus=candidate.gpus,
-            size_bytes=size_bytes,
-            dedicated=dedicated,
-            node_id=self.id,
-            execution_timeout_seconds=execution_timeout_seconds,
+        self._set_in_map(
+            self.deployments,
+            Deployment(
+                model_key=model_key,
+                replica_id=replica_id,
+                deployment_level=DeploymentLevel.HOT,
+                gpus=candidate.gpus,
+                size_bytes=size_bytes,
+                dedicated=dedicated,
+                node_id=self.id,
+                execution_timeout_seconds=execution_timeout_seconds,
+            ),
         )
 
-        if model_key in self.cache:
-            del self.cache[model_key]
+        if self._get_from_map(self.cache, model_key, replica_id) is not None:
+            self._remove_from_map(self.cache, model_key, replica_id)
 
             # Return its cpu memory to the node
             self.cpu_resources.release(size_bytes)
@@ -200,7 +253,9 @@ class Node:
             return []
 
         evictions = []
-        for deployment in sorted(self.cache.values(), key=lambda x: x.size_bytes):
+        for deployment in sorted(
+            self._flatten_map(self.cache), key=lambda x: x.size_bytes
+        ):
             if exclude is not None and deployment.model_key in exclude:
                 continue
 
@@ -212,42 +267,60 @@ class Node:
 
         return None
 
-    def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
-        deployment = self.deployments[model_key]
+    def evict(
+        self,
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+        exclude: Optional[Set[MODEL_KEY]] = None,
+    ):
+        deployment = self._get_from_map(self.deployments, model_key, replica_id)
+        if deployment is None:
+            raise KeyError(f"Deployment not found: {model_key}:{replica_id}")
 
         self.gpu_resources.release(deployment.gpus)
 
         logger.info(
-            f"Evicting {model_key} from {self.name}. "
+            f"Evicting {model_key}:{replica_id} from {self.name}. "
             f"CPU memory needed: {deployment.size_bytes - self.cpu_resources.available_memory_bytes} "
             f"= {deployment.size_bytes} - {self.cpu_resources.available_memory_bytes}"
         )
 
-        cache_evictions = self.find_cache_evictions(deployment.size_bytes, exclude=exclude)
+        cache_evictions = self.find_cache_evictions(
+            deployment.size_bytes, exclude=exclude
+        )
 
         if cache_evictions is not None:
             for eviction_deployment in cache_evictions:
                 logger.info(
-                    f"Evicting {eviction_deployment.model_key} from cache in order to make room for {model_key}"
+                    f"Evicting {eviction_deployment.model_key}:{eviction_deployment.replica_id} "
+                    f"from cache in order to make room for {model_key}"
                 )
-                del self.cache[eviction_deployment.model_key]
+                self._remove_from_map(
+                    self.cache,
+                    eviction_deployment.model_key,
+                    eviction_deployment.replica_id,
+                )
                 self.cpu_resources.release(eviction_deployment.size_bytes)
 
-        del self.deployments[model_key]
+        self._remove_from_map(self.deployments, model_key, replica_id)
 
         if cache_evictions is not None:
             self.cpu_resources.allocate(deployment.size_bytes)
 
-            self.cache[model_key] = Deployment(
-                model_key=deployment.model_key,
-                deployment_level=DeploymentLevel.WARM,
-                gpus={},
-                size_bytes=deployment.size_bytes,
-                dedicated=False,
-                node_id=self.id,
+            self._set_in_map(
+                self.cache,
+                Deployment(
+                    model_key=deployment.model_key,
+                    replica_id=replica_id,
+                    deployment_level=DeploymentLevel.WARM,
+                    gpus={},
+                    size_bytes=deployment.size_bytes,
+                    dedicated=False,
+                    node_id=self.id,
+                ),
             )
 
-    def evictable(self, deployment: Deployment, dedicated: bool) -> bool:
+    def _is_evictable(self, deployment: Deployment, dedicated: bool) -> bool:
         """Check if a deployment can be evicted."""
         if deployment.dedicated:
             return False
@@ -265,7 +338,7 @@ class Node:
         per_gpu_bytes: int,
         dedicated: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
-    ) -> tuple[List[MODEL_KEY], Dict[int, int]]:
+    ) -> tuple[List[tuple[MODEL_KEY, REPLICA_ID]], Dict[int, int]]:
         """Find cheapest evictions to make gpus_needed GPUs each have per_gpu_bytes available.
 
         Handles both single-GPU and multi-GPU uniformly: a fractional model is
@@ -288,24 +361,26 @@ class Node:
                allocation dict.
 
         Returns:
-            (evictions, gpus) tuple where evictions is a list of model keys to evict
-            and gpus is the planned allocation (gpu_index -> bytes).
+            (evictions, gpus) tuple where evictions is a list of (model_key, replica_id)
+            tuples to evict and gpus is the planned allocation (gpu_index -> bytes).
             Returns ([], {}) if the node can't accommodate.
         """
         # Build per-GPU evictable occupant mapping
         occupants_by_gpu: Dict[int, List[tuple]] = {
             gpu.index: [] for gpu in self.gpu_resources.gpus
         }
-        for mk, dep in self.deployments.items():
-            if exclude is not None and mk in exclude:
+        for dep in self._flatten_map(self.deployments):
+            if exclude is not None and dep.model_key in exclude:
                 continue
-            if not self.evictable(dep, dedicated):
+            if not self._is_evictable(dep, dedicated):
                 continue
             for gpu_idx, alloc_bytes in dep.gpus.items():
-                occupants_by_gpu[gpu_idx].append((mk, alloc_bytes))
+                occupants_by_gpu[gpu_idx].append(
+                    (dep.model_key, dep.replica_id, alloc_bytes)
+                )
 
         # For each GPU, compute cheapest eviction plan to reach per_gpu_bytes available
-        gpu_plans: List[tuple[int, List[MODEL_KEY]]] = []
+        gpu_plans: List[tuple[int, List[tuple[MODEL_KEY, REPLICA_ID]]]] = []
         for gpu in self.gpu_resources.gpus:
             needed = per_gpu_bytes - gpu.available_memory_bytes
             if needed <= 0:
@@ -313,11 +388,11 @@ class Node:
                 continue
 
             # Sort occupants by bytes ascending (cheapest evictions first)
-            occupants = sorted(occupants_by_gpu[gpu.index], key=lambda x: x[1])
+            occupants = sorted(occupants_by_gpu[gpu.index], key=lambda x: x[2])
             freed = 0
             eviction_keys = []
-            for mk, alloc_bytes in occupants:
-                eviction_keys.append(mk)
+            for mk, rid, alloc_bytes in occupants:
+                eviction_keys.append((mk, rid))
                 freed += alloc_bytes
                 if freed >= needed:
                     break
@@ -332,7 +407,7 @@ class Node:
         gpu_plans.sort(key=lambda x: len(x[1]))
 
         # Collect evictions and build allocation from cheapest gpus_needed plans
-        all_evictions: set[MODEL_KEY] = set()
+        all_evictions: set[tuple[MODEL_KEY, REPLICA_ID]] = set()
         gpus: Dict[int, int] = {}
         for gpu_index, eviction_keys in gpu_plans[:gpus_needed]:
             all_evictions.update(eviction_keys)
@@ -343,17 +418,19 @@ class Node:
     def evaluate(
         self,
         model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
         model_size_in_bytes: int,
         dedicated: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
     ) -> Candidate:
-        if model_key in self.deployments:
+        deployment = self._get_from_map(self.deployments, model_key, replica_id)
+        if deployment is not None:
             if dedicated:
-                self.deployments[model_key].dedicated = True
+                deployment.dedicated = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
-        cached = model_key in self.cache
+        cached = self._get_from_map(self.cache, model_key, replica_id) is not None
 
         # Determine per-GPU requirements.
         # Multi-GPU models are treated as consuming 100% of each GPU they span.
@@ -396,7 +473,7 @@ class Node:
         )
 
     def purge(self):
-        for deployment in self.deployments.values():
+        for deployment in self._flatten_map(self.deployments):
             deployment.delete()
-        for cache in self.cache.values():
+        for cache in self._flatten_map(self.cache):
             cache.delete()
