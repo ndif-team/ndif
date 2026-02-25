@@ -23,6 +23,7 @@ from opentelemetry import trace
 
 from ....logging import set_logger
 from ....metrics import (
+    ExecutionTimeMetric,
     GPUMemMetric,
     ModelLoadTimeMetric,
     RequestResponseSizeMetric,
@@ -461,6 +462,7 @@ class BaseModelDeployment:
 
             RequestResponseSizeMetric.update(self.request, result_object._size)
             GPUMemMetric.update(self.request, gpu_mem)
+            ExecutionTimeMetric.update(self.request, execution_time_s)
 
     def exception(self, exception: Exception) -> None:
         """Handles exceptions that occur during model execution.
