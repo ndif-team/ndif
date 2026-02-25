@@ -8,6 +8,9 @@ from typing import Dict, Optional, Any
 import time
 from functools import wraps
 
+from opentelemetry import trace
+from opentelemetry.trace import format_trace_id, format_span_id
+
 # Environment variables for Loki configuration
 LOKI_URL = os.environ.get("LOKI_URL")
 LOKI_RETRY_COUNT = int(
@@ -61,6 +64,16 @@ class CustomJSONFormatter(logging.Formatter):
         # Add code location
         record.code_file = record.pathname
         record.code_line = record.lineno
+
+        # Add trace context if available
+        span = trace.get_current_span()
+        span_context = span.get_span_context()
+        if span_context and span_context.is_valid:
+            record.trace_id = format_trace_id(span_context.trace_id)
+            record.span_id = format_span_id(span_context.span_id)
+        else:
+            record.trace_id = ""
+            record.span_id = ""
 
         # Format the log record using the standard logging format
         return super().format(record)
@@ -134,18 +147,22 @@ def set_logger(service_name) -> logging.Logger:
             "file": "%(code_file)s",
             "line": %(code_line)d
         },
+        "trace": {
+            "trace_id": "%(trace_id)s",
+            "span_id": "%(span_id)s"
+        },
         "message": "%(message)s"
     }"""
 
     # Simpler format for console output with filename and process id
-    console_format = "[%(asctime)s] [%(process)d] [%(levelname)s] [%(pathname)s:%(lineno)d] %(message)s"
+    console_format = "[%(asctime)s] [%(process)d] [%(levelname)s] [trace:%(trace_id)s] [%(pathname)s:%(lineno)d] %(message)s"
     # Create formatters for different outputs
     json_formatter = CustomJSONFormatter(
         fmt=json_format, service_name=service_name, datefmt="%Y-%m-%d %H:%M:%S.%f%z"
     )
 
-    console_formatter = logging.Formatter(
-        fmt=console_format, datefmt="%Y-%m-%d %H:%M:%S"
+    console_formatter = CustomJSONFormatter(
+        fmt=console_format, service_name=service_name, datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     # Set up console handler for local debugging

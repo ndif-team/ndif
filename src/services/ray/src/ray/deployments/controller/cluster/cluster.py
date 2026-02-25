@@ -9,7 +9,10 @@ from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
+from opentelemetry import trace
+
 from .....schema.deployment_config import DeploymentConfig
+from .....tracing import trace_span
 from .....types import MODEL_KEY, NODE_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
@@ -137,131 +140,145 @@ class Cluster:
             - change: bool indicating if cluster state changed
         """
 
-        logger.info(
-            f"Cluster deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}..."
-        )
-
-        results = {"result": {}, "evictions": set()}
-
-        change = False
-
-        all_model_keys = set(configs.keys())
-
-        # First get the size of the models in bytes
-        evaluated_configs = []
-        for model_key, config in configs.items():
-            size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor)
-            if isinstance(size_in_bytes, Exception):
-                tb = "".join(
-                    traceback.format_exception(
-                        type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__
-                    )
-                )
-                logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
-                results["result"][model_key] = f"{size_in_bytes}\n{tb}"
-            else:
-                evaluated_configs.append((model_key, config, size_in_bytes))
-
-        # If any config is dedicated, evict deprecated dedicated deployments not in the new set.
-        has_dedicated = any(cfg.dedicated for _, cfg, _ in evaluated_configs)
-        if has_dedicated:
-            logger.info("=> Checking to evict deprecated dedicated deployments...")
-
-            for node in self.nodes.values():
-                for model_key, deployment in list(node.deployments.items()):
-                    if deployment.dedicated and model_key not in all_model_keys:
-                        logger.info(
-                            f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
-                        )
-
-                        results["evictions"].add(model_key)
-
-                        node.evict(model_key, exclude=all_model_keys)
-
-                        change = True
-
-        # Sort models by size in descending order (deploy biggest ones first)
-        sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
-
-        # For each model to deploy, find the best node to deploy it on, if possible.
-        for model_key, config, size_in_bytes in sorted_configs:
-            dedicated = config.dedicated
-
+        with trace_span("cluster.deploy", attributes={
+            "ndif.cluster.num_models": len(configs),
+            "ndif.cluster.num_nodes": len(self.nodes),
+        }) as span:
             logger.info(
-                f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
+                f"Cluster deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}..."
             )
 
-            candidates = {}
+            results = {"result": {}, "evictions": set()}
 
-            # Check each node to see if the model can be deployed on it.
-            for node in self.nodes.values():
-                logger.info(
-                    f"==> Analyzing deployment of {model_key} for node {node.name}..."
-                )
+            change = False
 
-                # Evaluate the node to see if the model can be deployed on it.
-                candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated, exclude=all_model_keys)
+            all_model_keys = set(configs.keys())
 
-                logger.info(
-                    f"==> Candidate: {candidate.candidate_level.name}, gpus: {candidate.gpus}, evictions: {candidate.evictions}"
-                )
-
-                # If the model is already deployed on this node, we can stop looking for nodes.
-                if candidate.candidate_level == CandidateLevel.DEPLOYED:
-                    candidates = {node.id: candidate}
-
-                    break
-
-                # If we haven't found a node yet, add this one to the candidates.
-                if len(candidates) == 0:
-                    candidates[node.id] = candidate
-
-                # If we have found a node, we need to see if this node is better than the current best node.
+            # First get the size of the models in bytes
+            evaluated_configs = []
+            for model_key, config in configs.items():
+                size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor)
+                if isinstance(size_in_bytes, Exception):
+                    tb = "".join(
+                        traceback.format_exception(
+                            type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__
+                        )
+                    )
+                    logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
+                    span.add_event("model_evaluation_failed", {"model_key": model_key})
+                    results["result"][model_key] = f"{size_in_bytes}\n{tb}"
                 else:
-                    candidate_level = list(candidates.values())[0].candidate_level
+                    evaluated_configs.append((model_key, config, size_in_bytes))
 
-                    # If the candidate is the same level as the current best node, we can add it to the candidates.
-                    if candidate.candidate_level == candidate_level:
-                        candidates[node.id] = candidate
+            # If any config is dedicated, evict deprecated dedicated deployments not in the new set.
+            has_dedicated = any(cfg.dedicated for _, cfg, _ in evaluated_configs)
+            if has_dedicated:
+                logger.info("=> Checking to evict deprecated dedicated deployments...")
 
-                    # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
-                    elif candidate.candidate_level < candidate_level:
+                for node in self.nodes.values():
+                    for model_key, deployment in list(node.deployments.items()):
+                        if deployment.dedicated and model_key not in all_model_keys:
+                            logger.info(
+                                f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
+                            )
+
+                            results["evictions"].add(model_key)
+
+                            node.evict(model_key, exclude=all_model_keys)
+
+                            change = True
+
+            # Sort models by size in descending order (deploy biggest ones first)
+            sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
+
+            # For each model to deploy, find the best node to deploy it on, if possible.
+            for model_key, config, size_in_bytes in sorted_configs:
+                dedicated = config.dedicated
+
+                logger.info(
+                    f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
+                )
+
+                candidates = {}
+
+                # Check each node to see if the model can be deployed on it.
+                for node in self.nodes.values():
+                    logger.info(
+                        f"==> Analyzing deployment of {model_key} for node {node.name}..."
+                    )
+
+                    # Evaluate the node to see if the model can be deployed on it.
+                    candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated, exclude=all_model_keys)
+
+                    logger.info(
+                        f"==> Candidate: {candidate.candidate_level.name}, gpus: {candidate.gpus}, evictions: {candidate.evictions}"
+                    )
+
+                    # If the model is already deployed on this node, we can stop looking for nodes.
+                    if candidate.candidate_level == CandidateLevel.DEPLOYED:
                         candidates = {node.id: candidate}
 
-            # Pick a random node from the candidates.
-            node_id, candidate = random.choice(list(candidates.items()))
+                        break
 
-            candidate_level = candidate.candidate_level
+                    # If we haven't found a node yet, add this one to the candidates.
+                    if len(candidates) == 0:
+                        candidates[node.id] = candidate
 
-            results["result"][model_key] = candidate_level.name
+                    # If we have found a node, we need to see if this node is better than the current best node.
+                    else:
+                        candidate_level = list(candidates.values())[0].candidate_level
 
-            if candidate_level == CandidateLevel.DEPLOYED:
-                logger.info(
-                    f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
-                )
+                        # If the candidate is the same level as the current best node, we can add it to the candidates.
+                        if candidate.candidate_level == candidate_level:
+                            candidates[node.id] = candidate
 
-            elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
-                logger.error(f"=> {model_key} cannot be deployed on any node")
+                        # If the candidate is better than the current best node, we can replace the current candidate set with just this one.
+                        elif candidate.candidate_level < candidate_level:
+                            candidates = {node.id: candidate}
 
-            else:
-                logger.info(
-                    f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
-                )
+                # Pick a random node from the candidates.
+                node_id, candidate = random.choice(list(candidates.items()))
 
-                self.nodes[node_id].deploy(
-                    model_key,
-                    candidate,
-                    size_in_bytes,
-                    dedicated=dedicated,
-                    exclude=all_model_keys,
-                    execution_timeout_seconds=config.execution_timeout_seconds,
-                )
+                candidate_level = candidate.candidate_level
 
-                results["evictions"].update(candidate.evictions)
+                results["result"][model_key] = candidate_level.name
 
-                change = True
+                if candidate_level == CandidateLevel.DEPLOYED:
+                    logger.info(
+                        f"=> {model_key} is already deployed on {self.nodes[node_id].name}"
+                    )
 
-        return results, change
+                elif candidate_level == CandidateLevel.CANT_ACCOMMODATE:
+                    logger.error(f"=> {model_key} cannot be deployed on any node")
+
+                else:
+                    logger.info(
+                        f"=> Deploying {model_key} with size {size_in_bytes} on {self.nodes[node_id].name} because {candidate_level.name}. Requiring evictions: {candidate.evictions}"
+                    )
+
+                    self.nodes[node_id].deploy(
+                        model_key,
+                        candidate,
+                        size_in_bytes,
+                        dedicated=dedicated,
+                        exclude=all_model_keys,
+                        execution_timeout_seconds=config.execution_timeout_seconds,
+                    )
+
+                    results["evictions"].update(candidate.evictions)
+
+                    change = True
+
+                span.add_event("model_placement_decided", {
+                    "model_key": model_key,
+                    "candidate_level": candidate_level.name,
+                    "node": self.nodes[node_id].name if node_id in self.nodes else "unknown",
+                    "size_bytes": size_in_bytes,
+                })
+
+            span.set_attribute("ndif.cluster.total_evictions", len(results["evictions"]))
+
+            return results, change
 
     def evict(self, model_keys: List[MODEL_KEY]):
         """Evict models from the cluster.
@@ -271,32 +288,38 @@ class Cluster:
             - results: dict mapping model_key to status
             - change: bool indicating if cluster state changed
         """
-        change = False
-        results = {}
+        with trace_span("cluster.evict", attributes={"ndif.cluster.num_evictions": len(model_keys)}) as span:
+            change = False
+            results = {}
 
-        for model_key in model_keys:
-            found = False
+            for model_key in model_keys:
+                found = False
 
-            # Search for deployment across all nodes
-            for node_id, node in self.nodes.items():
-                if model_key in node.deployments:
-                    deployment = node.deployments[model_key]
+                # Search for deployment across all nodes
+                for node_id, node in self.nodes.items():
+                    if model_key in node.deployments:
+                        deployment = node.deployments[model_key]
 
-                    # Evict from node (updates resources, removes from deployments)
-                    node.evict(model_key)
+                        # Evict from node (updates resources, removes from deployments)
+                        node.evict(model_key)
 
-                    results[model_key] = {
-                        "status": "evicted",
-                        "node": node.name,
-                        "freed_gpus": len(deployment.gpus),
-                        "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
-                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
-                    }
-                    change = True
-                    found = True
-                    break
+                        results[model_key] = {
+                            "status": "evicted",
+                            "node": node.name,
+                            "freed_gpus": len(deployment.gpus),
+                            "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
+                            "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
+                        }
+                        span.add_event("model_evicted", {
+                            "model_key": model_key,
+                            "node": node.name,
+                            "freed_gpus": len(deployment.gpus),
+                        })
+                        change = True
+                        found = True
+                        break
 
-            if not found:
-                results[model_key] = {"status": "not_found"}
+                if not found:
+                    results[model_key] = {"status": "not_found"}
 
-        return results, change
+            return results, change
