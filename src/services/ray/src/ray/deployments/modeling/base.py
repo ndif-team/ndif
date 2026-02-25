@@ -44,7 +44,8 @@ from ...nn.security.protected_environment import (
     WHITELISTED_MODULES_DESERIALIZATION,
     Protector,
 )
-from ...nn.security.protected_objects import protect
+from ...nn.security.protected_objects import protect, clear_set_attrs
+from nnsight.intervention.tracing.globals import Globals
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
@@ -206,6 +207,7 @@ class BaseModelDeployment:
                     max_memory=max_memory,
                     dispatch=self.dispatch,
                     torch_dtype=self.dtype,
+                    attn_implementation="eager",
                     **self.extra_kwargs,
                 )
             )
@@ -513,6 +515,10 @@ class BaseModelDeployment:
 
             span.add_event("gc_collect")
             gc.collect()
+
+            span.add_event("clearing_globals")
+            Globals.clear()
+            clear_set_attrs()
 
             span.add_event("cuda_empty_cache")
             torch.cuda.empty_cache()
