@@ -26,11 +26,13 @@ class Cluster:
         minimum_deployment_time_seconds: float = None,
         model_cache_percentage: float = 0.5,
         default_padding_factor: float = 0.15,
+        default_padding_bias: int = 0,
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
         self.default_padding_factor = default_padding_factor
-        self.evaluator = ModelEvaluator(padding_factor=default_padding_factor)
+        self.default_padding_bias = default_padding_bias
+        self.evaluator = ModelEvaluator(padding_factor=default_padding_factor, padding_bias=default_padding_bias)
 
         self._state = None
 

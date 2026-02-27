@@ -26,10 +26,10 @@ from .cluster import Cluster, Deployment, DeploymentLevel
 
 @dataclass
 class DeploymentDelta:
-    deployments_to_cache: List[Deployment]
-    deployments_from_cache: List[Deployment]
-    deployments_to_create: List[tuple[str, Deployment]]
-    deployments_to_delete: List[Deployment]
+    deployments_to_cache: List["Deployment"]
+    deployments_from_cache: List["Deployment"]
+    deployments_to_create: List[tuple[str, "Deployment"]]
+    deployments_to_delete: List["Deployment"]
 
 
 class _ControllerActor:
@@ -41,6 +41,7 @@ class _ControllerActor:
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
+        default_padding_bias: int,
     ):
         super().__init__()
 
@@ -51,6 +52,7 @@ class _ControllerActor:
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
         self.default_padding_factor = default_padding_factor
+        self.default_padding_bias = default_padding_bias
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
 
@@ -60,6 +62,7 @@ class _ControllerActor:
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
             model_cache_percentage=self.model_cache_percentage,
             default_padding_factor=self.default_padding_factor,
+            default_padding_bias=self.default_padding_bias,
         )
 
         self.cluster.update_nodes()
@@ -78,6 +81,7 @@ class _ControllerActor:
             "model_cache_percentage": self.model_cache_percentage,
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "default_padding_factor": self.default_padding_factor,
+            "default_padding_bias": self.default_padding_bias,
         }
 
         if include_ray_state:
@@ -306,7 +310,7 @@ class _ControllerActor:
     async def _monitor_deployment(
         self,
         future: ray.ObjectRef,
-        deployment: Deployment,
+        deployment: "Deployment",
         operation: str,
     ) -> None:
         """Monitor a deployment future and clean up on failure.
@@ -345,7 +349,7 @@ class _ControllerActor:
                     )
                 self._remove_deployment_from_state(deployment)
 
-    def _remove_deployment_from_state(self, deployment: Deployment) -> None:
+    def _remove_deployment_from_state(self, deployment: "Deployment") -> None:
         """Remove a deployment from the internal state.
 
         Args:
@@ -555,6 +559,9 @@ class ControllerDeploymentArgs(BaseModel):
     )
     default_padding_factor: Optional[float] = float(
         os.environ.get("NDIF_DEFAULT_PADDING_FACTOR", "0.15")
+    )
+    default_padding_bias: Optional[int] = int(
+        os.environ.get("NDIF_DEFAULT_PADDING_BIAS", str(500 * 1024 * 1024))
     )
 
 

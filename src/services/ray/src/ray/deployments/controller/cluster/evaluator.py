@@ -23,8 +23,10 @@ class ModelEvaluator:
     def __init__(
         self,
         padding_factor: float = 0.15,
+        padding_bias: int = 0,
     ):
         self.padding_factor = padding_factor
+        self.padding_bias = padding_bias
 
         self.cache: Dict[MODEL_KEY, CacheEntry] = {}
 
@@ -42,6 +44,7 @@ class ModelEvaluator:
                 for key, value in self.cache.items()
             },
             "padding_factor": self.padding_factor,
+            "padding_bias": self.padding_bias,
             "dtype": str(torch.get_default_dtype()),
         }
 
@@ -80,8 +83,8 @@ class ModelEvaluator:
             logger.info(f"=> New model evaluated: {model_key} base_size: {base_size_bytes}")
 
         entry = self.cache[model_key]
-        padded_size = math.ceil(entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding)
+        padded_size = math.ceil(entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding + self.padding_bias)
 
-        logger.info(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding})")
+        logger.info(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding}, padding_bias: {self.padding_bias})")
 
         return padded_size
