@@ -110,10 +110,14 @@ class _ControllerActor:
         configs = DeploymentConfig.normalize(deployments)
 
         parent_ctx = TracingContext.extract(trace_context)
-        with trace_span("controller.deploy", parent_context=parent_ctx, attributes={
-            "ndif.model.keys": str(list(configs.keys())),
-            "ndif.deploy.num_models": len(configs),
-        }) as span:
+        with trace_span(
+            "controller.deploy",
+            parent_context=parent_ctx,
+            attributes={
+                "ndif.model.keys": str(list(configs.keys())),
+                "ndif.deploy.num_models": len(configs),
+            },
+        ) as span:
             self.logger.info(
                 f"Deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}"
             )
@@ -122,7 +126,9 @@ class _ControllerActor:
 
             span.set_attribute("ndif.deploy.changed", change)
             for model_key, status in results.get("result", {}).items():
-                span.add_event("deploy_result", {"model_key": model_key, "status": str(status)})
+                span.add_event(
+                    "deploy_result", {"model_key": model_key, "status": str(status)}
+                )
             for evicted_key in results.get("evictions", set()):
                 span.add_event("deploy_eviction", {"model_key": evicted_key})
 
@@ -140,10 +146,18 @@ class _ControllerActor:
     ):
         return self._deploy(deployments, trace_context=trace_context)
 
-    def evict(self, model_keys: List[MODEL_KEY], trace_context: Optional[Dict[str, str]] = None):
+    def evict(
+        self,
+        model_keys: List[MODEL_KEY],
+        trace_context: Optional[Dict[str, str]] = None,
+    ):
         """Evict models from the cluster."""
         parent_ctx = TracingContext.extract(trace_context)
-        with trace_span("controller.evict", parent_context=parent_ctx, attributes={"ndif.model.keys": str(model_keys)}) as span:
+        with trace_span(
+            "controller.evict",
+            parent_context=parent_ctx,
+            attributes={"ndif.model.keys": str(model_keys)},
+        ) as span:
             results, change = self.cluster.evict(model_keys)
 
             span.set_attribute("ndif.evict.changed", change)
@@ -204,7 +218,9 @@ class _ControllerActor:
             )
 
             span.set_attribute("ndif.delta.to_cache", len(delta.deployments_to_cache))
-            span.set_attribute("ndif.delta.from_cache", len(delta.deployments_from_cache))
+            span.set_attribute(
+                "ndif.delta.from_cache", len(delta.deployments_from_cache)
+            )
             span.set_attribute("ndif.delta.to_create", len(delta.deployments_to_create))
             span.set_attribute("ndif.delta.to_delete", len(delta.deployments_to_delete))
 
@@ -217,14 +233,18 @@ class _ControllerActor:
 
             # Delete deployments
             for deployment in deployment_delta.deployments_to_delete:
-                span.add_event("deleting_deployment", {"model_key": deployment.model_key})
+                span.add_event(
+                    "deleting_deployment", {"model_key": deployment.model_key}
+                )
                 deployment.delete()
 
             # Cache deployments - must complete before from_cache can proceed to free up resources
             cache_futures = []
             cache_deployments = []
             for deployment in deployment_delta.deployments_to_cache:
-                span.add_event("caching_deployment", {"model_key": deployment.model_key})
+                span.add_event(
+                    "caching_deployment", {"model_key": deployment.model_key}
+                )
                 cache_future = deployment.cache()
 
                 if cache_future is not None:
@@ -246,12 +266,17 @@ class _ControllerActor:
             for future, deployment in zip(cache_futures, cache_deployments):
                 try:
                     ray.get(future)
-                    span.add_event("cache_completed", {"model_key": deployment.model_key})
+                    span.add_event(
+                        "cache_completed", {"model_key": deployment.model_key}
+                    )
                 except Exception as e:
                     self.logger.error(
                         f"Deployment {deployment.model_key} failed during cache: {e}"
                     )
-                    span.add_event("cache_failed", {"model_key": deployment.model_key, "error": str(e)})
+                    span.add_event(
+                        "cache_failed",
+                        {"model_key": deployment.model_key, "error": str(e)},
+                    )
                     try:
                         deployment.delete()
                     except Exception:
@@ -260,7 +285,9 @@ class _ControllerActor:
 
             # Deploy models from cache - spawn monitoring tasks
             for deployment in deployment_delta.deployments_from_cache:
-                span.add_event("restoring_from_cache", {"model_key": deployment.model_key})
+                span.add_event(
+                    "restoring_from_cache", {"model_key": deployment.model_key}
+                )
                 future = deployment.from_cache()
                 if future is not None:
                     asyncio.create_task(
@@ -271,13 +298,18 @@ class _ControllerActor:
                     self.logger.error(
                         f"Failed to initiate from_cache for {deployment.model_key}"
                     )
-                    span.add_event("from_cache_failed", {"model_key": deployment.model_key})
+                    span.add_event(
+                        "from_cache_failed", {"model_key": deployment.model_key}
+                    )
                     deployment.delete()
                     self._remove_deployment_from_state(deployment)
 
             # Create models from disk - spawn monitoring tasks
             for name, deployment in deployment_delta.deployments_to_create:
-                span.add_event("creating_deployment", {"model_key": deployment.model_key, "node": name})
+                span.add_event(
+                    "creating_deployment",
+                    {"model_key": deployment.model_key, "node": name},
+                )
                 execution_timeout = (
                     deployment.execution_timeout_seconds
                     if deployment.execution_timeout_seconds is not None
@@ -303,7 +335,10 @@ class _ControllerActor:
                     self.logger.error(
                         f"Failed to get actor handle for {deployment.model_key}: {e}"
                     )
-                    span.add_event("create_failed", {"model_key": deployment.model_key, "error": str(e)})
+                    span.add_event(
+                        "create_failed",
+                        {"model_key": deployment.model_key, "error": str(e)},
+                    )
                     deployment.delete()
                     self._remove_deployment_from_state(deployment)
 
@@ -322,10 +357,13 @@ class _ControllerActor:
             deployment: The Deployment object being monitored.
             operation: Name of the operation for logging.
         """
-        with trace_span("controller.monitor_deployment", attributes={
-            "ndif.model.key": deployment.model_key,
-            "ndif.deploy.operation": operation,
-        }) as span:
+        with trace_span(
+            "controller.monitor_deployment",
+            attributes={
+                "ndif.model.key": deployment.model_key,
+                "ndif.deploy.operation": operation,
+            },
+        ) as span:
             try:
                 span.add_event("waiting_for_ray_actor")
                 # Use asyncio to wait for the ray future without blocking
@@ -441,6 +479,9 @@ class _ControllerActor:
             for deployment in node.deployments.values():
                 application_name = deployment.name
 
+                if application_name not in status:
+                    continue
+
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
@@ -478,6 +519,9 @@ class _ControllerActor:
 
             for cached_deployment in node.cache.values():
                 application_name = cached_deployment.name
+
+                if application_name not in status:
+                    continue
 
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
