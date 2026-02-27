@@ -402,32 +402,28 @@ class BaseModelDeployment:
 
         self.execution_ident = threading.current_thread().ident
 
-        with trace_span("model_actor.execute", attributes={"ndif.model.key": self.model_key}) as span:
-            with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
-                if torch.cuda.is_available():
-                    reset_peak_memory_stats()
-                    model_memory = memory_allocated()
+        with autocast(device_type="cuda", dtype=torch.get_default_dtype()):
+            if torch.cuda.is_available():
+                reset_peak_memory_stats()
+                model_memory = memory_allocated()
 
-                execution_time = time.time()
+            execution_time = time.time()
 
-                # Execute object.
-                with StdoutRedirect(self.log):
-                    result = RemoteExecutionBackend(
-                        request.interventions, self.execution_protector
-                    )(request.tracer)
+            # Execute object.
+            with StdoutRedirect(self.log):
+                result = RemoteExecutionBackend(
+                    request.interventions, self.execution_protector
+                )(request.tracer)
 
-                execution_time = time.time() - execution_time
+            execution_time = time.time() - execution_time
 
-                # Compute GPU memory usage
-                if torch.cuda.is_available():
-                    gpu_mem = max_memory_allocated() - model_memory
-                else:
-                    gpu_mem = 0
+            # Compute GPU memory usage
+            if torch.cuda.is_available():
+                gpu_mem = max_memory_allocated() - model_memory
+            else:
+                gpu_mem = 0
 
-            span.set_attribute("ndif.execution_time_s", execution_time)
-            span.set_attribute("ndif.gpu_mem_bytes", gpu_mem)
-
-            return result, gpu_mem, execution_time
+        return result, gpu_mem, execution_time
 
     def post(self, result: Any) -> None:
         """Logic to execute after execution with result from `.execute`.
