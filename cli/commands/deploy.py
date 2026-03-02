@@ -81,12 +81,12 @@ def deploy(checkpoints: tuple, config_file: str, revision: str, dedicated: bool,
     Models can be specified as arguments or via a config file (-f).
     When using -f, per-model revision/dedicated settings in the file take precedence.
 
+    \b
     Examples:
         ndif deploy gpt2
         ndif deploy gpt2 meta-llama/Llama-3.1-8b
-        ndif deploy gpt2 meta-llama/Llama-3.1-8b --dedicated
+        ndif deploy gpt2 --dedicated
         ndif deploy -f models.yaml
-        ndif deploy -f models.yaml --dedicated  # Sets default for models without dedicated specified
     """
     # Validate: must have either checkpoints or config file
     if not checkpoints and not config_file:

@@ -20,16 +20,14 @@ from ..lib.checks import check_redis, check_minio, check_api, check_ray
 def info(json_flag: bool, show_env: bool):
     """Show current session and configuration information.
 
-    Displays:
-    - Active session details
-    - Service status (running/stopped)
-    - Configuration values
-    - Environment variable settings
+    Displays active session details, service status, configuration
+    values, and environment variable settings.
 
+    \b
     Examples:
-        ndif info                  # Show session and status
-        ndif info --env            # Include all environment variables
-        ndif info --json-output    # Output as JSON
+        ndif info              # Show session and status
+        ndif info --env        # Include all environment variables
+        ndif info --json-output
     """
     session = get_current_session()
 

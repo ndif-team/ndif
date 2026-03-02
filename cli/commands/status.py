@@ -23,12 +23,13 @@ def status(json_flag: bool, verbose: bool, show_cold: bool, watch: bool, ray_add
     Shows current deployments grouped by level (HOT/WARM/COLD),
     cluster resources, and node information.
 
+    \b
     Examples:
-        ndif status                    # Quick overview
-        ndif status --show-cold        # Include all COLD deployments
-        ndif status --verbose          # Detailed cluster state
-        ndif status --json-output      # Raw JSON output
-        ndif status --watch            # Real-time monitoring
+        ndif status             # Quick overview
+        ndif status --show-cold # Include COLD deployments
+        ndif status --verbose   # Detailed cluster state
+        ndif status --json-output
+        ndif status --watch     # Real-time monitoring
     """
     # Use session default if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")

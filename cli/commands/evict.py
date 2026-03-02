@@ -25,12 +25,12 @@ def evict(checkpoints: tuple, revision: str, evict_all: bool, flush_cache: bool,
     This command removes running model deployments to free up resources.
     Use --flush-cache to clear all WARM (CPU-cached) models.
 
+    \b
     Examples:
         ndif evict gpt2
         ndif evict gpt2 meta-llama/Llama-3.1-8b
-        ndif evict meta-llama/Llama-2-7b-hf --revision main
-        ndif evict --all                               # Evict all HOT deployments
-        ndif evict --flush-cache                       # Flush all WARM models from cache
+        ndif evict --all          # Evict all HOT deployments
+        ndif evict --flush-cache  # Flush all WARM cache
     """
     # Use session defaults if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")

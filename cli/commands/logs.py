@@ -19,13 +19,12 @@ def logs(service: str, follow: bool, lines: int):
     By default, shows the last 100 lines of the current session's logs.
     Use --follow to continuously stream new log entries.
 
+    \b
     Examples:
-        ndif logs api              # Show last 100 lines of API logs
-        ndif logs broker           # Show broker (Redis) logs
-        ndif logs object-store     # Show object store logs
-        ndif logs ray              # Show Ray logs
-        ndif logs api -n 500       # Show last 500 lines
-        ndif logs api --follow     # Follow logs in real-time
+        ndif logs api           # Show last 100 lines of API logs
+        ndif logs ray           # Show Ray logs
+        ndif logs api -n 500    # Show last 500 lines
+        ndif logs api --follow  # Follow logs in real-time
     """
     session = get_current_session()
 

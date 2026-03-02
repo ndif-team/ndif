@@ -30,6 +30,7 @@ def stop(service: str, force: bool):
     Finds running services by checking ports and kills the associated processes.
     Uses the current session to determine which ports to check.
 
+    \b
     Examples:
         ndif stop              # Stop all services
         ndif stop api          # Stop only API

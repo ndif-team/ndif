@@ -41,12 +41,12 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
     Displays Python version and installed packages from the Ray cluster,
     as cached in Redis by the API service.
 
+    \b
     Examples:
-        ndif env                   # Show key packages only
-        ndif env --all             # Show all installed packages
-        ndif env --json-output     # Output as JSON
-        ndif env --local           # Show local system info
-        ndif env --broker-url redis://host:6379  # Query specific broker
+        ndif env           # Show key packages only
+        ndif env --all     # Show all installed packages
+        ndif env --json-output
+        ndif env --local   # Show local system info
     """
     if local:
         _show_local_env(json_flag)

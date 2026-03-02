@@ -72,14 +72,13 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
     nothing is started. If a service fails to start, all started services are
     stopped and the session is removed.
 
+    \b
     Examples:
-        ndif start                              # Start all services (head node)
-        ndif start api                          # Start API only
-        ndif start broker                       # Start broker (Redis) only
-        ndif start --verbose                    # Start with logs visible
-        ndif start --worker                     # Start as Ray worker node
-        ndif start --api-url http://localhost:8080  # Start with custom API URL
-        ndif start --broker-url redis://host:6379   # Use custom broker
+        ndif start                    # Start all services (head node)
+        ndif start api                # Start API only
+        ndif start broker             # Start broker (Redis) only
+        ndif start --verbose          # Start with logs visible
+        ndif start --worker           # Start as Ray worker node
 
     CLI arguments take precedence over environment variables.
     """

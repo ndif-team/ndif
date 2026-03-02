@@ -22,10 +22,11 @@ def queue(json_flag: bool, watch: bool, broker_url: str):
     Shows current queue state including active processors,
     queued requests, and executing requests.
 
+    \b
     Examples:
-        ndif queue                    # Quick overview
-        ndif queue --json-output      # Raw JSON output
-        ndif queue --watch            # Real-time monitoring
+        ndif queue               # Quick overview
+        ndif queue --json-output # Raw JSON output
+        ndif queue --watch       # Real-time monitoring
     """
     # Use session default if not provided
     broker_url = broker_url or get_env("NDIF_BROKER_URL")

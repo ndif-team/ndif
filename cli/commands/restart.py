@@ -20,15 +20,13 @@ def restart(checkpoint: str, revision: str, ray_address: str):
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
 
-    This command restarts a running model deployment, useful for:
-    - Clearing cached state
-    - Reloading model weights
-    - Recovering from errors
+    This command restarts a running model deployment, useful for clearing
+    cached state, reloading model weights, or recovering from errors.
 
+    \b
     Examples:
         ndif restart gpt2
         ndif restart meta-llama/Llama-2-7b-hf --revision main
-        ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
     # Use session default if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
