@@ -96,7 +96,9 @@ def _output_human(session, show_env: bool):
                 status = "🟢 running"
             elif svc.running and not port_in_use:
                 status = "🟡 marked running but port not in use"
-                hint = f"Check logs: ndif logs {name}"
+                # Map service name to logs command name (ray-worker -> ray)
+                logs_name = "ray" if name == "ray-worker" else name
+                hint = f"Check logs: ndif logs {logs_name}"
             elif not svc.running and port_in_use:
                 status = "🟡 stopped but port in use (external?)"
             else:
