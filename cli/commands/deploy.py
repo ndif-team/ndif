@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from src.common.schema.deployment_config import DeploymentConfig
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
@@ -140,7 +141,9 @@ def deploy(checkpoints: tuple, config_file: str, revision: str, dedicated: bool,
             dedicated_label = " (dedicated)" if is_dedicated else ""
             click.echo(f"\nDeploying {len(batch_keys)} model(s){dedicated_label}...")
 
-            object_ref = controller._deploy.remote(model_keys=batch_keys, dedicated=is_dedicated)
+            # Build config dict for batch deployment using new DeploymentConfig API
+            configs = {k: DeploymentConfig(dedicated=is_dedicated) for k in batch_keys}
+            object_ref = controller._deploy.remote(deployments=configs)
             results = ray.get(object_ref)
 
             # Collect evictions
@@ -154,10 +157,14 @@ def deploy(checkpoints: tuple, config_file: str, revision: str, dedicated: bool,
                     click.echo(f"  ✗ {model_key}: cannot be deployed on any node")
                 elif result_status == "DEPLOYED":
                     click.echo(f"  ✓ {model_key}: already deployed")
-                else:
+                elif result_status in ("FREE", "CACHED_AND_FREE"):
                     click.echo(f"  ✓ {model_key}: deployed successfully")
                     # Notify dispatcher about deployment
                     asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
+                elif result_status in ("FULL", "CACHED_AND_FULL"):
+                    click.echo(f"  ✗ {model_key}: no capacity available")
+                else:
+                    click.echo(f"  ? {model_key}: unknown status ({result_status})")
 
         # Report evictions once at the end
         if all_evictions:

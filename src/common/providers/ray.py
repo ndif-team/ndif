@@ -82,5 +82,33 @@ class RayProvider(Provider):
     def reset(cls):
         ray.shutdown()
 
+    # Error patterns that indicate a broken Ray connection
+    CONNECTION_ERROR_PATTERNS = (
+        "Ray client has already been disconnected",
+        "Unrecoverable error in data channel",
+        "_MultiThreadedRendezvous",
+        "Failed to reconnect",
+        "session that has already been cleaned up",
+        "Channel for client",
+        "grpc._channel",
+        "Failed during this or a previous request",
+    )
+
+    @classmethod
+    def is_connection_error(cls, error: Exception) -> bool:
+        """Check if an exception indicates a broken Ray connection.
+
+        This is used reactively - when an error occurs, we check if it's
+        a connection error and force reconnection if so.
+
+        Args:
+            error: The exception to check.
+
+        Returns:
+            True if this error indicates the Ray connection is broken.
+        """
+        error_str = str(error)
+        return any(pattern in error_str for pattern in cls.CONNECTION_ERROR_PATTERNS)
+
 
 RayProvider.from_env()

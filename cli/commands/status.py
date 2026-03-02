@@ -244,9 +244,9 @@ def format_state_verbose(state: dict):
 
         resources = node.get('resources', {})
         click.echo("    Resources:")
+        click.echo(f"      GPU Type: {resources.get('gpu_type', 'unknown')}")
         click.echo(f"      Total GPUs: {resources.get('total_gpus', 0)}")
         click.echo(f"      Available GPUs: {resources.get('available_gpus', [])}")
-        click.echo(f"      GPU Type: {resources.get('gpu_type', 'unknown')}")
         click.echo(f"      GPU Memory: {resources.get('gpu_memory_bytes', 0) / (1024**3):.1f} GB")
         click.echo(f"      CPU Memory Total: {resources.get('cpu_memory_bytes', 0) / (1024**3):.1f} GB")
         click.echo(f"      CPU Memory Available: {resources.get('available_cpu_memory_bytes', 0) / (1024**3):.1f} GB")

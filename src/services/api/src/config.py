@@ -14,7 +14,10 @@ Example:
 """
 
 import os
+import sys
 from typing import Optional
+
+from nnsight import __version__ as nnsight_version
 
 
 class AppConfig:
@@ -49,6 +52,9 @@ class AppConfig:
     socketio_max_http_buffer_size: int
     socketio_ping_timeout: int
     status_request_timeout_s: int
+    min_nnsight_version: str
+    min_python_version: str
+    dev_mode: bool
 
     @classmethod
     def from_env(cls) -> None:
@@ -77,6 +83,12 @@ class AppConfig:
             status_timeout_str, "STATUS_REQUEST_TIMEOUT_S"
         )
 
+        cls.min_nnsight_version = os.environ.get("MIN_NNSIGHT_VERSION", nnsight_version)
+        cls.min_python_version = os.environ.get(
+            "MIN_PYTHON_VERSION", ".".join(sys.version.split(".")[0:2])
+        )
+        cls.dev_mode = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
+
     @classmethod
     def to_env(cls) -> dict[str, object]:
         """Export configuration as a dictionary suitable for environment variables.
@@ -89,6 +101,9 @@ class AppConfig:
             "SOCKETIO_MAX_HTTP_BUFFER_SIZE": cls.socketio_max_http_buffer_size,
             "SOCKETIO_PING_TIMEOUT": cls.socketio_ping_timeout,
             "STATUS_REQUEST_TIMEOUT_S": cls.status_request_timeout_s,
+            "MIN_NNSIGHT_VERSION": cls.min_nnsight_version,
+            "MIN_PYTHON_VERSION": cls.min_python_version,
+            "NDIF_DEV_MODE": cls.dev_mode,
         }
 
     @classmethod

@@ -1,0 +1,75 @@
+name: Connected Endpoint Check
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore health state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .health_state
+          key: health-state-v1
+
+      - name: Check /connected and notify Discord
+        env:
+          CHECK_URL: http://lone-peoples-lotus-floral.trycloudflare.com/connected
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          set -euo pipefail
+
+          STATE_FILE=".health_state"
+          prev="unknown"
+          if [ -f "$STATE_FILE" ]; then
+            prev="$(cat "$STATE_FILE" | tr -d '\n\r' || true)"
+          else
+            echo "unknown" > "$STATE_FILE"
+          fi
+
+          post_discord () {
+            msg="$1"
+            msg="${msg//\\/\\\\}"
+            msg="${msg//\"/\\\"}"
+            msg="${msg//$'\n'/\\n}"
+            curl -sS -H "Content-Type: application/json" \
+              -d "{\"content\":\"$msg\"}" \
+              "$DISCORD_WEBHOOK" >/dev/null
+          }
+
+          # First run greeting
+          if [ "$prev" = "unknown" ]; then
+            post_discord "🔔 Monitoring started for $CHECK_URL. Hello :)"
+          fi
+
+          tmp="$(mktemp)"
+          http_code="$(curl -sS -m 8 -o "$tmp" -w "%{http_code}" "$CHECK_URL" || echo "000")"
+          body="$(cat "$tmp" || true)"
+          rm -f "$tmp"
+
+          now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          is_up="false"
+          if [ "$http_code" = "200" ] && echo "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"connected"'; then
+            is_up="true"
+          fi
+
+          if [ "$is_up" = "true" ]; then
+            echo "up" > "$STATE_FILE"
+            if [ "$prev" = "down" ]; then
+              post_discord "✅ RECOVERED: /connected is back (status=connected) • $now"
+            fi
+          else
+            echo "down" > "$STATE_FILE"
+            snippet="$(printf "%s" "$body" | head -c 180)"
+            post_discord "🚨 DOWN: /connected unhealthy (HTTP $http_code). Body: \`$snippet\` • $now"
+          fi
+
+      - name: Save health state cache
+        uses: actions/cache/save@v4
+        with:
+          path: .health_state
+          key: health-state-v1

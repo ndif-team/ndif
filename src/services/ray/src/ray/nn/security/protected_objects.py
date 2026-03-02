@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections import defaultdict
 from typing import Any
 
 import torch
 
 
 PROTECTIONS = {}
+SET_ATTRS = defaultdict(dict)
 
 
 def protected(obj: Any):
@@ -36,13 +38,15 @@ class ProtectedObject:
 
         return value
 
+    def __getattr__(self, name: str):
+        raise AttributeError(f"Attribute `{name}` cannot be accessed")
+
     def __setattr__(self, name: str, value: Any):
         if not protected(self):
             object.__setattr__(self, name, value)
         else:
-            raise AttributeError(
-                f"Attribute '{name}' cannot be set after initialization"
-            )
+            SET_ATTRS[id(self)][name] = getattr(PROTECTIONS[id(self)], name)
+            PROTECTIONS[id(self)].__dict__[name] = value
 
 
 def protect(obj: Any):
@@ -50,3 +54,10 @@ def protect(obj: Any):
         pass
 
     return _ProtectedObject(obj)
+
+
+def clear_set_attrs():
+    for obj in list(PROTECTIONS.values()):
+        for name in SET_ATTRS[id(obj)]:
+            setattr(obj, name, SET_ATTRS[id(obj)][name])
+        SET_ATTRS[id(obj)].clear()
