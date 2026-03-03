@@ -415,7 +415,7 @@ class Node:
             flushed.append(model_key)
             del self.cache[model_key]
 
-        self.resources.available_cpu_memory_bytes += memory_freed
+        self.cpu_resources.release(memory_freed)
 
         logger.info(
             f"Flushed {len(flushed)} WARM model(s) from {self.name}, freed {memory_freed} bytes"
