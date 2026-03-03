@@ -1,6 +1,6 @@
 import os
 os.environ["DEV_MODE"] = "true"
-os.environ.setdefault("BROKER_URL", "redis://localhost:6379")
+os.environ.setdefault("NDIF_BROKER_URL", "redis://localhost:6379")
 
 from unittest.mock import AsyncMock, Mock, patch
 

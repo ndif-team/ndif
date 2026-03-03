@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import pickle
 from copy import deepcopy
+from collections import defaultdict
 from typing import Any
 
 import torch
 
-from nnsight.intervention import serialization
-from nnsight.intervention.envoy import Envoy
-from nnsight.util import Patch, Patcher
 
 PROTECTIONS = {}
+SET_ATTRS = defaultdict(dict)
 
 
 def protected(obj: Any):
@@ -40,13 +38,15 @@ class ProtectedObject:
 
         return value
 
+    def __getattr__(self, name: str):
+        raise AttributeError(f"Attribute `{name}` cannot be accessed")
+
     def __setattr__(self, name: str, value: Any):
         if not protected(self):
             object.__setattr__(self, name, value)
         else:
-            raise AttributeError(
-                f"Attribute '{name}' cannot be set after initialization"
-            )
+            SET_ATTRS[id(self)][name] = getattr(PROTECTIONS[id(self)], name)
+            PROTECTIONS[id(self)].__dict__[name] = value
 
 
 def protect(obj: Any):
@@ -56,28 +56,8 @@ def protect(obj: Any):
     return _ProtectedObject(obj)
 
 
-original_setstate = Envoy.__setstate__
-
-
-class ProtectedCustomCloudUnpickler(serialization.CustomCloudUnpickler):
-    def load(self):
-        def inject(_self, state):
-            original_setstate(_self, state)
-
-            envoy = self.root.get(_self.path.removeprefix("model"))
-
-            module = protect(envoy._module)
-
-            _self._module = module
-            _self._interleaver = envoy._interleaver
-
-            for key, value in envoy.__dict__.items():
-                if key not in _self.__dict__:
-                    _self.__dict__[key] = value
-
-        with Patcher([Patch(Envoy, inject, "__setstate__")]):
-            return pickle.Unpickler.load(self)
-
-
-def protect_model():
-    serialization.CustomCloudUnpickler = ProtectedCustomCloudUnpickler
+def clear_set_attrs():
+    for obj in list(PROTECTIONS.values()):
+        for name in SET_ATTRS[id(obj)]:
+            setattr(obj, name, SET_ATTRS[id(obj)][name])
+        SET_ATTRS[id(obj)].clear()

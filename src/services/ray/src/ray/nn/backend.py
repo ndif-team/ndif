@@ -3,11 +3,12 @@ from typing import Any, Callable
 from nnsight.intervention.backends import Backend
 from .security.protected_environment import (
     Protector,
-    WHITELISTED_MODULES,
 )
-from .sandbox import run
 from nnsight.intervention.tracing.globals import Globals
 from nnsight.intervention.tracing.tracer import Tracer
+from nnsight.intervention.tracing.util import wrap_exception
+
+from ...tracing import trace_span
 
 
 class RemoteExecutionBackend(Backend):
@@ -20,19 +21,22 @@ class RemoteExecutionBackend(Backend):
         Globals.enter()
 
         try:
-            with self.protector:
-                run(tracer, self.fn)
+            with trace_span("model_actor.nnsight_execute") as span:
+                num_mediators = len(tracer.mediators) if hasattr(tracer, 'mediators') else None
+                if num_mediators is not None:
+                    span.set_attribute("ndif.nnsight.num_mediators", num_mediators)
 
+                with self.protector:
+                    saves = tracer.execute(self.fn)
+
+                num_saves = len(saves) if saves else 0
+                span.set_attribute("ndif.nnsight.num_saves", num_saves)
+        except Exception as e:
+            raise wrap_exception(e, tracer.info) from None
         finally:
+            Globals.cache.clear()
+            Globals.saves.clear()
             Globals.exit()
-
-        saves = {
-            key: value
-            for key, value in tracer.info.frame.f_locals.items()
-            if id(value) in Globals.saves
-        }
-
-        Globals.saves.clear()
-        Globals.stack = 0
+            Globals.stack = 0
 
         return saves

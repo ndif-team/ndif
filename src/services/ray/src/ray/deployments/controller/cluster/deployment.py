@@ -5,10 +5,12 @@ from enum import Enum
 from typing import Any, Dict
 
 import ray
+from opentelemetry import trace
 
 from .....providers.mailgun import MailgunProvider
 from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
+from .....tracing import TracingContext, trace_span
 from .....types import MODEL_KEY
 from ...modeling.base import BaseModelDeploymentArgs, ModelActor
 
@@ -26,15 +28,19 @@ class Deployment:
         self,
         model_key: MODEL_KEY,
         deployment_level: DeploymentLevel,
-        gpus: list[int],
+        gpus: dict[int, int],
         size_bytes: int,
         dedicated: bool = False,
+        node_id: str = None,
+        execution_timeout_seconds: float | None = None,
     ):
         self.model_key = model_key
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
         self.dedicated = dedicated
+        self.node_id = node_id
+        self.execution_timeout_seconds = execution_timeout_seconds
         self.deployed = time.time()
 
     @property
@@ -54,6 +60,8 @@ class Deployment:
             "gpus": self.gpus,
             "size_bytes": self.size_bytes,
             "dedicated": self.dedicated,
+            "node_id": self.node_id,
+            "execution_timeout_seconds": self.execution_timeout_seconds,
             "deployed": self.deployed,
         }
 
@@ -63,50 +71,81 @@ class Deployment:
         )
 
     def delete(self):
-        try:
-            actor = self.actor
-            ray.kill(actor, no_restart=True)
-        except Exception:
-            logger.exception(f"Error deleting actor {self.model_key}.")
-            pass
+        with trace_span("deployment.delete", attributes={"ndif.model.key": self.model_key}) as span:
+            try:
+                actor = self.actor
+                ray.kill(actor, no_restart=True)
+            except Exception:
+                span.set_status(trace.StatusCode.ERROR)
+                logger.exception(f"Error deleting actor {self.model_key}.")
+                pass
 
     def restart(self):
-        try:
-            actor = self.actor
-            ray.kill(actor, no_restart=False)
-        except Exception:
-            logger.exception(f"Error restarting actor {self.model_key}.")
-            pass
+        with trace_span("deployment.restart", attributes={"ndif.model.key": self.model_key}) as span:
+            try:
+                actor = self.actor
+                ray.kill(actor, no_restart=False)
+            except Exception:
+                span.set_status(trace.StatusCode.ERROR)
+                logger.exception(f"Error restarting actor {self.model_key}.")
+                pass
 
     def cache(self):
-        try:
-            actor = self.actor
-            return actor.to_cache.remote()
-        except Exception:
-            logger.exception(f"Error adding actor {self.model_key} to cache.")
-            return None
+        with trace_span("deployment.cache", attributes={"ndif.model.key": self.model_key}) as span:
+            try:
+                actor = self.actor
+                return actor.to_cache.remote(TracingContext.inject())
+            except Exception:
+                span.set_status(trace.StatusCode.ERROR)
+                logger.exception(f"Error adding actor {self.model_key} to cache.")
+                return None
 
     def from_cache(self):
-        try:
-            actor = self.actor
-            return actor.from_cache.remote(",".join(str(gpu) for gpu in self.gpus))
-        except Exception:
-            logger.exception(f"Error removing actor {self.model_key} from cache.")
-            return None
+        with trace_span("deployment.from_cache", attributes={
+            "ndif.model.key": self.model_key,
+            "ndif.deploy.gpus": str(self.gpus),
+        }) as span:
+            try:
+                actor = self.actor
+                return actor.from_cache.remote(self.gpus, TracingContext.inject())
+            except Exception:
+                span.set_status(trace.StatusCode.ERROR)
+                logger.exception(f"Error removing actor {self.model_key} from cache.")
+                return None
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
-        try:
-            actor = ModelActor.options(
-                name=self.name,
-                resources={f"node:{node_name}": 0.01},
-                namespace="NDIF",
-                lifetime="detached",
-                runtime_env={
+        with trace_span("deployment.create", attributes={
+            "ndif.model.key": self.model_key,
+            "ndif.deploy.node": node_name,
+            "ndif.deploy.gpus": str(self.gpus),
+        }) as span:
+            try:
+                # Inject the assigned GPU memory allocation so the actor knows which GPUs to target
+                deployment_args.gpu_mem_bytes_by_id = self.gpus
+                deployment_args.trace_context = TracingContext.inject()
+
+                env_vars = {
+                    # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor
+                    # inherits full GPU visibility from the worker node. GPU targeting
+                    # is handled by max_memory in the actor's load_from_disk/from_cache.
+                    "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
                     **SioProvider.to_env(),
                     **ObjectStoreProvider.to_env(),
                     **MailgunProvider.to_env(),
-                },
-            ).remote(**deployment_args.model_dump())
+                }
 
-        except Exception:
-            logger.exception(f"Error creating actor {self.model_key}.")
+                env_vars = {k: v for k, v in env_vars.items() if v is not None}
+
+                actor = ModelActor.options(
+                    name=self.name,
+                    resources={f"node:{node_name}": 0.01},
+                    namespace="NDIF",
+                    lifetime="detached",
+                    runtime_env={
+                        "env_vars": env_vars,
+                    },
+                ).remote(**deployment_args.model_dump())
+
+            except Exception:
+                span.set_status(trace.StatusCode.ERROR)
+                logger.exception(f"Error creating actor {self.model_key}.")

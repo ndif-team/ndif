@@ -7,7 +7,7 @@ from .types import API_KEY, TIER
 
 logger = logging.getLogger("ndif")
 
-DEV_MODE = os.environ.get("DEV_MODE", "false").lower() == "true"
+DEV_MODE = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
 
 
 class AccountsDB:

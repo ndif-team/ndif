@@ -22,8 +22,8 @@ class Provider:
     @classmethod
     def to_env(cls) -> dict:
         return {
-            "PROVIDER_MAX_RETRIES": cls.max_retries,
-            "PROVIDER_RETRY_INTERVAL_S": cls.retry_interval,
+            "PROVIDER_MAX_RETRIES": str(cls.max_retries),
+            "PROVIDER_RETRY_INTERVAL_S": str(cls.retry_interval),
         }
 
     @classmethod

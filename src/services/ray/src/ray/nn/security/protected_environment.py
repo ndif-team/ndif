@@ -1,166 +1,59 @@
+"""Protected execution environment for NDIF.
+
+This module provides security restrictions for executing untrusted user code:
+- Import restrictions: Only whitelisted modules can be imported
+- Builtin restrictions: Only whitelisted builtins are available
+- Module immutability: Imported modules cannot be modified
+
+Usage:
+    with Protector(WHITELISTED_MODULES):
+        # User code runs here with restrictions applied
+        exec(user_code)
+"""
+
 from __future__ import annotations
 
-import inspect
 from functools import wraps
+from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
+import yaml
 from pydantic import BaseModel
+from RestrictedPython.Guards import (
+    guarded_iter_unpack_sequence,
+    guarded_unpack_sequence,
+)
+from RestrictedPython.Eval import (
+    default_guarded_getitem,
+    default_guarded_getiter,
+)
 
 from nnsight.util import Patch, Patcher
 from nnsight.modeling.mixins.remoteable import StreamTracer
 
+import ast
+
+setattr(ast, "compile", compile)
+
+# =============================================================================
+# WHITELIST CONFIGURATION LOADING
+# =============================================================================
+
+WHITELIST_PATH = Path(__file__).parent / "whitelist.yaml"
+
+
+def _load_whitelist() -> dict:
+    """Load the whitelist configuration from YAML file."""
+    with open(WHITELIST_PATH, "r") as f:
+        return yaml.safe_load(f)
+
+
+# Load configuration at module import time
+_WHITELIST_CONFIG = _load_whitelist()
+
 # Built-in functions and types that are allowed to be used
-WHITELISTED_BUILTINS = {
-    # Built-in exceptions
-    "BaseExceptionGroup",
-    "ArithmeticError",
-    "AssertionError",
-    "AttributeError",
-    "BaseException",
-    "BlockingIOError",
-    "BrokenPipeError",
-    "BufferError",
-    "BytesWarning",
-    "ChildProcessError",
-    "ConnectionAbortedError",
-    "ConnectionError",
-    "ConnectionRefusedError",
-    "ConnectionResetError",
-    "DeprecationWarning",
-    "EOFError",
-    "Ellipsis",
-    "EncodingWarning",
-    "EnvironmentError",
-    "Exception",
-    "False",
-    "FileExistsError",
-    "FileNotFoundError",
-    "FloatingPointError",
-    "FutureWarning",
-    "GeneratorExit",
-    "IOError",
-    "ImportError",
-    "ImportWarning",
-    "IndentationError",
-    "IndexError",
-    "InterruptedError",
-    "IsADirectoryError",
-    "KeyError",
-    "KeyboardInterrupt",
-    "LookupError",
-    "MemoryError",
-    "ModuleNotFoundError",
-    "NameError",
-    "None",
-    "NotADirectoryError",
-    "NotImplemented",
-    "NotImplementedError",
-    "OSError",
-    "OverflowError",
-    "PendingDeprecationWarning",
-    "PermissionError",
-    "ProcessLookupError",
-    "RecursionError",
-    "ReferenceError",
-    "ResourceWarning",
-    "RuntimeError",
-    "RuntimeWarning",
-    "StopAsyncIteration",
-    "StopIteration",
-    "SyntaxError",
-    "SyntaxWarning",
-    "SystemError",
-    "SystemExit",
-    "TabError",
-    "TimeoutError",
-    "True",
-    "TypeError",
-    "UnboundLocalError",
-    "UnicodeDecodeError",
-    "UnicodeEncodeError",
-    "UnicodeError",
-    "UnicodeTranslateError",
-    "UnicodeWarning",
-    "UserWarning",
-    "ValueError",
-    "Warning",
-    "ZeroDivisionError",
-    # Built-in special attributes
-    "__doc__",
-    "__import__",
-    "__loader__",
-    "__name__",
-    "__package__",
-    "__spec__",
-    "__build_class__",
-    # Built-in functions
-    "abs",
-    "aiter",
-    "all",
-    "anext",
-    "any",
-    "ascii",
-    "bool",
-    "bytearray",
-    "bytes",
-    "callable",
-    "chr",
-    "classmethod",
-    "complex",
-    "copyright",
-    "credits",
-    "delattr",
-    "dict",
-    "dir",
-    "divmod",
-    "enumerate",
-    "filter",
-    "float",
-    "format",
-    "frozenset",
-    "getattr",
-    "hasattr",
-    "hash",
-    "hex",
-    "id",
-    "int",
-    "isinstance",
-    "issubclass",
-    "iter",
-    "len",
-    "list",
-    "map",
-    "max",
-    "min",
-    "next",
-    "object",
-    "oct",
-    "ord",
-    "pow",
-    "print",
-    "property",
-    "range",
-    "repr",
-    "reversed",
-    "round",
-    "set",
-    "setattr",
-    "slice",
-    "sorted",
-    "staticmethod",
-    "str",
-    "sum",
-    "super",
-    "tuple",
-    "type",
-    "vars",
-    "zip",
-    "memoryview",
-    "globals",
-    "input",
-    "eval",
-}
+WHITELISTED_BUILTINS = set(_WHITELIST_CONFIG.get("builtins", []))
 
 SAFE_BUILTINS = {
     key: value for key, value in __builtins__.items() if key in WHITELISTED_BUILTINS
@@ -174,7 +67,10 @@ class SafeBuiltins(ModuleType):
         super().__init__("safe_builtins")
 
     def __getattribute__(self, name: str):
-        return SAFE_BUILTINS[name]
+        try:
+            return SAFE_BUILTINS[name]
+        except KeyError:
+            raise AttributeError(f"module 'builtins' has no attribute '{name}'")
 
     def __getitem__(self, name: str):
         return SAFE_BUILTINS[name]
@@ -190,55 +86,103 @@ class WhitelistedModule(BaseModel):
     strict: bool = True
 
     def check(self, name: str) -> bool:
-        return (
-            self.strict
-            and self.name == name
-            or not self.strict
-            and name.startswith(self.name)
-        )
+        if self.strict:
+            return self.name == name
+        return self.name == name or name.startswith(self.name + ".")
+
+
+def _load_modules(config_key: str) -> List[WhitelistedModule]:
+    """Load module whitelist from config."""
+    modules = _WHITELIST_CONFIG.get(config_key, [])
+    return [WhitelistedModule(**m) for m in modules]
 
 
 # Modules that are allowed to be imported
-WHITELISTED_MODULES = [
-    WhitelistedModule(name="builtins", strict=True),
-    WhitelistedModule(name="torch", strict=False),
-    WhitelistedModule(name="collections", strict=False),
-    WhitelistedModule(name="nnsight.intervention.envoy", strict=False),
-    WhitelistedModule(name="time", strict=False),
-    WhitelistedModule(name="numpy", strict=False),
-    WhitelistedModule(name="sympy", strict=False),
-    WhitelistedModule(name="nnterp", strict=False),
-    WhitelistedModule(name="math", strict=False),
-    WhitelistedModule(name="einops", strict=False),
-    WhitelistedModule(name="urllib3", strict=False),
-    WhitelistedModule(name="typing", strict=False),
-    WhitelistedModule(name="_operator", strict=True),
-    WhitelistedModule(name="operator", strict=True),
-    WhitelistedModule(name="pandas", strict = False),
-    WhitelistedModule(name="enum", strict = False),
-]
+WHITELISTED_MODULES = _load_modules("modules")
 
-# Modules allowed during deserialization
+# Modules allowed during deserialization (includes regular modules)
 WHITELISTED_MODULES_DESERIALIZATION = [
-    WhitelistedModule(name="pickle", strict=False),
-    WhitelistedModule(name="cloudpickle", strict=False),
-    WhitelistedModule(name="copyreg", strict=False),
-    WhitelistedModule(name="nnsight.schema.request", strict=True),
-    WhitelistedModule(name="nnsight.modeling.mixins.remoteable", strict=True),
-    WhitelistedModule(name="nnsight.intervention.tracing.base", strict=True),
-    WhitelistedModule(name="nnsight.intervention.interleaver", strict=True),
-    WhitelistedModule(name="nnsight.intervention.batching", strict=True),
-    WhitelistedModule(name="nnsight.modeling", strict=False),
+    *_load_modules("deserialization_modules"),
     *WHITELISTED_MODULES,
 ]
 
 
+class UnauthorizedModule:
+    """A lazy placeholder for non-whitelisted modules.
+
+    Instead of immediately raising an ImportError when a non-whitelisted module
+    is imported, this object is returned. The ImportError is only raised when
+    the user tries to interact with the module (attribute access, calling, etc.).
+    """
+
+    def __init__(self, name: str):
+        object.__setattr__(self, "_module_name", name)
+
+    def _raise_error(self) -> None:
+        """Raise the ImportError for this unauthorized module."""
+        name = object.__getattribute__(self, "_module_name")
+        raise ImportError(f"Module {name} is not whitelisted")
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in ("_module_name", "_raise_error"):
+            return object.__getattribute__(self, name)
+        object.__getattribute__(self, "_raise_error")()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self._raise_error()
+
+    def __delattr__(self, name: str) -> None:
+        self._raise_error()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self._raise_error()
+
+    def __iter__(self) -> Any:
+        self._raise_error()
+
+    def __next__(self) -> Any:
+        self._raise_error()
+
+    def __len__(self) -> int:
+        self._raise_error()
+
+    def __getitem__(self, key: Any) -> Any:
+        self._raise_error()
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._raise_error()
+
+    def __delitem__(self, key: Any) -> None:
+        self._raise_error()
+
+    def __contains__(self, item: Any) -> bool:
+        self._raise_error()
+
+    def __bool__(self) -> bool:
+        self._raise_error()
+
+    def __repr__(self) -> str:
+        name = object.__getattribute__(self, "_module_name")
+        return f"<UnauthorizedModule '{name}'>"
+
+
 class ProtectedModule(ModuleType):
-    """A wrapper around a module that enforces whitelist rules."""
+    """A wrapper around a module that enforces whitelist rules.
+
+    This class:
+    1. Blocks access to non-whitelisted submodules (e.g., torch.os)
+    2. Prevents modification of module attributes (immutable)
+    3. Prevents deletion of module attributes
+    """
+
+    # Track if we're in __init__ to allow initial setup
+    _initializing = False
 
     def __init__(self, whitelist_entry: WhitelistedModule):
+        object.__setattr__(self, "_initializing", True)
         super().__init__(whitelist_entry.name)
-        self.whitelist_entry = whitelist_entry
+        object.__setattr__(self, "whitelist_entry", whitelist_entry)
+        object.__setattr__(self, "_initializing", False)
 
     def __getattribute__(self, name: str):
         attr = super().__getattribute__(name)
@@ -257,6 +201,22 @@ class ProtectedModule(ModuleType):
         protected = ProtectedModule(self.whitelist_entry)
         protected.__dict__.update(attr.__dict__)
         return protected
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Prevent modification of module attributes."""
+        # Allow setting during initialization and for __dict__ updates
+        if object.__getattribute__(self, "_initializing"):
+            object.__setattr__(self, name, value)
+            return
+        raise AttributeError(
+            f"Cannot modify protected module: setting '{name}' is not allowed"
+        )
+
+    def __delattr__(self, name: str) -> None:
+        """Prevent deletion of module attributes."""
+        raise AttributeError(
+            f"Cannot modify protected module: deleting '{name}' is not allowed"
+        )
 
 
 class Importer:
@@ -295,7 +255,7 @@ class Importer:
                     protected.__dict__.update(result.__dict__)
                     return protected
 
-            raise ImportError(f"Module {result.__name__} is not whitelisted")
+            return UnauthorizedModule(result.__name__)
 
         for module in self.whitelisted_modules:
             if module.check(name):
@@ -311,14 +271,17 @@ class Importer:
                 finally:
                     self.protector.__enter__()
 
-        raise ImportError(f"Module {name} is not whitelisted")
+        return UnauthorizedModule(name)
 
 
 class Protector(Patcher):
     """Enforces security restrictions on Python's built-ins and imports."""
 
     def __init__(
-        self, whitelisted_modules: List[WhitelistedModule], builtins: bool = False
+        self,
+        whitelisted_modules: List[WhitelistedModule],
+        builtins: bool = False,
+        restrict_compile: bool = True,
     ):
         super().__init__()
         self.importer = Importer(whitelisted_modules, self)
@@ -350,6 +313,29 @@ class Protector(Patcher):
             )
         )
 
+        # Patch compile and exec to use restricted versions
+        if restrict_compile:
+            self.add(
+                Patch(
+                    __builtins__,
+                    replacement=restricted_compile,
+                    key="compile",
+                    as_dict=True,
+                )
+            )
+            self.add(
+                Patch(
+                    __builtins__,
+                    replacement=restricted_exec,
+                    key="exec",
+                    as_dict=True,
+                )
+            )
+            # Add restricted versions directly to SAFE_BUILTINS
+            # (they don't exist there originally, so we can't use Patch)
+            SAFE_BUILTINS["compile"] = restricted_compile
+            SAFE_BUILTINS["exec"] = restricted_exec
+
         # Remove non-whitelisted built-ins
         if builtins:
             for key in __builtins__.keys():
@@ -368,6 +354,240 @@ class Protector(Patcher):
         return inner
 
 
-import ast
+# =============================================================================
+# RESTRICTED COMPILE / EXEC
+# =============================================================================
 
-setattr(ast, "compile", compile)
+# Dunder attributes loaded from whitelist.yaml
+BLOCKED_DUNDER_ATTRS = frozenset(_WHITELIST_CONFIG.get("blocked_dunder_attrs", []))
+ALLOWED_DUNDER_ATTRS = frozenset(_WHITELIST_CONFIG.get("allowed_dunder_attrs", []))
+
+
+def guarded_getattr(obj: Any, name: str, default: Any = None) -> Any:
+    """Guard for attribute access that blocks dangerous dunder attributes.
+
+    This is injected as `_getattr_` into the execution globals when running
+    restricted code. RestrictedPython transforms `obj.attr` into
+    `_getattr_(obj, 'attr')` calls.
+
+    Args:
+        obj: The object to get the attribute from.
+        name: The attribute name.
+        default: Default value if attribute doesn't exist.
+
+    Returns:
+        The attribute value.
+
+    Raises:
+        AttributeError: If the attribute is blocked.
+    """
+    if name.startswith("_"):
+        # Allow explicitly safe dunder methods
+        if name in ALLOWED_DUNDER_ATTRS:
+            pass
+        # Block explicitly dangerous ones
+        elif name in BLOCKED_DUNDER_ATTRS:
+            raise AttributeError(
+                f"Access to '{name}' is not allowed in restricted code"
+            )
+        # Block all other underscore-prefixed attributes (private/dunder)
+        else:
+            raise AttributeError(
+                f"Access to private attribute '{name}' is not allowed in restricted code"
+            )
+
+    if default is None:
+        return getattr(obj, name)
+    return getattr(obj, name, default)
+
+
+def guarded_setattr(obj: Any, name: str, value: Any) -> None:
+    """Guard for attribute setting that blocks dangerous dunder attributes.
+
+    Injected as `_write_` guard. RestrictedPython transforms `obj.attr = val`
+    into guarded calls.
+    """
+    if name.startswith("_"):
+        if name in BLOCKED_DUNDER_ATTRS or name.startswith("__"):
+            raise AttributeError(f"Setting '{name}' is not allowed in restricted code")
+    setattr(obj, name, value)
+
+
+def guarded_delattr(obj: Any, name: str) -> None:
+    """Guard for attribute deletion that blocks dangerous dunder attributes."""
+    if name.startswith("_"):
+        if name in BLOCKED_DUNDER_ATTRS or name.startswith("__"):
+            raise AttributeError(f"Deleting '{name}' is not allowed in restricted code")
+    delattr(obj, name)
+
+
+class GuardedWrite:
+    """Guard class that wraps objects for guarded attribute writes.
+
+    RestrictedPython calls `_write_(obj)` before attribute assignment.
+    This returns a wrapper that intercepts `__setattr__` and `__delattr__`.
+    """
+
+    def __init__(self, obj: Any):
+        object.__setattr__(self, "_guarded_obj", obj)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        obj = object.__getattribute__(self, "_guarded_obj")
+        guarded_setattr(obj, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        obj = object.__getattribute__(self, "_guarded_obj")
+        guarded_delattr(obj, name)
+
+
+def _write_(obj: Any) -> GuardedWrite:
+    """Return a guarded wrapper for write operations."""
+    return GuardedWrite(obj)
+
+
+def _inplacevar_(op: str, x: Any, y: Any) -> Any:
+    """Handle in-place operations like +=, -=, etc.
+
+    RestrictedPython transforms `x += y` into `x = _inplacevar_('+=', x, y)`.
+    """
+    op_map = {
+        "+=": lambda a, b: a + b,
+        "-=": lambda a, b: a - b,
+        "*=": lambda a, b: a * b,
+        "/=": lambda a, b: a / b,
+        "//=": lambda a, b: a // b,
+        "%=": lambda a, b: a % b,
+        "**=": lambda a, b: a**b,
+        "&=": lambda a, b: a & b,
+        "|=": lambda a, b: a | b,
+        "^=": lambda a, b: a ^ b,
+        "<<=": lambda a, b: a << b,
+        ">>=": lambda a, b: a >> b,
+        "@=": lambda a, b: a @ b,
+    }
+    if op not in op_map:
+        raise ValueError(f"Unknown in-place operator: {op}")
+    return op_map[op](x, y)
+
+
+# Store references to original compile and exec before we patch them
+# This prevents infinite recursion when restricted_compile/restricted_exec call them
+_original_compile = compile
+_original_exec = exec
+
+
+def restricted_compile(
+    source: str,
+    filename: str = "<restricted>",
+    mode: str = "exec",
+    flags: int = 0,
+    dont_inherit: bool = False,
+    optimize: int = -1,
+) -> Any:
+    """Compile source code for execution in a restricted environment.
+
+    This uses the original Python compile(). Security is enforced through:
+    1. The Protector context which restricts imports to whitelisted modules
+    2. The Protector context which restricts builtins to safe ones
+    3. The guarded execution globals (guarded_getattr blocks dangerous dunders)
+
+    Note: We use standard compile instead of RestrictedPython's AST transformation
+    because RestrictedPython blocks nnsight's internal variable names
+    (like __nnsight_tracer_*). Security is still enforced at runtime.
+
+    Args:
+        source: The source code to compile.
+        filename: Filename for error messages.
+        mode: Compile mode - 'exec', 'eval', or 'single'.
+        flags: Compiler flags (passed through).
+        dont_inherit: Don't inherit flags from calling code.
+        optimize: Optimization level (-1 for default).
+
+    Returns:
+        A compiled code object.
+
+    Raises:
+        SyntaxError: If there are syntax errors in the source.
+    """
+    return _original_compile(source, filename, mode, flags, dont_inherit, optimize)
+
+
+def make_restricted_globals(
+    base_globals: Optional[Dict[str, Any]] = None,
+    builtins: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create a globals dict with all required guards for restricted execution.
+
+    When executing code compiled with `restricted_compile`, the execution globals
+    must contain the guard functions that RestrictedPython's AST transformations
+    expect. This function creates a properly configured globals dict.
+
+    Args:
+        base_globals: Optional base globals to include (e.g., user-provided values).
+        builtins: Optional custom builtins dict. Defaults to SAFE_BUILTINS.
+
+    Returns:
+        A globals dict ready for use with exec() on restricted-compiled code.
+
+    Example:
+        >>> code = restricted_compile("result = obj.value + 1", mode="exec")
+        >>> globs = make_restricted_globals({"obj": my_obj})
+        >>> exec(code, globs)
+        >>> print(globs["result"])
+    """
+    globs = dict(base_globals) if base_globals else {}
+
+    # Set builtins
+    globs["__builtins__"] = builtins if builtins is not None else SAFE_BUILTINS
+
+    # Guard functions required by RestrictedPython's AST transformations
+    globs["_getattr_"] = guarded_getattr
+    globs["_getitem_"] = default_guarded_getitem
+    globs["_getiter_"] = default_guarded_getiter
+    globs["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
+    globs["_unpack_sequence_"] = guarded_unpack_sequence
+    globs["_write_"] = _write_
+    globs["_inplacevar_"] = _inplacevar_
+
+    return globs
+
+
+def restricted_exec(
+    code: Any,
+    globals: Optional[Dict[str, Any]] = None,
+    locals: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Execute code in a restricted environment.
+
+    If the code is a string, it will be compiled with restricted_compile first.
+    The globals are automatically augmented with the required guard functions.
+
+    Args:
+        code: Either a code object (from restricted_compile) or source string.
+        globals: Optional globals dict. Will be augmented with guards.
+        locals: Optional locals dict.
+    """
+    if isinstance(code, str):
+        code = restricted_compile(code, mode="exec")
+
+    exec_globals = make_restricted_globals(globals)
+    _original_exec(code, exec_globals, locals)
+
+    # Sync new/modified values back to the original globals dict
+    # This ensures that defined functions/variables are accessible to the caller
+    if globals is not None:
+        _guard_keys = frozenset(
+            (
+                "__builtins__",
+                "_getattr_",
+                "_getitem_",
+                "_getiter_",
+                "_iter_unpack_sequence_",
+                "_unpack_sequence_",
+                "_write_",
+                "_inplacevar_",
+            )
+        )
+        for key, value in exec_globals.items():
+            if key not in _guard_keys:
+                globals[key] = value

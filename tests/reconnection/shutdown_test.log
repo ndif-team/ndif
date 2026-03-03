@@ -1,0 +1,49 @@
+============================================================
+Testing if ray.shutdown() fixes the gRPC channel issue
+============================================================
+
+============================================================
+Testing: Basic ray.shutdown()
+============================================================
+1. Initial connection...
+
+   ERROR during test: Version mismatch: The cluster was started with:
+    Ray: 2.50.0
+    Python: 3.12.12
+This process on Ray Client was started with:
+    Ray: 2.53.0
+    Python: 3.12.12
+
+
+============================================================
+Testing: ray.shutdown() + gc.collect() + 0.5s delay
+============================================================
+1. Initial connection...
+
+   ERROR during test: Version mismatch: The cluster was started with:
+    Ray: 2.50.0
+    Python: 3.12.12
+This process on Ray Client was started with:
+    Ray: 2.53.0
+    Python: 3.12.12
+
+
+============================================================
+Testing: Aggressive reset (gc + 1s + internal state)
+============================================================
+1. Initial connection...
+
+   ERROR during test: Version mismatch: The cluster was started with:
+    Ray: 2.50.0
+    Python: 3.12.12
+This process on Ray Client was started with:
+    Ray: 2.53.0
+    Python: 3.12.12
+
+
+============================================================
+SUMMARY
+============================================================
+  ✗ FAILED: Basic ray.shutdown()
+  ✗ FAILED: ray.shutdown() + gc.collect() + 0.5s delay
+  ✗ FAILED: Aggressive reset (gc + 1s + internal state)

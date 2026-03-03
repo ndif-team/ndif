@@ -1,5 +1,5 @@
 import logging
-import logging_loki
+
 import os
 import socket
 import sys
@@ -8,11 +8,18 @@ from typing import Dict, Optional, Any
 import time
 from functools import wraps
 
+from opentelemetry import trace
+from opentelemetry.trace import format_trace_id, format_span_id
+
 # Environment variables for Loki configuration
 LOKI_URL = os.environ.get("LOKI_URL")
 LOKI_RETRY_COUNT = int(
     os.environ.get("LOKI_RETRY_COUNT", "3")
 )  # Number of retry attempts for failed log sends
+
+
+if LOKI_URL is not None:
+    import logging_loki
 
 
 class CustomJSONFormatter(logging.Formatter):
@@ -58,47 +65,59 @@ class CustomJSONFormatter(logging.Formatter):
         record.code_file = record.pathname
         record.code_line = record.lineno
 
+        # Add trace context if available
+        span = trace.get_current_span()
+        span_context = span.get_span_context()
+        if span_context and span_context.is_valid:
+            record.trace_id = format_trace_id(span_context.trace_id)
+            record.span_id = format_span_id(span_context.span_id)
+        else:
+            record.trace_id = ""
+            record.span_id = ""
+
         # Format the log record using the standard logging format
         return super().format(record)
 
 
-class RetryingLokiHandler(logging_loki.LokiHandler):
-    """
-    Extended Loki handler with retry capability for handling network issues.
+if LOKI_URL is not None:
 
-    Attempts to resend logs to Loki if initial attempts fail, using
-    exponential backoff between retries.
-    """
-
-    def __init__(self, retry_count=LOKI_RETRY_COUNT, *args, **kwargs):
+    class RetryingLokiHandler(logging_loki.LokiHandler):
         """
-        Initialize the handler with retry configuration.
+        Extended Loki handler with retry capability for handling network issues.
 
-        Args:
-            retry_count: Number of times to retry sending logs
-            *args, **kwargs: Arguments passed to LokiHandler
+        Attempts to resend logs to Loki if initial attempts fail, using
+        exponential backoff between retries.
         """
-        self.retry_count = retry_count
-        super().__init__(*args, **kwargs)
 
-    def emit(self, record):
-        """
-        Send the log record to Loki with retry logic.
+        def __init__(self, retry_count=LOKI_RETRY_COUNT, *args, **kwargs):
+            """
+            Initialize the handler with retry configuration.
 
-        Args:
-            record: The log record to send
-        """
-        for attempt in range(self.retry_count):
-            try:
-                super().emit(record)
-                return
-            except Exception as e:
-                if attempt == self.retry_count - 1:
-                    sys.stderr.write(
-                        f"Failed to send log to Loki after {self.retry_count} attempts: {e}\n"
-                    )
-                else:
-                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+            Args:
+                retry_count: Number of times to retry sending logs
+                *args, **kwargs: Arguments passed to LokiHandler
+            """
+            self.retry_count = retry_count
+            super().__init__(*args, **kwargs)
+
+        def emit(self, record):
+            """
+            Send the log record to Loki with retry logic.
+
+            Args:
+                record: The log record to send
+            """
+            for attempt in range(self.retry_count):
+                try:
+                    super().emit(record)
+                    return
+                except Exception as e:
+                    if attempt == self.retry_count - 1:
+                        sys.stderr.write(
+                            f"Failed to send log to Loki after {self.retry_count} attempts: {e}\n"
+                        )
+                    else:
+                        time.sleep(0.5 * (attempt + 1))  # Exponential backoff
 
 
 def set_logger(service_name) -> logging.Logger:
@@ -128,18 +147,22 @@ def set_logger(service_name) -> logging.Logger:
             "file": "%(code_file)s",
             "line": %(code_line)d
         },
+        "trace": {
+            "trace_id": "%(trace_id)s",
+            "span_id": "%(span_id)s"
+        },
         "message": "%(message)s"
     }"""
 
     # Simpler format for console output with filename and process id
-    console_format = "[%(asctime)s] [%(process)d] [%(levelname)s] [%(pathname)s:%(lineno)d] %(message)s"
+    console_format = "[%(asctime)s] [%(process)d] [%(levelname)s] [trace:%(trace_id)s] [%(pathname)s:%(lineno)d] %(message)s"
     # Create formatters for different outputs
     json_formatter = CustomJSONFormatter(
         fmt=json_format, service_name=service_name, datefmt="%Y-%m-%d %H:%M:%S.%f%z"
     )
 
-    console_formatter = logging.Formatter(
-        fmt=console_format, datefmt="%Y-%m-%d %H:%M:%S"
+    console_formatter = CustomJSONFormatter(
+        fmt=console_format, service_name=service_name, datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     # Set up console handler for local debugging
