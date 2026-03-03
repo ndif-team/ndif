@@ -291,8 +291,8 @@ class Dispatcher:
         has_connection_error = False
 
         while not self.error_queue.empty():
-            model_key, error = self.error_queue.get_nowait()
-            errors.append((model_key, error))
+            name, error = self.error_queue.get_nowait()
+            errors.append((name, error))
             if RayProvider.is_connection_error(error):
                 has_connection_error = True
 
@@ -314,16 +314,16 @@ class Dispatcher:
             self.connect()
 
         # Log all errors
-        for model_key, error in errors:
+        for name, error in errors:
             tb_str = "".join(
                 traceback.format_exception(type(error), error, error.__traceback__)
             )
-            self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
+            self.logger.error(f"Error in component {name}: {error}\n{tb_str}")
 
             # Only reset processor to READY if we didn't reconnect
             # (if we reconnected, processors were purged)
-            if not needs_reconnect and model_key in self.processors:
-                processor = self.processors[model_key]
+            if not needs_reconnect and name in self.processors:
+                processor = self.processors[name]
                 processor.status = ProcessorStatus.READY
 
     def get_state(self) -> dict[str, dict[str, object]]:
@@ -432,7 +432,8 @@ class Dispatcher:
                 got_status = True
 
             except Exception as e:
-                self.logger.exception(f"Error getting status: {e}")
+                self.error_queue.put_nowait(("status_worker", e))
+                asyncio.sleep(0)
 
     async def events_worker(self) -> None:
         """Unified asyncio task for handling all dispatcher events via Redis streams.
