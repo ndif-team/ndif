@@ -433,7 +433,7 @@ class Dispatcher:
 
             except Exception as e:
                 self.error_queue.put_nowait(("status_worker", e))
-                asyncio.sleep(0)
+                await asyncio.sleep(0)
 
     async def events_worker(self) -> None:
         """Unified asyncio task for handling all dispatcher events via Redis streams.
