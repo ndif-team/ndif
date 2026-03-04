@@ -48,6 +48,7 @@ from ...nn.security.protected_environment import (
 from ...nn.security.protected_objects import protect, clear_set_attrs
 from nnsight.intervention.tracing.globals import Globals
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
+from ...numa import apply_numa_affinity
 
 
 class BaseModelDeployment:
@@ -112,6 +113,10 @@ class BaseModelDeployment:
                     total = torch.cuda.get_device_properties(gpu_id).total_memory
                     fraction = min(mem_bytes / total, 1.0)
                     torch.cuda.set_per_process_memory_fraction(fraction, gpu_id)
+
+            # Best-effort NUMA affinity: pin to cores/memory near our GPUs
+            gpu_indices = list(self.gpu_mem_bytes_by_id.keys()) if self.gpu_mem_bytes_by_id else []
+            self._numa_node_ids, self._numa_topology = apply_numa_affinity(gpu_indices)
 
             span.add_event("loading_model")
             self.model = self.load_from_disk()
@@ -237,6 +242,12 @@ class BaseModelDeployment:
             for gpu_id in self.gpu_mem_bytes_by_id:
                 torch.cuda.set_per_process_memory_fraction(1.0, gpu_id)
 
+            # Set memory policy before .cpu() so host memory lands on NUMA-local banks
+            if self._numa_node_ids and len(self._numa_node_ids) == 1:
+                from ...numa import set_memory_policy_preferred
+
+                set_memory_policy_preferred(next(iter(self._numa_node_ids)))
+
             span.add_event("move_to_cpu")
             self.model._module = self.model._module.cpu()
             # torch.cuda.synchronize()
@@ -261,6 +272,12 @@ class BaseModelDeployment:
         parent_ctx = TracingContext.extract(trace_context)
         with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "cache"}) as span:
             self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id
+
+            # Re-apply NUMA affinity for the (potentially new) GPU set
+            gpu_indices = list(gpu_mem_bytes_by_id.keys()) if gpu_mem_bytes_by_id else []
+            self._numa_node_ids, self._numa_topology = apply_numa_affinity(
+                gpu_indices, topology=self._numa_topology
+            )
 
             # Switch default CUDA device to the new target GPU before any CUDA ops
             if self.gpu_mem_bytes_by_id:

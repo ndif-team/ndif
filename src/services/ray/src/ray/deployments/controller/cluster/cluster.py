@@ -95,6 +95,14 @@ class Cluster:
                     * self.model_cache_percentage
                 )
 
+                # Reconstruct GPU-to-NUMA mapping from individual numeric
+                # resources named "numa_gpu_<idx>" (value = numa_node_id + 1).
+                gpu_to_numa = {}
+                for key, val in node.resources_total.items():
+                    if key.startswith("numa_gpu_"):
+                        gpu_idx = int(key[len("numa_gpu_"):])
+                        gpu_to_numa[gpu_idx] = int(val) - 1
+
                 gpus = [
                     GPU(index=i, memory_bytes=per_gpu_memory_bytes)
                     for i in range(total_gpus)
@@ -103,6 +111,7 @@ class Cluster:
                 gpu_resources = GPUResources(
                     gpu_type=gpu_type,
                     gpus=gpus,
+                    gpu_to_numa=gpu_to_numa,
                 )
 
                 cpu_resources = CPUResources(

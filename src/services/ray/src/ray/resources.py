@@ -3,6 +3,8 @@ import json
 import psutil
 import torch
 
+from .numa import get_gpu_numa_mapping
+
 
 def get_available_cpu_memory_bytes():
     mem = psutil.virtual_memory()
@@ -36,6 +38,15 @@ def main(head: bool, name: str = None):
 
     resources["cuda_memory_bytes"] = get_total_cudamemory_bytes()
     resources["cpu_memory_bytes"] = get_available_cpu_memory_bytes()
+
+    # Encode GPU-to-NUMA mapping as individual numeric resources.
+    # Ray resources must be numeric, so we use "numa_gpu_<idx>: <node_id + 1>"
+    # (offset by 1 so that NUMA node 0 maps to value 1; value 0 would be
+    # ignored by Ray as "no resource").
+    gpu_count = torch.cuda.device_count()
+    gpu_to_numa = get_gpu_numa_mapping(gpu_count)
+    for gpu_idx, numa_node_id in gpu_to_numa.items():
+        resources[f"numa_gpu_{gpu_idx}"] = numa_node_id + 1
 
     if name is not None:
         resources[name] = 10
