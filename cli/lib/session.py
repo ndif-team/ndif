@@ -53,12 +53,16 @@ def get_env(name: str, default: str = None) -> str:
 def get_session_root() -> Path:
     """Get the session root directory, creating it if needed.
 
+    Also creates the models.yaml template in ~/.ndif if it doesn't exist.
+
     Returns:
         Path to session root directory
 
     Raises:
         PermissionError: If directory cannot be created or accessed
     """
+    from .model_config import create_config_template, get_default_config_path
+
     root = Path(get_env("NDIF_SESSION_ROOT"))
 
     try:
@@ -67,6 +71,12 @@ def get_session_root() -> Path:
         test_file = root / ".write_test"
         test_file.touch()
         test_file.unlink()
+
+        # Create models.yaml template in ~/.ndif if it doesn't exist
+        models_config = get_default_config_path()
+        if not models_config.exists():
+            create_config_template(models_config)
+
         return root
     except PermissionError as e:
         raise PermissionError(

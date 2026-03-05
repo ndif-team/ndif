@@ -28,6 +28,7 @@ from ..lib.checks import (
     preflight_check_worker,
 )
 from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
+from ..lib.model_config import config_exists, get_default_config_path
 
 
 def _apply_cli_overrides(api_url: str = None, broker_url: str = None,
@@ -251,6 +252,11 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
         click.echo()
         click.echo(f"Session: {session.config.session_id}")
         click.echo(f"  Logs: {session.logs_dir}")
+
+        # Auto-deploy from models.yaml if it exists
+        if 'ray' in started_services and config_exists():
+            _auto_deploy_models(session)
+
         click.echo("\nTo view logs:")
         for name in started_services:
             if name in ('api', 'ray'):
@@ -512,6 +518,65 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
 
     session.mark_service_running('ray', True)
     return proc
+
+
+def _wait_for_controller(ray_address: str, timeout: int = 120) -> bool:
+    """Wait for the controller actor to be available.
+
+    Args:
+        ray_address: Ray address to connect to
+        timeout: Maximum seconds to wait
+
+    Returns:
+        True if controller is available, False if timeout
+    """
+    import ray
+    import time
+
+    ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            ray.get_actor("Controller", namespace="NDIF")
+            return True
+        except ValueError:
+            time.sleep(2)
+
+    return False
+
+
+def _auto_deploy_models(session: Session):
+    """Auto-deploy models from ~/.ndif/models.yaml if it exists."""
+    from .deploy import deploy as deploy_cmd
+    from click.testing import CliRunner
+
+    config_path = get_default_config_path()
+    click.echo()
+    click.echo(f"Auto-deploying models from {config_path}...")
+
+    # Wait for controller to be available
+    click.echo("Waiting for controller...")
+    if not _wait_for_controller(session.config.ray_address):
+        click.echo("Warning: Controller not available, skipping auto-deploy", err=True)
+        return
+
+    runner = CliRunner()
+    result = runner.invoke(deploy_cmd, [
+        '-f', str(config_path),
+        '--ray-address', session.config.ray_address,
+        '--broker-url', session.config.broker_url,
+    ])
+
+    # Echo the output (excluding the first line which repeats the file path)
+    if result.output:
+        lines = result.output.strip().split('\n')
+        # Skip the "Loaded N model(s)" line since we already said we're auto-deploying
+        for line in lines[1:]:
+            click.echo(line)
+
+    if result.exit_code != 0:
+        click.echo("Warning: Auto-deploy encountered errors", err=True)
 
 
 def _start_worker_mode(repo_root: Path, verbose: bool):

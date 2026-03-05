@@ -69,6 +69,7 @@ Use `ndif <command> --help` for detailed options.
 | `ndif kill` | Cancel a specific request |
 | `ndif info` | Show session and configuration |
 | `ndif env` | Show cluster environment info |
+| `ndif export` | Export deployments to config file |
 
 ## Common Workflows
 
@@ -116,6 +117,46 @@ models:
   - checkpoint: meta-llama/Llama-3.1-8b
     revision: main
     dedicated: true                # Full form with options
+```
+
+### Model Configuration Files
+
+NDIF supports saving and restoring deployment configurations using YAML files.
+
+#### Auto-deploy on startup
+
+If `~/.ndif/models.yaml` contains models, they are automatically deployed when you run `ndif start`. A template file is created automatically when you first use the CLI.
+
+```bash
+# Edit the template to add your models
+vim ~/.ndif/models.yaml
+
+# Start NDIF - models deploy automatically
+ndif start
+```
+
+#### Export current deployments
+
+Save your current cluster state to restore later:
+
+```bash
+# Export to file
+ndif export -f models.yaml
+
+# Print to stdout
+ndif export --stdout
+
+# Redirect to file
+ndif export --stdout > my-setup.yaml
+```
+
+#### Sync cluster state to config
+
+Use `--sync` to make the cluster match a config file exactly, evicting any models not in the file:
+
+```bash
+# Deploy only what's in the file, evict everything else
+ndif deploy -f models.yaml --sync
 ```
 
 ### Evicting Models

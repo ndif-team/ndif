@@ -139,3 +139,28 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
         )
     finally:
         await redis_client.aclose()
+
+
+def get_current_deployments(level: str = "HOT") -> list[dict]:
+    """Fetch current deployments from the controller.
+
+    Requires Ray to be initialized first.
+
+    Args:
+        level: Deployment level to filter by ("HOT", "WARM", "COLD", or None for all)
+
+    Returns:
+        List of deployment dicts with repo_id, revision, dedicated, model_key, etc.
+    """
+    controller = get_controller_actor_handle()
+    status_ref = controller.status.remote()
+    status = ray.get(status_ref)
+
+    deployments = status.get("deployments", {})
+
+    if level:
+        return [
+            dep for dep in deployments.values()
+            if dep.get("deployment_level") == level
+        ]
+    return list(deployments.values())
