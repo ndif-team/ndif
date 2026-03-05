@@ -193,7 +193,7 @@ The CLI uses environment variables for default configuration. CLI arguments over
 | `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | Ray client address |
 | `NDIF_RAY_HEAD_PORT` | `6380` | Ray head node port |
 | `NDIF_RAY_DASHBOARD_PORT` | `8265` | Ray dashboard port |
-| `NDIF_SESSION_ROOT` | `~/.ndif` | Session data directory |
+| `NDIF_SESSION_ROOT` | `~/.ndif/sessions` | Session data directory |
 
 View current configuration:
 ```bash
@@ -202,7 +202,7 @@ ndif info --env
 
 ## Session Management
 
-NDIF maintains session state in `~/.ndif/` (or `$NDIF_SESSION_ROOT`). Each session tracks:
+NDIF maintains session state in `~/.ndif/sessions/` (or `$NDIF_SESSION_ROOT`). Each session tracks:
 - Service states (running/stopped)
 - Port configurations
 - Service PIDs

@@ -11,9 +11,20 @@ from cli.commands.env import env
 @click.group()
 @click.version_option(package_name="ndif")
 def cli():
-    """NDIF - National Deep Inference Fabric
+    """CLI for managing NDIF (National Deep Inference Fabric).
 
-    The NDIF server, which performs deep inference and serves nnsight requests remotely.
+    \b
+    Start and stop services, deploy models, and monitor the cluster.
+
+    \b
+    Quick start:
+        ndif start          Start all services
+        ndif deploy gpt2    Deploy a model
+        ndif status         View cluster status
+        ndif stop           Stop all services
+
+    \b
+    See 'ndif <command> --help' for command-specific options.
     """
     pass
 

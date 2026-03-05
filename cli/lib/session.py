@@ -5,7 +5,7 @@ Sessions store configuration, track which services are running, and provide a
 consistent way to find and manage NDIF processes.
 
 Session directory structure:
-    $NDIF_SESSION_ROOT/              # Default: ~/.ndif
+    ~/.ndif/sessions/                # Default: $NDIF_SESSION_ROOT
     ├── current -> session_xxx/      # Symlink to active session
     └── session_20250121_143052/
         ├── config.json              # Session configuration

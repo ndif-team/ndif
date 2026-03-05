@@ -24,7 +24,7 @@ load_dotenv(_PROJECT_ROOT / ".env", override=True)
 # Session Management
 # =============================================================================
 
-NDIF_SESSION_ROOT = os.path.expanduser("~/.ndif")
+NDIF_SESSION_ROOT = os.path.expanduser("~/.ndif/sessions")
 
 
 # =============================================================================
