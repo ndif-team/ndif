@@ -164,3 +164,38 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
             if dep.get("deployment_level") == level
         ]
     return list(deployments.values())
+
+
+def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
+    """Wait for a model actor to be ready.
+
+    Polls the model actor's __ray_ready__ method until it returns successfully,
+    indicating the model is fully loaded and ready for inference.
+
+    Args:
+        model_key: The model key to wait for
+        timeout: Maximum seconds to wait (default: 300 = 5 minutes)
+
+    Returns:
+        True if model is ready, False if timeout or error
+
+    Raises:
+        Exception: If an initialization error occurs (not a lookup failure)
+    """
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
+        try:
+            handle = get_actor_handle(model_key)
+            ray.get(handle.__ray_ready__.remote())
+            return True
+        except Exception as e:
+            error_str = str(e)
+            # Actor doesn't exist yet - keep waiting
+            if "Failed to look up actor" in error_str:
+                time.sleep(2)
+                continue
+            # Actual initialization error
+            raise
+
+    return False

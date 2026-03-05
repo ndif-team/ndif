@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from src.common.schema.deployment_config import DeploymentConfig
-from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher, get_current_deployments
+from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher, get_current_deployments, wait_for_model_ready
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 from ..lib.model_config import load_model_config
@@ -109,6 +109,9 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
 
             all_evictions.extend(results.get("evictions", []))
 
+            # Track which models need initialization
+            models_to_init = []
+
             for model_key in batch_keys:
                 result_status = results["result"].get(model_key, "UNKNOWN")
 
@@ -117,12 +120,23 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
                 elif result_status == "DEPLOYED":
                     click.echo(f"  ✓ {model_key}: already deployed")
                 elif result_status in ("FREE", "CACHED_AND_FREE"):
-                    click.echo(f"  ✓ {model_key}: deployed successfully")
-                    asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
+                    click.echo(f"  ⋯ {model_key}: provisioned, initializing...")
+                    models_to_init.append(model_key)
                 elif result_status in ("FULL", "CACHED_AND_FULL"):
                     click.echo(f"  ✗ {model_key}: no capacity available")
                 else:
                     click.echo(f"  ? {model_key}: unknown status ({result_status})")
+
+            # Wait for models to initialize
+            for model_key in models_to_init:
+                try:
+                    if wait_for_model_ready(model_key):
+                        click.echo(f"  ✓ {model_key}: ready")
+                        asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
+                    else:
+                        click.echo(f"  ✗ {model_key}: initialization timed out")
+                except Exception as e:
+                    click.echo(f"  ✗ {model_key}: initialization failed - {e}")
 
         if all_evictions:
             click.echo("\nEvictions:")
