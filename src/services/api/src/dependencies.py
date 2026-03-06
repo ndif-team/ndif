@@ -1,10 +1,11 @@
+import asyncio
+
 from fastapi import HTTPException, Request
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
-from packaging.version import Version
 
 from .config import AppConfig
 from .types import API_KEY
@@ -35,7 +36,7 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
             detail="API key validation is not configured.",
         )
 
-    if not api_key_store.api_key_exists(api_key):
+    if not await asyncio.to_thread(api_key_store.api_key_exists, api_key):
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
@@ -67,13 +68,14 @@ async def validate_python_version(python_version: str) -> str:
             detail="Client python version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
-    min_python_version = Version(AppConfig.min_python_version)
+    from packaging.version import Version
+
     user_version = Version(user_python_version)
 
-    if user_version < min_python_version:
+    if user_version < AppConfig.min_python_version_parsed:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"Client python version {user_python_version} is incompatible with the server. The minimum supported version is {min_python_version}. Please update your python version and try again.",
+            detail=f"Client python version {user_python_version} is incompatible with the server. The minimum supported version is {AppConfig.min_python_version_parsed}. Please update your python version and try again.",
         )
 
     return user_python_version
@@ -101,13 +103,14 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
             detail="Client nnsight version was not provided to the NDIF server. This likely means that you are using an outdated version of nnsight. Please update your nnsight version and try again.",
         )
 
-    min_nnsight_version = Version(AppConfig.min_nnsight_version)
+    from packaging.version import Version
+
     user_nnsight_version = Version(nnsight_version)
 
-    if user_nnsight_version < min_nnsight_version:
+    if user_nnsight_version < AppConfig.min_nnsight_version_parsed:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
-            detail=f"Client nnsight version {user_nnsight_version} is incompatible with the server nnsight version. The minimum supported version is {min_nnsight_version}. Please update nnsight to the latest version: `pip install --upgrade nnsight`",
+            detail=f"Client nnsight version {user_nnsight_version} is incompatible with the server nnsight version. The minimum supported version is {AppConfig.min_nnsight_version_parsed}. Please update nnsight to the latest version: `pip install --upgrade nnsight`",
         )
 
     return nnsight_version
@@ -126,7 +129,7 @@ async def check_hotswapping_access(api_key: API_KEY) -> bool:
         return True
     if api_key_store is None:
         return False
-    return api_key_store.key_has_hotswapping_access(api_key)
+    return await asyncio.to_thread(api_key_store.key_has_hotswapping_access, api_key)
 
 
 async def require_ray_connection() -> None:
