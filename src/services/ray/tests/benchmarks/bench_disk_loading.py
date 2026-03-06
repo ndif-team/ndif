@@ -140,18 +140,37 @@ def sudo_drop_caches():
     print(f"  [cache] Done in {elapsed:.1f}s")
 
 
-def invalidate_via_junk_file(path: str):
-    """Read the junk file to pressure model pages out of the page cache."""
+def invalidate_via_junk_file(path: str, num_threads: int = 16):
+    """Read the junk file to pressure model pages out of the page cache.
+
+    Uses multiple threads to saturate I/O bandwidth, since a single read
+    stream on Lustre / local NVMe typically achieves only 2-7 GB/s.
+    """
     if not os.path.exists(path):
         print(f"  [cache] Junk file not found: {path}")
         return
 
-    size_gb = os.path.getsize(path) / (1024 ** 3)
-    print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache...")
+    file_size = os.path.getsize(path)
+    size_gb = file_size / (1024 ** 3)
+    chunk_size = file_size // num_threads
+    print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache ({num_threads} threads)...")
+
+    def _read_chunk(thread_idx: int):
+        offset = thread_idx * chunk_size
+        end = file_size if thread_idx == num_threads - 1 else offset + chunk_size
+        with open(path, "rb") as f:
+            f.seek(offset)
+            remaining = end - offset
+            while remaining > 0:
+                to_read = min(16 * 1024 * 1024, remaining)
+                data = f.read(to_read)
+                if not data:
+                    break
+                remaining -= len(data)
+
     t0 = time.perf_counter()
-    with open(path, "rb") as f:
-        while f.read(16 * 1024 * 1024):  # 16MB chunks
-            pass
+    with ThreadPoolExecutor(max_workers=num_threads) as pool:
+        list(pool.map(_read_chunk, range(num_threads)))
     elapsed = time.perf_counter() - t0
     bw = size_gb / elapsed if elapsed > 0 else 0
     print(f"  [cache] Done in {elapsed:.1f}s ({bw:.1f} GB/s)")
