@@ -1,15 +1,12 @@
-"""Benchmark: Model loading from disk with varying parallelism strategies.
+"""Benchmark: Model loading from disk with varying worker counts.
 
-Measures wall-clock time for loading HuggingFace models under different
-configurations to identify the optimal strategy for Lustre / NVMe-oF storage
-(e.g., NCSA Delta).
+Measures wall-clock time for loading HuggingFace models via from_pretrained
+with different GLOBAL_WORKERS counts to find the optimal parallelism for
+Lustre / NVMe-oF storage (e.g., NCSA Delta).
 
 Experiments:
   baseline            - standard from_pretrained (v5 default, 4 worker threads)
   workers             - from_pretrained with GLOBAL_WORKERS = 1,2,4,8,16,32
-  prefetch            - warm page cache first, then from_pretrained
-  parallel_shards     - direct-to-device parallel shard loading (no CPU staging)
-  parallel_shards_cpu_staged - thread-pool load_file() bypass with CPU staging + dispatch
 
 Page cache invalidation between experiments:
   By default, creates a large file (512GB) on /tmp at startup and reads it
@@ -192,17 +189,6 @@ def resolve_shard_paths(model_id: str, revision: str = "main") -> list[str]:
     return [str(p) for p in shard_paths]
 
 
-def warm_page_cache(shard_paths: list[str], num_threads: int = 8):
-    """Read shard files into OS page cache using parallel threads."""
-    def _read_file(path: str):
-        with open(path, "rb") as f:
-            while f.read(8 * 1024 * 1024):  # 8MB chunks
-                pass
-
-    with ThreadPoolExecutor(max_workers=min(num_threads, len(shard_paths))) as pool:
-        list(pool.map(_read_file, shard_paths))
-
-
 def unload_model(model):
     """Fully unload a model and free GPU memory."""
     if model is not None:
@@ -226,14 +212,8 @@ def patch_global_workers(n_workers: int):
         cml.GLOBAL_WORKERS = original
 
 
-def build_max_memory(gpu_ids: list[int], include_cpu: bool = False) -> dict:
-    """Build a max_memory dict that restricts placement to the given GPUs.
-
-    Args:
-        include_cpu: If True, add a CPU entry so overflow layers spill to RAM
-            instead of requiring disk offload. ``from_pretrained`` does this
-            internally, but manual ``infer_auto_device_map`` callers need it.
-    """
+def build_max_memory(gpu_ids: list[int]) -> dict:
+    """Build a max_memory dict that restricts placement to the given GPUs."""
     max_memory = {}
     for i in range(torch.cuda.device_count()):
         if i in gpu_ids:
@@ -241,9 +221,6 @@ def build_max_memory(gpu_ids: list[int], include_cpu: bool = False) -> dict:
             max_memory[i] = int(mem * 0.9)  # 90% of GPU memory
         else:
             max_memory[i] = 0
-    if include_cpu:
-        mem_info = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        max_memory["cpu"] = int(mem_info * 0.8)
     return max_memory
 
 
@@ -329,337 +306,12 @@ def run_workers(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
 
 
 # ---------------------------------------------------------------------------
-# Experiment: Page cache warming + from_pretrained
-# ---------------------------------------------------------------------------
-
-def run_prefetch(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
-                 prefetch_threads: int = 8, revision: str = "main") -> TimingResult:
-    """Warm page cache by pre-reading all shard files, then from_pretrained."""
-    from transformers import AutoModelForCausalLM
-
-    max_memory = build_max_memory(gpu_ids)
-    phases = {}
-
-    shard_paths = resolve_shard_paths(model_id, revision)
-    total_size_mb = sum(os.path.getsize(p) for p in shard_paths) / (1024 ** 2)
-
-    # Phase 1: Prefetch
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-    warm_page_cache(shard_paths, num_threads=prefetch_threads)
-    t_prefetch = time.perf_counter() - t0
-    phases["prefetch"] = t_prefetch
-    prefetch_bw = total_size_mb / t_prefetch / 1024 if t_prefetch > 0 else 0
-    print(f"  [prefetch] {len(shard_paths)} shards, {total_size_mb:.0f} MB "
-          f"in {t_prefetch:.2f}s ({prefetch_bw:.1f} GB/s)")
-
-    # Phase 2: Load (should hit page cache)
-    t1 = time.perf_counter()
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        revision=revision,
-        device_map="auto",
-        max_memory=max_memory,
-        torch_dtype=dtype,
-        attn_implementation="eager",
-    )
-    torch.cuda.synchronize()
-    t_load = time.perf_counter() - t1
-    phases["load_after_prefetch"] = t_load
-
-    wall = time.perf_counter() - t0
-    peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
-    peak_cpu = get_process_rss_mb()
-
-    unload_model(model)
-
-    return TimingResult(
-        experiment="prefetch",
-        config={"prefetch_threads": prefetch_threads, "shard_count": len(shard_paths),
-                "total_size_mb": round(total_size_mb, 1)},
-        wall_time_s=wall,
-        phase_times_s=phases,
-        peak_gpu_mem_mb=peak_gpu,
-        peak_cpu_mem_mb=peak_cpu,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Experiment: Parallel shard loading — direct to device (no CPU staging)
-# ---------------------------------------------------------------------------
-
-def run_parallel_shards(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
-                        n_workers: int = 4, revision: str = "main") -> TimingResult:
-    """Load safetensors shards directly to target devices in parallel.
-
-    Replicates the HuggingFace Transformers v5 from_pretrained pattern:
-      1. Meta-init model with correct dtype
-      2. Compute per-tensor device map
-      3. CUDA allocator warmup
-      4. Build tensor → shard index
-      5. Parallel materialize: safe_open(device=target) + get_tensor()
-      6. Assign into model via set_module_tensor_to_device (no data movement)
-      7. tie_weights() to re-establish shared weight tying
-    """
-    from transformers import AutoModelForCausalLM, AutoConfig
-    from safetensors import safe_open
-    from accelerate import init_empty_weights, infer_auto_device_map
-    from accelerate.utils import set_module_tensor_to_device
-    from transformers.modeling_utils import expand_device_map
-    from collections import defaultdict
-
-    max_memory = build_max_memory(gpu_ids, include_cpu=True)
-    phases = {}
-
-    shard_paths = resolve_shard_paths(model_id, revision)
-    total_size_mb = sum(os.path.getsize(p) for p in shard_paths) / (1024 ** 2)
-
-    if not shard_paths or not shard_paths[0].endswith(".safetensors"):
-        return TimingResult(
-            experiment="parallel_shards",
-            config={"workers": n_workers},
-            wall_time_s=0,
-            error="No safetensors files found, skipping",
-        )
-
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-
-    # Phase 1: Build model architecture on meta device
-    t_meta_start = time.perf_counter()
-    config = AutoConfig.from_pretrained(model_id, revision=revision)
-    with init_empty_weights():
-        model = AutoModelForCausalLM.from_config(config, dtype=dtype, attn_implementation="eager")
-    phases["meta_init"] = time.perf_counter() - t_meta_start
-
-    # Phase 2: Compute device map (module-level → per-tensor)
-    t_map_start = time.perf_counter()
-    device_map = infer_auto_device_map(model, max_memory=max_memory, dtype=dtype)
-    expected_keys = list(model.state_dict().keys())
-    tensor_device_map = expand_device_map(device_map, expected_keys)
-    phases["device_map"] = time.perf_counter() - t_map_start
-
-    # Phase 3: CUDA allocator warmup (replicate v5 optimization)
-    t_warmup_start = time.perf_counter()
-    try:
-        from transformers.modeling_utils import caching_allocator_warmup
-        caching_allocator_warmup(model, tensor_device_map, None)
-        phases["cuda_warmup"] = time.perf_counter() - t_warmup_start
-    except Exception as e:
-        phases["cuda_warmup"] = time.perf_counter() - t_warmup_start
-        print(f"  [warn] Could not run caching_allocator_warmup: {e}")
-
-    # Phase 4: Build tensor index — map tensor names to shard paths
-    t_index_start = time.perf_counter()
-    tensor_to_shard = {}
-    for shard_path in shard_paths:
-        with safe_open(shard_path, framework="pt") as f:
-            for name in f.keys():
-                tensor_to_shard[name] = shard_path
-    phases["tensor_index"] = time.perf_counter() - t_index_start
-
-    # Phase 5: Parallel direct-to-device I/O
-    # Group tensors by (shard_path, target_device) for efficient batched reads
-    groups = defaultdict(list)
-    for name, shard_path in tensor_to_shard.items():
-        target = tensor_device_map.get(name, "cpu")
-        # Normalize device string for safe_open
-        if isinstance(target, int):
-            target = f"cuda:{target}"
-        elif target == "cpu":
-            target = "cpu"
-        else:
-            target = str(target)
-        groups[(shard_path, target)].append(name)
-
-    t_io_start = time.perf_counter()
-
-    loaded_tensors = {}
-
-    def _load_group(args):
-        (shard_path, device), tensor_names = args
-        result = {}
-        with safe_open(shard_path, framework="pt", device=device) as f:
-            for name in tensor_names:
-                tensor = f.get_tensor(name)
-                if dtype is not None and tensor.is_floating_point() and tensor.dtype != dtype:
-                    tensor = tensor.to(dtype=dtype)
-                result[name] = tensor
-        return result
-
-    effective_workers = min(n_workers, len(groups))
-    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-        for batch in pool.map(_load_group, groups.items()):
-            loaded_tensors.update(batch)
-
-    torch.cuda.synchronize()
-    t_io = time.perf_counter() - t_io_start
-    phases["direct_io"] = t_io
-    io_bw = total_size_mb / t_io / 1024 if t_io > 0 else 0
-    print(f"  [direct_io] {len(shard_paths)} shards, {total_size_mb:.0f} MB "
-          f"in {t_io:.2f}s ({io_bw:.1f} GB/s) with {effective_workers} workers "
-          f"({len(groups)} groups)")
-
-    # Phase 6: Assign tensors into meta-initialized model (no data movement)
-    t_assign_start = time.perf_counter()
-    for name, tensor in loaded_tensors.items():
-        target = tensor_device_map.get(name, "cpu")
-        if isinstance(target, int):
-            target = f"cuda:{target}"
-        set_module_tensor_to_device(model, name, target, value=tensor)
-    del loaded_tensors
-    phases["assign"] = time.perf_counter() - t_assign_start
-
-    # Phase 7: Re-establish shared weight tying (e.g. lm_head ↔ embed_tokens)
-    model.tie_weights()
-
-    torch.cuda.synchronize()
-    wall = time.perf_counter() - t0
-
-    peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
-    peak_cpu = get_process_rss_mb()
-
-    unload_model(model)
-
-    return TimingResult(
-        experiment="parallel_shards",
-        config={"workers": n_workers, "shard_count": len(shard_paths),
-                "total_size_mb": round(total_size_mb, 1),
-                "groups": len(groups)},
-        wall_time_s=wall,
-        phase_times_s=phases,
-        peak_gpu_mem_mb=peak_gpu,
-        peak_cpu_mem_mb=peak_cpu,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Experiment: Parallel shard loading — CPU staged + dispatch (original)
-# ---------------------------------------------------------------------------
-
-def run_parallel_shards_cpu_staged(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
-                                   n_workers: int = 8, revision: str = "main") -> TimingResult:
-    """Load all safetensors shards in parallel to CPU, then dispatch to GPUs.
-
-    This bypasses from_pretrained's sequential shard opening but replicates
-    the key v5 optimizations:
-      - Meta device init (no double memory)
-      - CUDA allocator warmup
-      - accelerate dispatch for device placement
-
-    NOTE: This approach is slow because dispatch_model moves tensors one-by-one
-    from CPU to GPU. Kept for A/B comparison with the direct-to-device strategy.
-    """
-    from transformers import AutoModelForCausalLM, AutoConfig
-    from safetensors.torch import load_file
-    from accelerate import init_empty_weights, infer_auto_device_map, dispatch_model
-
-    max_memory = build_max_memory(gpu_ids, include_cpu=True)
-    phases = {}
-
-    shard_paths = resolve_shard_paths(model_id, revision)
-    total_size_mb = sum(os.path.getsize(p) for p in shard_paths) / (1024 ** 2)
-
-    if not shard_paths or not shard_paths[0].endswith(".safetensors"):
-        return TimingResult(
-            experiment="parallel_shards_cpu_staged",
-            config={"workers": n_workers},
-            wall_time_s=0,
-            error="No safetensors files found, skipping",
-        )
-
-    torch.cuda.synchronize()
-    t0 = time.perf_counter()
-
-    # Phase 1: Build model architecture on meta device
-    t_meta_start = time.perf_counter()
-    config = AutoConfig.from_pretrained(model_id, revision=revision)
-    with init_empty_weights():
-        model = AutoModelForCausalLM.from_config(config, dtype=dtype, attn_implementation="eager")
-    phases["meta_init"] = time.perf_counter() - t_meta_start
-
-    # Phase 2: Compute device map
-    t_map_start = time.perf_counter()
-    device_map = infer_auto_device_map(model, max_memory=max_memory, dtype=dtype)
-    phases["device_map"] = time.perf_counter() - t_map_start
-
-    # Phase 3: CUDA allocator warmup (replicate v5 optimization)
-    t_warmup_start = time.perf_counter()
-    try:
-        from transformers.modeling_utils import caching_allocator_warmup, expand_device_map
-        expected_keys = list(model.state_dict().keys())
-        expanded = expand_device_map(device_map, expected_keys)
-        caching_allocator_warmup(model, expanded, None)
-        phases["cuda_warmup"] = time.perf_counter() - t_warmup_start
-    except Exception as e:
-        phases["cuda_warmup"] = time.perf_counter() - t_warmup_start
-        print(f"  [warn] Could not run caching_allocator_warmup: {e}")
-
-    # Phase 4: Parallel shard loading (eager read via device="cpu" to avoid
-    # mmap deferring I/O to the dispatch phase)
-    t_io_start = time.perf_counter()
-    effective_workers = min(n_workers, len(shard_paths))
-
-    def _load_shard(path):
-        return load_file(path, device="cpu")
-
-    with ThreadPoolExecutor(max_workers=effective_workers) as pool:
-        state_dicts = list(pool.map(_load_shard, shard_paths))
-    merged = {}
-    for sd in state_dicts:
-        merged.update(sd)
-    del state_dicts
-    t_io = time.perf_counter() - t_io_start
-    phases["parallel_io"] = t_io
-    io_bw = total_size_mb / t_io / 1024 if t_io > 0 else 0
-    print(f"  [parallel_io] {len(shard_paths)} shards, {total_size_mb:.0f} MB "
-          f"in {t_io:.2f}s ({io_bw:.1f} GB/s) with {effective_workers} workers")
-
-    # Phase 5: Load state dict and dispatch to GPUs
-    t_dispatch_start = time.perf_counter()
-
-    # Cast dtype before loading to avoid double memory from in-place conversion
-    if dtype is not None:
-        for k, v in merged.items():
-            if v.is_floating_point() and v.dtype != dtype:
-                merged[k] = v.to(dtype=dtype)
-
-    model.load_state_dict(merged, assign=True)
-    del merged
-    gc.collect()
-
-    model = dispatch_model(model, device_map=device_map)
-    torch.cuda.synchronize()
-    phases["dispatch"] = time.perf_counter() - t_dispatch_start
-
-    wall = time.perf_counter() - t0
-
-    peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
-    peak_cpu = get_process_rss_mb()
-
-    unload_model(model)
-
-    return TimingResult(
-        experiment="parallel_shards_cpu_staged",
-        config={"workers": n_workers, "shard_count": len(shard_paths),
-                "total_size_mb": round(total_size_mb, 1)},
-        wall_time_s=wall,
-        phase_times_s=phases,
-        peak_gpu_mem_mb=peak_gpu,
-        peak_cpu_mem_mb=peak_cpu,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Experiment registry & dispatch
 # ---------------------------------------------------------------------------
 
 EXPERIMENT_CONFIGS = {
     "baseline": [("baseline", {"workers": 4})],
     "workers": [("workers", {"workers": n}) for n in [1, 2, 4, 8, 16, 32]],
-    "prefetch": [("prefetch", {"prefetch_threads": t}) for t in [4, 8, 16]],
-    "parallel_shards": [("parallel_shards", {"workers": n}) for n in [4, 8, 16]],
-    "parallel_shards_cpu_staged": [("parallel_shards_cpu_staged", {"workers": n}) for n in [4, 8, 16]],
 }
 
 
@@ -669,12 +321,6 @@ def run_single_config(exp_name: str, config: dict, model_id: str, gpu_ids: list[
         return run_baseline(model_id, gpu_ids, dtype, revision)
     elif exp_name == "workers":
         return run_workers(model_id, gpu_ids, dtype, config["workers"], revision)
-    elif exp_name == "prefetch":
-        return run_prefetch(model_id, gpu_ids, dtype, config["prefetch_threads"], revision)
-    elif exp_name == "parallel_shards":
-        return run_parallel_shards(model_id, gpu_ids, dtype, config["workers"], revision)
-    elif exp_name == "parallel_shards_cpu_staged":
-        return run_parallel_shards_cpu_staged(model_id, gpu_ids, dtype, config["workers"], revision)
     else:
         raise ValueError(f"Unknown experiment: {exp_name}")
 
