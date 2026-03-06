@@ -185,7 +185,7 @@ class Processor:
         """
         return get_actor_handle(f"ModelActor:{self.model_key}")
 
-    def enqueue(self, request: BackendRequestModel) -> None:
+    async def enqueue(self, request: BackendRequestModel) -> None:
         """Add a request to the processing queue.
 
         Validates that the request can be processed (either the model is dedicated
@@ -201,21 +201,21 @@ class Processor:
             and not added to the queue.
         """
         if self.dedicated is False and not request.hotswapping:
-            request.create_response(
+            await request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
                 "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
-            ).respond()
+            ).arespond()
 
             return
 
         self.queue.put_nowait(request)
 
-        request.create_response(
+        await request.create_response(
             BackendResponseModel.JobStatus.QUEUED,
             logger,
             f"Moved to position {self.queue.qsize()} in Queue.",
-        ).respond()
+        ).arespond()
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
         """Check if this model has a dedicated (scheduled) deployment.
@@ -280,11 +280,11 @@ class Processor:
 
                             valid_queue.append(request)
                         else:
-                            request.create_response(
+                            await request.create_response(
                                 BackendResponseModel.JobStatus.ERROR,
                                 logger,
                                 "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
-                            ).respond()
+                            ).arespond()
 
                     for request in valid_queue:
                         self.queue.put_nowait(request)
@@ -433,11 +433,11 @@ class Processor:
             try:
                 handle = self.handle
 
-                request.create_response(
+                await request.create_response(
                     BackendResponseModel.JobStatus.DISPATCHED,
                     logger,
                     "Your job has been sent to the model deployment.",
-                ).respond()
+                ).arespond()
 
                 span.add_event("dispatched_to_model_actor")
 
@@ -452,11 +452,11 @@ class Processor:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
 
-                request.create_response(
+                await request.create_response(
                     BackendResponseModel.JobStatus.ERROR,
                     logger,
                     "Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.",
-                ).respond()
+                ).arespond()
 
                 if str(e).startswith("Failed to look up actor"):
                     self.eviction_queue.put_nowait(
@@ -528,7 +528,7 @@ class Processor:
 
             self.status = ProcessorStatus.BUSY
 
-            self.reply()
+            await self.reply()
 
             await self.execute(request)
 
@@ -549,13 +549,13 @@ class Processor:
             and self.status != ProcessorStatus.CANCELLED
         ):
             if self.status == ProcessorStatus.PROVISIONING:
-                self.reply("Model Provisioning...")
+                await self.reply("Model Provisioning...")
             elif self.status == ProcessorStatus.DEPLOYING:
-                self.reply("Model Deploying...")
+                await self.reply("Model Deploying...")
 
             await asyncio.sleep(reply_freq_s)
 
-    def reply(
+    async def reply(
         self,
         description: Optional[str] = None,
         status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
@@ -571,7 +571,7 @@ class Processor:
             status: The job status to report. Defaults to QUEUED.
         """
         for i, request in enumerate(self.queue._queue):
-            request.create_response(
+            await request.create_response(
                 status,
                 logger,
                 (
@@ -579,9 +579,9 @@ class Processor:
                     if description is not None
                     else f"Moved to position {i + 1} in Queue."
                 ),
-            ).respond()
+            ).arespond()
 
-    def purge(self, message: Optional[str] = None) -> None:
+    async def purge(self, message: Optional[str] = None) -> None:
         """Send an error message to all queued users and clear the queue.
 
         Used during processor shutdown or critical errors to notify all
@@ -594,7 +594,7 @@ class Processor:
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
-        self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
+        await self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
 
     def get_state(self) -> dict[str, object]:
         """Get a snapshot of the current processor state.
@@ -659,14 +659,14 @@ class Processor:
             self.queue._queue.remove(found_request)
 
             # Notify the user their request was cancelled
-            found_request.create_response(
+            await found_request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
                 "Request cancelled.",
-            ).respond()
+            ).arespond()
 
             # Update remaining requests in queue about new positions
-            self.reply()
+            await self.reply()
 
             return {
                 "status": "removed_from_queue",
