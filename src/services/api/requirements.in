@@ -18,7 +18,7 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-fastapi
 prometheus_client
 prometheus-fastapi-instrumentator
-python-logging-loki
+loki-logger-handler
 # Http server
 uvicorn[standard]==0.24.0
 gunicorn
