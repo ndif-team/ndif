@@ -64,7 +64,15 @@ class ObjectStoreProvider(Provider):
             region_name=cls.object_store_region,
             verify=cls.object_store_verify,
         )
+        cls._ensure_bucket()
         logger.info("Connected to object store")
+
+    @classmethod
+    def _ensure_bucket(cls):
+        try:
+            cls.object_store.head_bucket(Bucket=cls.object_store_bucket)
+        except cls.object_store.exceptions.ClientError:
+            cls.object_store.create_bucket(Bucket=cls.object_store_bucket)
 
 
 ObjectStoreProvider.from_env()
