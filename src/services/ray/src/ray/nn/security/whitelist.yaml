@@ -167,6 +167,10 @@ builtins:
 # - strict: false = module and all submodules match (e.g., torch.nn)
 
 modules:
+
+  - name: re
+    strict: false
+
   - name: builtins
     strict: true
 
