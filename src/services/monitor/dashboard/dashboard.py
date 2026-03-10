@@ -39,6 +39,11 @@ def api_models():
     return jsonify(parse_log_files("models_*.log"))
 
 
+@app.route("/api/cluster")
+def api_cluster():
+    return jsonify(parse_log_files("cluster_*.log"))
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

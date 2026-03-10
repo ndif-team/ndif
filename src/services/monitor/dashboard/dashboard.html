@@ -334,6 +334,85 @@
             margin-top: 2px;
         }
 
+        /* ---- CLUSTER ---- */
+        .cluster-wrap { margin-bottom: 1.25rem; }
+        .cluster-summary {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .cluster-stat {
+            font-family: 'VT323', monospace;
+        }
+        .cluster-stat-value {
+            font-size: 1.6rem;
+            color: var(--accent);
+            line-height: 1;
+        }
+        .cluster-stat-label {
+            font-size: 0.8rem;
+            color: var(--muted);
+            letter-spacing: 0.08em;
+        }
+        .cluster-nodes {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 0.6rem;
+        }
+        .node-card {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            font-size: 0.7rem;
+        }
+        .node-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.4rem;
+        }
+        .node-id {
+            font-family: 'VT323', monospace;
+            font-size: 0.9rem;
+            letter-spacing: 0.05em;
+        }
+        .node-gpu-count {
+            color: var(--muted);
+            font-size: 0.65rem;
+        }
+        .node-mem-bar {
+            height: 10px;
+            background: var(--border);
+            margin-bottom: 0.3rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .node-mem-fill {
+            height: 100%;
+            transition: width 0.3s;
+        }
+        .node-mem-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.6rem;
+            color: var(--muted);
+            margin-bottom: 0.35rem;
+        }
+        .node-deployments {
+            font-size: 0.6rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+        .node-deploy-name {
+            color: var(--text);
+            font-weight: 700;
+        }
+        .cluster-chart-wrap {
+            margin-top: 1rem;
+            position: relative;
+            height: 160px;
+        }
+
         /* ---- EMPTY STATE ---- */
         .empty-state {
             text-align: center;
@@ -431,6 +510,11 @@
             <div id="model-table"></div>
         </div>
 
+        <div class="panel cluster-wrap">
+            <div class="panel-title">CLUSTER</div>
+            <div id="cluster-panel"></div>
+        </div>
+
         <div class="footer" id="footer"></div>
     </div>
 
@@ -449,6 +533,7 @@
     let theme = localStorage.getItem('ndif-theme') || 'dark';
     let connectedData = [];
     let modelsData = [];
+    let clusterData = [];
     let latestCheckedModels = new Set(); // models from last check = currently HOT
     let chartAvg = null;
     let chartModels = null;
@@ -509,12 +594,14 @@
     // ---- DATA ----
     async function fetchData() {
         try {
-            const [c, m] = await Promise.all([
+            const [c, m, cl] = await Promise.all([
                 fetch('/api/connected').then(r => r.json()),
                 fetch('/api/models').then(r => r.json()),
+                fetch('/api/cluster').then(r => r.json()).catch(() => []),
             ]);
             connectedData = c;
             modelsData = m;
+            clusterData = cl;
             // Models in the most recent check = currently HOT
             latestCheckedModels = new Set();
             if (modelsData.length > 0) {
@@ -921,6 +1008,107 @@
         container.innerHTML = html;
     }
 
+    // ---- RENDER: CLUSTER ----
+    let clusterChart = null;
+
+    function fmtBytes(bytes) {
+        const gb = bytes / (1024 * 1024 * 1024);
+        return gb >= 1000 ? `${(gb / 1024).toFixed(1)} TB` : `${gb.toFixed(1)} GB`;
+    }
+
+    function renderCluster() {
+        const container = document.getElementById('cluster-panel');
+        if (clusterData.length === 0) {
+            container.innerHTML = '<div class="empty-state">NO CLUSTER DATA YET</div>';
+            return;
+        }
+
+        const latest = clusterData[clusterData.length - 1];
+        const usedMem = latest.total_memory_bytes - latest.available_memory_bytes;
+        const usedPct = latest.total_memory_bytes > 0
+            ? (usedMem / latest.total_memory_bytes * 100).toFixed(1) : 0;
+
+        let html = '<div class="cluster-summary">';
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${latest.nodes}</div><div class="cluster-stat-label">NODES</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${latest.total_gpus}</div><div class="cluster-stat-label">GPUs</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${fmtBytes(latest.total_memory_bytes)}</div><div class="cluster-stat-label">TOTAL VRAM</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${usedPct}%</div><div class="cluster-stat-label">VRAM USED</div></div>`;
+        html += '</div>';
+
+        // Per-node cards
+        html += '<div class="cluster-nodes">';
+        for (const node of (latest.node_details || [])) {
+            const nodeUsed = node.memory_bytes - node.available_bytes;
+            const nodeUsedPct = node.memory_bytes > 0 ? (nodeUsed / node.memory_bytes * 100) : 0;
+            const barColor = nodeUsedPct >= 90 ? 'var(--red)' : nodeUsedPct >= 70 ? 'var(--amber)' : 'var(--green)';
+
+            let deploys = '';
+            for (const d of (node.deployments || [])) {
+                deploys += `<span class="node-deploy-name">${d}</span><br>`;
+            }
+            if (!deploys) deploys = '<span style="opacity:0.5">none</span>';
+
+            html += `
+                <div class="node-card">
+                    <div class="node-card-header">
+                        <span class="node-id">${node.node_id}</span>
+                        <span class="node-gpu-count">${node.gpus} GPU${node.gpus > 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="node-mem-bar">
+                        <div class="node-mem-fill" style="width:${nodeUsedPct}%;background:${barColor}"></div>
+                    </div>
+                    <div class="node-mem-label">
+                        <span>${fmtBytes(nodeUsed)} / ${fmtBytes(node.memory_bytes)}</span>
+                        <span>${nodeUsedPct.toFixed(0)}%</span>
+                    </div>
+                    <div class="node-deployments">${deploys}</div>
+                </div>`;
+        }
+        html += '</div>';
+
+        // Memory usage chart over time
+        html += '<div class="cluster-chart-wrap"><canvas id="chart-cluster"></canvas></div>';
+        container.innerHTML = html;
+
+        // Render chart
+        const colors = getColors();
+        if (clusterChart) clusterChart.destroy();
+
+        const labels = clusterData.map(e => fmtTime(e.timestamp));
+        const usedData = clusterData.map(e => +((e.total_memory_bytes - e.available_memory_bytes) / (1024**3)).toFixed(1));
+        const totalData = clusterData.map(e => +(e.total_memory_bytes / (1024**3)).toFixed(1));
+
+        const clusterOpts = baseChartOpts(colors);
+        clusterOpts.plugins.legend = {
+            display: true, position: 'bottom',
+            labels: {
+                font: { family: "'Space Mono', monospace", size: 9 },
+                color: colors.muted, boxWidth: 10, boxHeight: 3, padding: 10,
+            },
+        };
+        clusterOpts.scales.y.ticks.callback = v => `${v} GB`;
+
+        clusterChart = new Chart(document.getElementById('chart-cluster'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Used VRAM', data: usedData,
+                        borderColor: colors.red, backgroundColor: colors.red + '18',
+                        fill: true, pointBackgroundColor: colors.red, spanGaps: true,
+                    },
+                    {
+                        label: 'Total VRAM', data: totalData,
+                        borderColor: colors.muted, borderDash: [4, 4],
+                        pointRadius: 0, spanGaps: true,
+                    },
+                ],
+            },
+            options: clusterOpts,
+        });
+    }
+
     // ---- RENDER: FOOTER ----
     function renderFooter() {
         document.getElementById('footer').textContent =
@@ -934,6 +1122,7 @@
         renderCalendar();
         renderCharts();
         renderModelTable();
+        renderCluster();
         renderFooter();
     }
 

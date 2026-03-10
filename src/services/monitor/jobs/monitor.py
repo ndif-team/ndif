@@ -41,11 +41,63 @@ def check_connected(base_url: str) -> tuple[bool, str]:
         return False, f"unexpected status {resp.status_code}"
 
 
-def get_hot_models(base_url: str) -> list[dict]:
+def get_status(base_url: str) -> dict:
+    """Fetch full /status response."""
     resp = requests.get(f"{base_url}/status", timeout=TIMEOUT)
     resp.raise_for_status()
-    deployments = resp.json().get("deployments", {})
+    return resp.json()
+
+
+def extract_hot_models(status: dict) -> list[dict]:
+    deployments = status.get("deployments", {})
     return [m for m in deployments.values() if m.get("deployment_level") == "HOT"]
+
+
+def extract_cluster_info(status: dict) -> dict:
+    """Summarize cluster info from /status response."""
+    cluster = status.get("cluster", {})
+    nodes = cluster.get("nodes", {})
+    total_gpus = 0
+    total_mem = 0
+    available_mem = 0
+    node_details = []
+
+    for node_id, node in nodes.items():
+        gpus = node.get("resources", {}).get("gpu_details", [])
+        n_gpus = len(gpus)
+        node_mem = sum(g.get("memory_bytes", 0) for g in gpus)
+        node_avail = sum(g.get("available_memory_bytes", 0) for g in gpus)
+
+        # Extract deployed model repo_ids for this node
+        deployed = []
+        for key in node.get("deployments", {}):
+            # key format: "nnsight...LanguageModel:{\"repo_id\": \"X\", ...}"
+            try:
+                json_part = key.split(":", 2)[2]
+                repo_id = json.loads(json_part).get("repo_id", key)
+            except (IndexError, json.JSONDecodeError):
+                repo_id = key
+            deployed.append(repo_id)
+
+        node_details.append({
+            "node_id": node_id[:8],
+            "gpus": n_gpus,
+            "memory_bytes": node_mem,
+            "available_bytes": node_avail,
+            "deployments": deployed,
+        })
+
+        total_gpus += n_gpus
+        total_mem += node_mem
+        available_mem += node_avail
+
+    return {
+        "nodes": len(nodes),
+        "total_gpus": total_gpus,
+        "total_memory_bytes": total_mem,
+        "available_memory_bytes": available_mem,
+        "node_details": sorted(node_details, key=lambda n: n["node_id"]),
+    }
 
 
 def _run_trace(repo_id: str, api_key: str) -> dict:
@@ -200,7 +252,14 @@ def main():
     if is_ok and model_check_due:
         # Fetch /status
         try:
-            hot_models = get_hot_models(args.url)
+            status_data = get_status(args.url)
+            hot_models = extract_hot_models(status_data)
+
+            # Log cluster info
+            cluster_info = extract_cluster_info(status_data)
+            cluster_info["timestamp"] = timestamp
+            with open(log_dir / f"cluster_{today}.log", "a") as f:
+                f.write(json.dumps(cluster_info) + "\n")
         except Exception as e:
             is_ok = False
             reason = f"/status unreachable"
@@ -255,6 +314,7 @@ def main():
     # ---- Step 5: Rotate ----
     rotate_logs(log_dir, "connected_*.log", args.max_days)
     rotate_logs(log_dir, "models_*.log", args.max_days)
+    rotate_logs(log_dir, "cluster_*.log", args.max_days)
 
     print(json.dumps({"timestamp": timestamp, "connected": is_ok, "reason": reason}))
     if not is_ok:
