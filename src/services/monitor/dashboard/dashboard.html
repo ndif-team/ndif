@@ -971,7 +971,8 @@
                         }
                     }
 
-                    if (!lastCheck || (slotEnd - lastCheck.time) > CHECK_VALIDITY_MS) {
+                    const checkAgainst = slotEnd > now ? now : slotEnd;
+                    if (!lastCheck || (checkAgainst - lastCheck.time) > CHECK_VALIDITY_MS) {
                         // No recent check — something was wrong
                         cls = 'fail';
                         label = 'no check';
