@@ -1,0 +1,9 @@
+torch
+transformers>=5.0
+accelerate
+safetensors
+huggingface_hub
+# Optional (install in bench-hf env):
+# runai-model-streamer
+# Optional (install in bench-vllm env):
+# vllm>=0.15
