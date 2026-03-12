@@ -211,11 +211,7 @@ class Processor:
 
         self.queue.put_nowait(request)
 
-        await request.create_response(
-            BackendResponseModel.JobStatus.QUEUED,
-            logger,
-            f"Moved to position {self.queue.qsize()} in Queue.",
-        ).arespond()
+        self.reply(description=f"Added to Queue at position {self.queue.qsize()}." if self.status not in [ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING] else None)
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
         """Check if this model has a dedicated (scheduled) deployment.
@@ -499,7 +495,7 @@ class Processor:
         """
         self.status = ProcessorStatus.PROVISIONING
 
-        asyncio.create_task(self.reply_worker())
+        await self.reply()
 
         if provision:
             await self.provision()
@@ -510,6 +506,8 @@ class Processor:
             return
 
         self.status = ProcessorStatus.DEPLOYING
+        
+        await self.reply()
 
         await self.initialize()
 
@@ -532,31 +530,9 @@ class Processor:
 
             await self.execute(request)
 
-    async def reply_worker(self) -> None:
-        """Asyncio task that sends periodic status updates to queued users.
-
-        Runs during the PROVISIONING and DEPLOYING phases, sending status
-        messages to all users in the queue at a configurable interval.
-        Exits once the processor reaches READY or CANCELLED status.
-
-        See Also:
-            QueueConfig.processor_reply_freq_s: Configures the update interval.
-        """
-        reply_freq_s = QueueConfig.processor_reply_freq_s
-
-        while (
-            self.status != ProcessorStatus.READY
-            and self.status != ProcessorStatus.CANCELLED
-        ):
-            if self.status == ProcessorStatus.PROVISIONING:
-                await self.reply("Model Provisioning...")
-            elif self.status == ProcessorStatus.DEPLOYING:
-                await self.reply("Model Deploying...")
-
-            await asyncio.sleep(reply_freq_s)
-
     async def reply(
         self,
+        request: Optional[BackendRequestModel] = None,
         description: Optional[str] = None,
         status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
     ) -> None:
@@ -566,19 +542,37 @@ class Processor:
         the provided description or a default queue position message.
 
         Args:
-            description: Custom message to send to all users. If None, each user
+            request: The request to send the response to. If None, all requests in the queue are sent the response.
+            description: Custom message to send to the request. If None, each user
                 receives their current queue position (e.g., "Moved to position 2 in Queue.").
             status: The job status to report. Defaults to QUEUED.
         """
-        for i, request in enumerate(self.queue._queue):
+        if description is None:
+            
+            if self.status == ProcessorStatus.PROVISIONING:
+                description = "Model Provisioning..."
+            elif self.status == ProcessorStatus.DEPLOYING:
+                description = "Model Deploying..."
+                
+        if request is None:
+
+            for i, request in enumerate(list(self.queue._queue)):
+                await request.create_response(
+                    status,
+                    logger,
+                    (
+                        description
+                        if description is not None
+                        else f"Moved to position {i + 1} in Queue."
+                    ),
+                ).arespond()
+                
+        else:
+            
             await request.create_response(
                 status,
                 logger,
-                (
-                    description
-                    if description is not None
-                    else f"Moved to position {i + 1} in Queue."
-                ),
+                description,
             ).arespond()
 
     async def purge(self, message: Optional[str] = None) -> None:
