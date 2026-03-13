@@ -9,6 +9,7 @@ Experiments:
   baseline            - standard from_pretrained (v5 default, 4 worker threads)
   workers             - from_pretrained with GLOBAL_WORKERS = 1,2,4,8,16,32
   runai               - run:ai SafetensorsStreamer to CPU + from_pretrained(state_dict=...)
+  nnsight             - nnsight's stream_weights_into_model (run:ai backend)
   vllm_default        - vLLM LLM() with default load_format="auto"
   vllm_runai          - vLLM LLM() with load_format="runai_streamer"
 
@@ -78,6 +79,13 @@ def _has_runai_streamer() -> bool:
     try:
         from runai_model_streamer import SafetensorsStreamer  # noqa: F401
         return True
+    except ImportError:
+        return False
+
+def _has_nnsight_loader() -> bool:
+    try:
+        from nnsight.modeling.loader import stream_weights_into_model  # noqa: F401
+        return _has_runai_streamer()
     except ImportError:
         return False
 
@@ -518,6 +526,55 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
 
 
 # ---------------------------------------------------------------------------
+# Experiment: nnsight loader (run:ai streamer via nnsight.modeling.loader)
+# ---------------------------------------------------------------------------
+
+def run_nnsight_loader(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
+                       shard_paths: list[str], concurrency: int = 16,
+                       revision: str = "main") -> TimingResult:
+    """Load model using nnsight's stream_weights_into_model (run:ai backend)."""
+    from nnsight.modeling.loader import stream_weights_into_model
+    from transformers import AutoConfig, AutoModelForCausalLM
+    from accelerate import init_empty_weights, infer_auto_device_map
+
+    max_memory = build_max_memory(gpu_ids)
+
+    # 1. Init empty model on meta device, compute device map
+    config = AutoConfig.from_pretrained(model_id, revision=revision)
+    with init_empty_weights():
+        model = AutoModelForCausalLM.from_config(
+            config, dtype=dtype, attn_implementation="eager",
+        )
+    device_map = infer_auto_device_map(model, max_memory=max_memory, dtype=dtype)
+
+    # 2. Stream weights via nnsight loader
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+
+    stream_weights_into_model(
+        model, shard_paths, device_map,
+        torch_dtype=dtype, concurrency=concurrency,
+    )
+
+    torch.cuda.synchronize()
+    wall = time.perf_counter() - t0
+
+    model.tie_weights()
+
+    peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
+    peak_cpu = get_process_rss_mb()
+    unload_model(model)
+
+    return TimingResult(
+        experiment="nnsight",
+        config={"concurrency": concurrency},
+        wall_time_s=wall,
+        peak_gpu_mem_mb=peak_gpu,
+        peak_cpu_mem_mb=peak_cpu,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Experiment: vLLM
 # ---------------------------------------------------------------------------
 
@@ -588,6 +645,7 @@ EXPERIMENT_CONFIGS = {
     "baseline": [("baseline", {"workers": 4})],
     "workers": [("workers", {"workers": n}) for n in [1, 2, 4, 8, 16, 32]],
     "runai": [("runai", {"concurrency": c}) for c in [1, 4, 8, 16]],
+    "nnsight": [("nnsight", {"concurrency": c}) for c in [1, 4, 8, 16]],
     "vllm_default": [("vllm_default", {"load_format": "auto"})],
     "vllm_runai": [("vllm_runai", {"load_format": "runai_streamer", "concurrency": c})
                    for c in [4, 8, 16, 32]],
@@ -608,6 +666,11 @@ def run_single_config(exp_name: str, config: dict, model_id: str, gpu_ids: list[
         return run_workers(model_id, gpu_ids, dtype, config["workers"], revision)
     elif exp_name == "runai":
         return run_runai_statedict(
+            model_id, gpu_ids, dtype, kwargs["shard_paths"],
+            concurrency=config["concurrency"], revision=revision,
+        )
+    elif exp_name == "nnsight":
+        return run_nnsight_loader(
             model_id, gpu_ids, dtype, kwargs["shard_paths"],
             concurrency=config["concurrency"], revision=revision,
         )
@@ -680,6 +743,7 @@ def main():
     # --- Validate experiment dependencies ---
     EXPERIMENT_DEPS = {
         "runai": ("runai-model-streamer", _has_runai_streamer),
+        "nnsight": ("nnsight + runai-model-streamer", _has_nnsight_loader),
         "vllm_default": ("vllm", _has_vllm),
         "vllm_runai": ("vllm + runai-model-streamer", lambda: _has_vllm() and _has_runai_streamer()),
     }
