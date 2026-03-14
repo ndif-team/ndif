@@ -161,7 +161,8 @@ def create_junk_file(path: str, size_gb: int, fio_binary: str):
     subprocess.run(
         [fio_binary, "--name=create_junk", f"--filename={path}",
          "--rw=write", "--bs=1M", f"--size={size_gb}G",
-         "--ioengine=psync", "--direct=0"],
+         "--ioengine=psync", "--direct=0",
+         "--eta=always", "--status-interval=5"],
         check=True,
     )
     elapsed = time.perf_counter() - t0
@@ -201,15 +202,19 @@ def invalidate_via_junk_file(path: str, fio_binary: str, num_threads: int = 16):
 
     file_size = os.path.getsize(path)
     size_gb = file_size / (1024 ** 3)
+    chunk_gb = size_gb / num_threads
     print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache "
-          f"(fio, {num_threads} jobs)...")
+          f"(fio, {num_threads} jobs x {chunk_gb:.0f} GB)...")
 
     t0 = time.perf_counter()
     subprocess.run(
         [fio_binary, "--name=evict_cache", f"--filename={path}",
          "--rw=read", "--bs=1M", "--direct=0",
-         f"--numjobs={num_threads}", "--ioengine=psync",
-         "--group_reporting", "--thread"],
+         f"--numjobs={num_threads}", f"--size={int(chunk_gb)}G",
+         f"--offset_increment={int(chunk_gb)}G",
+         "--ioengine=psync",
+         "--group_reporting", "--thread",
+         "--eta=always", "--status-interval=5"],
         check=True,
         timeout=600,
     )
