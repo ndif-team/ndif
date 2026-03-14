@@ -87,7 +87,7 @@ def _has_runai_streamer() -> bool:
 
 def _has_nnsight_loader() -> bool:
     try:
-        from nnsight.modeling.loader import stream_weights_into_model  # noqa: F401
+        from nnsight.modeling.loader import stream_to_state_dict  # noqa: F401
         return _has_runai_streamer()
     except ImportError:
         return False
@@ -497,7 +497,7 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
         else:
             param_device[name] = device_map.get("", "cpu")
 
-    # 3. Pipelined: stream from disk -> pin CPU memory -> async copy to GPU
+    # 3. Stream from disk -> dtype convert -> place on GPU
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
@@ -506,12 +506,15 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
         for name, tensor in streamer.get_tensors():
             target = param_device.get(name, "cpu")
             if target not in ("cpu", "disk"):
-                tensor = tensor.to(dtype=dtype).pin_memory()
                 set_module_tensor_to_device(
-                    model, name, target, value=tensor.to(target, non_blocking=True),
+                    model, name, target, value=tensor.to(dtype=dtype).to(target),
+                    clear_cache=False,
                 )
             else:
-                set_module_tensor_to_device(model, name, target, value=tensor.to(dtype=dtype))
+                set_module_tensor_to_device(
+                    model, name, target, value=tensor.to(dtype=dtype),
+                    clear_cache=False,
+                )
             del tensor
 
     torch.cuda.synchronize()
@@ -539,34 +542,30 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
 def run_nnsight_loader(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
                        shard_paths: list[str], concurrency: int = 16,
                        revision: str = "main") -> TimingResult:
-    """Load model using nnsight's stream_weights_into_model (run:ai backend)."""
-    from nnsight.modeling.loader import stream_weights_into_model
+    """Load model using nnsight's stream_to_state_dict (run:ai backend) + from_pretrained."""
+    from nnsight.modeling.loader import stream_to_state_dict
     from transformers import AutoConfig, AutoModelForCausalLM
-    from accelerate import init_empty_weights, infer_auto_device_map
 
     max_memory = build_max_memory(gpu_ids)
-
-    # 1. Init empty model on meta device, compute device map
     config = AutoConfig.from_pretrained(model_id, revision=revision, local_files_only=True)
-    with init_empty_weights():
-        model = AutoModelForCausalLM.from_config(
-            config, dtype=dtype, attn_implementation="eager",
-        )
-    device_map = infer_auto_device_map(model, max_memory=max_memory, dtype=dtype)
+    model_class = AutoModelForCausalLM._model_mapping[type(config)]
 
-    # 2. Stream weights via nnsight loader
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
-    stream_weights_into_model(
-        model, shard_paths, device_map,
-        torch_dtype=dtype, concurrency=concurrency,
+    state_dict = stream_to_state_dict(shard_paths, concurrency=concurrency)
+    model = model_class.from_pretrained(
+        None,
+        config=config,
+        state_dict=state_dict,
+        device_map="auto",
+        max_memory=max_memory,
+        dtype=dtype,
+        revision=revision,
     )
 
     torch.cuda.synchronize()
     wall = time.perf_counter() - t0
-
-    model.tie_weights()
 
     peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
     peak_cpu = get_process_rss_mb()
