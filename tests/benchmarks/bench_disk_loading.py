@@ -501,24 +501,67 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
     torch.cuda.synchronize()
     t0 = time.perf_counter()
 
+    # Per-step accumulators
+    t_get_tensor = 0.0   # time waiting for next tensor from streamer (disk I/O)
+    t_dtype_cast = 0.0   # time for .to(dtype)
+    t_to_device = 0.0    # time for .to(target_device)
+    t_set_module = 0.0   # time for set_module_tensor_to_device
+    n_tensors = 0
+    total_bytes = 0
+
     with SafetensorsStreamer() as streamer:
         streamer.stream_files(shard_paths, device="cpu")
+        _t_iter = time.perf_counter()
         for name, tensor in streamer.get_tensors():
+            _t1 = time.perf_counter()
+            t_get_tensor += _t1 - _t_iter
+            total_bytes += tensor.nelement() * tensor.element_size()
+
             target = param_device.get(name, "cpu")
             if target not in ("cpu", "disk"):
+                tensor_cast = tensor.to(dtype=dtype)
+                _t2 = time.perf_counter()
+                t_dtype_cast += _t2 - _t1
+
+                tensor_dev = tensor_cast.to(target)
+                _t3 = time.perf_counter()
+                t_to_device += _t3 - _t2
+
                 set_module_tensor_to_device(
-                    model, name, target, value=tensor.to(dtype=dtype).to(target),
+                    model, name, target, value=tensor_dev,
                     clear_cache=False,
                 )
+                _t4 = time.perf_counter()
+                t_set_module += _t4 - _t3
+                del tensor_cast, tensor_dev
             else:
+                tensor_cast = tensor.to(dtype=dtype)
+                _t2 = time.perf_counter()
+                t_dtype_cast += _t2 - _t1
+
                 set_module_tensor_to_device(
-                    model, name, target, value=tensor.to(dtype=dtype),
+                    model, name, target, value=tensor_cast,
                     clear_cache=False,
                 )
+                _t3 = time.perf_counter()
+                t_set_module += _t3 - _t2
+                del tensor_cast
+
             del tensor
+            n_tensors += 1
+            _t_iter = time.perf_counter()
 
     torch.cuda.synchronize()
     wall = time.perf_counter() - t0
+
+    total_gb = total_bytes / (1024 ** 3)
+    print(f"  [runai profile] {n_tensors} tensors, {total_gb:.1f} GB")
+    print(f"    get_tensor (disk I/O):  {t_get_tensor:8.2f}s  ({total_gb/t_get_tensor:.2f} GB/s)" if t_get_tensor > 0 else "    get_tensor: 0s")
+    print(f"    dtype cast (CPU):       {t_dtype_cast:8.2f}s")
+    print(f"    to(device) (GPU xfer):  {t_to_device:8.2f}s")
+    print(f"    set_module (place):     {t_set_module:8.2f}s")
+    print(f"    cuda.synchronize:       {wall - t_get_tensor - t_dtype_cast - t_to_device - t_set_module:8.2f}s")
+    print(f"    total wall:             {wall:8.2f}s")
 
     model.tie_weights()
 
