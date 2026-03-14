@@ -63,6 +63,9 @@ import shutil
 import subprocess
 import sys
 import time
+
+# Force unbuffered stdout so progress is visible immediately
+sys.stdout.reconfigure(line_buffering=True)
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -139,12 +142,12 @@ JUNK_FILE_PATH = "/tmp/bench_disk_loading_junk.bin"
 JUNK_FILE_SIZE_GB = 512
 
 
-def create_junk_file(path: str = JUNK_FILE_PATH, size_gb: int = JUNK_FILE_SIZE_GB):
+def create_junk_file(path: str, size_gb: int, fio_binary: str):
     """Create a large junk file on local /tmp for page cache invalidation.
 
-    Uses dd with /dev/zero for speed. On Delta, /tmp is 1.5TB local NVMe
-    so 512GB is safe. Writing zeros is fast (~2-3 GB/s) and the content
-    doesn't matter — we just need to fill the page cache with junk.
+    Uses fio sequential write for speed. On Delta, /tmp is 1.5TB local NVMe
+    so 512GB is safe. The content doesn't matter — we just need to fill the
+    page cache with junk later.
     """
     if os.path.exists(path):
         existing_gb = os.path.getsize(path) / (1024 ** 3)
@@ -153,11 +156,12 @@ def create_junk_file(path: str = JUNK_FILE_PATH, size_gb: int = JUNK_FILE_SIZE_G
             return
         print(f"  [junk] Existing file too small ({existing_gb:.0f} GB), recreating...")
 
-    print(f"  [junk] Creating {size_gb} GB junk file at {path}...")
+    print(f"  [junk] Creating {size_gb} GB junk file at {path} via fio...")
     t0 = time.perf_counter()
     subprocess.run(
-        ["dd", "if=/dev/zero", f"of={path}", "bs=1M", f"count={size_gb * 1024}",
-         "status=progress"],
+        [fio_binary, "--name=create_junk", f"--filename={path}",
+         "--rw=write", "--bs=1M", f"--size={size_gb}G",
+         "--ioengine=psync", "--direct=0"],
         check=True,
     )
     elapsed = time.perf_counter() - t0
@@ -185,11 +189,11 @@ def sudo_drop_caches():
     print(f"  [cache] Done in {elapsed:.1f}s")
 
 
-def invalidate_via_junk_file(path: str, num_threads: int = 16):
+def invalidate_via_junk_file(path: str, fio_binary: str, num_threads: int = 16):
     """Read the junk file to pressure model pages out of the page cache.
 
-    Uses multiple threads to saturate I/O bandwidth, since a single read
-    stream on Lustre / local NVMe typically achieves only 2-7 GB/s.
+    Uses fio with buffered reads (direct=0) so data flows through the page
+    cache, evicting model shard pages. Multiple jobs saturate I/O bandwidth.
     """
     if not os.path.exists(path):
         print(f"  [cache] Junk file not found: {path}")
@@ -197,25 +201,18 @@ def invalidate_via_junk_file(path: str, num_threads: int = 16):
 
     file_size = os.path.getsize(path)
     size_gb = file_size / (1024 ** 3)
-    chunk_size = file_size // num_threads
-    print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache ({num_threads} threads)...")
-
-    def _read_chunk(thread_idx: int):
-        offset = thread_idx * chunk_size
-        end = file_size if thread_idx == num_threads - 1 else offset + chunk_size
-        with open(path, "rb") as f:
-            f.seek(offset)
-            remaining = end - offset
-            while remaining > 0:
-                to_read = min(16 * 1024 * 1024, remaining)
-                data = f.read(to_read)
-                if not data:
-                    break
-                remaining -= len(data)
+    print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache "
+          f"(fio, {num_threads} jobs)...")
 
     t0 = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=num_threads) as pool:
-        list(pool.map(_read_chunk, range(num_threads)))
+    subprocess.run(
+        [fio_binary, "--name=evict_cache", f"--filename={path}",
+         "--rw=read", "--bs=1M", "--direct=0",
+         f"--numjobs={num_threads}", "--ioengine=psync",
+         "--group_reporting", "--thread"],
+        check=True,
+        timeout=600,
+    )
     elapsed = time.perf_counter() - t0
     bw = size_gb / elapsed if elapsed > 0 else 0
     print(f"  [cache] Done in {elapsed:.1f}s ({bw:.1f} GB/s)")
@@ -385,6 +382,7 @@ def run_baseline(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
     max_memory = build_max_memory(gpu_ids)
 
     torch.cuda.synchronize()
+    print("  [baseline] Starting from_pretrained...", flush=True)
     t0 = time.perf_counter()
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -394,10 +392,13 @@ def run_baseline(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
         max_memory=max_memory,
         dtype=dtype,
         attn_implementation="eager",
+        local_files_only=True,
     )
 
+    print(f"  [baseline] from_pretrained returned, syncing CUDA...", flush=True)
     torch.cuda.synchronize()
     wall = time.perf_counter() - t0
+    print(f"  [baseline] Done in {wall:.2f}s", flush=True)
 
     peak_gpu = get_gpu_mem_allocated_mb(gpu_ids)
     peak_cpu = get_process_rss_mb()
@@ -435,6 +436,7 @@ def run_workers(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
             max_memory=max_memory,
             dtype=dtype,
             attn_implementation="eager",
+            local_files_only=True,
         )
 
         torch.cuda.synchronize()
@@ -471,7 +473,7 @@ def run_runai_statedict(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
     max_memory = build_max_memory(gpu_ids)
 
     # 1. Init empty model on meta device, compute device map
-    config = AutoConfig.from_pretrained(model_id, revision=revision)
+    config = AutoConfig.from_pretrained(model_id, revision=revision, local_files_only=True)
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(
             config, dtype=dtype, attn_implementation="eager",
@@ -540,7 +542,7 @@ def run_nnsight_loader(model_id: str, gpu_ids: list[int], dtype: torch.dtype,
     max_memory = build_max_memory(gpu_ids)
 
     # 1. Init empty model on meta device, compute device map
-    config = AutoConfig.from_pretrained(model_id, revision=revision)
+    config = AutoConfig.from_pretrained(model_id, revision=revision, local_files_only=True)
     with init_empty_weights():
         model = AutoModelForCausalLM.from_config(
             config, dtype=dtype, attn_implementation="eager",
@@ -692,7 +694,7 @@ def run_single_config(exp_name: str, config: dict, model_id: str, gpu_ids: list[
 
 def print_result(r: TimingResult):
     status = "ERROR" if r.error else "OK"
-    print(f"\n  [{status}] {r.experiment} | config={r.config}")
+    print(f"\n  [{status}] {r.experiment} | config={r.config}", flush=True)
     if r.error:
         print(f"    error: {r.error}")
         return
@@ -770,6 +772,7 @@ def main():
     # --- Cache invalidation setup ---
     use_sudo = args.sudo_drop_caches
     junk_file = None
+    cache_fio_binary = None
 
     if use_sudo:
         print("Cache mode:  sudo drop_caches")
@@ -784,8 +787,9 @@ def main():
         print("Cache mode:  disabled (--no-drop-caches)")
     else:
         print(f"Cache mode:  junk file ({JUNK_FILE_SIZE_GB} GB on /tmp)")
+        cache_fio_binary = ensure_fio_binary()
         junk_file = JUNK_FILE_PATH
-        create_junk_file(junk_file, JUNK_FILE_SIZE_GB)
+        create_junk_file(junk_file, JUNK_FILE_SIZE_GB, cache_fio_binary)
 
     def drop_caches():
         if args.no_drop_caches:
@@ -793,7 +797,7 @@ def main():
         if use_sudo:
             sudo_drop_caches()
         else:
-            invalidate_via_junk_file(junk_file)
+            invalidate_via_junk_file(junk_file, cache_fio_binary)
 
     # --- Ensure model is downloaded ---
     print("\nEnsuring model is in local cache...")
@@ -810,10 +814,11 @@ def main():
         print(f"  Downloaded {len(shard_paths)} shards, {total_mb:.0f} MB total")
 
     # --- fio setup ---
-    fio_binary = None
+    fio_binary = cache_fio_binary  # reuse if already resolved for cache invalidation
     ioengine = "libaio"
     if "fio" in args.experiments:
-        fio_binary = ensure_fio_binary()
+        if fio_binary is None:
+            fio_binary = ensure_fio_binary()
         if not check_libaio_available(fio_binary):
             print("  [fio] libaio not available, falling back to psync")
             ioengine = "psync"
@@ -841,12 +846,14 @@ def main():
                 torch.cuda.synchronize()
 
                 try:
+                    print(f"  [run] Starting {exp_name} config={config}", flush=True)
                     result = run_single_config(exp_name, config, args.model, gpu_ids,
                                                dtype, args.revision,
                                                shard_paths=shard_paths,
                                                fio_binary=fio_binary,
                                                ioengine=ioengine,
                                                gpu_memory_utilization=args.gpu_mem_util)
+                    print(f"  [run] Finished {exp_name}, printing result...", flush=True)
                     result.config["repeat"] = rep
                     print_result(result)
                     all_results.append(result)
@@ -859,9 +866,11 @@ def main():
                         wall_time_s=0, error=str(e),
                     ))
 
+                print(f"  [run] Cleanup: gc + cuda empty_cache...", flush=True)
                 gc.collect()
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+                print(f"  [run] Cleanup done.", flush=True)
 
     # --- Cleanup junk file in background ---
     if junk_file:
