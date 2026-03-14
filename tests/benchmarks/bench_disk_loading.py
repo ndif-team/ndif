@@ -202,19 +202,23 @@ def invalidate_via_junk_file(path: str, fio_binary: str, num_threads: int = 16):
 
     file_size = os.path.getsize(path)
     size_gb = file_size / (1024 ** 3)
-    chunk_gb = size_gb / num_threads
+    # Use exact byte sizes to avoid GB rounding issues with fio
+    chunk_bytes = file_size // num_threads
+    # Align to 1MB boundary (fio bs=1M)
+    chunk_bytes = (chunk_bytes // (1024 * 1024)) * (1024 * 1024)
+    chunk_mb = chunk_bytes // (1024 * 1024)
     print(f"  [cache] Reading {size_gb:.0f} GB junk file to evict page cache "
-          f"(fio, {num_threads} jobs x {chunk_gb:.0f} GB)...")
+          f"(fio, {num_threads} jobs x {chunk_mb} MB)...")
 
     t0 = time.perf_counter()
     subprocess.run(
         [fio_binary, "--name=evict_cache", f"--filename={path}",
          "--rw=read", "--bs=1M", "--direct=0",
-         f"--numjobs={num_threads}", f"--size={int(chunk_gb)}G",
-         f"--offset_increment={int(chunk_gb)}G",
+         f"--numjobs={num_threads}", f"--size={chunk_mb}M",
+         f"--offset_increment={chunk_mb}M",
          "--ioengine=psync",
          "--group_reporting", "--thread",
-         "--eta=always", "--status-interval=5"],
+         "--eta=always", "--status-interval=60"],
         check=True,
         timeout=600,
     )
