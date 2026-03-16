@@ -5,7 +5,7 @@ import socket
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 _initialized = False
 _provider = None
@@ -31,10 +31,7 @@ def init_tracing(service_name: str) -> None:
         )
 
         exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
-    else:
-        exporter = ConsoleSpanExporter()
-
-    _provider.add_span_processor(BatchSpanProcessor(exporter))
+        _provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(_provider)
 
     atexit.register(_shutdown)
