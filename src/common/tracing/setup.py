@@ -30,7 +30,7 @@ def init_tracing(service_name: str) -> None:
             OTLPSpanExporter,
         )
 
-        exporter = OTLPSpanExporter(endpoint=otlp_endpoint)
+        exporter = OTLPSpanExporter(endpoint=otlp_endpoint, timeout=os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT", 5))
         _provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(_provider)
 
