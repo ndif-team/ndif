@@ -382,7 +382,9 @@ class Dispatcher:
                     try:
                         await self.dispatch(request)
                     except Exception as e:
-                        self.logger.exception(f"Error dispatching request {request.id}: {e}")
+                        self.logger.exception(
+                            f"Error dispatching request {request.id}: {e}"
+                        )
 
                 await self.handle_evictions()
                 await self.handle_errors()

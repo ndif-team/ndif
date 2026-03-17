@@ -211,7 +211,14 @@ class Processor:
 
         self.queue.put_nowait(request)
 
-        self.reply(description=f"Added to Queue at position {self.queue.qsize()}." if self.status not in [ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING] else None)
+        self.reply(
+            description=(
+                f"Added to Queue at position {self.queue.qsize()}."
+                if self.status
+                not in [ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING]
+                else None
+            )
+        )
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
         """Check if this model has a dedicated (scheduled) deployment.
@@ -257,7 +264,9 @@ class Processor:
             Any models evicted by the Controller to make room for this deployment
             are reported to the eviction_queue for the Dispatcher to handle.
         """
-        with trace_span("processor.provision", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "processor.provision", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             try:
                 controller = controller_handle()
 
@@ -297,7 +306,12 @@ class Processor:
 
                 span.add_event("controller_deploy_requested")
 
-                result = await submit(controller, "deploy", [self.model_key], trace_context=TracingContext.inject())
+                result = await submit(
+                    controller,
+                    "deploy",
+                    [self.model_key],
+                    trace_context=TracingContext.inject(),
+                )
 
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
@@ -353,7 +367,9 @@ class Processor:
 
                     return
 
-            span.add_event("controller_deploy_completed", {"deployment_status": status_str})
+            span.add_event(
+                "controller_deploy_completed", {"deployment_status": status_str}
+            )
 
     async def initialize(self) -> None:
         """Wait for the model deployment to complete initialization.
@@ -370,7 +386,9 @@ class Processor:
             No exceptions are raised; errors are reported via the error_queue
             and the processor status is set to CANCELLED.
         """
-        with trace_span("processor.initialize", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "processor.initialize", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             while True:
                 try:
                     handle = self.handle
@@ -506,7 +524,7 @@ class Processor:
             return
 
         self.status = ProcessorStatus.DEPLOYING
-        
+
         await self.reply()
 
         await self.initialize()
@@ -548,12 +566,12 @@ class Processor:
             status: The job status to report. Defaults to QUEUED.
         """
         if description is None:
-            
+
             if self.status == ProcessorStatus.PROVISIONING:
                 description = "Model Provisioning..."
             elif self.status == ProcessorStatus.DEPLOYING:
                 description = "Model Deploying..."
-                
+
         if request is None:
 
             for i, request in enumerate(list(self.queue._queue)):
@@ -566,9 +584,9 @@ class Processor:
                         else f"Moved to position {i + 1} in Queue."
                     ),
                 ).arespond()
-                
+
         else:
-            
+
             await request.create_response(
                 status,
                 logger,
@@ -588,7 +606,9 @@ class Processor:
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
-        await self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
+        await self.reply(
+            description=message, status=BackendResponseModel.JobStatus.ERROR
+        )
 
     def get_state(self) -> dict[str, object]:
         """Get a snapshot of the current processor state.
