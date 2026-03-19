@@ -4,6 +4,7 @@
 import argparse
 import concurrent.futures
 import datetime
+import fcntl
 import json
 import os
 import sys
@@ -213,6 +214,14 @@ def main():
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Prevent concurrent runs
+    lock_file = open(log_dir / ".monitor.lock", "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Another monitor instance is running, skipping")
+        sys.exit(0)
+
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     today = datetime.date.today().isoformat()
     state = load_state(log_dir)
@@ -221,18 +230,11 @@ def main():
     reason = "ok"
 
     # ---- Step 1: /connected ----
-    connected_entry = {"timestamp": timestamp}
     try:
         is_ok, reason = check_connected(args.url)
-        connected_entry["status"] = "ok" if is_ok else reason
     except requests.RequestException as e:
         is_ok = False
-        reason = f"API unreachable"
-        connected_entry["status"] = "unreachable"
-        connected_entry["error"] = str(e)
-
-    with open(log_dir / f"connected_{today}.log", "a") as f:
-        f.write(json.dumps(connected_entry) + "\n")
+        reason = "API unreachable"
 
     # ---- Step 2: /status + model traces (if connected and interval elapsed) ----
     model_check_due = False
@@ -297,8 +299,16 @@ def main():
                     f.write(json.dumps(model_entry) + "\n")
 
                 failed = [r for r in results if r["status"] != "ok"]
-                if failed:
+                failed_set = sorted(r["model"] for r in failed)
+                prev_failed = state.get("last_failed_models", [])
+                if failed and failed_set != prev_failed:
                     notify_model_failures(config, failed, total)
+                state["last_failed_models"] = failed_set
+
+    # ---- Write connected entry (after full pipeline) ----
+    connected_entry = {"timestamp": timestamp, "status": "ok" if is_ok else reason}
+    with open(log_dir / f"connected_{today}.log", "a") as f:
+        f.write(json.dumps(connected_entry) + "\n")
 
     # ---- Step 3: Up/down notifications ----
     notify_status(config, state, is_ok, reason, timestamp)
