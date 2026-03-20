@@ -67,4 +67,14 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=8.4.0",
     "pytest-asyncio>=1.3.0",
+    "pytest-benchmark>=4.0.0",
+    "pytest-cov>=4.0.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "benchmark: marks tests as benchmarks (deselect with '-m \"not benchmark\"')",
+]
+testpaths = ["src/services/ray/tests"]
+python_files = ["test_*.py", "bench_*.py"]
+addopts = "-v"

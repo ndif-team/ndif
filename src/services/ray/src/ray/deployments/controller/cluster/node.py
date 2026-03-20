@@ -1,7 +1,7 @@
 import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set
 
@@ -58,6 +58,9 @@ class GPUResources:
     @property
     def memory_bytes(self) -> int:
         return self.gpus[0].memory_bytes if self.gpus else 0
+
+    # Mapping of GPU index -> NUMA node ID (empty if unavailable)
+    gpu_to_numa: Dict[int, int] = field(default_factory=dict)
 
     def required(self, model_size_in_bytes: int) -> int:
         if self.memory_bytes == 0:
