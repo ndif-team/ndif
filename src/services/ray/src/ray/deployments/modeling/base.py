@@ -39,7 +39,7 @@ from ....schema import BackendRequestModel, BackendResponseModel, BackendResultM
 from ....types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_environment import (
+from ...nn.security import (
     WHITELISTED_MODULES,
     WHITELISTED_MODULES_DESERIALIZATION,
     Protector,

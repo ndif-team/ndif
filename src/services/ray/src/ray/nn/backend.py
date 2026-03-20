@@ -1,9 +1,7 @@
 from typing import Any, Callable
 
 from nnsight.intervention.backends import Backend
-from .security.protected_environment import (
-    Protector,
-)
+from .security import Protector
 from nnsight.intervention.tracing.globals import Globals
 from nnsight.intervention.tracing.tracer import Tracer
 from nnsight.intervention.tracing.util import wrap_exception
