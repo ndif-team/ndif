@@ -313,6 +313,199 @@ class TestHelperTraces:
         assert mean is not None
         assert logits is not None
 
+    def test_helper_calling_helper(self, model):
+        """Helper that calls another helper — both contain model.trace().
+
+        Both functions need linecache registration, and the outer function's
+        globals must include a reference to the inner function.
+        """
+
+        def get_hidden(model, prompt, layer=0):
+            with model.trace(prompt):
+                hidden = model.transformer.h[layer].output.save()
+            return hidden
+
+        def get_hidden_diff(model, prompt, layer_a=0, layer_b=5):
+            ha = get_hidden(model, prompt, layer_a)
+            hb = get_hidden(model, prompt, layer_b)
+            return ha, hb
+
+        with model.session(remote=True):
+            ha, hb = get_hidden_diff(model, "Hello")
+
+        assert ha is not None
+        assert hb is not None
+        assert not torch.allclose(ha, hb)
+
+    def test_helper_with_intervention(self, model):
+        """Helper that modifies activations inside its trace.
+
+        The common real-world pattern: apply an intervention and return
+        the downstream effect.
+        """
+
+        def zero_layer_and_get_logits(model, prompt, layer=0):
+            with model.trace(prompt):
+                model.transformer.h[layer].output[:] = 0
+                logits = model.lm_head.output[0, -1].save()
+            return logits
+
+        # Baseline (no intervention)
+        with model.trace("Hello world", remote=True):
+            baseline = model.lm_head.output[0, -1].save()
+
+        # With intervention
+        with model.session(remote=True):
+            intervened = zero_layer_and_get_logits(model, "Hello world", layer=0)
+
+        # Intervention should change the output
+        assert not torch.allclose(baseline, intervened)
+
+    def test_helper_in_loop(self, model):
+        """Same helper called multiple times with different arguments.
+
+        Tests that the deserialized function is reusable across calls,
+        not invalidated after the first use.
+        """
+
+        def get_layer_mean(model, prompt, layer):
+            with model.trace(prompt):
+                result = model.transformer.h[layer].output.mean().save()
+            return result
+
+        with model.session(remote=True):
+            r0 = get_layer_mean(model, "Hello", 0)
+            r3 = get_layer_mean(model, "Hello", 3)
+            r6 = get_layer_mean(model, "Hello", 6)
+            r9 = get_layer_mean(model, "Hello", 9)
+            r11 = get_layer_mean(model, "Hello", 11)
+
+        assert all(r is not None for r in [r0, r3, r6, r9, r11])
+        # Different layers should produce different means
+        assert not torch.allclose(r0, r11)
+
+    def test_higher_order_helper(self, model):
+        """Helper that takes a user function as an argument.
+
+        Both the helper AND the passed function must be serialized correctly.
+        Tests nested serialization of function-valued arguments.
+        """
+
+        def apply_fn_to_hidden(model, prompt, fn, layer=0):
+            with model.trace(prompt):
+                hidden = model.transformer.h[layer].output
+                result = fn(hidden).save()
+            return result
+
+        def my_norm(x):
+            return x / (x.norm(dim=-1, keepdim=True) + 1e-8)
+
+        with model.session(remote=True):
+            normed = apply_fn_to_hidden(model, "Hello", my_norm, layer=5)
+
+        norms = normed.norm(dim=-1)
+        # bfloat16 precision on GPU gives ~0.996 instead of 1.0
+        assert torch.allclose(norms, torch.ones_like(norms), atol=1e-2)
+
+    def test_helper_with_generation(self, model):
+        """Helper that wraps model.generate() with iteration.
+
+        The most complex nnsight pattern: generation + iteration + intervention,
+        all inside a user-defined helper function.
+        """
+
+        def generate_with_zero_layer(model, prompt, layer=0, n_tokens=3):
+            with model.generate(prompt, max_new_tokens=n_tokens) as tracer:
+                with tracer.iter[:]:
+                    model.transformer.h[layer].output[:] = 0
+                result = tracer.result.save()
+            return result
+
+        with model.session(remote=True):
+            output = generate_with_zero_layer(model, "Hello", layer=0)
+
+        assert output is not None
+
+    def test_class_with_trace_method(self, model):
+        """User class whose method contains model.trace().
+
+        Tests that instance methods survive serialization — the class,
+        the instance state, and the method's trace call must all work.
+        """
+
+        class LayerExtractor:
+            def __init__(self, layer_idx):
+                self.layer_idx = layer_idx
+
+            def extract(self, model, prompt):
+                with model.trace(prompt):
+                    hidden = model.transformer.h[self.layer_idx].output.save()
+                return hidden
+
+        extractor = LayerExtractor(5)
+
+        with model.session(remote=True):
+            hidden = extractor.extract(model, "Hello")
+
+        assert hidden is not None
+        assert hidden.ndim == 3
+
+    @pytest.mark.xfail(
+        reason="@torch.no_grad() decorator wraps the function with a closure "
+               "that references 'torch', but the deserialized function's "
+               "globals don't include it — 'name torch is not defined'",
+        strict=True,
+    )
+    def test_decorated_helper(self, model):
+        """Helper decorated with @torch.no_grad().
+
+        The decorator wraps the function — cloudpickle must serialize
+        the wrapped version, and the trace inside must still work.
+
+        Currently fails: the decorator's closure references 'torch' but
+        source-based serialization doesn't capture it in the reconstructed
+        function's globals.
+        """
+
+        @torch.no_grad()
+        def get_hidden_no_grad(model, prompt, layer=0):
+            with model.trace(prompt):
+                hidden = model.transformer.h[layer].output.save()
+            return hidden
+
+        with model.session(remote=True):
+            hidden = get_hidden_no_grad(model, "Hello", layer=0)
+
+        assert hidden is not None
+
+    def test_helper_cross_trace_patching(self, model):
+        """One helper that opens two traces and patches between them.
+
+        Tests internal cross-trace data flow within a single helper function.
+        """
+
+        def patch_representation(model, source_prompt, target_prompt, layer=5):
+            with model.trace(source_prompt):
+                source_repr = model.transformer.h[layer].output[:, -1, :]
+
+            with model.trace(target_prompt):
+                model.transformer.h[layer].output[:, -1, :] = source_repr
+                logits = model.lm_head.output[0, -1].save()
+
+            return logits
+
+        with model.session(remote=True):
+            logits = patch_representation(
+                model,
+                "The Eiffel Tower is in",
+                "The Colosseum is in",
+                layer=5,
+            )
+
+        assert logits is not None
+        predicted = model.tokenizer.decode(logits.argmax())
+        assert predicted is not None
+
 
 # =============================================================================
 # COMPLEX PATTERNS
