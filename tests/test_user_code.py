@@ -362,10 +362,10 @@ class TestHelperTraces:
         assert not torch.allclose(baseline, intervened)
 
     def test_helper_in_loop(self, model):
-        """Same helper called multiple times with different arguments.
+        """Same helper called multiple times in a loop.
 
-        Tests that the deserialized function is reusable across calls,
-        not invalidated after the first use.
+        The results list must be created with .save() so nnsight knows to
+        resolve its contents when the session exits.
         """
 
         def get_layer_mean(model, prompt, layer):
@@ -374,15 +374,14 @@ class TestHelperTraces:
             return result
 
         with model.session(remote=True):
-            r0 = get_layer_mean(model, "Hello", 0)
-            r3 = get_layer_mean(model, "Hello", 3)
-            r6 = get_layer_mean(model, "Hello", 6)
-            r9 = get_layer_mean(model, "Hello", 9)
-            r11 = get_layer_mean(model, "Hello", 11)
+            results = list().save()
+            for layer_idx in [0, 3, 6, 9, 11]:
+                results.append(get_layer_mean(model, "Hello", layer_idx))
 
-        assert all(r is not None for r in [r0, r3, r6, r9, r11])
+        assert len(results) == 5
+        assert all(r is not None for r in results)
         # Different layers should produce different means
-        assert not torch.allclose(r0, r11)
+        assert not torch.allclose(results[0], results[-1])
 
     def test_higher_order_helper(self, model):
         """Helper that takes a user function as an argument.
