@@ -278,6 +278,9 @@ deserialization_modules:
   - name: nnsight.schema.request
     strict: true
 
+  - name: nnsight.ndif
+    strict: false
+
   - name: nnsight.modeling.mixins.remoteable
     strict: true
 
