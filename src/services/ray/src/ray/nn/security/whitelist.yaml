@@ -275,28 +275,7 @@ deserialization_modules:
   - name: copyreg
     strict: false
 
-  - name: nnsight.schema.request
-    strict: true
-
-  - name: nnsight.ndif
-    strict: false
-
-  - name: nnsight.modeling.mixins.remoteable
-    strict: true
-
-  - name: nnsight.intervention.tracing.base
-    strict: true
-
-  - name: nnsight.intervention.interleaver
-    strict: true
-
-  - name: nnsight.intervention.batching
-    strict: true
-
-  - name: nnsight.intervention.serialization
-    strict: true
-
-  - name: nnsight.modeling
+  - name: nnsight
     strict: false
 
   - name: transformers
