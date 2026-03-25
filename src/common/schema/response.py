@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import TYPE_CHECKING, ClassVar, Optional
 
@@ -76,6 +77,50 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
                 if self.status != ResponseModel.JobStatus.LOG:
                     self.save()
+
+            return self
+
+    async def arespond(self) -> ResponseModel:
+        """Async version of respond() for use in the Dispatcher's event loop."""
+        with trace_span("response.deliver", attributes={
+            "ndif.request.id": str(self.id),
+            "ndif.response.status": self.status.name,
+            "ndif.response.blocking": self.blocking,
+        }) as span:
+            if self.blocking:
+                span.set_attribute("ndif.response.delivery", "socketio")
+
+                if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
+                    await SioProvider.async_call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+                else:
+                    await SioProvider.async_emit("blocking_response", data=(self.session_id, self.pickle()))
+            else:
+                if self.callback != "":
+                    if is_email(self.callback):
+                        span.set_attribute("ndif.response.delivery", "email")
+                        if MailgunProvider.connected():
+                            await asyncio.to_thread(
+                                MailgunProvider.send_email,
+                                self.callback,
+                                f"NDIF Update For Job ID: {self.id}",
+                                self.model_dump_json(
+                                    exclude_none=True,
+                                    exclude_unset=True,
+                                    exclude_defaults=True,
+                                    exclude=["value"],
+                                ),
+                            )
+                    else:
+                        span.set_attribute("ndif.response.delivery", "callback_url")
+                        callback_url = (
+                            f"{self.callback}?status={self.status.value}&id={self.id}"
+                        )
+                        await asyncio.to_thread(requests.get, callback_url)
+                else:
+                    span.set_attribute("ndif.response.delivery", "objectstore")
+
+                if self.status != ResponseModel.JobStatus.LOG:
+                    await asyncio.to_thread(self.save)
 
             return self
 

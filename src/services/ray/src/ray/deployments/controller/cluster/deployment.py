@@ -129,6 +129,8 @@ class Deployment:
                     # inherits full GPU visibility from the worker node. GPU targeting
                     # is handled by max_memory in the actor's load_from_disk/from_cache.
                     "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                    # Use expandable segments to reduce CUDA memory fragmentation
+                    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
                     **SioProvider.to_env(),
                     **ObjectStoreProvider.to_env(),
                     **MailgunProvider.to_env(),

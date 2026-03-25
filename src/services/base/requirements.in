@@ -1,3 +1,3 @@
 # Telemetry
 prometheus_client
-python-logging-loki
+loki-logger-handler

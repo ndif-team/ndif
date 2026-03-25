@@ -3,7 +3,6 @@ import gc
 import threading
 import time
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Set
 
 import ray
@@ -40,7 +39,7 @@ from ....schema import BackendRequestModel, BackendResponseModel, BackendResultM
 from ....types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect
-from ...nn.security.protected_environment import (
+from ...nn.security import (
     WHITELISTED_MODULES,
     WHITELISTED_MODULES_DESERIALIZATION,
     Protector,
@@ -99,6 +98,8 @@ class BaseModelDeployment:
                 self.dtype = getattr(torch, dtype)
 
             torch.set_default_dtype(torch.bfloat16)
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
 
             # Set the default CUDA device to the first target GPU BEFORE any CUDA
             # call. This ensures the CUDA context (~400MiB) is created on the
@@ -132,10 +133,9 @@ class BaseModelDeployment:
 
             self.request: BackendRequestModel
 
-            self.thread_pool = ThreadPoolExecutor(max_workers=1)
-
             self.kill_switch = asyncio.Event()
             self.execution_ident = None
+            self._request_count = 0
 
             StreamTracer.register(self.stream_send, self.stream_receive)
 
@@ -495,9 +495,9 @@ class BaseModelDeployment:
         """Performs cleanup operations after request processing.
 
         This method:
-        1. Disconnects from socketio if connected
-        2. Zeros out model gradients
-        3. Forces garbage collection
+        1. Zeros out model gradients
+        2. Clears nnsight globals and protected object state
+        3. Runs full garbage collection every 5 requests
         4. Clears CUDA cache
 
         This cleanup is important for preventing memory leaks and ensuring
@@ -508,18 +508,17 @@ class BaseModelDeployment:
             self.execution_ident = None
 
             span.add_event("zero_grad")
-            self.model._model.zero_grad()
+            self.model._model.zero_grad(set_to_none=True)
             self.request = None
-
-            span.add_event("gc_collect")
-            gc.collect()
 
             span.add_event("clearing_globals")
             Globals.clear()
             clear_set_attrs()
 
-            span.add_event("cuda_empty_cache")
-            torch.cuda.empty_cache()
+            self._request_count += 1
+            if self._request_count % 5 == 0:
+                span.add_event("gc_collect")
+                gc.collect()
 
     def log(self, *data):
         """Logs data during model execution.

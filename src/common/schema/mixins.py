@@ -151,12 +151,6 @@ class ObjectStorageMixin(BaseModel):
 
         data.seek(0)
 
-        # Ensure bucket exists
-        try:
-            client.head_bucket(Bucket=ObjectStoreProvider.object_store_bucket)
-        except client.exceptions.ClientError:
-            client.create_bucket(Bucket=ObjectStoreProvider.object_store_bucket)
-
         client.upload_fileobj(
             Fileobj=data,
             Bucket=ObjectStoreProvider.object_store_bucket,
@@ -230,7 +224,7 @@ class ObjectStorageMixin(BaseModel):
                 torch.save(payload, data, pickle_module=cpu_pickle_module)
 
                 if compress:
-                    cctx = zstd.ZstdCompressor(level=6)
+                    cctx = zstd.ZstdCompressor(level=3)
                     compressed = BytesIO()
 
                     with cctx.stream_writer(compressed, closefd=False) as writer:

@@ -167,6 +167,13 @@ builtins:
 # - strict: false = module and all submodules match (e.g., torch.nn)
 
 modules:
+
+  - name: re
+    strict: false
+
+  - name: dataclasses
+    strict: false
+
   - name: builtins
     strict: true
 
@@ -225,6 +232,33 @@ modules:
     strict: false
 
 # =============================================================================
+# BLOCKED SUBMODULES
+# =============================================================================
+# Submodules of whitelisted packages that are explicitly blocked.
+# These provide dangerous capabilities (process spawning, networking,
+# native code compilation) that user code must not access even though
+# the parent package is allowed.
+
+blocked_submodules:
+  # Process spawning
+  - torch.multiprocessing
+  # Native code compilation
+  - torch.utils.cpp_extension
+  # File system / packaging
+  - torch.package
+  # Network access (downloads models/weights from the internet)
+  - torch.hub
+  - torch.utils.model_zoo
+  # ctypes / native access
+  - numpy.ctypeslib
+  # Build system
+  - numpy.distutils
+
+  # NOTE: torch.distributed is NOT blocked because transformers internally
+  # does isinstance checks against torch.distributed.fsdp classes even in
+  # non-distributed settings. Blocking it breaks model.generate().
+
+# =============================================================================
 # DESERIALIZATION MODULES
 # =============================================================================
 # Additional modules allowed during deserialization (unpickling).
@@ -241,25 +275,7 @@ deserialization_modules:
   - name: copyreg
     strict: false
 
-  - name: nnsight.schema.request
-    strict: true
-
-  - name: nnsight.modeling.mixins.remoteable
-    strict: true
-
-  - name: nnsight.intervention.tracing.base
-    strict: true
-
-  - name: nnsight.intervention.interleaver
-    strict: true
-
-  - name: nnsight.intervention.batching
-    strict: true
-
-  - name: nnsight.intervention.serialization
-    strict: true
-
-  - name: nnsight.modeling
+  - name: nnsight
     strict: false
 
   - name: transformers

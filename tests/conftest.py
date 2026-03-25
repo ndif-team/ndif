@@ -61,6 +61,12 @@ def pytest_collection_modifyitems(config, items):
         "TestAdhocModules",
         "TestEdgeCases",
         "TestPrintAndDebug",
+        # User code serialization tests
+        "TestUserFunctions",
+        "TestUserModules",
+        "TestUserClasses",
+        "TestHelperTraces",
+        "TestComplexPatterns",
         # Fractional GPU / hotswapping tests
         "TestFractionalSingleGPU",
         "TestMultiGPUDeployment",

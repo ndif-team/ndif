@@ -164,25 +164,34 @@ class Dispatcher:
         RedisProvider.sync_client.set("ray:connected", "1")
         self.logger.info(f"Connected to Ray")
 
-    async def get(self) -> Optional[BackendRequestModel]:
-        """Fetch the next request from the Redis queue.
+    async def get(self) -> list[BackendRequestModel]:
+        """Fetch pending requests from the Redis queue.
 
-        Performs a blocking pop on the Redis "queue" with a 1-second timeout.
-        This allows the dispatch loop to periodically check for evictions
-        and errors even when no requests are arriving.
+        Performs a blocking pop on the Redis "queue" with a 10-second timeout,
+        then batch-pops any additional queued requests (up to 32 total).
+        This reduces Redis round-trips under load while still allowing
+        periodic eviction/error checks when idle.
 
         Returns:
-            The next BackendRequestModel from the queue, or None if the
-            timeout elapsed with no request available.
+            List of BackendRequestModel instances. Empty list if the
+            timeout elapsed with no requests available.
         """
-        result = await RedisProvider.async_client.brpop("queue", timeout=1)
+        result = await RedisProvider.async_client.brpop("queue", timeout=10)
 
-        if result is not None:
-            return pickle.loads(result[1])
+        if result is None:
+            return []
 
-        return None
+        requests = [pickle.loads(result[1])]
 
-    def dispatch(self, request: BackendRequestModel) -> None:
+        while len(requests) < 32:
+            item = await RedisProvider.async_client.rpop("queue")
+            if item is None:
+                break
+            requests.append(pickle.loads(item))
+
+        return requests
+
+    async def dispatch(self, request: BackendRequestModel) -> None:
         """Route a request to the appropriate per-model Processor.
 
         If no Processor exists for the request's model_key, creates one and
@@ -212,11 +221,11 @@ class Dispatcher:
 
                 span.add_event("processor_created")
 
-            self.processors[request.model_key].enqueue(request)
+            await self.processors[request.model_key].enqueue(request)
 
             span.add_event("request_enqueued_to_processor")
 
-    def remove(self, model_key: str, message: str) -> None:
+    async def remove(self, model_key: str, message: str) -> None:
         """Remove a Processor and notify its queued users.
 
         Removes the Processor from the processors dict, sets its status to
@@ -235,9 +244,9 @@ class Dispatcher:
         )
         processor = self.processors.pop(model_key)
         processor.status = ProcessorStatus.CANCELLED
-        processor.purge(message)
+        await processor.purge(message)
 
-    def purge(self, message: str) -> None:
+    async def purge(self, message: str) -> None:
         """Remove all Processors and notify all queued users.
 
         Used during critical failures (e.g., Ray disconnection) to clean up
@@ -248,9 +257,9 @@ class Dispatcher:
                 Processors.
         """
         for model_key in list(self.processors.keys()):
-            self.remove(model_key, message)
+            await self.remove(model_key, message)
 
-    def handle_evictions(self) -> None:
+    async def handle_evictions(self) -> None:
         """Process all pending eviction events from Processors.
 
         Drains the eviction_queue and removes each evicted Processor,
@@ -264,7 +273,7 @@ class Dispatcher:
             model_key, reason = self.eviction_queue.get_nowait()
 
             try:
-                self.remove(model_key, reason)
+                await self.remove(model_key, reason)
             except Exception:
                 self.logger.exception(f"Error handling eviction for `{model_key}`")
 
@@ -291,8 +300,8 @@ class Dispatcher:
         has_connection_error = False
 
         while not self.error_queue.empty():
-            model_key, error = self.error_queue.get_nowait()
-            errors.append((model_key, error))
+            name, error = self.error_queue.get_nowait()
+            errors.append((name, error))
             if RayProvider.is_connection_error(error):
                 has_connection_error = True
 
@@ -304,7 +313,7 @@ class Dispatcher:
                 f"Connection error detected (has_connection_error={has_connection_error}), "
                 f"forcing reconnection..."
             )
-            self.purge(
+            await self.purge(
                 "Critical server error occurred. Please try again later. Sorry for the inconvenience."
             )
 
@@ -314,16 +323,16 @@ class Dispatcher:
             self.connect()
 
         # Log all errors
-        for model_key, error in errors:
+        for name, error in errors:
             tb_str = "".join(
                 traceback.format_exception(type(error), error, error.__traceback__)
             )
-            self.logger.error(f"Error in model {model_key}: {error}\n{tb_str}")
+            self.logger.error(f"Error in component {name}: {error}\n{tb_str}")
 
             # Only reset processor to READY if we didn't reconnect
             # (if we reconnected, processors were purged)
-            if not needs_reconnect and model_key in self.processors:
-                processor = self.processors[model_key]
+            if not needs_reconnect and name in self.processors:
+                processor = self.processors[name]
                 processor.status = ProcessorStatus.READY
 
     def get_state(self) -> dict[str, dict[str, object]]:
@@ -367,11 +376,17 @@ class Dispatcher:
         while True:
 
             try:
-                request = await self.get()
-                if request is not None:
-                    self.dispatch(request)
+                requests = await self.get()
 
-                self.handle_evictions()
+                for request in requests:
+                    try:
+                        await self.dispatch(request)
+                    except Exception as e:
+                        self.logger.exception(
+                            f"Error dispatching request {request.id}: {e}"
+                        )
+
+                await self.handle_evictions()
                 await self.handle_errors()
             except Exception as e:
                 self.logger.exception(f"Error in dispatch worker: {e}")
@@ -432,7 +447,8 @@ class Dispatcher:
                 got_status = True
 
             except Exception as e:
-                self.logger.exception(f"Error getting status: {e}")
+                self.error_queue.put_nowait(("status_worker", e))
+                await asyncio.sleep(0)
 
     async def events_worker(self) -> None:
         """Unified asyncio task for handling all dispatcher events via Redis streams.
@@ -523,7 +539,7 @@ class Dispatcher:
         model_key = event_data.get(b"model_key", b"").decode("utf-8")
 
         if model_key in self.processors:
-            self.remove(model_key, "Model evicted by external command")
+            await self.remove(model_key, "Model evicted by external command")
             self.logger.info(f"Removed processor for {model_key} due to eviction event")
 
     async def _handle_kill_request(self, event_data: dict) -> None:

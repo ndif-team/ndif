@@ -18,6 +18,7 @@ import sys
 from typing import Optional
 
 from nnsight import __version__ as nnsight_version
+from packaging.version import Version
 
 
 class AppConfig:
@@ -54,6 +55,8 @@ class AppConfig:
     status_request_timeout_s: int
     min_nnsight_version: str
     min_python_version: str
+    min_nnsight_version_parsed: Version
+    min_python_version_parsed: Version
     dev_mode: bool
 
     @classmethod
@@ -87,6 +90,8 @@ class AppConfig:
         cls.min_python_version = os.environ.get(
             "MIN_PYTHON_VERSION", ".".join(sys.version.split(".")[0:2])
         )
+        cls.min_nnsight_version_parsed = Version(cls.min_nnsight_version)
+        cls.min_python_version_parsed = Version(cls.min_python_version)
         cls.dev_mode = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
 
     @classmethod

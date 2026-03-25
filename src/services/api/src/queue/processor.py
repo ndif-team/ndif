@@ -185,7 +185,7 @@ class Processor:
         """
         return get_actor_handle(f"ModelActor:{self.model_key}")
 
-    def enqueue(self, request: BackendRequestModel) -> None:
+    async def enqueue(self, request: BackendRequestModel) -> None:
         """Add a request to the processing queue.
 
         Validates that the request can be processed (either the model is dedicated
@@ -201,21 +201,24 @@ class Processor:
             and not added to the queue.
         """
         if self.dedicated is False and not request.hotswapping:
-            request.create_response(
+            await request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
                 "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
-            ).respond()
+            ).arespond()
 
             return
 
         self.queue.put_nowait(request)
 
-        request.create_response(
-            BackendResponseModel.JobStatus.QUEUED,
-            logger,
-            f"Moved to position {self.queue.qsize()} in Queue.",
-        ).respond()
+        self.reply(
+            description=(
+                f"Added to Queue at position {self.queue.qsize()}."
+                if self.status
+                not in [ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING]
+                else None
+            )
+        )
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
         """Check if this model has a dedicated (scheduled) deployment.
@@ -261,7 +264,9 @@ class Processor:
             Any models evicted by the Controller to make room for this deployment
             are reported to the eviction_queue for the Dispatcher to handle.
         """
-        with trace_span("processor.provision", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "processor.provision", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             try:
                 controller = controller_handle()
 
@@ -282,11 +287,11 @@ class Processor:
 
                             valid_queue.append(request)
                         else:
-                            request.create_response(
+                            await request.create_response(
                                 BackendResponseModel.JobStatus.ERROR,
                                 logger,
                                 "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
-                            ).respond()
+                            ).arespond()
 
                     for request in valid_queue:
                         self.queue.put_nowait(request)
@@ -303,7 +308,12 @@ class Processor:
 
                 span.add_event("controller_deploy_requested")
 
-                result = await submit(controller, "deploy", [self.model_key], trace_context=TracingContext.inject())
+                result = await submit(
+                    controller,
+                    "deploy",
+                    [self.model_key],
+                    trace_context=TracingContext.inject(),
+                )
 
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
@@ -359,7 +369,9 @@ class Processor:
 
                     return
 
-            span.add_event("controller_deploy_completed", {"deployment_status": status_str})
+            span.add_event(
+                "controller_deploy_completed", {"deployment_status": status_str}
+            )
 
     async def initialize(self) -> None:
         """Wait for the model deployment to complete initialization.
@@ -376,7 +388,9 @@ class Processor:
             No exceptions are raised; errors are reported via the error_queue
             and the processor status is set to CANCELLED.
         """
-        with trace_span("processor.initialize", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "processor.initialize", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             while True:
                 try:
                     handle = self.handle
@@ -435,11 +449,11 @@ class Processor:
             try:
                 handle = self.handle
 
-                request.create_response(
+                await request.create_response(
                     BackendResponseModel.JobStatus.DISPATCHED,
                     logger,
                     "Your job has been sent to the model deployment.",
-                ).respond()
+                ).arespond()
 
                 span.add_event("dispatched_to_model_actor")
 
@@ -454,11 +468,11 @@ class Processor:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
 
-                request.create_response(
+                await request.create_response(
                     BackendResponseModel.JobStatus.ERROR,
                     logger,
                     "Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.",
-                ).respond()
+                ).arespond()
 
                 if str(e).startswith("Failed to look up actor"):
                     self.eviction_queue.put_nowait(
@@ -496,7 +510,7 @@ class Processor:
         """
         self.status = ProcessorStatus.PROVISIONING
 
-        asyncio.create_task(self.reply_worker())
+        await self.reply()
 
         await self.provision()
 
@@ -504,6 +518,8 @@ class Processor:
             return
 
         self.status = ProcessorStatus.DEPLOYING
+
+        await self.reply()
 
         await self.initialize()
 
@@ -522,35 +538,13 @@ class Processor:
 
             self.status = ProcessorStatus.BUSY
 
-            self.reply()
+            await self.reply()
 
             await self.execute(request)
 
-    async def reply_worker(self) -> None:
-        """Asyncio task that sends periodic status updates to queued users.
-
-        Runs during the PROVISIONING and DEPLOYING phases, sending status
-        messages to all users in the queue at a configurable interval.
-        Exits once the processor reaches READY or CANCELLED status.
-
-        See Also:
-            QueueConfig.processor_reply_freq_s: Configures the update interval.
-        """
-        reply_freq_s = QueueConfig.processor_reply_freq_s
-
-        while (
-            self.status != ProcessorStatus.READY
-            and self.status != ProcessorStatus.CANCELLED
-        ):
-            if self.status == ProcessorStatus.PROVISIONING:
-                self.reply("Model Provisioning...")
-            elif self.status == ProcessorStatus.DEPLOYING:
-                self.reply("Model Deploying...")
-
-            await asyncio.sleep(reply_freq_s)
-
-    def reply(
+    async def reply(
         self,
+        request: Optional[BackendRequestModel] = None,
         description: Optional[str] = None,
         status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
     ) -> None:
@@ -560,22 +554,40 @@ class Processor:
         the provided description or a default queue position message.
 
         Args:
-            description: Custom message to send to all users. If None, each user
+            request: The request to send the response to. If None, all requests in the queue are sent the response.
+            description: Custom message to send to the request. If None, each user
                 receives their current queue position (e.g., "Moved to position 2 in Queue.").
             status: The job status to report. Defaults to QUEUED.
         """
-        for i, request in enumerate(self.queue._queue):
-            request.create_response(
+        if description is None:
+
+            if self.status == ProcessorStatus.PROVISIONING:
+                description = "Model Provisioning..."
+            elif self.status == ProcessorStatus.DEPLOYING:
+                description = "Model Deploying..."
+
+        if request is None:
+
+            for i, request in enumerate(list(self.queue._queue)):
+                await request.create_response(
+                    status,
+                    logger,
+                    (
+                        description
+                        if description is not None
+                        else f"Moved to position {i + 1} in Queue."
+                    ),
+                ).arespond()
+
+        else:
+
+            await request.create_response(
                 status,
                 logger,
-                (
-                    description
-                    if description is not None
-                    else f"Moved to position {i + 1} in Queue."
-                ),
-            ).respond()
+                description,
+            ).arespond()
 
-    def purge(self, message: Optional[str] = None) -> None:
+    async def purge(self, message: Optional[str] = None) -> None:
         """Send an error message to all queued users and clear the queue.
 
         Used during processor shutdown or critical errors to notify all
@@ -588,7 +600,9 @@ class Processor:
         if message is None:
             message = "Critical server error occurred. Please try again later. Sorry for the inconvenience."
 
-        self.reply(message, status=BackendResponseModel.JobStatus.ERROR)
+        await self.reply(
+            description=message, status=BackendResponseModel.JobStatus.ERROR
+        )
 
     def get_state(self) -> dict[str, object]:
         """Get a snapshot of the current processor state.
@@ -653,14 +667,14 @@ class Processor:
             self.queue._queue.remove(found_request)
 
             # Notify the user their request was cancelled
-            found_request.create_response(
+            await found_request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
                 "Request cancelled.",
-            ).respond()
+            ).arespond()
 
             # Update remaining requests in queue about new positions
-            self.reply()
+            await self.reply()
 
             return {
                 "status": "removed_from_queue",

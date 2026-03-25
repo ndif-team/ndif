@@ -13,6 +13,9 @@ on a remote NDIF server. They cover:
 - Iteration over generation steps
 
 Run with: pytest tests/test_nnsight.py --run-remote
+
+Note: As of transformers 5.0+, transformer layer outputs are tensors
+directly, not tuples. Use .output (not .output[0]) for layer hidden states.
 """
 
 import pytest
@@ -58,7 +61,7 @@ class TestBasicTracing:
     def test_access_hidden_states(self, model: LanguageModel):
         """Test accessing hidden states from a layer."""
         with model.trace("Hello world", remote=True):
-            hs = model.transformer.h[-1].output[0].save()
+            hs = model.transformer.h[-1].output.save()
 
         assert hs is not None
         assert isinstance(hs, torch.Tensor)
@@ -76,9 +79,9 @@ class TestBasicTracing:
     def test_access_multiple_layers(self, model: LanguageModel):
         """Test accessing outputs from multiple layers in order."""
         with model.trace("Hello", remote=True):
-            hs_0 = model.transformer.h[0].output[0].save()
-            hs_5 = model.transformer.h[5].output[0].save()
-            hs_11 = model.transformer.h[11].output[0].save()
+            hs_0 = model.transformer.h[0].output.save()
+            hs_5 = model.transformer.h[5].output.save()
+            hs_11 = model.transformer.h[11].output.save()
 
         assert hs_0 is not None
         assert hs_5 is not None
@@ -107,7 +110,11 @@ class TestBasicTracing:
         assert embeddings.shape[-1] == 768  # GPT-2 hidden dim
 
     def test_access_attention_output(self, model: LanguageModel):
-        """Test accessing attention layer output."""
+        """Test accessing attention layer output.
+
+        Attention modules still return tuples (hidden_states, attention_weights)
+        unlike transformer block outputs which are now plain tensors.
+        """
         with model.trace("Hello", remote=True):
             attn_out = model.transformer.h[0].attn.output[0].save()
 
@@ -142,7 +149,7 @@ class TestGeneration:
     def test_generation_with_hidden_access(self, model: LanguageModel):
         """Test accessing hidden states during generation."""
         with model.generate("Hello", max_new_tokens=2, remote=True) as tracer:
-            hs = model.transformer.h[-1].output[0].save()
+            hs = model.transformer.h[-1].output.save()
             output = tracer.result.save()
 
         assert hs is not None
@@ -160,9 +167,9 @@ class TestActivationModification:
     def test_inplace_modification(self, model: LanguageModel, MSG_prompt: str):
         """Test in-place activation modification with [:]."""
         with model.trace(MSG_prompt, remote=True):
-            pre = model.transformer.h[-1].output[0].clone().save()
-            model.transformer.h[-1].output[0][:] = 0
-            post = model.transformer.h[-1].output[0].save()
+            pre = model.transformer.h[-1].output.clone().save()
+            model.transformer.h[-1].output[:] = 0
+            post = model.transformer.h[-1].output.save()
 
         assert not (pre == 0).all().item()
         assert (post == 0).all().item()
@@ -180,26 +187,25 @@ class TestActivationModification:
     def test_addition_modification(self, model: LanguageModel):
         """Test adding to activations."""
         with model.trace("Hello", remote=True):
-            pre = model.transformer.h[5].output[0].clone().save()
-            # Add a constant to all activations
-            model.transformer.h[5].output[0][:] = model.transformer.h[5].output[0] + 1.0
-            post = model.transformer.h[5].output[0].save()
+            pre = model.transformer.h[5].output.clone().save()
+            model.transformer.h[5].output[:] = model.transformer.h[5].output + 1.0
+            post = model.transformer.h[5].output.save()
 
         # Post should be pre + 1
         diff = (post - pre).mean().item()
         assert abs(diff - 1.0) < 0.01
 
-    def test_tuple_replacement(self, model: LanguageModel):
-        """Test replacing tuple outputs."""
+    def test_direct_replacement(self, model: LanguageModel):
+        """Test replacing layer output with a new tensor."""
         with model.trace("Hello", remote=True):
-            pre = model.transformer.h[-1].output.save()
-            model.transformer.h[-1].output = (
-                torch.zeros_like(model.transformer.h[-1].output[0]),
-            ) + model.transformer.h[-1].output[1:]
+            pre = model.transformer.h[-1].output.clone().save()
+            model.transformer.h[-1].output = torch.zeros_like(
+                model.transformer.h[-1].output
+            )
             post = model.transformer.h[-1].output.save()
 
-        assert not (pre[0] == 0).all().item()
-        assert (post[0] == 0).all().item()
+        assert not (pre == 0).all().item()
+        assert (post == 0).all().item()
 
     def test_modification_affects_output(self, model: LanguageModel, MSG_prompt: str):
         """Test that modifications affect final output."""
@@ -209,7 +215,7 @@ class TestActivationModification:
 
         # Get modified prediction
         with model.trace(MSG_prompt, remote=True):
-            model.transformer.h[-1].output[0][:] = 0
+            model.transformer.h[-1].output[:] = 0
             modified_logits = model.lm_head.output[0, -1].save()
 
         # Predictions should differ
@@ -229,7 +235,7 @@ class TestGradients:
     def test_grad_access_in_backward(self, model: LanguageModel):
         """Test accessing gradients inside backward context."""
         with model.trace("Hello World", remote=True):
-            hidden_states = model.transformer.h[-1].output[0]
+            hidden_states = model.transformer.h[-1].output
             hs_shape = hidden_states.shape.save()
             hidden_states.requires_grad_(True)
             logits = model.lm_head.output
@@ -243,7 +249,7 @@ class TestGradients:
     def test_grad_modification(self, model: LanguageModel):
         """Test modifying gradients in backward context."""
         with model.trace("Hello World", remote=True):
-            hidden_states = model.transformer.h[-1].output[0]
+            hidden_states = model.transformer.h[-1].output
             hidden_states.requires_grad_(True)
             logits = model.lm_head.output
 
@@ -268,10 +274,10 @@ class TestSessions:
         """Test basic session with multiple traces."""
         with model.session(remote=True):
             with model.trace("Hello"):
-                hs1 = model.transformer.h[0].output[0].save()
+                hs1 = model.transformer.h[0].output.save()
 
             with model.trace("World"):
-                hs2 = model.transformer.h[0].output[0].save()
+                hs2 = model.transformer.h[0].output.save()
 
         assert hs1 is not None
         assert hs2 is not None
@@ -282,17 +288,16 @@ class TestSessions:
         """Test using values from one trace in another."""
         with model.session(remote=True):
             with model.trace("The Eiffel Tower is in"):
-                paris_hs = model.transformer.h[5].output[0][:, -1, :]
+                paris_hs = model.transformer.h[5].output[:, -1, :]
 
             with model.trace("The Colosseum is in"):
                 # Patch with hidden states from first trace
-                model.transformer.h[5].output[0][:, -1, :] = paris_hs
+                model.transformer.h[5].output[:, -1, :] = paris_hs
                 patched_logits = model.lm_head.output[0, -1].save()
 
         # Should predict something related to Paris, not Rome
         predicted_token = patched_logits.argmax(dim=-1)
         predicted_text = model.tokenizer.decode(predicted_token)
-        # The patching should affect the prediction
         assert predicted_text is not None
 
     def test_session_with_generation(self, model: LanguageModel):
@@ -313,6 +318,11 @@ class TestSessions:
 # =============================================================================
 
 
+@pytest.mark.xfail(
+    reason="nnsight tracer.cache() triggers RecursionError in __getattr__ "
+           "during client-side result deserialization",
+    strict=True,
+)
 class TestCaching:
     """Tests for activation caching."""
 
@@ -341,7 +351,6 @@ class TestCaching:
         with model.trace("Hello", remote=True) as tracer:
             cache = tracer.cache(include_inputs=True)
 
-        # Layer 1's input should match layer 0's output
         assert cache["model.transformer.h.0"].output is not None
         assert cache["model.transformer.h.1"].inputs is not None
 
@@ -349,10 +358,10 @@ class TestCaching:
         """Test that cache captures intervened values."""
         with model.trace("Hello", remote=True) as tracer:
             cache = tracer.cache()
-            model.transformer.h[0].output[0][:] = 0
+            model.transformer.h[0].output[:] = 0
 
         # Cache should contain the modified (zeroed) values
-        assert torch.all(cache["model.transformer.h.0"].output[0] == 0)
+        assert torch.all(cache["model.transformer.h.0"].output == 0)
 
 
 # =============================================================================
@@ -452,12 +461,10 @@ class TestIteration:
             with tracer.iter[:] as step_idx:
                 if step_idx == 1:
                     # Only intervene on step 1
-                    model.transformer.h[0].output[0][:] = 0
-                hidden_states.append(model.transformer.h[-1].output[0].clone())
+                    model.transformer.h[0].output[:] = 0
+                hidden_states.append(model.transformer.h[-1].output.clone())
 
         assert len(hidden_states) == 3
-        # Step 1 should be different due to intervention
-        # (the zeros propagate through the model)
 
 
 # =============================================================================
@@ -471,10 +478,10 @@ class TestAdhocModules:
     def test_logit_lens(self, model: LanguageModel):
         """Test applying lm_head to intermediate hidden states."""
         with model.trace("The Eiffel Tower is in the city of", remote=True):
-            hidden_states = model.transformer.h[-1].output[0]
+            hidden_states = model.transformer.h[-1].output
             # Apply final layer norm and lm_head manually
-            hidden_states = model.lm_head(model.transformer.ln_f(hidden_states))
-            tokens = torch.softmax(hidden_states, dim=2).argmax(dim=2).save()
+            logits = model.lm_head(model.transformer.ln_f(hidden_states))
+            tokens = torch.softmax(logits, dim=-1).argmax(dim=-1).save()
 
         decoded = model.tokenizer.decode(tokens[0])
         assert decoded is not None
@@ -514,9 +521,9 @@ class TestEdgeCases:
     def test_clone_before_modify(self, model: LanguageModel):
         """Test that clone works correctly before modification."""
         with model.trace("Hello", remote=True):
-            before = model.transformer.h[0].output[0].clone().save()
-            model.transformer.h[0].output[0][:] = 0
-            after = model.transformer.h[0].output[0].save()
+            before = model.transformer.h[0].output.clone().save()
+            model.transformer.h[0].output[:] = 0
+            after = model.transformer.h[0].output.save()
 
         # Before should not be zeros (it was cloned before modification)
         assert not (before == 0).all().item()
@@ -526,7 +533,7 @@ class TestEdgeCases:
     def test_detach_and_cpu(self, model: LanguageModel):
         """Test detaching and moving to CPU for smaller downloads."""
         with model.trace("Hello", remote=True):
-            hs = model.transformer.h[0].output[0].detach().cpu().save()
+            hs = model.transformer.h[0].output.detach().cpu().save()
 
         assert hs.device.type == "cpu"
         assert not hs.requires_grad
@@ -542,9 +549,8 @@ class TestPrintAndDebug:
 
     def test_print_in_trace(self, model: LanguageModel):
         """Test that print statements work in remote traces."""
-        # Print statements are captured and sent back as LOG status
         with model.trace("Hello", remote=True):
-            hidden = model.transformer.h[0].output[0]
+            hidden = model.transformer.h[0].output
             print(f"Hidden shape: {hidden.shape}")
             output = model.lm_head.output.save()
 
@@ -553,7 +559,7 @@ class TestPrintAndDebug:
     def test_shape_access(self, model: LanguageModel):
         """Test accessing tensor shapes inside trace."""
         with model.trace("Hello", remote=True):
-            hs = model.transformer.h[0].output[0]
+            hs = model.transformer.h[0].output
             # Shape is available inside the trace
             assert hs.shape[-1] == 768  # GPT-2 hidden dim
             output = model.lm_head.output.save()

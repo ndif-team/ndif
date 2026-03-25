@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NDIF Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=VT323&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <style>
+        /* ---- THEME VARIABLES ---- */
+        :root, [data-theme="light"] {
+            --bg: #ece7dc;
+            --surface: #e2ddd1;
+            --border: #cac4b6;
+            --text: #2d2a26;
+            --muted: #84807a;
+            --green: #3a7d44;
+            --green-soft: #3a7d4425;
+            --red: #b82e2e;
+            --red-soft: #b82e2e20;
+            --amber: #a07800;
+            --accent: #3a7d44;
+            --chart-grid: #d2ccc0;
+            --scanline-opacity: 0;
+            --noise-opacity: 0.025;
+            --selected-ring: #2d2a26;
+        }
+        [data-theme="dark"] {
+            --bg: #0e0e0e;
+            --surface: #161616;
+            --border: #252525;
+            --text: #b0b0b0;
+            --muted: #555;
+            --green: #4ade80;
+            --green-soft: #4ade8012;
+            --red: #f87171;
+            --red-soft: #f8717112;
+            --amber: #fbbf24;
+            --accent: #4ade80;
+            --chart-grid: #1c1c1c;
+            --scanline-opacity: 0.03;
+            --noise-opacity: 0.04;
+            --selected-ring: #e0e0e0;
+        }
+
+        /* ---- RESET & BASE ---- */
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { font-size: 14px; }
+        body {
+            font-family: 'Space Mono', monospace;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            transition: background 0.2s, color 0.2s;
+        }
+        ::selection { background: var(--accent); color: var(--bg); }
+
+        /* ---- OVERLAYS ---- */
+        .scanlines {
+            position: fixed; inset: 0;
+            background: repeating-linear-gradient(
+                0deg, transparent, transparent 1px,
+                rgba(0,0,0, var(--scanline-opacity)) 1px,
+                rgba(0,0,0, var(--scanline-opacity)) 2px
+            );
+            pointer-events: none; z-index: 9000;
+        }
+        .noise {
+            position: fixed; inset: 0;
+            opacity: var(--noise-opacity);
+            background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2Ij48ZmlsdGVyIGlkPSJuIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iMC44IiBudW1PY3RhdmVzPSI0IiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI24pIi8+PC9zdmc+");
+            pointer-events: none; z-index: 8999;
+        }
+
+        /* ---- LAYOUT ---- */
+        .wrap {
+            max-width: 1120px;
+            margin: 0 auto;
+            padding: 2rem 2rem 4rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ---- HEADER ---- */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding-bottom: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .logo {
+            font-family: 'VT323', monospace;
+            font-size: 1.7rem;
+            letter-spacing: 0.08em;
+        }
+        .cursor {
+            display: inline-block;
+            width: 0.55em; height: 1.05em;
+            background: var(--accent);
+            vertical-align: text-bottom;
+            margin-left: 2px;
+            animation: blink 1s step-end infinite;
+        }
+        @keyframes blink { 50% { opacity: 0; } }
+        .header-right { display: flex; align-items: center; gap: 0.75rem; }
+        .status-pill {
+            font-family: 'VT323', monospace;
+            font-size: 1rem;
+            letter-spacing: 0.05em;
+            padding: 2px 10px;
+            border: 1px solid var(--border);
+        }
+        .status-pill.ok { color: var(--green); border-color: var(--green); }
+        .status-pill.fail { color: var(--red); border-color: var(--red); }
+        .hdr-btn {
+            font-family: 'VT323', monospace;
+            font-size: 1rem;
+            letter-spacing: 0.05em;
+            background: none; border: 1px solid var(--border);
+            color: var(--muted); padding: 2px 10px;
+            cursor: pointer; transition: color 0.15s, border-color 0.15s;
+        }
+        .hdr-btn:hover { color: var(--text); border-color: var(--text); }
+
+        /* ---- PANELS ---- */
+        .panel {
+            border: 1px solid var(--border);
+            padding: 1.25rem;
+            position: relative;
+            background: var(--surface);
+        }
+        .panel-title {
+            font-family: 'VT323', monospace;
+            font-size: 0.9rem;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--muted);
+            position: absolute;
+            top: -0.55em;
+            left: 0.75rem;
+            background: var(--surface);
+            padding: 0 0.4rem;
+        }
+
+        /* ---- STATS ROW ---- */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+        .stat-card {
+            border: 1px solid var(--border);
+            background: var(--surface);
+            padding: 0.75rem 1rem;
+        }
+        .stat-label {
+            font-family: 'VT323', monospace;
+            font-size: 0.85rem;
+            letter-spacing: 0.1em;
+            color: var(--muted);
+            margin-bottom: 0.3rem;
+        }
+        .stat-value {
+            font-family: 'VT323', monospace;
+            font-size: 2rem;
+            line-height: 1;
+            color: var(--accent);
+            margin-bottom: 0.2rem;
+        }
+        .stat-sub { font-size: 0.65rem; color: var(--muted); }
+
+        /* ---- MAIN 2-COL GRID ---- */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto;
+            gap: 1.25rem;
+            margin-bottom: 1.25rem;
+        }
+        .main-grid .calendar-panel { grid-row: 1 / 3; }
+
+        /* ---- CALENDAR ---- */
+        .cal-wrap { padding-top: 0.3rem; }
+        .cal-month {
+            font-family: 'VT323', monospace;
+            font-size: 1rem;
+            color: var(--muted);
+            margin-bottom: 0.5rem;
+            letter-spacing: 0.05em;
+        }
+        .cal-header, .cal-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 3px;
+        }
+        .cal-header { margin-bottom: 2px; }
+        .cal-label {
+            font-size: 0.6rem;
+            text-align: center;
+            color: var(--muted);
+            line-height: 1;
+        }
+        .cal-day {
+            aspect-ratio: 1;
+            cursor: pointer;
+            transition: outline 0.1s, opacity 0.1s;
+        }
+        .cal-day.ok { background: var(--green); opacity: 0.7; }
+        .cal-day.fail { background: var(--red); opacity: 0.8; }
+        .cal-day.no-data { background: var(--border); opacity: 0.3; }
+        .cal-day.empty { background: transparent; cursor: default; }
+        .cal-day:not(.empty):hover { opacity: 1; }
+        .cal-day.selected { outline: 2px solid var(--selected-ring); outline-offset: 1px; opacity: 1; }
+
+        /* ---- DAY DETAIL ---- */
+        .day-detail {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+        .day-detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 0.5rem;
+        }
+        .day-detail-date {
+            font-family: 'VT323', monospace;
+            font-size: 1.1rem;
+            letter-spacing: 0.05em;
+        }
+        .day-detail-summary {
+            font-size: 0.7rem;
+            color: var(--muted);
+        }
+        .timeline {
+            display: flex;
+            height: 20px;
+            gap: 0;
+            margin-bottom: 4px;
+        }
+        .tl-block {
+            flex: 1;
+            min-width: 0;
+            cursor: default;
+            transition: opacity 0.1s;
+        }
+        .tl-block.ok { background: var(--green); opacity: 0.7; }
+        .tl-block.fail { background: var(--red); opacity: 0.85; }
+        .tl-block.gap { background: var(--border); opacity: 0.2; }
+        .tl-block:hover { opacity: 1; }
+        .tl-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.55rem;
+            color: var(--muted);
+            font-family: 'VT323', monospace;
+            letter-spacing: 0.05em;
+        }
+        .day-detail-empty {
+            font-family: 'VT323', monospace;
+            color: var(--muted);
+            font-size: 0.95rem;
+            padding: 0.5rem 0;
+        }
+
+        /* ---- CHARTS ---- */
+        .chart-container { position: relative; height: 100%; min-height: 180px; }
+
+        /* ---- MODEL TIMELINES ---- */
+        .model-grid-wrap { margin-bottom: 1.25rem; }
+        .model-row { margin-bottom: 0.75rem; }
+        .model-row:last-of-type { margin-bottom: 0.25rem; }
+        .model-row-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 3px;
+        }
+        .model-row-name {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .model-dot {
+            width: 7px; height: 7px;
+            flex-shrink: 0;
+        }
+        .model-dot.hot { background: var(--green); }
+        .model-dot.warm { background: var(--amber); }
+        .model-dot.cold { background: #60a5fa; }
+        .model-dot.error { background: var(--red); }
+        .model-row-stats {
+            font-size: 0.65rem;
+            color: var(--muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+            margin-left: 0.5rem;
+        }
+        .model-tl {
+            display: flex;
+            height: 14px;
+            gap: 0;
+        }
+        .model-tl-seg {
+            flex: 1;
+            min-width: 0;
+            cursor: default;
+            transition: opacity 0.1s;
+        }
+        .model-tl-seg.ok { background: var(--green); opacity: 0.7; }
+        .model-tl-seg.fail { background: var(--red); opacity: 0.85; }
+        .model-tl-seg.warm { background: var(--amber); opacity: 0.65; }
+        .model-tl-seg.cold { background: #60a5fa; opacity: 0.5; }
+        .model-tl-seg.gap { background: var(--border); opacity: 0.15; }
+        .model-tl-seg:hover { opacity: 1; }
+        .model-tl-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.55rem;
+            color: var(--muted);
+            font-family: 'VT323', monospace;
+            letter-spacing: 0.05em;
+            margin-top: 2px;
+        }
+
+        /* ---- CLUSTER ---- */
+        .cluster-wrap { margin-bottom: 1.25rem; }
+        .cluster-summary {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .cluster-stat {
+            font-family: 'VT323', monospace;
+        }
+        .cluster-stat-value {
+            font-size: 1.6rem;
+            color: var(--accent);
+            line-height: 1;
+        }
+        .cluster-stat-label {
+            font-size: 0.8rem;
+            color: var(--muted);
+            letter-spacing: 0.08em;
+        }
+        .cluster-nodes {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 0.6rem;
+        }
+        .node-card {
+            border: 1px solid var(--border);
+            padding: 0.6rem 0.8rem;
+            font-size: 0.7rem;
+        }
+        .node-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.4rem;
+        }
+        .node-id {
+            font-family: 'VT323', monospace;
+            font-size: 0.9rem;
+            letter-spacing: 0.05em;
+        }
+        .node-gpu-count {
+            color: var(--muted);
+            font-size: 0.65rem;
+        }
+        .node-mem-bar {
+            height: 10px;
+            background: var(--border);
+            margin-bottom: 0.3rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .node-mem-fill {
+            height: 100%;
+            transition: width 0.3s;
+        }
+        .node-mem-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.6rem;
+            color: var(--muted);
+            margin-bottom: 0.35rem;
+        }
+        .node-deployments {
+            font-size: 0.6rem;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+        .node-deploy-name {
+            color: var(--text);
+            font-weight: 700;
+        }
+        .cluster-chart-wrap {
+            margin-top: 1rem;
+            position: relative;
+            height: 160px;
+        }
+
+        /* ---- EMPTY STATE ---- */
+        .empty-state {
+            text-align: center;
+            color: var(--muted);
+            font-family: 'VT323', monospace;
+            font-size: 1.1rem;
+            padding: 2rem 0;
+            letter-spacing: 0.05em;
+        }
+
+        /* ---- FOOTER ---- */
+        .footer {
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.65rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+
+        /* ---- SCROLLBAR ---- */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); }
+
+        /* ---- RESPONSIVE ---- */
+        @media (max-width: 860px) {
+            .main-grid { grid-template-columns: 1fr; }
+            .main-grid .calendar-panel { grid-row: auto; }
+            .model-row-name { font-size: 0.65rem; }
+        }
+        @media (max-width: 600px) {
+            .wrap { padding: 1rem; }
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+            header { flex-wrap: wrap; gap: 0.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="scanlines"></div>
+    <div class="noise"></div>
+    <div class="wrap">
+        <header>
+            <div class="logo">NDIF MONITOR<span class="cursor"></span></div>
+            <div class="header-right">
+                <div class="status-pill" id="header-status">...</div>
+                <button class="hdr-btn" onclick="refresh()">REFRESH</button>
+                <button class="hdr-btn" id="theme-btn" onclick="toggleTheme()">LIGHT</button>
+            </div>
+        </header>
+
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-label">API UPTIME</div>
+                <div class="stat-value" id="stat-api-uptime">&mdash;</div>
+                <div class="stat-sub" id="stat-api-sub"></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">MODELS OK</div>
+                <div class="stat-value" id="stat-models-ok">&mdash;</div>
+                <div class="stat-sub">last check</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">AVG LATENCY</div>
+                <div class="stat-value" id="stat-avg-latency">&mdash;</div>
+                <div class="stat-sub">all models</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">LAST CHECK</div>
+                <div class="stat-value" id="stat-last-check">&mdash;</div>
+                <div class="stat-sub" id="stat-last-sub"></div>
+            </div>
+        </div>
+
+        <div class="main-grid">
+            <div class="panel calendar-panel">
+                <div class="panel-title">CONNECTED &middot; 30 DAYS</div>
+                <div id="calendar" class="cal-wrap"></div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">AVG LATENCY</div>
+                <div class="chart-container">
+                    <canvas id="chart-avg"></canvas>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">PER-MODEL LATENCY</div>
+                <div class="chart-container">
+                    <canvas id="chart-models"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel model-grid-wrap">
+            <div class="panel-title">MODEL STATUS</div>
+            <div id="model-table"></div>
+        </div>
+
+        <div class="panel cluster-wrap">
+            <div class="panel-title">CLUSTER</div>
+            <div id="cluster-panel"></div>
+        </div>
+
+        <div class="footer" id="footer"></div>
+    </div>
+
+    <script>
+    // ---- PALETTES ----
+    const PALETTE_DARK = [
+        '#4ade80','#38bdf8','#fb923c','#c084fc',
+        '#fbbf24','#f472b6','#2dd4bf','#a3e635',
+    ];
+    const PALETTE_LIGHT = [
+        '#2e7d32','#1565c0','#bf5700','#7b1fa2',
+        '#9a6700','#ad1457','#00796b','#558b2f',
+    ];
+
+    // ---- STATE ----
+    let theme = localStorage.getItem('ndif-theme') || 'dark';
+    let connectedData = [];
+    let modelsData = [];
+    let clusterData = [];
+    let latestCheckedModels = new Set(); // models from last check = currently HOT
+    let chartAvg = null;
+    let chartModels = null;
+    let selectedDay = null;
+    let dayStatusMap = {};
+
+    // ---- THEME ----
+    function setTheme(t) {
+        theme = t;
+        document.documentElement.setAttribute('data-theme', t);
+        localStorage.setItem('ndif-theme', t);
+        document.getElementById('theme-btn').textContent = t === 'dark' ? 'LIGHT' : 'DARK';
+    }
+    function toggleTheme() {
+        setTheme(theme === 'dark' ? 'light' : 'dark');
+        renderCharts();
+    }
+    setTheme(theme);
+
+    // ---- UTILS ----
+    const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const DAYS_FULL = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+    function fmtTime(ts) {
+        const d = new Date(ts);
+        return `${MONTHS[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    }
+    function timeAgo(ts) {
+        const sec = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+        if (sec < 60) return `${sec}s ago`;
+        if (sec < 3600) return `${Math.floor(sec/60)}m ago`;
+        if (sec < 86400) return `${Math.floor(sec/3600)}h ago`;
+        return `${Math.floor(sec/86400)}d ago`;
+    }
+    function pct(n, d) { return d > 0 ? (n / d * 100) : 0; }
+    function getColors() {
+        const s = getComputedStyle(document.documentElement);
+        const g = k => s.getPropertyValue(k).trim();
+        return {
+            text: g('--text'), muted: g('--muted'), accent: g('--accent'),
+            green: g('--green'), red: g('--red'), amber: g('--amber'),
+            grid: g('--chart-grid'), surface: g('--surface'), border: g('--border'),
+        };
+    }
+    function palette() { return theme === 'dark' ? PALETTE_DARK : PALETTE_LIGHT; }
+
+    function getLast30Days() {
+        const days = [];
+        const now = new Date();
+        for (let i = 29; i >= 0; i--) {
+            const d = new Date(now);
+            d.setDate(d.getDate() - i);
+            days.push(d.toISOString().split('T')[0]);
+        }
+        return days;
+    }
+
+    // ---- DATA ----
+    async function fetchData() {
+        try {
+            const [c, m, cl] = await Promise.all([
+                fetch('/api/connected').then(r => r.json()),
+                fetch('/api/models').then(r => r.json()),
+                fetch('/api/cluster').then(r => r.json()).catch(() => []),
+            ]);
+            connectedData = c;
+            modelsData = m;
+            clusterData = cl;
+            // Models in the most recent check = currently HOT
+            latestCheckedModels = new Set();
+            if (modelsData.length > 0) {
+                const last = modelsData[modelsData.length - 1];
+                for (const r of (last.results || []))
+                    latestCheckedModels.add(r.model);
+            }
+        } catch (e) {
+            console.error('Fetch failed:', e);
+        }
+        // Build day status map
+        dayStatusMap = {};
+        for (const entry of connectedData) {
+            const day = entry.timestamp.split('T')[0];
+            if (!dayStatusMap[day]) dayStatusMap[day] = { total: 0, failed: 0, entries: [] };
+            dayStatusMap[day].total++;
+            if (entry.status !== 'ok') dayStatusMap[day].failed++;
+            dayStatusMap[day].entries.push(entry);
+        }
+    }
+
+    // ---- RENDER: HEADER ----
+    function renderHeaderStatus() {
+        const pill = document.getElementById('header-status');
+        if (connectedData.length === 0) {
+            pill.textContent = 'NO DATA'; pill.className = 'status-pill'; return;
+        }
+        const last = connectedData[connectedData.length - 1];
+        pill.textContent = last.status === 'ok' ? 'CONNECTED' : last.status.toUpperCase();
+        pill.className = 'status-pill ' + (last.status === 'ok' ? 'ok' : 'fail');
+    }
+
+    // ---- RENDER: STATS ----
+    function renderStats() {
+        const totalC = connectedData.length;
+        const okC = connectedData.filter(e => e.status === 'ok').length;
+        const uptimeC = pct(okC, totalC);
+        document.getElementById('stat-api-uptime').textContent = totalC > 0 ? `${uptimeC.toFixed(1)}%` : '\u2014';
+        document.getElementById('stat-api-uptime').style.color = uptimeC >= 99 ? '' : uptimeC >= 90 ? 'var(--amber)' : 'var(--red)';
+        document.getElementById('stat-api-sub').textContent = totalC > 0 ? `${okC}/${totalC} checks` : '';
+
+        const lastM = modelsData.length > 0 ? modelsData[modelsData.length - 1] : null;
+        if (lastM) {
+            document.getElementById('stat-models-ok').textContent = `${lastM.ok}/${lastM.total}`;
+            document.getElementById('stat-models-ok').style.color = lastM.ok === lastM.total ? '' : 'var(--red)';
+        }
+
+        let allLat = [];
+        for (const entry of modelsData)
+            for (const r of (entry.results || []))
+                if (r.status === 'ok' && r.latency_s != null) allLat.push(r.latency_s);
+        if (allLat.length > 0) {
+            const avg = allLat.reduce((a, b) => a + b, 0) / allLat.length;
+            document.getElementById('stat-avg-latency').textContent = `${avg.toFixed(1)}s`;
+        }
+
+        const allTs = [...connectedData.map(e => e.timestamp), ...modelsData.map(e => e.timestamp)].filter(Boolean);
+        if (allTs.length > 0) {
+            allTs.sort();
+            const lastTs = allTs[allTs.length - 1];
+            document.getElementById('stat-last-check').textContent = timeAgo(lastTs);
+            document.getElementById('stat-last-sub').textContent = fmtTime(lastTs);
+        }
+    }
+
+    // ---- RENDER: CALENDAR + DAY DETAIL ----
+    function selectDay(day) {
+        selectedDay = day;
+        renderCalendar();
+    }
+
+    function renderCalendar() {
+        const container = document.getElementById('calendar');
+        const dayNames = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+        const days = getLast30Days();
+
+        const firstDate = new Date(days[0] + 'T12:00:00');
+        const lastDate = new Date(days[days.length - 1] + 'T12:00:00');
+        const firstDow = (firstDate.getDay() + 6) % 7;
+
+        const monthLabel = `${MONTHS[firstDate.getMonth()]} ${firstDate.getFullYear()}` +
+            (firstDate.getMonth() !== lastDate.getMonth()
+                ? ` \u2013 ${MONTHS[lastDate.getMonth()]} ${lastDate.getFullYear()}` : '');
+
+        // Default selected day to today or most recent day with data
+        if (!selectedDay) {
+            const today = new Date().toISOString().split('T')[0];
+            selectedDay = dayStatusMap[today] ? today : days[days.length - 1];
+        }
+
+        let html = `<div class="cal-month">${monthLabel}</div>`;
+        html += '<div class="cal-header">';
+        for (const n of dayNames) html += `<div class="cal-label">${n}</div>`;
+        html += '</div><div class="cal-grid">';
+
+        for (let i = 0; i < firstDow; i++) html += '<div class="cal-day empty"></div>';
+
+        for (const day of days) {
+            const st = dayStatusMap[day];
+            let cls = 'no-data';
+            if (st) cls = st.failed > 0 ? 'fail' : 'ok';
+            if (day === selectedDay) cls += ' selected';
+            html += `<div class="cal-day ${cls}" onclick="selectDay('${day}')"></div>`;
+        }
+        html += '</div>';
+
+        // Day detail
+        html += renderDayDetail(selectedDay);
+
+        container.innerHTML = html;
+    }
+
+    function renderDayDetail(day) {
+        const st = dayStatusMap[day];
+        const d = new Date(day + 'T12:00:00');
+        const dateStr = `${DAYS_FULL[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}`;
+
+        let html = '<div class="day-detail">';
+        html += '<div class="day-detail-header">';
+        html += `<div class="day-detail-date">${dateStr}</div>`;
+
+        if (!st) {
+            html += '</div><div class="day-detail-empty">No checks recorded</div></div>';
+            return html;
+        }
+
+        const okCount = st.total - st.failed;
+        const upPct = pct(okCount, st.total);
+        html += `<div class="day-detail-summary">${okCount}/${st.total} ok &mdash; ${upPct.toFixed(1)}%</div>`;
+        html += '</div>';
+
+        // Build 144 ten-minute slots
+        const slots = new Array(144).fill(null);
+        for (const entry of st.entries) {
+            const ed = new Date(entry.timestamp);
+            const slot = ed.getUTCHours() * 6 + Math.floor(ed.getUTCMinutes() / 10);
+            slots[slot] = entry.status;
+        }
+
+        html += '<div class="timeline">';
+        for (let i = 0; i < 144; i++) {
+            const status = slots[i];
+            const cls = status === null ? 'gap' : status === 'ok' ? 'ok' : 'fail';
+            const h = String(Math.floor(i / 6)).padStart(2, '0');
+            const m = String((i % 6) * 10).padStart(2, '0');
+            const label = status === null ? 'no check' : status;
+            html += `<div class="tl-block ${cls}" title="${h}:${m} UTC \u2014 ${label}"></div>`;
+        }
+        html += '</div>';
+        html += '<div class="tl-labels"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>';
+        html += '</div>';
+        return html;
+    }
+
+    // ---- RENDER: CHARTS ----
+    function baseChartOpts(colors) {
+        return {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                tooltip: {
+                    backgroundColor: colors.surface,
+                    titleColor: colors.text,
+                    bodyColor: colors.muted,
+                    borderColor: colors.border,
+                    borderWidth: 1, cornerRadius: 0,
+                    titleFont: { family: "'VT323', monospace", size: 16 },
+                    bodyFont: { family: "'Space Mono', monospace", size: 11 },
+                    padding: 10,
+                    callbacks: {
+                        label: ctx => {
+                            const v = ctx.parsed.y;
+                            return v != null ? ` ${ctx.dataset.label}: ${v.toFixed(2)}s` : '';
+                        }
+                    }
+                },
+            },
+            scales: {
+                x: {
+                    grid: { color: colors.grid, lineWidth: 0.5 },
+                    border: { display: false },
+                    ticks: {
+                        font: { family: "'Space Mono', monospace", size: 9 },
+                        color: colors.muted, maxTicksLimit: 6, maxRotation: 0,
+                    },
+                },
+                y: {
+                    grid: { color: colors.grid, lineWidth: 0.5 },
+                    border: { display: false },
+                    ticks: {
+                        font: { family: "'Space Mono', monospace", size: 9 },
+                        color: colors.muted, callback: v => `${v}s`,
+                    },
+                    beginAtZero: true,
+                },
+            },
+            elements: {
+                point: { radius: 2.5, hoverRadius: 5, pointStyle: 'rect' },
+                line: { tension: 0, borderWidth: 1.5 },
+            },
+        };
+    }
+
+    function renderCharts() {
+        const colors = getColors();
+        const pal = palette();
+
+        if (chartAvg) chartAvg.destroy();
+        if (chartModels) chartModels.destroy();
+
+        const avgEl = document.getElementById('chart-avg');
+        const modEl = document.getElementById('chart-models');
+
+        if (modelsData.length === 0) {
+            avgEl.parentElement.innerHTML = '<div class="empty-state">NO MODEL DATA YET</div>';
+            modEl.parentElement.innerHTML = '<div class="empty-state">NO MODEL DATA YET</div>';
+            return;
+        }
+
+        const labels = modelsData.map(e => fmtTime(e.timestamp));
+        const avgData = modelsData.map(entry => {
+            const lats = (entry.results || []).filter(r => r.status === 'ok' && r.latency_s != null).map(r => r.latency_s);
+            return lats.length > 0 ? lats.reduce((a, b) => a + b, 0) / lats.length : null;
+        });
+
+        const avgOpts = baseChartOpts(colors);
+        avgOpts.plugins.legend = { display: false };
+
+        chartAvg = new Chart(avgEl, {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [{
+                    label: 'Avg Latency', data: avgData,
+                    borderColor: colors.accent,
+                    backgroundColor: colors.accent + '18',
+                    fill: true, pointBackgroundColor: colors.accent, spanGaps: true,
+                }],
+            },
+            options: avgOpts,
+        });
+
+        const modelNames = new Set();
+        for (const entry of modelsData)
+            for (const r of (entry.results || []))
+                modelNames.add(r.model);
+
+        const modelOpts = baseChartOpts(colors);
+        modelOpts.plugins.legend = {
+            display: true, position: 'bottom',
+            labels: {
+                font: { family: "'Space Mono', monospace", size: 9 },
+                color: colors.muted, boxWidth: 10, boxHeight: 3,
+                useBorderRadius: false, padding: 10,
+            },
+        };
+
+        const datasets = Array.from(modelNames).map((name, i) => {
+            const data = modelsData.map(entry => {
+                const r = (entry.results || []).find(r => r.model === name);
+                return r && r.status === 'ok' ? r.latency_s : null;
+            });
+            return {
+                label: name.split('/').pop(), data,
+                borderColor: pal[i % pal.length],
+                pointBackgroundColor: pal[i % pal.length],
+                spanGaps: true,
+            };
+        });
+
+        chartModels = new Chart(modEl, {
+            type: 'line',
+            data: { labels, datasets },
+            options: modelOpts,
+        });
+    }
+
+    // ---- RENDER: MODEL TIMELINES ----
+    function renderModelTable() {
+        const container = document.getElementById('model-table');
+        if (modelsData.length === 0) {
+            container.innerHTML = '<div class="empty-state">NO MODEL DATA YET</div>';
+            return;
+        }
+
+        // Collect models that appeared in check results (= were HOT)
+        const modelNames = new Set();
+        for (const entry of modelsData)
+            for (const r of (entry.results || []))
+                modelNames.add(r.model);
+
+        // Time range: last 30 days in 2-hour slots
+        const now = new Date();
+        const startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - 29);
+        startDate.setUTCHours(0, 0, 0, 0);
+        const slotMs = 2 * 60 * 60 * 1000;
+        const totalSlots = Math.ceil((now - startDate) / slotMs);
+
+        // Build sorted list of model checks with their results
+        const modelChecks = []; // [{time: Date, results: {model -> status}}]
+        for (const entry of modelsData) {
+            const t = new Date(entry.timestamp);
+            const results = {};
+            for (const r of (entry.results || []))
+                results[r.model] = r.status;
+            modelChecks.push({ time: t, results });
+        }
+        const firstCheckTime = modelChecks.length > 0 ? modelChecks[0].time : null;
+        const CHECK_VALIDITY_MS = (2 * 60 + 15) * 60 * 1000; // 2h15m
+
+        // Sort: red (HOT but last check failed) first, green (HOT and ok), blue (not HOT)
+        const lastStatus = {};
+        if (modelsData.length > 0) {
+            const last = modelsData[modelsData.length - 1];
+            for (const r of (last.results || []))
+                lastStatus[r.model] = r.status;
+        }
+        const sorted = Array.from(modelNames).sort((a, b) => {
+            const aHot = latestCheckedModels.has(a);
+            const bHot = latestCheckedModels.has(b);
+            const aOk = lastStatus[a] === 'ok';
+            const bOk = lastStatus[b] === 'ok';
+            // red=0 (hot+failed), green=1 (hot+ok), blue=2 (not hot)
+            const aOrder = !aHot ? 2 : !aOk ? 0 : 1;
+            const bOrder = !bHot ? 2 : !bOk ? 0 : 1;
+            return aOrder - bOrder || a.localeCompare(b);
+        });
+        let html = '';
+
+        for (const name of sorted) {
+            // Get latest latency from most recent successful check
+            let lastLat = '\u2014';
+            for (let i = modelsData.length - 1; i >= 0; i--) {
+                const r = (modelsData[i].results || []).find(x => x.model === name);
+                if (r && r.status === 'ok' && r.latency_s != null) {
+                    lastLat = r.latency_s.toFixed(1) + 's';
+                    break;
+                }
+            }
+
+            // Dot: green if in most recent check (= currently HOT), otherwise not HOT anymore
+            const isHot = latestCheckedModels.has(name);
+            const dotCls = isHot ? 'hot' : 'cold';
+
+            // Build timeline segments — find most recent check within 2h15m of each slot
+            let segs = '';
+            for (let i = 0; i < totalSlots; i++) {
+                const slotTime = new Date(startDate.getTime() + i * slotMs);
+                const slotEnd = new Date(slotTime.getTime() + slotMs);
+                const dateStr = slotTime.toISOString().split('T')[0];
+                const hourStr = String(slotTime.getUTCHours()).padStart(2, '0') + ':00';
+                let cls, label;
+
+                if (!firstCheckTime || slotEnd <= firstCheckTime) {
+                    // Before monitoring started
+                    cls = 'gap';
+                    label = 'not recording';
+                } else {
+                    // Find most recent model check at or before slotEnd
+                    let lastCheck = null;
+                    for (let j = modelChecks.length - 1; j >= 0; j--) {
+                        if (modelChecks[j].time < slotEnd) {
+                            lastCheck = modelChecks[j];
+                            break;
+                        }
+                    }
+
+                    const checkAgainst = slotEnd > now ? now : slotEnd;
+                    if (!lastCheck || (checkAgainst - lastCheck.time) > CHECK_VALIDITY_MS) {
+                        // No recent check — something was wrong
+                        cls = 'fail';
+                        label = 'no check';
+                    } else if (lastCheck.results[name] !== undefined) {
+                        // Model was in this check
+                        cls = lastCheck.results[name] === 'ok' ? 'ok' : 'fail';
+                        label = lastCheck.results[name];
+                    } else {
+                        // Check ran but model wasn't in it — wasn't HOT
+                        cls = 'cold';
+                        label = 'not HOT';
+                    }
+                }
+
+                segs += `<div class="model-tl-seg ${cls}" title="${dateStr} ${hourStr} UTC \u2014 ${label}"></div>`;
+            }
+
+            html += `
+                <div class="model-row">
+                    <div class="model-row-header">
+                        <div class="model-row-name">
+                            <span class="model-dot ${dotCls}"></span>
+                            <span title="${name}">${name}</span>
+                        </div>
+                        <div class="model-row-stats">${lastLat}</div>
+                    </div>
+                    <div class="model-tl">${segs}</div>
+                </div>`;
+        }
+
+        // Shared time labels
+        html += '<div class="model-tl-labels"><span>30d ago</span><span>20d</span><span>10d</span><span>now</span></div>';
+
+        container.innerHTML = html;
+    }
+
+    // ---- RENDER: CLUSTER ----
+    let clusterChart = null;
+
+    function fmtBytes(bytes) {
+        const gb = bytes / (1024 * 1024 * 1024);
+        return gb >= 1000 ? `${(gb / 1024).toFixed(1)} TB` : `${gb.toFixed(1)} GB`;
+    }
+
+    function renderCluster() {
+        const container = document.getElementById('cluster-panel');
+        if (clusterData.length === 0) {
+            container.innerHTML = '<div class="empty-state">NO CLUSTER DATA YET</div>';
+            return;
+        }
+
+        const latest = clusterData[clusterData.length - 1];
+        const usedMem = latest.total_memory_bytes - latest.available_memory_bytes;
+        const usedPct = latest.total_memory_bytes > 0
+            ? (usedMem / latest.total_memory_bytes * 100).toFixed(1) : 0;
+
+        let html = '<div class="cluster-summary">';
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${latest.nodes}</div><div class="cluster-stat-label">NODES</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${latest.total_gpus}</div><div class="cluster-stat-label">GPUs</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${fmtBytes(latest.total_memory_bytes)}</div><div class="cluster-stat-label">TOTAL VRAM</div></div>`;
+        html += `<div class="cluster-stat"><div class="cluster-stat-value">${usedPct}%</div><div class="cluster-stat-label">VRAM USED</div></div>`;
+        html += '</div>';
+
+        // Per-node cards
+        html += '<div class="cluster-nodes">';
+        for (const node of (latest.node_details || [])) {
+            const nodeUsed = node.memory_bytes - node.available_bytes;
+            const nodeUsedPct = node.memory_bytes > 0 ? (nodeUsed / node.memory_bytes * 100) : 0;
+            const barColor = nodeUsedPct >= 90 ? 'var(--red)' : nodeUsedPct >= 70 ? 'var(--amber)' : 'var(--green)';
+
+            let deploys = '';
+            for (const d of (node.deployments || [])) {
+                deploys += `<span class="node-deploy-name">${d}</span><br>`;
+            }
+            if (!deploys) deploys = '<span style="opacity:0.5">none</span>';
+
+            html += `
+                <div class="node-card">
+                    <div class="node-card-header">
+                        <span class="node-id">${node.node_id}</span>
+                        <span class="node-gpu-count">${node.gpus} GPU${node.gpus > 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="node-mem-bar">
+                        <div class="node-mem-fill" style="width:${nodeUsedPct}%;background:${barColor}"></div>
+                    </div>
+                    <div class="node-mem-label">
+                        <span>${fmtBytes(nodeUsed)} / ${fmtBytes(node.memory_bytes)}</span>
+                        <span>${nodeUsedPct.toFixed(0)}%</span>
+                    </div>
+                    <div class="node-deployments">${deploys}</div>
+                </div>`;
+        }
+        html += '</div>';
+
+        // Memory usage chart over time
+        html += '<div class="cluster-chart-wrap"><canvas id="chart-cluster"></canvas></div>';
+        container.innerHTML = html;
+
+        // Render chart
+        const colors = getColors();
+        if (clusterChart) clusterChart.destroy();
+
+        const labels = clusterData.map(e => fmtTime(e.timestamp));
+        const usedData = clusterData.map(e => +((e.total_memory_bytes - e.available_memory_bytes) / (1024**3)).toFixed(1));
+        const totalData = clusterData.map(e => +(e.total_memory_bytes / (1024**3)).toFixed(1));
+
+        const clusterOpts = baseChartOpts(colors);
+        clusterOpts.plugins.legend = {
+            display: true, position: 'bottom',
+            labels: {
+                font: { family: "'Space Mono', monospace", size: 9 },
+                color: colors.muted, boxWidth: 10, boxHeight: 3, padding: 10,
+            },
+        };
+        clusterOpts.scales.y.ticks.callback = v => `${v} GB`;
+
+        clusterChart = new Chart(document.getElementById('chart-cluster'), {
+            type: 'line',
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: 'Used VRAM', data: usedData,
+                        borderColor: colors.red, backgroundColor: colors.red + '18',
+                        fill: true, pointBackgroundColor: colors.red, spanGaps: true,
+                    },
+                    {
+                        label: 'Total VRAM', data: totalData,
+                        borderColor: colors.muted, borderDash: [4, 4],
+                        pointRadius: 0, spanGaps: true,
+                    },
+                ],
+            },
+            options: clusterOpts,
+        });
+    }
+
+    // ---- RENDER: FOOTER ----
+    function renderFooter() {
+        document.getElementById('footer').textContent =
+            `refreshed ${fmtTime(new Date().toISOString())} \u00b7 ndif monitor`;
+    }
+
+    // ---- ORCHESTRATOR ----
+    function render() {
+        renderHeaderStatus();
+        renderStats();
+        renderCalendar();
+        renderCharts();
+        renderModelTable();
+        renderCluster();
+        renderFooter();
+    }
+
+    async function refresh() { await fetchData(); render(); }
+
+    (async () => {
+        await fetchData();
+        render();
+        setInterval(refresh, 5 * 60 * 1000);
+    })();
+    </script>
+</body>
+</html>
