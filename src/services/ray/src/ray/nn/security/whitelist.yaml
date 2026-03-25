@@ -199,6 +199,11 @@ modules:
   - name: collections
     strict: false
 
+  - name: nnsight
+    strict: true
+    allowed_attributes:
+      - save
+
   - name: nnsight.intervention.envoy
     strict: false
 

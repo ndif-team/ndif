@@ -40,11 +40,17 @@ class WhitelistedModule(BaseModel):
     strict=False → the module and every submodule match (e.g. "torch" allows
                    "torch.nn.functional") UNLESS the submodule appears in
                    ``blocked_submodules``.
+
+    allowed_attributes → when set on a strict entry, only these attributes
+                         may be accessed on the imported module.  This lets
+                         you whitelist ``nnsight`` with only ``nnsight.save``
+                         exposed, without opening up the entire namespace.
     """
 
     name: str
     strict: bool = True
     blocked_submodules: List[str] = []
+    allowed_attributes: List[str] = []
 
     def check(self, name: str) -> bool:
         """True if *name* is allowed by this entry (whitelisted and not blocked)."""

@@ -111,6 +111,14 @@ class ProtectedModule(ModuleType):
         real = object.__getattribute__(self, "_real_module")
         entry = object.__getattribute__(self, "_whitelist_entry")
 
+        # If the entry has an allowed_attributes list, only those names
+        # are accessible.  This lets you whitelist "nnsight" with only
+        # "nnsight.save" exposed.
+        if entry.allowed_attributes and name not in entry.allowed_attributes:
+            raise AttributeError(
+                f"Attribute '{name}' is not in the allowed list for module '{real.__name__}'"
+            )
+
         attr = getattr(real, name)
 
         # Non-module attributes (functions, classes, constants) pass through.

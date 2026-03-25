@@ -155,6 +155,16 @@ to that module's entry:
     - scipy.weave    # code generation
 ```
 
+To allow only specific attributes on a strict module (e.g. expose `nnsight.save`
+without opening the entire `nnsight` namespace):
+
+```yaml
+- name: nnsight
+  strict: true
+  allowed_attributes:
+    - save
+```
+
 ## Known Limitations
 
 - **No AST transformation**: We use standard `compile()` rather than RestrictedPython's AST transformation because it conflicts with nnsight's internal variable naming (`__nnsight_tracer_*`). This means `obj.__class__` in syntax form is not caught — only `getattr(obj, '__class__')` is blocked via the guarded builtins. Full dunder blocking requires AST transformation.
