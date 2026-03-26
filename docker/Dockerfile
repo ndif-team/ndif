@@ -28,4 +28,8 @@ RUN uv pip install --system -r src/services/${NAME}/requirements.in \
     && rm -rf /root/.cache
 
 SHELL ["/bin/bash", "-c"]
-CMD ndif start ${NDIF_SERVICE} --verbose
+CMD if [[ -n "${RAY_ADDRESS}" ]]; then \
+      ndif start "${NDIF_SERVICE}" --verbose --worker --ray-address "${RAY_ADDRESS}"; \
+    else \
+      ndif start "${NDIF_SERVICE}" --verbose; \
+    fi
