@@ -32,4 +32,3 @@ torch
 python-slugify
 influxdb-client
 nnsight
-zstandard
