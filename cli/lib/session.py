@@ -200,9 +200,10 @@ class SessionConfig:
                 "ray-worker": ServiceConfig(name="ray-worker", port=0, managed=True, running=False),
             }
         else:
+            ray_head_port = int(get_env("NDIF_RAY_HEAD_PORT")) if get_env("NDIF_RAY_HEAD_PORT") else None
             services = {
                 "api": ServiceConfig(name="api", port=api_port, managed=True, running=False),
-                "ray": ServiceConfig(name="ray", port=int(get_env("NDIF_RAY_HEAD_PORT")), managed=True, running=False),
+                "ray": ServiceConfig(name="ray", port=ray_head_port, managed=True, running=False),
                 "broker": ServiceConfig(name="broker", port=broker_port, managed=True, running=False),
                 "object-store": ServiceConfig(name="object-store", port=object_store_port, managed=True, running=False),
             }
@@ -220,15 +221,15 @@ class SessionConfig:
 
             # Ray config
             ray_temp_dir=get_env("NDIF_RAY_TEMP_DIR"),
-            ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")),
-            ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")),
-            ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")),
-            ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")),
-            ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")),
+            ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")) if get_env("NDIF_RAY_HEAD_PORT") else None,
+            ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")) if get_env("NDIF_RAY_DASHBOARD_PORT") else None ,
+            ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")) if get_env("NDIF_RAY_SERVE_PORT") else None,
+            ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")) if get_env("NDIF_RAY_OBJECT_MANAGER_PORT") else None,
+            ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")) if get_env("NDIF_RAY_DASHBOARD_GRPC_PORT") else None,
 
             # API config
             api_port=api_port,
-            api_workers=int(get_env("NDIF_API_WORKERS")),
+            api_workers=int(get_env("NDIF_API_WORKERS")) if get_env("NDIF_API_WORKERS") else None,
 
             # Ports
             broker_port=broker_port,
@@ -236,7 +237,7 @@ class SessionConfig:
 
             # Controller config
             controller_import_path=get_env("NDIF_CONTROLLER_IMPORT_PATH"),
-            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS")),
+            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS")) if get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS") else None,
 
             # Services
             services=services,

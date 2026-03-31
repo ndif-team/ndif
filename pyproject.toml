@@ -58,7 +58,7 @@ exclude = ["docker*", "scripts*", "tests*"]
 
 [tool.setuptools.package-data]
 "src.services.api" = ["start.sh"]
-"src.services.ray" = ["start.sh"]
+"src.services.ray" = ["start.sh", "start-worker.sh"]
 "src.services.ray.src.ray.nn.security" = ["whitelist.yaml"]
 
 [dependency-groups]

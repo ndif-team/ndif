@@ -153,7 +153,6 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
             config.ray_object_manager_port,
             config.ray_dashboard_grpc_port,
             config.ray_serve_port,
-            skip_object_store_check='object-store' in services_to_start,
         )
         all_checks.extend(checks)
         if not run_preflight_checks(checks, verbose=verbose):
@@ -165,9 +164,7 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
         checks = preflight_check_api(
             config.api_port,
             config.broker_url,
-            config.object_store_url,
-            skip_broker_check='broker' in services_to_start,
-            skip_object_store_check='object-store' in services_to_start,
+            skip_broker_check='broker' not in services_to_start,
         )
         all_checks.extend(checks)
         if not run_preflight_checks(checks, verbose=verbose):
@@ -418,7 +415,8 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
     click.echo(f"  Workers: {session.config.api_workers}")
     if verbose:
         click.echo(f"  Broker: {session.config.broker_url}")
-        click.echo(f"  Object Store: {session.config.object_store_url}")
+        if session.config.object_store_url:
+            click.echo(f"  Object Store: {session.config.object_store_url}")
         click.echo(f"  Ray: {session.config.ray_address}")
 
     log_dir = session.get_service_log_dir('api')
@@ -428,15 +426,17 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
     click.echo()
 
     env = os.environ.copy()
-    env.update({
-        'NDIF_OBJECT_STORE_URL': session.config.object_store_url,
+    env_updates = {
         'NDIF_BROKER_URL': session.config.broker_url,
         'NDIF_API_WORKERS': str(session.config.api_workers),
         'NDIF_RAY_ADDRESS': session.config.ray_address,
         'NDIF_API_PORT': str(session.config.api_port),
         'NDIF_API_URL': session.config.api_url,
         'NDIF_DEV_MODE': 'true',
-    })
+    }
+    if session.config.object_store_url:
+        env_updates['OBJECT_STORE_URL'] = session.config.object_store_url
+    env.update(env_updates)
 
     if verbose:
         proc = subprocess.Popen(
@@ -470,7 +470,6 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
 
     click.echo("Starting NDIF Ray service...")
     if verbose:
-        click.echo(f"  Object Store: {session.config.object_store_url}")
         click.echo(f"  API: {session.config.api_url}")
         click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
     click.echo(f"  Head Port: {session.config.ray_head_port}")
@@ -483,8 +482,7 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
     click.echo()
 
     env = os.environ.copy()
-    env.update({
-        'OBJECT_STORE_URL': session.config.object_store_url,
+    env_updates = {
         'API_URL': session.config.api_url,
         'NDIF_RAY_TEMP_DIR': session.config.ray_temp_dir,
         'NDIF_RAY_HEAD_PORT': str(session.config.ray_head_port),
@@ -496,8 +494,10 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         'NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS': str(session.config.minimum_deployment_time_seconds),
         'RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS': '1000',
         'RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S': '10',
-    })
-
+    }
+    if session.config.object_store_url:
+        env_updates['OBJECT_STORE_URL'] = session.config.object_store_url
+    env.update(env_updates)
     if verbose:
         proc = subprocess.Popen(
             ['bash', str(start_script)],

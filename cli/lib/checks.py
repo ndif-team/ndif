@@ -439,9 +439,7 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
 def preflight_check_api(
     port: int,
     broker_url: str,
-    object_store_url: str,
     skip_broker_check: bool = False,
-    skip_object_store_check: bool = False,
 ) -> list[CheckResult]:
     """Run pre-flight checks before starting the API service.
 
@@ -450,7 +448,6 @@ def preflight_check_api(
         broker_url: Redis/broker URL
         object_store_url: Object store URL
         skip_broker_check: Skip broker connectivity check (if starting broker in same command)
-        skip_object_store_check: Skip object store check (if starting it in same command)
 
     Returns:
         List of CheckResults (all must pass)
@@ -471,17 +468,6 @@ def preflight_check_api(
                 suggestion="Start the broker first: ndif start broker"
             ))
 
-    # Check object store is reachable (unless we're starting it)
-    if not skip_object_store_check:
-        if check_minio(object_store_url):
-            results.append(CheckResult(success=True, message=f"Object store reachable at {object_store_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach object store at {object_store_url}",
-                suggestion="Start the object store first: ndif start object-store"
-            ))
-
     return results
 
 
@@ -493,7 +479,6 @@ def preflight_check_ray(
     object_manager_port: int,
     grpc_port: int,
     serve_port: int,
-    skip_object_store_check: bool = False,
 ) -> list[CheckResult]:
     """Run pre-flight checks before starting the Ray service.
 
@@ -505,7 +490,6 @@ def preflight_check_ray(
         object_manager_port: Ray object manager port
         grpc_port: Ray dashboard gRPC port
         serve_port: Ray serve/metrics port
-        skip_object_store_check: Skip object store check (if starting it in same command)
 
     Returns:
         List of CheckResults (all must pass)
@@ -528,17 +512,6 @@ def preflight_check_ray(
     ]
     for port, name in ray_ports:
         results.append(check_port_available(port, name))
-
-    # Check object store is reachable (unless we're starting it)
-    if not skip_object_store_check:
-        if check_minio(object_store_url):
-            results.append(CheckResult(success=True, message=f"Object store reachable at {object_store_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach object store at {object_store_url}",
-                suggestion="Start the object store first: ndif start object-store"
-            ))
 
     return results
 
