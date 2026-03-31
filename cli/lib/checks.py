@@ -457,7 +457,6 @@ def preflight_check_api(
 
 def preflight_check_ray(
     temp_dir: str,
-    object_store_url: str,
     head_port: int,
     dashboard_port: int,
     object_manager_port: int,
@@ -468,7 +467,6 @@ def preflight_check_ray(
 
     Args:
         temp_dir: Ray temp directory
-        object_store_url: Object store URL
         head_port: Ray head node port
         dashboard_port: Ray dashboard port
         object_manager_port: Ray object manager port
