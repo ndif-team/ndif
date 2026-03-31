@@ -237,7 +237,7 @@ class SessionConfig:
 
             # Controller config
             controller_import_path=get_env("NDIF_CONTROLLER_IMPORT_PATH"),
-            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS")) if get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS") else None,
+            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")),
 
             # Services
             services=services,
