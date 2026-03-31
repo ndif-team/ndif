@@ -147,7 +147,6 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
             click.echo("  Ray:")
         checks = preflight_check_ray(
             config.ray_temp_dir,
-            config.object_store_url,
             config.ray_head_port,
             config.ray_dashboard_port,
             config.ray_object_manager_port,
@@ -163,8 +162,6 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
             click.echo("  API:")
         checks = preflight_check_api(
             config.api_port,
-            config.broker_url,
-            skip_broker_check='broker' not in services_to_start,
         )
         all_checks.extend(checks)
         if not run_preflight_checks(checks, verbose=verbose):

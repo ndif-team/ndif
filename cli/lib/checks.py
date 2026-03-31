@@ -438,16 +438,11 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
 
 def preflight_check_api(
     port: int,
-    broker_url: str,
-    skip_broker_check: bool = False,
 ) -> list[CheckResult]:
     """Run pre-flight checks before starting the API service.
 
     Args:
         port: Port to bind to
-        broker_url: Redis/broker URL
-        object_store_url: Object store URL
-        skip_broker_check: Skip broker connectivity check (if starting broker in same command)
 
     Returns:
         List of CheckResults (all must pass)
@@ -456,17 +451,6 @@ def preflight_check_api(
 
     # Check port availability
     results.append(check_port_available(port, "API"))
-
-    # Check broker is reachable (unless we're starting it)
-    if not skip_broker_check:
-        if check_redis(broker_url):
-            results.append(CheckResult(success=True, message=f"Broker reachable at {broker_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach broker at {broker_url}",
-                suggestion="Start the broker first: ndif start broker"
-            ))
 
     return results
 
