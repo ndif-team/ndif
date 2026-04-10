@@ -80,11 +80,11 @@ class ModelEvaluator:
                 meta_model.revision,
             )
 
-            logger.info(f"=> New model evaluated: {model_key} base_size: {base_size_bytes}")
+            logger.debug(f"=> New model evaluated: {model_key} base_size: {base_size_bytes}")
 
         entry = self.cache[model_key]
         padded_size = math.ceil(entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding + self.padding_bias)
 
-        logger.info(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding}, padding_bias: {self.padding_bias})")
+        logger.debug(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding}, padding_bias: {self.padding_bias})")
 
         return padded_size

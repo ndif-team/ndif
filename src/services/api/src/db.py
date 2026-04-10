@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 
 from .types import API_KEY, TIER
 from .providers.postgres import PostgresProvider
@@ -14,6 +15,16 @@ class AccountsDB:
 
     def api_key_exists(self, key_id: API_KEY) -> bool:
         """Check if a key exists."""
+        # Validate that key_id is a valid UUID before querying the database
+        try:
+            uuid.UUID(key_id, version=4)
+        except Exception as e:
+            raise ValueError(
+                f"Invalid API key format: '{key_id}'. "
+                f"API keys must be in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                f"You can obtain a valid API key from https://login.ndif.us"
+            ) from e
+
         try:
             result = PostgresProvider.execute(
                 "SELECT EXISTS(SELECT 1 FROM keys WHERE key_id = %s)",
