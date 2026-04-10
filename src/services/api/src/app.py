@@ -70,6 +70,7 @@ sm = SocketManager(
     max_http_buffer_size=AppConfig.socketio_max_http_buffer_size,
     ping_timeout=AppConfig.socketio_ping_timeout,
     always_connect=True,
+    transports=["websocket"],
 )
 
 # Init object_store connection

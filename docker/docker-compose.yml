@@ -2,7 +2,8 @@ services:
   message_broker:
     image: redis:${REDIS_VERSION}
     ports:
-      - ${NDIF_BROKER_PORT}:6379
+      - ${NDIF_BROKER_PORT}:${NDIF_BROKER_PORT}
+    command: redis-server --port ${NDIF_BROKER_PORT}
 
   minio:
     image: minio/minio:${MINIO_VERSION}
@@ -19,10 +20,10 @@ services:
       - ray-data:/tmp/ray/
 
     ports:
-      - ${NDIF_RAY_HEAD_PORT}:6379
-      - ${NDIF_RAY_CLIENT_PORT}:10001
-      - ${NDIF_RAY_DASHBOARD_PORT}:8265
-      - ${NDIF_RAY_SERVE_PORT}:8262
+      - ${NDIF_RAY_HEAD_PORT}:${NDIF_RAY_HEAD_PORT}
+      - ${NDIF_RAY_CLIENT_PORT}:${NDIF_RAY_CLIENT_PORT}
+      - ${NDIF_RAY_DASHBOARD_PORT}:${NDIF_RAY_DASHBOARD_PORT}
+      - ${NDIF_RAY_SERVE_PORT}:${NDIF_RAY_SERVE_PORT}
     deploy:
       replicas: 1
       resources:
@@ -51,15 +52,26 @@ services:
       - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
 
   api:
     image: api:${API_VERSION}
     ports:
       - ${NDIF_API_PORT}:${NDIF_API_PORT}
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
     environment:
       NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
       NDIF_API_WORKERS: ${NDIF_API_WORKERS}
+      NDIF_API_PORT: ${NDIF_API_PORT}
       NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
       NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
       NDIF_DEV_MODE: ${NDIF_DEV_MODE}
@@ -77,8 +89,6 @@ services:
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
       DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
-    env_file:
-      - .env
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}

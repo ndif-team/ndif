@@ -13,22 +13,20 @@ from ..lib.session import get_env
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 def restart(checkpoint: str, revision: str, ray_address: str):
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
 
-    This command restarts a running model deployment, useful for:
-    - Clearing cached state
-    - Reloading model weights
-    - Recovering from errors
+    This command restarts a running model deployment, useful for clearing
+    cached state, reloading model weights, or recovering from errors.
 
+    \b
     Examples:
         ndif restart gpt2
         ndif restart meta-llama/Llama-2-7b-hf --revision main
-        ndif restart openai-community/gpt2 --ray-address ray://localhost:10001
     """
     # Use session default if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -37,10 +35,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         check_prerequisites(ray_address=ray_address)
 
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
-        
-        # TODO: revision bug ("main" is not always the default revision)
-        model = LanguageModel(checkpoint, revision=None, dispatch=False)
+        click.echo(f"Generating model key for {checkpoint}{f' (revision: {revision})' if revision else ''}...")
+
+        model = LanguageModel(checkpoint, revision=revision, dispatch=False)
         model_key = model.to_model_key()
         click.echo(f"Model key: {model_key}")
 

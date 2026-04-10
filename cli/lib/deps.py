@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
+import platform
+import tempfile
 
 from .checks import check_redis, check_minio
 from .session import get_or_create_session
@@ -37,9 +39,6 @@ def install_micromamba() -> bool:
     Returns:
         True if installation succeeded, False otherwise
     """
-    import platform
-    import tempfile
-
     arch = platform.machine()
     if arch == "x86_64":
         plat = "linux-64"

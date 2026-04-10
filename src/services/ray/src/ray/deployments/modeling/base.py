@@ -234,7 +234,7 @@ class BaseModelDeployment:
 
             self._verify_device_placement(model._module, "disk")
 
-            self.logger.info(f"Model loaded from disk in {load_time} seconds")
+            self.logger.debug(f"Model loaded from disk in {load_time} seconds")
 
             return model
 
@@ -329,7 +329,7 @@ class BaseModelDeployment:
             span.set_attribute("ndif.model.load_time_s", load_time)
             ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
 
-            self.logger.info(f"Model loaded from cache in {load_time} seconds")
+            self.logger.debug(f"Model loaded from cache in {load_time} seconds")
 
             self.cached = False
 

@@ -24,8 +24,30 @@ from ..lib.checks import (
     preflight_check_broker,
     preflight_check_object_store,
     run_preflight_checks,
+    wait_for_services,
+    preflight_check_worker,
 )
 from ..lib.deps import start_redis as util_start_redis, start_object_store as util_start_object_store
+from ..lib.model_config import config_exists, get_default_config_path
+
+
+def _apply_cli_overrides(api_url: str = None, broker_url: str = None,
+                         object_store_url: str = None, ray_address: str = None,
+                         ray_dashboard_port: int = None):
+    """Apply CLI argument overrides to environment variables.
+
+    CLI arguments take precedence over environment variables.
+    """
+    if api_url is not None:
+        os.environ['NDIF_API_URL'] = api_url
+    if broker_url is not None:
+        os.environ['NDIF_BROKER_URL'] = broker_url
+    if object_store_url is not None:
+        os.environ['NDIF_OBJECT_STORE_URL'] = object_store_url
+    if ray_address is not None:
+        os.environ['NDIF_RAY_ADDRESS'] = ray_address
+    if ray_dashboard_port is not None:
+        os.environ['NDIF_RAY_DASHBOARD_PORT'] = str(ray_dashboard_port)
 
 
 @click.command()
@@ -35,7 +57,14 @@ from ..lib.deps import start_redis as util_start_redis, start_object_store as ut
 ), default='all')
 @click.option('--worker', is_flag=True, help='Start as Ray worker node (connects to existing head)')
 @click.option('--verbose', is_flag=True, help='Run in foreground with logs visible (blocking mode)')
-def start(service: str, worker: bool, verbose: bool):
+@click.option('--timeout', type=int, default=120, help='Timeout in seconds for services to become ready (default: 120)')
+@click.option('--api-url', default=None, help='API URL (default: from NDIF_API_URL)')
+@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+@click.option('--object-store-url', default=None, help='Object store URL (default: from NDIF_OBJECT_STORE_URL)')
+@click.option('--ray-address', default=None, help='Ray head address for worker mode (default: from NDIF_RAY_ADDRESS)')
+@click.option('--ray-dashboard-port', type=int, default=None, help='Ray dashboard port (default: from NDIF_RAY_DASHBOARD_PORT)')
+def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str, broker_url: str,
+          object_store_url: str, ray_address: str, ray_dashboard_port: int):
     """Start NDIF services.
 
     SERVICE: Which service to start (api, ray, broker, object-store, or all). Default: all
@@ -44,22 +73,26 @@ def start(service: str, worker: bool, verbose: bool):
     nothing is started. If a service fails to start, all started services are
     stopped and the session is removed.
 
+    \b
     Examples:
-        ndif start                              # Start all services (head node)
-        ndif start api                          # Start API only
-        ndif start broker                       # Start broker (Redis) only
-        ndif start --verbose                    # Start with logs visible
-        ndif start --worker                     # Start as Ray worker node
+        ndif start                    # Start all services (head node)
+        ndif start api                # Start API only
+        ndif start broker             # Start broker (Redis) only
+        ndif start --verbose          # Start with logs visible
+        ndif start --worker           # Start as Ray worker node
 
-    Key Environment Variables:
-        NDIF_BROKER_URL          - Broker URL (default: redis://localhost:6379/)
-        NDIF_OBJECT_STORE_URL    - Object store URL (default: http://localhost:27017)
-        NDIF_API_PORT            - API port (default: 8001)
-        NDIF_RAY_TEMP_DIR        - Ray temp directory (default: /tmp/ray)
-        NDIF_RAY_ADDRESS         - Ray head address for workers (default: ray://localhost:10001)
-        NDIF_SESSION_ROOT        - Session directory (default: ~/.ndif)
+    CLI arguments take precedence over environment variables.
     """
     print_logo()
+
+    # Apply CLI overrides to environment (takes precedence over env vars)
+    _apply_cli_overrides(
+        api_url=api_url,
+        broker_url=broker_url,
+        object_store_url=object_store_url,
+        ray_address=ray_address,
+        ray_dashboard_port=ray_dashboard_port,
+    )
 
     repo_root = get_repo_root()
 
@@ -85,57 +118,59 @@ def start(service: str, worker: bool, verbose: bool):
         click.echo("\nUse 'ndif info' to see session status.")
         return
 
-    click.echo(f"Services to start: {', '.join(services_to_start)}")
-    click.echo()
+    if verbose:
+        click.echo(f"Services to start: {', '.join(services_to_start)}")
+        click.echo()
 
     # Run ALL pre-flight checks before creating session
     click.echo("Running pre-flight checks...")
     all_checks = []
 
     if 'broker' in services_to_start:
-        click.echo("  Broker:")
+        if verbose:
+            click.echo("  Broker:")
         checks = preflight_check_broker(config.broker_port)
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'object-store' in services_to_start:
-        click.echo("  Object store:")
+        if verbose:
+            click.echo("  Object store:")
         checks = preflight_check_object_store(config.object_store_port)
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'ray' in services_to_start:
-        click.echo("  Ray:")
+        if verbose:
+            click.echo("  Ray:")
         checks = preflight_check_ray(
             config.ray_temp_dir,
-            config.object_store_url,
             config.ray_head_port,
             config.ray_dashboard_port,
             config.ray_object_manager_port,
             config.ray_dashboard_grpc_port,
             config.ray_serve_port,
-            skip_object_store_check='object-store' in services_to_start,
         )
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
     if 'api' in services_to_start:
-        click.echo("  API:")
+        if verbose:
+            click.echo("  API:")
         checks = preflight_check_api(
             config.api_port,
-            config.broker_url,
-            config.object_store_url,
-            skip_broker_check='broker' in services_to_start,
-            skip_object_store_check='object-store' in services_to_start,
         )
         all_checks.extend(checks)
-        if not run_preflight_checks(checks):
+        if not run_preflight_checks(checks, verbose=verbose):
             _preflight_failed()
 
-    click.echo("\n✓ All pre-flight checks passed")
+    if verbose:
+        click.echo("\n✓ All pre-flight checks passed")
+    else:
+        click.echo("  ✓ All pre-flight checks passed")
     click.echo()
 
     # Now create or reuse session
@@ -143,9 +178,10 @@ def start(service: str, worker: bool, verbose: bool):
         session = existing_session
     else:
         session = Session.create()
-        click.echo(f"Session: {session.config.session_id}")
-        click.echo(f"  Logs: {session.logs_dir}")
-        click.echo()
+        if verbose:
+            click.echo(f"Session: {session.config.session_id}")
+            click.echo(f"  Logs: {session.logs_dir}")
+            click.echo()
 
     # Track what we've started for rollback
     started_services = []
@@ -190,7 +226,31 @@ def start(service: str, worker: bool, verbose: bool):
             _rollback(session, started_services, processes, existing_session is None)
             sys.exit(0)
     else:
-        click.echo("\n✓ Services started successfully.")
+        # Wait for services to be ready
+        click.echo("Waiting for services to be ready...")
+
+        success, failed = wait_for_services(
+            broker_url=session.config.broker_url if 'broker' in started_services else None,
+            minio_url=session.config.object_store_url if 'object-store' in started_services else None,
+            ray_address=session.config.ray_address if 'ray' in started_services else None,
+            api_url=session.config.api_url if 'api' in started_services else None,
+            timeout=timeout,
+        )
+
+        if not success:
+            click.echo(f"\n✗ Services failed to become ready: {', '.join(failed)}", err=True)
+            _rollback(session, started_services, processes, existing_session is None)
+            sys.exit(1)
+
+        click.echo("\n✓ All services ready.")
+        click.echo()
+        click.echo(f"Session: {session.config.session_id}")
+        click.echo(f"  Logs: {session.logs_dir}")
+
+        # Auto-deploy from models.yaml if it exists
+        if 'ray' in started_services and config_exists():
+            _auto_deploy_models(session)
+
         click.echo("\nTo view logs:")
         for name in started_services:
             if name in ('api', 'ray'):
@@ -314,10 +374,9 @@ def _start_broker(session: Session, verbose: bool):
             click.echo(f"  ✓ {message} (PID: {pid})")
         else:
             click.echo(f"  ✓ {message}")
+        click.echo()
     else:
         raise RuntimeError(f"Failed to start broker: {message}")
-
-    click.echo()
 
 
 def _start_object_store(session: Session, verbose: bool):
@@ -335,10 +394,9 @@ def _start_object_store(session: Session, verbose: bool):
             click.echo(f"  ✓ {message} (PID: {pid})")
         else:
             click.echo(f"  ✓ {message}")
+        click.echo()
     else:
         raise RuntimeError(f"Failed to start object store: {message}")
-
-    click.echo()
 
 
 def _start_api(session: Session, repo_root: Path, verbose: bool):
@@ -352,26 +410,30 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
     click.echo("Starting NDIF API service...")
     click.echo(f"  Port: {session.config.api_port}")
     click.echo(f"  Workers: {session.config.api_workers}")
-    click.echo(f"  Broker: {session.config.broker_url}")
-    click.echo(f"  Object Store: {session.config.object_store_url}")
-    click.echo(f"  Ray: {session.config.ray_address}")
+    if verbose:
+        click.echo(f"  Broker: {session.config.broker_url}")
+        if session.config.object_store_url:
+            click.echo(f"  Object Store: {session.config.object_store_url}")
+        click.echo(f"  Ray: {session.config.ray_address}")
 
     log_dir = session.get_service_log_dir('api')
     log_file = log_dir / "output.log"
-    if not verbose:
+    if verbose:
         click.echo(f"  Logs: {log_file}")
     click.echo()
 
     env = os.environ.copy()
-    env.update({
-        'NDIF_OBJECT_STORE_URL': session.config.object_store_url,
+    env_updates = {
         'NDIF_BROKER_URL': session.config.broker_url,
         'NDIF_API_WORKERS': str(session.config.api_workers),
         'NDIF_RAY_ADDRESS': session.config.ray_address,
         'NDIF_API_PORT': str(session.config.api_port),
         'NDIF_API_URL': session.config.api_url,
         'NDIF_DEV_MODE': 'true',
-    })
+    }
+    if session.config.object_store_url:
+        env_updates['OBJECT_STORE_URL'] = session.config.object_store_url
+    env.update(env_updates)
 
     if verbose:
         proc = subprocess.Popen(
@@ -404,21 +466,20 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         raise RuntimeError(f"start.sh not found at {start_script}")
 
     click.echo("Starting NDIF Ray service...")
-    click.echo(f"  Object Store: {session.config.object_store_url}")
-    click.echo(f"  API: {session.config.api_url}")
-    click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
+    if verbose:
+        click.echo(f"  API: {session.config.api_url}")
+        click.echo(f"  Temp Dir: {session.config.ray_temp_dir}")
     click.echo(f"  Head Port: {session.config.ray_head_port}")
-    click.echo(f"  Dashboard: {session.config.ray_dashboard_host}:{session.config.ray_dashboard_port}")
+    click.echo(f"  Dashboard: {session.config.ray_dashboard_port}")
 
     log_dir = session.get_service_log_dir('ray')
     log_file = log_dir / "output.log"
-    if not verbose:
+    if verbose:
         click.echo(f"  Logs: {log_file}")
     click.echo()
 
     env = os.environ.copy()
-    env.update({
-        'OBJECT_STORE_URL': session.config.object_store_url,
+    env_updates = {
         'API_URL': session.config.api_url,
         'NDIF_RAY_TEMP_DIR': session.config.ray_temp_dir,
         'NDIF_RAY_HEAD_PORT': str(session.config.ray_head_port),
@@ -430,8 +491,10 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
         'NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS': str(session.config.minimum_deployment_time_seconds),
         'RAY_METRICS_GAUGE_EXPORT_INTERVAL_MS': '1000',
         'RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S': '10',
-    })
-
+    }
+    if session.config.object_store_url:
+        env_updates['OBJECT_STORE_URL'] = session.config.object_store_url
+    env.update(env_updates)
     if verbose:
         proc = subprocess.Popen(
             ['bash', str(start_script)],
@@ -454,9 +517,67 @@ def _start_ray(session: Session, repo_root: Path, verbose: bool):
     return proc
 
 
+def _wait_for_controller(ray_address: str, timeout: int = 120) -> bool:
+    """Wait for the controller actor to be available.
+
+    Args:
+        ray_address: Ray address to connect to
+        timeout: Maximum seconds to wait
+
+    Returns:
+        True if controller is available, False if timeout
+    """
+    import ray
+    import time
+
+    ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            ray.get_actor("Controller", namespace="NDIF")
+            return True
+        except ValueError:
+            time.sleep(2)
+
+    return False
+
+
+def _auto_deploy_models(session: Session):
+    """Auto-deploy models from ~/.ndif/models.yaml if it exists."""
+    from .deploy import deploy as deploy_cmd
+    from click.testing import CliRunner
+
+    config_path = get_default_config_path()
+    click.echo()
+    click.echo(f"Auto-deploying models from {config_path}...")
+
+    # Wait for controller to be available
+    click.echo("Waiting for controller...")
+    if not _wait_for_controller(session.config.ray_address):
+        click.echo("Warning: Controller not available, skipping auto-deploy", err=True)
+        return
+
+    runner = CliRunner()
+    result = runner.invoke(deploy_cmd, [
+        '-f', str(config_path),
+        '--ray-address', session.config.ray_address,
+        '--broker-url', session.config.broker_url,
+    ])
+
+    # Echo the output (excluding the first line which repeats the file path)
+    if result.output:
+        lines = result.output.strip().split('\n')
+        # Skip the "Loaded N model(s)" line since we already said we're auto-deploying
+        for line in lines[1:]:
+            click.echo(line)
+
+    if result.exit_code != 0:
+        click.echo("Warning: Auto-deploy encountered errors", err=True)
+
+
 def _start_worker_mode(repo_root: Path, verbose: bool):
     """Handle starting as a Ray worker node."""
-    from ..lib.checks import preflight_check_worker
 
     # Check for existing session
     existing_session = get_current_session()

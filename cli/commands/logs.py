@@ -1,7 +1,6 @@
 """Logs command for NDIF - View service logs"""
 
 import subprocess
-import sys
 
 import click
 
@@ -20,20 +19,19 @@ def logs(service: str, follow: bool, lines: int):
     By default, shows the last 100 lines of the current session's logs.
     Use --follow to continuously stream new log entries.
 
+    \b
     Examples:
-        ndif logs api              # Show last 100 lines of API logs
-        ndif logs broker           # Show broker (Redis) logs
-        ndif logs object-store     # Show object store logs
-        ndif logs ray              # Show Ray logs
-        ndif logs api -n 500       # Show last 500 lines
-        ndif logs api --follow     # Follow logs in real-time
+        ndif logs api           # Show last 100 lines of API logs
+        ndif logs ray           # Show Ray logs
+        ndif logs api -n 500    # Show last 500 lines
+        ndif logs api --follow  # Follow logs in real-time
     """
     session = get_current_session()
 
     if session is None:
         click.echo("No active session found.", err=True)
         click.echo("\nStart services with 'ndif start' first.", err=True)
-        sys.exit(1)
+        raise click.Abort()
 
     log_dir = session.logs_dir / service
     log_file = log_dir / "output.log"
@@ -42,7 +40,7 @@ def logs(service: str, follow: bool, lines: int):
         click.echo(f"No logs found for {service} service.", err=True)
         click.echo(f"\nExpected: {log_file}", err=True)
         click.echo(f"\nMake sure the service has been started with 'ndif start {service}'", err=True)
-        sys.exit(1)
+        raise click.Abort()
 
     # Build tail command
     tail_cmd = ['tail']
@@ -54,7 +52,6 @@ def logs(service: str, follow: bool, lines: int):
         subprocess.run(tail_cmd)
     except KeyboardInterrupt:
         click.echo("\nStopped following logs.")
-        sys.exit(0)
     except FileNotFoundError:
         click.echo("Error: 'tail' command not found.", err=True)
-        sys.exit(1)
+        raise click.Abort()

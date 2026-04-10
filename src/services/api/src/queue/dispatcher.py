@@ -422,7 +422,7 @@ class Dispatcher:
                         {"status:trigger": last_id}, count=1, block=0
                     )
 
-                    self.logger.info(f"Status trigger received")
+                    self.logger.debug(f"Status trigger received")
 
                     _, entries = message[0]
                     entry_id, _ = entries[0]
@@ -482,7 +482,7 @@ class Dispatcher:
                     # Get event type
                     event_type = event_data.get(b"event_type", b"").decode("utf-8")
 
-                    self.logger.info(f"Received event: {event_type}")
+                    self.logger.debug(f"Received event: {event_type}")
 
                     # Handle different event types
                     if event_type == DispatcherEvent.QUEUE_STATE_REQUEST:
@@ -529,7 +529,7 @@ class Dispatcher:
         if model_key not in self.processors:
             processor = Processor(model_key, self.eviction_queue, self.error_queue)
             self.processors[model_key] = processor
-            asyncio.create_task(processor.processor_worker(provision=False))
+            asyncio.create_task(processor.processor_worker())
             self.logger.info(
                 f"Created processor for {model_key} due to deployment event"
             )

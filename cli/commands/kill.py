@@ -19,13 +19,12 @@ def kill(request_id: str, broker_url: str):
 
     REQUEST_ID: The ID of the request to cancel
 
-    This command will:
-    - Remove the request from the queue if it's waiting
-    - Cancel the request if it's currently executing
+    This command will remove the request from the queue if waiting,
+    or cancel it if currently executing.
 
+    \b
     Examples:
-        ndif kill abc123                     # Cancel request abc123
-        ndif kill abc123 --redis-url redis://... # Use custom Redis URL
+        ndif kill abc123
     """
     # Use session default if not provided
     broker_url = broker_url or get_env("NDIF_BROKER_URL")

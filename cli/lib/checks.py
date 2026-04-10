@@ -14,6 +14,14 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+import redis as redis_sync
+import requests
+import time
+import click
+import sys
+import pwd
+import subprocess
+
 
 @dataclass
 class CheckResult:
@@ -43,7 +51,6 @@ def check_redis(redis_url: str, timeout: int = 2) -> bool:
         True if Redis is reachable, False otherwise
     """
     try:
-        import redis as redis_sync
         client = redis_sync.Redis.from_url(redis_url, socket_connect_timeout=timeout)
         client.ping()
         client.close()
@@ -63,7 +70,6 @@ def check_minio(minio_url: str, timeout: int = 2) -> bool:
         True if MinIO is reachable, False otherwise
     """
     try:
-        import requests
         # Try to access the MinIO health endpoint
         response = requests.get(f"{minio_url}/minio/health/live", timeout=timeout)
         return response.status_code == 200
@@ -82,7 +88,6 @@ def check_api(api_url: str, timeout: int = 2) -> bool:
         True if API is reachable, False otherwise
     """
     try:
-        import requests
         # Try to access the API ping endpoint
         response = requests.get(f"{api_url}/ping", timeout=timeout)
         return response.status_code == 200
@@ -101,9 +106,6 @@ def check_ray(ray_address: str, timeout: int = 2) -> bool:
         True if Ray port is listening, False otherwise
     """
     try:
-        import socket
-        from urllib.parse import urlparse
-
         # Parse the ray address to get host and port
         # ray://localhost:10001 -> localhost, 10001
         parsed = urlparse(ray_address)
@@ -120,6 +122,62 @@ def check_ray(ray_address: str, timeout: int = 2) -> bool:
         return False
 
 
+def wait_for_services(
+    broker_url: str = None,
+    minio_url: str = None,
+    ray_address: str = None,
+    api_url: str = None,
+    timeout: int = 120,
+    poll_interval: float = 2.0,
+) -> tuple[bool, list[str]]:
+    """Wait for services to become ready.
+
+    Args:
+        broker_url: Broker (Redis) URL to check (None = skip)
+        minio_url: MinIO URL to check (None = skip)
+        ray_address: Ray address to check (None = skip)
+        api_url: API URL to check (None = skip)
+        timeout: Maximum seconds to wait
+        poll_interval: Seconds between checks
+
+    Returns:
+        Tuple of (success, list of services that failed to become ready)
+    """
+    services = {}
+    if broker_url:
+        services['broker'] = lambda: check_redis(broker_url)
+    if minio_url:
+        services['object-store'] = lambda: check_minio(minio_url)
+    if ray_address:
+        services['ray'] = lambda: check_ray(ray_address)
+    if api_url:
+        services['api'] = lambda: check_api(api_url)
+
+    if not services:
+        return True, []
+
+    pending = set(services.keys())
+    start_time = time.time()
+    last_status_time = 0
+
+    while pending and (time.time() - start_time) < timeout:
+        for name in list(pending):
+            if services[name]():
+                click.echo(f"  ✓ {name.capitalize()} ready")
+                pending.remove(name)
+
+        if pending:
+            elapsed = time.time() - start_time
+            # Show status every 10 seconds
+            if elapsed - last_status_time >= 10:
+                pending_list = ', '.join(sorted(pending))
+                click.echo(f"  ... still waiting for: {pending_list} ({int(elapsed)}s)")
+                last_status_time = elapsed
+            time.sleep(poll_interval)
+
+    return len(pending) == 0, list(pending)
+
+
 def check_prerequisites(broker_url: str = None, minio_url: str = None,
                        api_url: str = None, ray_address: str = None,
                        verbose: bool = False):
@@ -132,8 +190,6 @@ def check_prerequisites(broker_url: str = None, minio_url: str = None,
         ray_address: Ray address to check (optional)
         verbose: If True, show checking messages and success. If False, only show errors.
     """
-    import click
-    import sys
 
     if verbose:
         click.echo("Checking prerequisites...")
@@ -233,7 +289,6 @@ def check_directory_writable(path: str | Path) -> CheckResult:
     except PermissionError:
         # Get owner info
         try:
-            import pwd
             stat_info = path.stat()
             owner = pwd.getpwuid(stat_info.st_uid).pw_name
             details = f"Directory owned by '{owner}', current user is '{os.environ.get('USER', 'unknown')}'"
@@ -285,7 +340,6 @@ def check_port_available(port: int, service_name: str = "service") -> CheckResul
 
 def _get_port_user(port: int) -> str:
     """Get information about what process is using a port."""
-    import subprocess
 
     try:
         # Try lsof first
@@ -367,7 +421,6 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
     # Check for common Ray temp dir issues
     # Ray creates subdirectories, so we need enough space
     try:
-        import shutil
         total, used, free = shutil.disk_usage(temp_dir)
         free_gb = free / (1024**3)
         if free_gb < 1:
@@ -385,19 +438,11 @@ def check_ray_temp_dir(temp_dir: str | Path) -> CheckResult:
 
 def preflight_check_api(
     port: int,
-    broker_url: str,
-    object_store_url: str,
-    skip_broker_check: bool = False,
-    skip_object_store_check: bool = False,
 ) -> list[CheckResult]:
     """Run pre-flight checks before starting the API service.
 
     Args:
         port: Port to bind to
-        broker_url: Redis/broker URL
-        object_store_url: Object store URL
-        skip_broker_check: Skip broker connectivity check (if starting broker in same command)
-        skip_object_store_check: Skip object store check (if starting it in same command)
 
     Returns:
         List of CheckResults (all must pass)
@@ -407,52 +452,26 @@ def preflight_check_api(
     # Check port availability
     results.append(check_port_available(port, "API"))
 
-    # Check broker is reachable (unless we're starting it)
-    if not skip_broker_check:
-        if check_redis(broker_url):
-            results.append(CheckResult(success=True, message=f"Broker reachable at {broker_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach broker at {broker_url}",
-                suggestion="Start the broker first: ndif start broker"
-            ))
-
-    # Check object store is reachable (unless we're starting it)
-    if not skip_object_store_check:
-        if check_minio(object_store_url):
-            results.append(CheckResult(success=True, message=f"Object store reachable at {object_store_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach object store at {object_store_url}",
-                suggestion="Start the object store first: ndif start object-store"
-            ))
-
     return results
 
 
 def preflight_check_ray(
     temp_dir: str,
-    object_store_url: str,
     head_port: int,
     dashboard_port: int,
     object_manager_port: int,
     grpc_port: int,
     serve_port: int,
-    skip_object_store_check: bool = False,
 ) -> list[CheckResult]:
     """Run pre-flight checks before starting the Ray service.
 
     Args:
         temp_dir: Ray temp directory
-        object_store_url: Object store URL
         head_port: Ray head node port
         dashboard_port: Ray dashboard port
         object_manager_port: Ray object manager port
         grpc_port: Ray dashboard gRPC port
         serve_port: Ray serve/metrics port
-        skip_object_store_check: Skip object store check (if starting it in same command)
 
     Returns:
         List of CheckResults (all must pass)
@@ -475,17 +494,6 @@ def preflight_check_ray(
     ]
     for port, name in ray_ports:
         results.append(check_port_available(port, name))
-
-    # Check object store is reachable (unless we're starting it)
-    if not skip_object_store_check:
-        if check_minio(object_store_url):
-            results.append(CheckResult(success=True, message=f"Object store reachable at {object_store_url}"))
-        else:
-            results.append(CheckResult(
-                success=False,
-                message=f"Cannot reach object store at {object_store_url}",
-                suggestion="Start the object store first: ndif start object-store"
-            ))
 
     return results
 
@@ -559,7 +567,6 @@ def run_preflight_checks(checks: list[CheckResult], verbose: bool = True) -> boo
     Returns:
         True if all checks passed, False otherwise
     """
-    import click
 
     all_passed = True
 

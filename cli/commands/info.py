@@ -2,6 +2,7 @@
 
 import json
 import click
+import ray
 
 from ..lib.session import (
     get_current_session,
@@ -19,16 +20,14 @@ from ..lib.checks import check_redis, check_minio, check_api, check_ray
 def info(json_flag: bool, show_env: bool):
     """Show current session and configuration information.
 
-    Displays:
-    - Active session details
-    - Service status (running/stopped)
-    - Configuration values
-    - Environment variable settings
+    Displays active session details, service status, configuration
+    values, and environment variable settings.
 
+    \b
     Examples:
-        ndif info                  # Show session and status
-        ndif info --env            # Include all environment variables
-        ndif info --json-output    # Output as JSON
+        ndif info              # Show session and status
+        ndif info --env        # Include all environment variables
+        ndif info --json-output
     """
     session = get_current_session()
 
@@ -92,10 +91,14 @@ def _output_human(session, show_env: bool):
         for name, svc in session.config.services.items():
             port_in_use = is_port_in_use(svc.port)
 
+            hint = None
             if svc.running and port_in_use:
                 status = "🟢 running"
             elif svc.running and not port_in_use:
                 status = "🟡 marked running but port not in use"
+                # Map service name to logs command name (ray-worker -> ray)
+                logs_name = "ray" if name == "ray-worker" else name
+                hint = f"Check logs: ndif logs {logs_name}"
             elif not svc.running and port_in_use:
                 status = "🟡 stopped but port in use (external?)"
             else:
@@ -103,6 +106,8 @@ def _output_human(session, show_env: bool):
 
             managed_str = "managed" if svc.managed else "external"
             click.echo(f"  {name}: {status} (port {svc.port}, {managed_str})")
+            if hint:
+                click.echo(f"       └─ {hint}")
 
         click.echo()
 
@@ -112,7 +117,7 @@ def _output_human(session, show_env: bool):
         click.echo(f"  Object Store URL: {session.config.object_store_url}")
         click.echo(f"  API URL: {session.config.api_url}")
         click.echo(f"  Ray Address: {session.config.ray_address}")
-        click.echo(f"  Ray Dashboard: {session.config.ray_dashboard_host}:{session.config.ray_dashboard_port}")
+        click.echo(f"  Ray Dashboard: {session.config.ray_dashboard_port}")
 
     else:
         click.echo("No active session")
@@ -184,7 +189,6 @@ def _output_human(session, show_env: bool):
 def _show_ray_nodes(ray_address: str):
     """Show Ray cluster nodes."""
     try:
-        import ray
         if not ray.is_initialized():
             ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
 

@@ -113,7 +113,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
         log_msg = f"{self.id} - {status.name}: {description}"
 
-        logging_level = "info"
+        logging_level = "debug"
 
         if status == ResponseModel.JobStatus.ERROR:
             logging_level = "exception"

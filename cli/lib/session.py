@@ -5,7 +5,7 @@ Sessions store configuration, track which services are running, and provide a
 consistent way to find and manage NDIF processes.
 
 Session directory structure:
-    $NDIF_SESSION_ROOT/              # Default: ~/.ndif
+    ~/.ndif/sessions/                # Default: $NDIF_SESSION_ROOT
     ├── current -> session_xxx/      # Symlink to active session
     └── session_20250121_143052/
         ├── config.json              # Session configuration
@@ -19,6 +19,8 @@ Session directory structure:
 import json
 import os
 import getpass
+import socket
+import subprocess
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -51,12 +53,16 @@ def get_env(name: str, default: str = None) -> str:
 def get_session_root() -> Path:
     """Get the session root directory, creating it if needed.
 
+    Also creates the models.yaml template in ~/.ndif if it doesn't exist.
+
     Returns:
         Path to session root directory
 
     Raises:
         PermissionError: If directory cannot be created or accessed
     """
+    from .model_config import create_config_template, get_default_config_path
+
     root = Path(get_env("NDIF_SESSION_ROOT"))
 
     try:
@@ -65,6 +71,12 @@ def get_session_root() -> Path:
         test_file = root / ".write_test"
         test_file.touch()
         test_file.unlink()
+
+        # Create models.yaml template in ~/.ndif if it doesn't exist
+        models_config = get_default_config_path()
+        if not models_config.exists():
+            create_config_template(models_config)
+
         return root
     except PermissionError as e:
         raise PermissionError(
@@ -116,7 +128,6 @@ class SessionConfig:
     ray_temp_dir: str
     ray_head_port: int
     ray_dashboard_port: int
-    ray_dashboard_host: str
     ray_serve_port: int
     ray_object_manager_port: int
     ray_dashboard_grpc_port: int
@@ -189,9 +200,10 @@ class SessionConfig:
                 "ray-worker": ServiceConfig(name="ray-worker", port=0, managed=True, running=False),
             }
         else:
+            ray_head_port = int(get_env("NDIF_RAY_HEAD_PORT")) if get_env("NDIF_RAY_HEAD_PORT") else None
             services = {
                 "api": ServiceConfig(name="api", port=api_port, managed=True, running=False),
-                "ray": ServiceConfig(name="ray", port=int(get_env("NDIF_RAY_HEAD_PORT")), managed=True, running=False),
+                "ray": ServiceConfig(name="ray", port=ray_head_port, managed=True, running=False),
                 "broker": ServiceConfig(name="broker", port=broker_port, managed=True, running=False),
                 "object-store": ServiceConfig(name="object-store", port=object_store_port, managed=True, running=False),
             }
@@ -209,15 +221,15 @@ class SessionConfig:
 
             # Ray config
             ray_temp_dir=get_env("NDIF_RAY_TEMP_DIR"),
-            ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")),
-            ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")),
-            ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")),
-            ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")),
-            ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")),
+            ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")) if get_env("NDIF_RAY_HEAD_PORT") else None,
+            ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")) if get_env("NDIF_RAY_DASHBOARD_PORT") else None ,
+            ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")) if get_env("NDIF_RAY_SERVE_PORT") else None,
+            ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")) if get_env("NDIF_RAY_OBJECT_MANAGER_PORT") else None,
+            ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")) if get_env("NDIF_RAY_DASHBOARD_GRPC_PORT") else None,
 
             # API config
             api_port=api_port,
-            api_workers=int(get_env("NDIF_API_WORKERS")),
+            api_workers=int(get_env("NDIF_API_WORKERS")) if get_env("NDIF_API_WORKERS") else None,
 
             # Ports
             broker_port=broker_port,
@@ -225,7 +237,7 @@ class SessionConfig:
 
             # Controller config
             controller_import_path=get_env("NDIF_CONTROLLER_IMPORT_PATH"),
-            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS")),
+            minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")),
 
             # Services
             services=services,
@@ -414,7 +426,6 @@ def get_pids_on_port(port: int) -> list[int]:
     Returns:
         List of PIDs using the port
     """
-    import subprocess
 
     try:
         # Use lsof to find processes listening on the port
@@ -446,12 +457,11 @@ def is_port_in_use(port: int) -> bool:
     Returns:
         True if port is in use
     """
-    import socket
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1)
-            result = s.connect_ex(("0.0.0.0", port))
+            result = s.connect_ex(("localhost", port))
             return result == 0
     except (socket.error, OSError):
         return False
