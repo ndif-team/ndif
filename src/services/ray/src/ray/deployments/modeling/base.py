@@ -68,12 +68,16 @@ class BaseModelDeployment:
 
         parent_ctx = TracingContext.extract(trace_context)
 
-        with trace_span("model_actor.init", parent_context=parent_ctx, attributes={
-            "ndif.model.key": model_key,
-            "ndif.model.gpu_mem_bytes_by_id": str(gpu_mem_bytes_by_id or {}),
-            "ndif.model.dispatch": dispatch,
-            "ndif.model.dtype": str(dtype),
-        }) as span:
+        with trace_span(
+            "model_actor.init",
+            parent_context=parent_ctx,
+            attributes={
+                "ndif.model.key": model_key,
+                "ndif.model.gpu_mem_bytes_by_id": str(gpu_mem_bytes_by_id or {}),
+                "ndif.model.dispatch": dispatch,
+                "ndif.model.dtype": str(dtype),
+            },
+        ) as span:
             self._init_trace_context = trace_context
 
             span.add_event("connecting_providers")
@@ -180,10 +184,13 @@ class BaseModelDeployment:
             expected = {f"cuda:{gpu}" for gpu in self.gpu_mem_bytes_by_id.keys()}
             actual_cuda = {d for d in devices if d.startswith("cuda:")}
             if actual_cuda and not actual_cuda.issubset(expected):
-                span.add_event("device_placement_mismatch", {
-                    "expected": str(sorted(expected)),
-                    "actual": str(sorted(actual_cuda)),
-                })
+                span.add_event(
+                    "device_placement_mismatch",
+                    {
+                        "expected": str(sorted(expected)),
+                        "actual": str(sorted(actual_cuda)),
+                    },
+                )
                 self.logger.warning(
                     f"Device placement mismatch! Expected GPUs {list(self.gpu_mem_bytes_by_id.keys())}, "
                     f"but model is on {actual_cuda}"
@@ -191,7 +198,14 @@ class BaseModelDeployment:
 
     def load_from_disk(self):
         parent_ctx = TracingContext.extract(self._init_trace_context)
-        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "disk"}) as span:
+        with trace_span(
+            "model_actor.load",
+            parent_context=parent_ctx,
+            attributes={
+                "ndif.model.key": self.model_key,
+                "ndif.model.load_source": "disk",
+            },
+        ) as span:
             start = time.time()
             torch.cuda.synchronize()
             self.logger.info(
@@ -226,7 +240,11 @@ class BaseModelDeployment:
 
     async def to_cache(self, trace_context: Optional[Dict[str, str]] = None):
         parent_ctx = TracingContext.extract(trace_context)
-        with trace_span("model_actor.to_cache", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "model_actor.to_cache",
+            parent_context=parent_ctx,
+            attributes={"ndif.model.key": self.model_key},
+        ) as span:
             # torch.cuda.synchronize()
             await self.cancel()
 
@@ -247,7 +265,11 @@ class BaseModelDeployment:
 
             self.cached = True
 
-    def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int], trace_context: Optional[Dict[str, str]] = None):
+    def from_cache(
+        self,
+        gpu_mem_bytes_by_id: Dict[int, int],
+        trace_context: Optional[Dict[str, str]] = None,
+    ):
         """Restore model from CPU cache onto the specified GPU(s).
 
         Uses max_memory targeting to ensure the model is placed on exactly
@@ -259,7 +281,14 @@ class BaseModelDeployment:
             trace_context: Optional trace context for distributed tracing.
         """
         parent_ctx = TracingContext.extract(trace_context)
-        with trace_span("model_actor.load", parent_context=parent_ctx, attributes={"ndif.model.key": self.model_key, "ndif.model.load_source": "cache"}) as span:
+        with trace_span(
+            "model_actor.load",
+            parent_context=parent_ctx,
+            attributes={
+                "ndif.model.key": self.model_key,
+                "ndif.model.load_source": "cache",
+            },
+        ) as span:
             self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id
 
             # Switch default CUDA device to the new target GPU before any CUDA ops
@@ -346,7 +375,9 @@ class BaseModelDeployment:
                     result = await job_task
                 elif kill_task in done:
                     kill_thread(self.execution_ident)
-                    raise Exception("Your job was cancelled or preempted by the server.")
+                    raise Exception(
+                        "Your job was cancelled or preempted by the server."
+                    )
                 else:
                     kill_thread(self.execution_ident)
                     raise Exception(
@@ -378,7 +409,9 @@ class BaseModelDeployment:
 
     def pre(self) -> RequestModel:
         """Logic to execute before execution."""
-        with trace_span("model_actor.pre", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "model_actor.pre", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             self.respond(
                 status=BackendResponseModel.JobStatus.RUNNING,
                 description="Your job has started running.",
@@ -432,7 +465,9 @@ class BaseModelDeployment:
             request (BackendRequestModel): Request.
             result (Any): Result.
         """
-        with trace_span("model_actor.post", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "model_actor.post", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             saves = result[0]
             gpu_mem: int = result[1]
             execution_time_s: float = result[2]
@@ -503,7 +538,9 @@ class BaseModelDeployment:
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
         """
-        with trace_span("model_actor.cleanup", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "model_actor.cleanup", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             self.kill_switch.clear()
             self.execution_ident = None
 
@@ -530,8 +567,14 @@ class BaseModelDeployment:
         Args:
             *data: Variable number of arguments to be converted to strings and logged.
         """
-        description = "".join([str(_data) for _data in data])
-        self.respond(status=BackendResponseModel.JobStatus.LOG, description=description)
+        try:
+            self.execution_protector.__exit__(None, None, None)
+            description = "".join([str(_data) for _data in data])
+            self.respond(
+                status=BackendResponseModel.JobStatus.LOG, description=description
+            )
+        finally:
+            self.execution_protector.__enter__()
 
     def stream_send(self, data: Any):
         """Sends streaming data back to the client.

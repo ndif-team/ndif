@@ -22,7 +22,7 @@ The **Importer** class replaces `__builtins__["__import__"]` while the sandbox i
 
 - **Whitelisted modules** (torch, numpy, collections, etc.) are imported normally but wrapped in a **ProtectedModule** that makes them immutable and blocks cross-module access (e.g. `torch.os` is blocked even though `torch` is allowed).
 - **Non-whitelisted modules** (os, subprocess, socket, sys, etc.) return an **UnauthorizedModule** — a lazy placeholder that raises `ImportError` on any interaction. The error is deferred (not raised on import) so that speculative imports that catch `ImportError` work normally.
-- **Blocked submodules** of whitelisted packages (torch.multiprocessing, torch.distributed, torch.hub, numpy.ctypeslib, etc.) are treated as non-whitelisted even though their parent is allowed.
+- **Blocked submodules** of whitelisted packages (torch.multiprocessing, torch.hub, numpy.ctypeslib, etc.) are treated as non-whitelisted even though their parent is allowed. Each module entry in `whitelist.yaml` can carry its own `blocked_submodules` list.
 
 The whitelist and blocklist are defined in `whitelist.yaml`.
 
@@ -144,11 +144,25 @@ To allow a new module, add an entry to `whitelist.yaml` under `modules`:
   strict: false   # allows scipy.linalg, scipy.stats, etc.
 ```
 
-To block a dangerous submodule of an allowed package:
+To block a dangerous submodule of an allowed package, add `blocked_submodules`
+to that module's entry:
 
 ```yaml
-blocked_submodules:
-  - scipy.io   # file I/O
+- name: scipy
+  strict: false
+  blocked_submodules:
+    - scipy.io       # file I/O
+    - scipy.weave    # code generation
+```
+
+To allow only specific attributes on a strict module (e.g. expose `nnsight.save`
+without opening the entire `nnsight` namespace):
+
+```yaml
+- name: nnsight
+  strict: true
+  allowed_attributes:
+    - save
 ```
 
 ## Known Limitations

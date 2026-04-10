@@ -4,12 +4,11 @@ All sandbox policy lives in whitelist.yaml.  This module loads that file and
 exposes the result as typed constants that the rest of the sandbox consumes.
 Nothing in here enforces anything — it is pure data.
 
-Four kinds of whitelist:
-    modules            – which Python modules user code may import
-    blocked_submodules – exceptions: submodules of whitelisted packages that
-                         are blocked (e.g. torch.multiprocessing)
-    builtins           – which builtins are visible (open, exec, compile excluded)
-    dunders            – which __dunder__ attributes may be accessed at runtime
+Three kinds of whitelist:
+    modules  – which Python modules user code may import (each entry may
+               also carry a ``blocked_submodules`` list for exceptions)
+    builtins – which builtins are visible (open, exec, compile excluded)
+    dunders  – which __dunder__ attributes may be accessed at runtime
 """
 
 from __future__ import annotations
@@ -38,13 +37,28 @@ class WhitelistedModule(BaseModel):
     """One entry from the ``modules`` or ``deserialization_modules`` list.
 
     strict=True  → only the exact module name matches  (e.g. "operator")
-    strict=False → the module and every submodule match (e.g. "torch" allows "torch.nn.functional")
+    strict=False → the module and every submodule match (e.g. "torch" allows
+                   "torch.nn.functional") UNLESS the submodule appears in
+                   ``blocked_submodules``.
+
+    allowed_attributes → when set on a strict entry, only these attributes
+                         may be accessed on the imported module.  This lets
+                         you whitelist ``nnsight`` with only ``nnsight.save``
+                         exposed, without opening up the entire namespace.
     """
 
     name: str
     strict: bool = True
+    blocked_submodules: List[str] = []
+    allowed_attributes: List[str] = []
 
     def check(self, name: str) -> bool:
+        """True if *name* is allowed by this entry (whitelisted and not blocked)."""
+        # Check blocked first — a blocked submodule is never allowed.
+        for blocked in self.blocked_submodules:
+            if name == blocked or name.startswith(blocked + "."):
+                return False
+
         if self.strict:
             return self.name == name
         return self.name == name or name.startswith(self.name + ".")
@@ -69,11 +83,15 @@ WHITELISTED_MODULES_DESERIALIZATION = [
 ]
 
 
-# ── Blocked submodules ────────────────────────────────────────────────────────
-# Even though "torch" is whitelisted, "torch.multiprocessing" is too dangerous.
-# A module is blocked if it equals or is a child of any entry in this list.
+# ── Blocked submodules (derived from module entries) ──────────────────────────
+# Collected from all module entries for use by SandboxFinder and other checks
+# that need a flat set of all blocked names.
 
-BLOCKED_SUBMODULES: frozenset = frozenset(_CONFIG.get("blocked_submodules", []))
+BLOCKED_SUBMODULES: frozenset = frozenset(
+    blocked
+    for m in (*WHITELISTED_MODULES, *_load_modules("deserialization_modules"))
+    for blocked in m.blocked_submodules
+)
 
 
 def is_module_blocked(name: str) -> bool:
@@ -85,7 +103,12 @@ def is_module_blocked(name: str) -> bool:
 
 
 def is_module_allowed(name: str, whitelist: List[WhitelistedModule]) -> bool:
-    """True if *name* is whitelisted AND not blocked."""
+    """True if *name* is whitelisted AND not blocked.
+
+    Note: ``WhitelistedModule.check()`` already accounts for blocked submodules
+    on its own entry.  This function also checks ``is_module_blocked()`` as
+    defense-in-depth (catches blocks defined on other entries).
+    """
     return is_module_whitelisted(name, whitelist) and not is_module_blocked(name)
 
 

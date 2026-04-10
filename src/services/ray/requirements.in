@@ -17,3 +17,5 @@ google
 
 # Security
 RestrictedPython>=7.0
+zstandard
+pandas

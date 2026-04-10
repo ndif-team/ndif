@@ -168,6 +168,9 @@ builtins:
 
 modules:
 
+  - name: PIL
+    strict: false
+
   - name: re
     strict: false
 
@@ -179,9 +182,27 @@ modules:
 
   - name: torch
     strict: false
+    blocked_submodules:
+      # Process spawning
+      - torch.multiprocessing
+      # Native code compilation
+      - torch.utils.cpp_extension
+      # File system / packaging
+      - torch.package
+      # Network access (downloads models/weights from the internet)
+      - torch.hub
+      - torch.utils.model_zoo
+      # NOTE: torch.distributed is NOT blocked because transformers internally
+      # does isinstance checks against torch.distributed.fsdp classes even in
+      # non-distributed settings. Blocking it breaks model.generate().
 
   - name: collections
     strict: false
+
+  - name: nnsight
+    strict: true
+    allowed_attributes:
+      - save
 
   - name: nnsight.intervention.envoy
     strict: false
@@ -191,6 +212,11 @@ modules:
 
   - name: numpy
     strict: false
+    blocked_submodules:
+      # ctypes / native access
+      - numpy.ctypeslib
+      # Build system
+      - numpy.distutils
 
   - name: sympy
     strict: false
@@ -231,32 +257,8 @@ modules:
   - name: transformers.modeling_utils
     strict: false
 
-# =============================================================================
-# BLOCKED SUBMODULES
-# =============================================================================
-# Submodules of whitelisted packages that are explicitly blocked.
-# These provide dangerous capabilities (process spawning, networking,
-# native code compilation) that user code must not access even though
-# the parent package is allowed.
-
-blocked_submodules:
-  # Process spawning
-  - torch.multiprocessing
-  # Native code compilation
-  - torch.utils.cpp_extension
-  # File system / packaging
-  - torch.package
-  # Network access (downloads models/weights from the internet)
-  - torch.hub
-  - torch.utils.model_zoo
-  # ctypes / native access
-  - numpy.ctypeslib
-  # Build system
-  - numpy.distutils
-
-  # NOTE: torch.distributed is NOT blocked because transformers internally
-  # does isinstance checks against torch.distributed.fsdp classes even in
-  # non-distributed settings. Blocking it breaks model.generate().
+  - name: _functools
+    strict: false
 
 # =============================================================================
 # DESERIALIZATION MODULES
