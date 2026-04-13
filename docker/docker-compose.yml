@@ -12,6 +12,21 @@ services:
       - ${NDIF_OBJECT_STORE_PORT}:9000
       - ${NDIF_OBJECT_STORE_CONSOLE_PORT}:9001
 
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   ray:
     image: ray:${RAY_VERSION}
     shm_size: '15gb'
@@ -81,13 +96,12 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_PORT: ${POSTGRES_PORT}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: keys
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
-      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
   prometheus:
@@ -155,3 +169,4 @@ volumes:
   ray-data:
   influxdb2-data:
   influxdb2-config:
+  postgres-data:
