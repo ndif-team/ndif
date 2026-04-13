@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 from fastapi import HTTPException, Request
 from starlette.status import (
@@ -34,6 +35,17 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
         raise HTTPException(
             status_code=HTTP_401_UNAUTHORIZED,
             detail="API key validation is not configured.",
+        )
+
+    # Validate API key format before checking database
+    try:
+        uuid.UUID(api_key, version=4)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail=f"Invalid API key format: '{api_key}'. "
+                   f"API keys must be in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. "
+                   f"You can obtain a valid API key from https://login.ndif.us",
         )
 
     if not await asyncio.to_thread(api_key_store.api_key_exists, api_key):

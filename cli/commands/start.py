@@ -429,7 +429,7 @@ def _start_api(session: Session, repo_root: Path, verbose: bool):
         'NDIF_RAY_ADDRESS': session.config.ray_address,
         'NDIF_API_PORT': str(session.config.api_port),
         'NDIF_API_URL': session.config.api_url,
-        'NDIF_DEV_MODE': 'true',
+        'NDIF_DEV_MODE': os.environ.get('NDIF_DEV_MODE', 'true'),
     }
     if session.config.object_store_url:
         env_updates['OBJECT_STORE_URL'] = session.config.object_store_url
