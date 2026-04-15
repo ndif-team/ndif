@@ -32,6 +32,7 @@ services:
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
+      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
       - ray-data:/tmp/ray/
 
     ports:
