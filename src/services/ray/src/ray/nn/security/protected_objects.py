@@ -35,22 +35,36 @@ SET_ATTRS: defaultdict[int, dict[str, Any]] = defaultdict(dict)
 # Methods that move the model between devices or change its dtype.
 # Blocked because the model is shared across requests and pinned to
 # specific GPUs by the cluster scheduler.
-_BLOCKED_METHODS = frozenset({
-    # Device movement
-    "to",
-    "cuda",
-    "cpu",
-    "xpu",
-    "ipu",
-    "to_empty",
-    # Dtype changes (these return a new module / modify in-place)
-    "half",
-    "float",
-    "double",
-    "bfloat16",
-    # Gradient state mutation
-    "requires_grad_",
-})
+_BLOCKED_METHODS = frozenset(
+    {
+        # Device movement
+        "to",
+        "cuda",
+        "cpu",
+        "xpu",
+        "ipu",
+        "to_empty",
+        # Dtype changes (these return a new module / modify in-place)
+        "half",
+        "float",
+        "double",
+        "bfloat16",
+        # Gradient state mutation
+        "requires_grad_",
+    }
+)
+
+_ALLOWED_ATTRIBUTES = frozenset(
+    {
+        "_forward_hooks",
+        "_forward_hooks_with_kwargs",
+        "_forward_pre_hooks",
+        "_forward_post_hooks",
+        "_forward_pre_hooks_with_kwargs",
+        "_forward_post_hooks_with_kwargs",
+        "_forward_pre_hooks_with_kwargs",
+    }
+)
 
 
 def protected(obj: Any) -> bool:
@@ -65,16 +79,16 @@ class ProtectedObject:
 
     def __getattribute__(self, name: str):
         if name in _BLOCKED_METHODS:
-            raise ValueError(
-                f"Method `{name}` cannot be called on a protected object"
-            )
+            raise ValueError(f"Method `{name}` cannot be called on a protected object")
 
         obj = PROTECTIONS[id(self)]
         value = getattr(obj, name)
 
         # Return deep copies of mutable types so users can't silently mutate
         # the model's internal state (e.g. bias vectors, config dicts).
-        if isinstance(value, (torch.Tensor, list, dict)):
+        if name not in _ALLOWED_ATTRIBUTES and isinstance(
+            value, (torch.Tensor, list, dict)
+        ):
             value = deepcopy(value)
             print(
                 f" WARNING: Accessing attribute `{name}` of protected object"
@@ -98,8 +112,10 @@ class ProtectedObject:
 
 def protect(obj: Any):
     """Wrap *obj* in a ProtectedObject that also inherits from obj's class."""
+
     class _ProtectedObject(ProtectedObject, obj.__class__):
         pass
+
     return _ProtectedObject(obj)
 
 
