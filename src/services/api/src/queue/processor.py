@@ -212,12 +212,13 @@ class Processor:
         self.queue.put_nowait(request)
 
         self.reply(
+            request=request,
             description=(
                 f"Added to Queue at position {self.queue.qsize()}."
                 if self.status
                 not in [ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING]
                 else None
-            )
+            ),
         )
 
     async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
