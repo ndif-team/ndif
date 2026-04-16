@@ -18,8 +18,16 @@ def load_config(path: Path) -> dict:
     return {}
 
 
-def send_discord(webhook_url: str, message: str):
-    requests.post(webhook_url, json={"content": message}, timeout=TIMEOUT)
+def send_discord(webhook_url: str, message: str) -> bool:
+    try:
+        resp = requests.post(webhook_url, json={"content": message}, timeout=TIMEOUT)
+        if not resp.ok:
+            print(f"Discord webhook returned {resp.status_code}: {resp.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Discord webhook failed: {e}")
+        return False
 
 
 def get_mention(config: dict) -> str:

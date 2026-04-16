@@ -156,18 +156,28 @@ def save_state(log_dir: Path, state: dict):
 
 # ---- Notifications ----
 
-def notify_status(config: dict, state: dict, is_ok: bool, reason: str, timestamp: str):
+def format_discord_ts(iso_timestamp: str) -> str:
+    """Convert ISO timestamp to Discord's native timestamp format.
+
+    Renders as a localized date/time in each user's timezone.
+    """
+    dt = datetime.datetime.fromisoformat(iso_timestamp)
+    unix = int(dt.timestamp())
+    return f"<t:{unix}:f>"
+
+
+def notify_status(config: dict, was_ok: bool, state: dict, is_ok: bool, reason: str, timestamp: str):
     webhook_url = config.get("discord_webhook")
     if not webhook_url:
         return
 
     messages = {**DEFAULT_MESSAGES, **config.get("messages", {})}
     mention = get_mention(config)
-    was_ok = state["last_status"] == "ok"
+    down_since = state.get("down_since")
     fmt = {
         "reason": reason,
-        "timestamp": timestamp,
-        "down_since": state.get("down_since", "unknown"),
+        "timestamp": format_discord_ts(timestamp),
+        "down_since": format_discord_ts(down_since) if down_since else "unknown",
         "mention": mention,
     }
 
@@ -310,16 +320,17 @@ def main():
     with open(log_dir / f"connected_{today}.log", "a") as f:
         f.write(json.dumps(connected_entry) + "\n")
 
-    # ---- Step 3: Up/down notifications ----
-    notify_status(config, state, is_ok, reason, timestamp)
-
-    # ---- Step 4: Update state ----
-    if not is_ok and state["last_status"] == "ok":
+    # ---- Step 3: Update state (before notifications so a failure can't lose state) ----
+    was_ok = state["last_status"] == "ok"
+    if not is_ok and was_ok:
         state["down_since"] = timestamp
     elif is_ok:
         state["down_since"] = None
     state["last_status"] = "ok" if is_ok else "down"
     save_state(log_dir, state)
+
+    # ---- Step 4: Up/down notifications ----
+    notify_status(config, was_ok, state, is_ok, reason, timestamp)
 
     # ---- Step 5: Rotate ----
     rotate_logs(log_dir, "connected_*.log", args.max_days)

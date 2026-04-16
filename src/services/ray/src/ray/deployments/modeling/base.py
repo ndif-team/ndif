@@ -551,6 +551,7 @@ class BaseModelDeployment:
             span.add_event("clearing_globals")
             Globals.clear()
             clear_set_attrs()
+            self.model.interleaver.clear()
 
             self._request_count += 1
             if self._request_count % 5 == 0:
