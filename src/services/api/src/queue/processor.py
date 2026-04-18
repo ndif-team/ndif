@@ -211,7 +211,7 @@ class Processor:
 
         self.queue.put_nowait(request)
 
-        self.reply(
+        await self.reply(
             request=request,
             description=(
                 f"Added to Queue at position {self.queue.qsize()}."
