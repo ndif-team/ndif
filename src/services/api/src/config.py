@@ -58,6 +58,8 @@ class AppConfig:
     min_nnsight_version_parsed: Version
     min_python_version_parsed: Version
     dev_mode: bool
+    queue_temp_file_threshold: int
+    max_request_size: int
 
     @classmethod
     def from_env(cls) -> None:
@@ -94,6 +96,20 @@ class AppConfig:
         cls.min_python_version_parsed = Version(cls.min_python_version)
         cls.dev_mode = os.environ.get("NDIF_DEV_MODE", "false").lower() == "true"
 
+        # Queue mode: requests larger than this threshold use temp files instead of direct Redis
+        # Default: 16 MB
+        threshold_str = os.environ.get("NDIF_QUEUE_TEMP_FILE_THRESHOLD", str(16 * 1024 * 1024))
+        cls.queue_temp_file_threshold = cls._parse_positive_int(
+            threshold_str, "NDIF_QUEUE_TEMP_FILE_THRESHOLD"
+        )
+
+        # Maximum allowed request size. Requests larger than this are rejected.
+        # Default: 1 GB
+        max_size_str = os.environ.get("NDIF_MAX_REQUEST_SIZE", str(1024 * 1024 * 1024))
+        cls.max_request_size = cls._parse_positive_int(
+            max_size_str, "NDIF_MAX_REQUEST_SIZE"
+        )
+
     @classmethod
     def to_env(cls) -> dict[str, object]:
         """Export configuration as a dictionary suitable for environment variables.
@@ -109,6 +125,8 @@ class AppConfig:
             "MIN_NNSIGHT_VERSION": cls.min_nnsight_version,
             "MIN_PYTHON_VERSION": cls.min_python_version,
             "NDIF_DEV_MODE": cls.dev_mode,
+            "NDIF_QUEUE_TEMP_FILE_THRESHOLD": cls.queue_temp_file_threshold,
+            "NDIF_MAX_REQUEST_SIZE": cls.max_request_size,
         }
 
     @classmethod

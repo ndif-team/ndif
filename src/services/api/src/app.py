@@ -1,5 +1,7 @@
 import asyncio
+import os
 import pickle
+import tempfile
 import traceback
 import uuid
 from typing import Any, Dict, Optional
@@ -117,9 +119,19 @@ async def request(
             # Inject trace context before pickling for cross-process propagation
             backend_request.trace_context = TracingContext.inject()
 
-            await RedisProvider.async_client.lpush(
-                "queue", pickle.dumps(backend_request)
-            )
+            # Use temp file for large requests, direct Redis for small ones
+            if backend_request.content_length > AppConfig.queue_temp_file_threshold:
+                # Dump request to tmp file, pass filename reference to redis
+                filename = f"request-{backend_request.id}.pkl"
+                tmp_file = os.path.join(tempfile.gettempdir(), filename)
+                with open(tmp_file, "wb") as f:
+                    pickle.dump(backend_request, f)
+                await RedisProvider.async_client.lpush("queue", f"file:{filename}")
+            else:
+                # Small request - pass pickled data directly to redis
+                await RedisProvider.async_client.lpush(
+                    "queue", pickle.dumps(backend_request)
+                )
 
             span.add_event("request_queued")
 

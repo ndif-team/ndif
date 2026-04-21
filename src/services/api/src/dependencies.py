@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
+    HTTP_413_REQUEST_ENTITY_TOO_LARGE,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
@@ -162,6 +163,27 @@ async def require_ray_connection() -> None:
         )
 
 
+def validate_content_length(content_length: int) -> int:
+    """Validate that the request content length is within allowed limits.
+
+    Args:
+        content_length: The content length in bytes.
+
+    Returns:
+        The validated content length in bytes.
+
+    Raises:
+        HTTPException: 413 if the content length exceeds the maximum allowed size.
+    """
+    if content_length > AppConfig.max_request_size:
+        raise HTTPException(
+            status_code=HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Request too large: {content_length} bytes exceeds maximum of {AppConfig.max_request_size} bytes",
+        )
+
+    return content_length
+
+
 async def validate_request(raw_request: Request) -> BackendRequestModel:
     """FastAPI dependency to validate and create a BackendRequestModel.
 
@@ -186,11 +208,14 @@ async def validate_request(raw_request: Request) -> BackendRequestModel:
         api_key = raw_request.headers.get("ndif-api-key", "")
         nnsight_version = raw_request.headers.get("nnsight-version", "")
         python_version = raw_request.headers.get("python-version", "")
+        content_length = int(raw_request.headers.get("content-length", 0))
 
         span.set_attribute("ndif.client.nnsight_version", nnsight_version)
         span.set_attribute("ndif.client.python_version", python_version)
+        span.set_attribute("ndif.content_length", content_length)
 
-        # # Validate using existing dependency functions (call them directly, not as dependencies)
+        # Validate using existing dependency functions (call them directly, not as dependencies)
+        validate_content_length(content_length)
         await authenticate_api_key(api_key)
         await validate_nnsight_version(nnsight_version)
         await validate_python_version(python_version)
