@@ -5,6 +5,7 @@ import ray
 import asyncio
 from pathlib import Path
 
+from ...common.schema.deployment_config import DeploymentConfig
 from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher, get_current_deployments, wait_for_model_ready
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
@@ -106,13 +107,11 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
             dedicated_label = " (dedicated)" if is_dedicated else ""
             click.echo(f"\nDeploying {len(batch_keys)} model(s){dedicated_label}...")
 
-            # Send plain dicts instead of DeploymentConfig objects to avoid
-            # serialization issues when calling via Ray client protocol
             configs = {
-                k: {
-                    "dedicated": is_dedicated,
-                    "actor_class": model_keys_map[k].get("actor_class"),
-                }
+                k: DeploymentConfig(
+                    dedicated=is_dedicated,
+                    actor_class=model_keys_map[k].get("actor_class"),
+                )
                 for k in batch_keys
             }
             object_ref = controller._deploy.remote(deployments=configs)
