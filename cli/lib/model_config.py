@@ -8,6 +8,7 @@ File format:
       - checkpoint: meta-llama/Llama-3.1-8b     # Full: with options
         dedicated: true
         revision: main
+        actor_class: ray.deployments.modeling.base.ModelActor  # optional
 """
 
 from pathlib import Path
@@ -31,6 +32,7 @@ MODELS_YAML_TEMPLATE = """\
 #     - checkpoint: meta-llama/Llama-3.1-8b
 #       revision: main                    # Optional: specific revision/branch
 #       dedicated: true                   # Optional: won't be evicted (default: false)
+#       actor_class: ray.deployments.modeling.base.ModelActor  # Optional: custom Ray actor class
 #
 # Commands:
 #   ndif deploy -f models.yaml            # Deploy models from this file
@@ -61,6 +63,7 @@ def load_model_config(
     file_path: Path,
     default_revision: Optional[str] = None,
     default_dedicated: bool = False,
+    default_actor_class: Optional[str] = None,
 ) -> list[dict]:
     """Load model specifications from a YAML config file.
 
@@ -68,9 +71,11 @@ def load_model_config(
         file_path: Path to the YAML config file
         default_revision: Default revision to use when not specified in file
         default_dedicated: Default dedicated flag to use when not specified in file
+        default_actor_class: Default Ray actor class (dotted import path) to use
+            when not specified in file
 
     Returns:
-        List of model spec dicts with checkpoint, revision, dedicated keys
+        List of model spec dicts with checkpoint, revision, dedicated, actor_class keys
 
     Raises:
         FileNotFoundError: If file doesn't exist
@@ -97,15 +102,17 @@ def load_model_config(
                 "checkpoint": item,
                 "revision": default_revision,
                 "dedicated": default_dedicated,
+                "actor_class": default_actor_class,
             })
         elif isinstance(item, dict):
-            # Full form: dict with checkpoint and optional revision/dedicated
+            # Full form: dict with checkpoint and optional revision/dedicated/actor_class
             if "checkpoint" not in item:
                 raise ValueError(f"Model entry missing 'checkpoint': {item}")
             specs.append({
                 "checkpoint": item["checkpoint"],
                 "revision": item.get("revision", default_revision),
                 "dedicated": item.get("dedicated", default_dedicated),
+                "actor_class": item.get("actor_class", default_actor_class),
             })
         else:
             raise ValueError(f"Invalid model entry (must be string or dict): {item}")
@@ -129,9 +136,10 @@ def save_model_config(file_path: Path, deployments: list[dict]):
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
         dedicated = dep.get("dedicated", False)
+        actor_class = dep.get("actor_class")
 
         # Use simple form if no special options
-        if not revision and not dedicated:
+        if not revision and not dedicated and not actor_class:
             models.append(repo_id)
         else:
             entry = {"checkpoint": repo_id}
@@ -139,6 +147,8 @@ def save_model_config(file_path: Path, deployments: list[dict]):
                 entry["revision"] = revision
             if dedicated:
                 entry["dedicated"] = dedicated
+            if actor_class:
+                entry["actor_class"] = actor_class
             models.append(entry)
 
     config = {"models": models}

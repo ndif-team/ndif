@@ -18,9 +18,12 @@ from ..lib.model_config import load_model_config
 @click.option('--sync', is_flag=True, help='Sync mode: evict models not in config file (requires -f)')
 @click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--dedicated', is_flag=True, help='Deploy as dedicated - will not be evicted (default: False)')
+@click.option('--actor-class', 'actor_class', default=None,
+              help='Dotted import path of the Ray actor class to use (default: ModelActor). '
+                   'With -f, acts as the default for entries that do not set actor_class themselves.')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedicated: bool, ray_address: str, broker_url: str):
+def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedicated: bool, actor_class: str, ray_address: str, broker_url: str):
     """Deploy one or more models without requiring to submit a request.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -62,13 +65,14 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
                     Path(config_file),
                     default_revision=revision,
                     default_dedicated=dedicated,
+                    default_actor_class=actor_class,
                 )
             except (FileNotFoundError, ValueError) as e:
                 raise click.ClickException(str(e))
             click.echo(f"Loaded {len(model_specs)} model(s) from {config_file}")
         else:
             model_specs = [
-                {"checkpoint": cp, "revision": revision, "dedicated": dedicated}
+                {"checkpoint": cp, "revision": revision, "dedicated": dedicated, "actor_class": actor_class}
                 for cp in checkpoints
             ]
 
@@ -103,7 +107,13 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
             dedicated_label = " (dedicated)" if is_dedicated else ""
             click.echo(f"\nDeploying {len(batch_keys)} model(s){dedicated_label}...")
 
-            configs = {k: DeploymentConfig(dedicated=is_dedicated) for k in batch_keys}
+            configs = {
+                k: DeploymentConfig(
+                    dedicated=is_dedicated,
+                    actor_class=model_keys_map[k].get("actor_class"),
+                )
+                for k in batch_keys
+            }
             object_ref = controller._deploy.remote(deployments=configs)
             results = ray.get(object_ref)
 
