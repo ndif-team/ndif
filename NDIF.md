@@ -2230,8 +2230,8 @@ cd src/ndif/services/monitor
 
 `run.sh` is idempotent. It:
 - Creates a `monitor` conda env (Python 3.12) if it does not exist
-- Installs the `ndif` package (editable) into that env — this pulls monitor's deps (`nnsight`, `requests`, `flask`) via the project's aggregated requirements
-- Cron invokes `python -m ndif.services.monitor.jobs.monitor` — code lives in the repo, so edits take effect immediately without re-running `run.sh`
+- Installs the `ndif` package into that env — this pulls monitor's deps (`nnsight`, `requests`, `flask`) via the project's aggregated requirements
+- Cron invokes `python -m ndif.services.monitor.jobs.monitor` from the conda env's site-packages snapshot — repo changes do not affect a running deployment until you re-run `run.sh`
 - Creates `$INSTALL_DIR/config.json` from `config.example.json` if missing
 - Installs or updates a cron job (schedule from `MONITOR_CRON`, default `*/10 * * * *`)
 

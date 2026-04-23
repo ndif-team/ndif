@@ -24,11 +24,11 @@ export INSTALL_DIR=~/ndif_monitor   # optional, defaults to ~/ndif_monitor
 
 `run.sh` will:
 - Create a `monitor` conda env (Python 3.12) if it doesn't exist
-- Install the `ndif` package (editable) into that env, which pulls in the monitor's deps
+- Install the `ndif` package into that env, which pulls in the monitor's deps
 - Create `<INSTALL_DIR>/config.json` from `config.example.json` if missing
 - Install/update the cron job (invokes `python -m ndif.services.monitor.jobs.monitor`)
 
-Re-run `run.sh` after making changes to deploy updates. Because the install is editable, code changes in the repo take effect immediately — `run.sh` only needs to re-run if you change dependencies or the cron schedule.
+The install is not editable — the deployed monitor runs from the conda env's site-packages snapshot, so repo changes don't affect a running deployment. Re-run `run.sh` after pulling code changes, changing dependencies, or updating the cron schedule.
 
 ## Install directory structure
 

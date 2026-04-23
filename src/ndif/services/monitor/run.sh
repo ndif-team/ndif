@@ -16,8 +16,8 @@ if ! conda env list | grep -q "^${ENV_NAME} "; then
     conda create -n "$ENV_NAME" python=3.12 -y
 fi
 
-echo "Installing/upgrading ndif (editable) from ${REPO_ROOT}..."
-conda run -n "$ENV_NAME" pip install --upgrade -e "${REPO_ROOT}" --quiet
+echo "Installing/upgrading ndif from ${REPO_ROOT}..."
+conda run -n "$ENV_NAME" pip install --upgrade "${REPO_ROOT}" --quiet
 
 # --- Set up install directory structure ---
 mkdir -p "${INSTALL_DIR}/logs"
