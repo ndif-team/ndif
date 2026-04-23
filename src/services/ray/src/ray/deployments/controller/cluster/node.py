@@ -3,7 +3,7 @@ import math
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 
 from .....types import MODEL_KEY, NODE_ID
 from .deployment import Deployment, DeploymentLevel
@@ -162,6 +162,7 @@ class Node:
         dedicated: Optional[bool] = None,
         exclude: Optional[Set[MODEL_KEY]] = None,
         execution_timeout_seconds: Optional[float] = None,
+        actor_class: Optional[Union[str, type]] = None,
     ):
         # Evict the models from GPU that are needed to deploy the new model
         for eviction in candidate.evictions:
@@ -177,6 +178,7 @@ class Node:
             dedicated=dedicated,
             node_id=self.id,
             execution_timeout_seconds=execution_timeout_seconds,
+            actor_class=actor_class,
         )
 
         if model_key in self.cache:
@@ -245,6 +247,7 @@ class Node:
                 size_bytes=deployment.size_bytes,
                 dedicated=False,
                 node_id=self.id,
+                actor_class=deployment.actor_class,
             )
 
     def evictable(self, deployment: Deployment, dedicated: bool) -> bool:

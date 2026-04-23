@@ -89,8 +89,9 @@ def _build_models_list(deployments: list[dict]) -> list:
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
         dedicated = dep.get("dedicated", False)
+        actor_class = dep.get("actor_class")
 
-        if not revision and not dedicated:
+        if not revision and not dedicated and not actor_class:
             models.append(repo_id)
         else:
             entry = {"checkpoint": repo_id}
@@ -98,5 +99,7 @@ def _build_models_list(deployments: list[dict]) -> list:
                 entry["revision"] = revision
             if dedicated:
                 entry["dedicated"] = dedicated
+            if actor_class:
+                entry["actor_class"] = actor_class
             models.append(entry)
     return models

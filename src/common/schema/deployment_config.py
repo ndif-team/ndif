@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..types import MODEL_KEY
 
@@ -10,9 +10,23 @@ from ..types import MODEL_KEY
 class DeploymentConfig(BaseModel):
     """Configuration for a model deployment."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     dedicated: bool = False
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    actor_class: Optional[Union[str, type]] = None
+    """Ray actor class used to serve this deployment.
+
+    Accepts either a dotted import path (e.g. ``"ray.deployments.modeling.base.ModelActor"``)
+    resolvable inside the Ray actor's Python path, or a class object already
+    decorated with ``@ray.remote``. ``None`` uses the default ``ModelActor``.
+
+    A user-supplied class must already be ``@ray.remote``-decorated — it will
+    be called as ``actor_class.options(...).remote(...)``; we do not wrap it,
+    so any ``num_cpus`` / ``num_gpus`` / ``max_restarts`` on the decorator are
+    preserved as-is.
+    """
 
     @staticmethod
     def normalize(

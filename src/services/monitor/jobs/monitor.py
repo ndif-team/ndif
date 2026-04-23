@@ -7,6 +7,7 @@ import datetime
 import fcntl
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -131,12 +132,14 @@ def _run_trace(repo_id: str, api_key: str) -> dict:
 
 
 def check_model(repo_id: str, api_key: str, model_timeout: int) -> dict:
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_run_trace, repo_id, api_key)
-        try:
-            return future.result(timeout=model_timeout)
-        except concurrent.futures.TimeoutError:
-            return {"model": repo_id, "status": "timeout", "error": f"Exceeded {model_timeout}s timeout"}
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(_run_trace, repo_id, api_key)
+    try:
+        return future.result(timeout=model_timeout)
+    except concurrent.futures.TimeoutError:
+        return {"model": repo_id, "status": "timeout", "error": f"Exceeded {model_timeout}s timeout"}
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ---- State ----
@@ -166,14 +169,13 @@ def format_discord_ts(iso_timestamp: str) -> str:
     return f"<t:{unix}:f>"
 
 
-def notify_status(config: dict, was_ok: bool, state: dict, is_ok: bool, reason: str, timestamp: str):
+def notify_status(config: dict, was_ok: bool, down_since: str | None, is_ok: bool, reason: str, timestamp: str):
     webhook_url = config.get("discord_webhook")
     if not webhook_url:
         return
 
     messages = {**DEFAULT_MESSAGES, **config.get("messages", {})}
     mention = get_mention(config)
-    down_since = state.get("down_since")
     fmt = {
         "reason": reason,
         "timestamp": format_discord_ts(timestamp),
@@ -205,7 +207,18 @@ def notify_model_failures(config: dict, failed: list, total: int):
 
 # ---- Main ----
 
+SCRIPT_TIMEOUT = 480  # 8 minutes — must finish before the next cron tick
+
+
+def _timeout_handler(signum, frame):
+    print("Monitor script timed out, force exiting")
+    os._exit(2)
+
+
 def main():
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(SCRIPT_TIMEOUT)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default=DEFAULT_URL, help="NDIF base URL")
     parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
@@ -322,6 +335,8 @@ def main():
 
     # ---- Step 3: Update state (before notifications so a failure can't lose state) ----
     was_ok = state["last_status"] == "ok"
+    # Preserve down_since for the notification — state mutation below clears it on recovery
+    notify_down_since = timestamp if (not is_ok and was_ok) else state.get("down_since")
     if not is_ok and was_ok:
         state["down_since"] = timestamp
     elif is_ok:
@@ -330,7 +345,7 @@ def main():
     save_state(log_dir, state)
 
     # ---- Step 4: Up/down notifications ----
-    notify_status(config, was_ok, state, is_ok, reason, timestamp)
+    notify_status(config, was_ok, notify_down_since, is_ok, reason, timestamp)
 
     # ---- Step 5: Rotate ----
     rotate_logs(log_dir, "connected_*.log", args.max_days)
@@ -338,8 +353,8 @@ def main():
     rotate_logs(log_dir, "cluster_*.log", args.max_days)
 
     print(json.dumps({"timestamp": timestamp, "connected": is_ok, "reason": reason}))
-    if not is_ok:
-        sys.exit(1)
+    # Force-exit to kill any lingering threads from timed-out model traces
+    os._exit(1 if not is_ok else 0)
 
 
 if __name__ == "__main__":

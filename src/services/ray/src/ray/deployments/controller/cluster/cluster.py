@@ -265,6 +265,7 @@ class Cluster:
                         dedicated=dedicated,
                         exclude=all_model_keys,
                         execution_timeout_seconds=config.execution_timeout_seconds,
+                        actor_class=config.actor_class,
                     )
 
                     results["evictions"].update(candidate.evictions)
