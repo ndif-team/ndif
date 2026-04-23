@@ -17,7 +17,7 @@ COPY . /ndif
 WORKDIR /ndif
 
 # Install service requirements and the ndif CLI
-RUN uv pip install --system -r src/services/${NAME}/requirements.in \
+RUN uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cu128 && uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
     && pip install . \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \

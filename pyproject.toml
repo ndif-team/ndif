@@ -8,58 +8,33 @@ version = "0.0.1"
 description = "The NDIF server, which performs deep inference and serves nnsight requests remotely"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-dependencies = [
-    # CLI
-    "click>=8.0.0",
-    "python-dotenv>=1.0.0",
-
-    # Core API dependencies
-    "fastapi==0.108.0", # Note: pinned version for Socket.IO compatibility
-    "fastapi-cache2",
-    "fastapi-socketio",
-    "python-socketio==5.13.0", # Note: pinned version for Socket.IO compatibility
-    "redis",
-    "psycopg2-binary",
-    "uvicorn[standard]==0.24.0",
-    "gunicorn",
-    "eventlet",
-    "zstandard",
-
-    # Ray dependencies
-    "ray[serve]>=2.50.0",
-    "nnsight",
-
-    # Storage and utilities
-    "boto3",
-    "torch",
-    "python-slugify",
-    "requests",
-
-    # Security
-    "RestrictedPython>=7.0",
-    "pyyaml>=6.0",
-
-    # Tracing
-    "opentelemetry-api",
-    "opentelemetry-sdk",
-    "opentelemetry-exporter-otlp-proto-grpc",
-    "opentelemetry-instrumentation-fastapi",
-    "grpcio>=1.60.0",
-    "RestrictedPython",
-]
+dynamic = ["dependencies"]
 
 [project.scripts]
-ndif = "cli.cli:cli"
+ndif = "ndif.cli.cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["cli*", "src*"]
-exclude = ["docker*", "scripts*", "tests*"]
+where = ["src"]
+include = ["ndif*"]
+exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
 
 [tool.setuptools.package-data]
-"src.services.api" = ["start.sh"]
-"src.services.ray" = ["start.sh", "start-worker.sh"]
-"src.services.ray.src.ray.nn.security" = ["whitelist.yaml"]
+"ndif.services.api" = ["start.sh"]
+"ndif.services.ray" = ["start.sh", "start-worker.sh"]
+"ndif.services.ray.nn.security" = ["whitelist.yaml"]
+"ndif.services.monitor" = ["run.sh", "config.example.json"]
+"ndif.services.monitor.dashboard" = ["dashboard.html"]
+"ndif.cli.config" = ["models.yaml"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = [
+    "src/ndif/services/api/requirements.in",
+    "src/ndif/services/ray/requirements.in",
+    "src/ndif/services/monitor/requirements.in",
+] }
 
 [dependency-groups]
 dev = [
