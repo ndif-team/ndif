@@ -1,8 +1,9 @@
+import importlib
 import logging
 import time
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 import ray
 from opentelemetry import trace
@@ -12,7 +13,7 @@ from .....providers.objectstore import ObjectStoreProvider
 from .....providers.socketio import SioProvider
 from .....tracing import TracingContext, trace_span
 from .....types import MODEL_KEY
-from ...modeling.base import BaseModelDeploymentArgs, ModelActor
+from ...modeling.base import BaseModelDeployment, BaseModelDeploymentArgs, ModelActor
 
 logger = logging.getLogger("ndif")
 
@@ -33,6 +34,7 @@ class Deployment:
         dedicated: bool = False,
         node_id: str = None,
         execution_timeout_seconds: float | None = None,
+        actor_class: Optional[Union[str, type]] = None,
     ):
         self.model_key = model_key
         self.deployment_level = deployment_level
@@ -41,7 +43,26 @@ class Deployment:
         self.dedicated = dedicated
         self.node_id = node_id
         self.execution_timeout_seconds = execution_timeout_seconds
+        self.actor_class = actor_class
         self.deployed = time.time()
+
+    def _resolve_actor_class(self) -> type[BaseModelDeployment]:
+        """Resolve ``self.actor_class`` to a concrete Ray actor class.
+
+        Strings are imported as dotted paths. ``None`` falls back to the
+        default ``ModelActor``. Class objects are returned as-is.
+        """
+        if self.actor_class is None:
+            return ModelActor
+        if isinstance(self.actor_class, str):
+            module_path, _, class_name = self.actor_class.rpartition(".")
+            if not module_path:
+                raise ValueError(
+                    f"actor_class {self.actor_class!r} is not a dotted import path"
+                )
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
+        return self.actor_class
 
     @property
     def name(self):
@@ -54,6 +75,15 @@ class Deployment:
     def get_state(self) -> Dict[str, Any]:
         """Get the state of the deployment."""
 
+        if self.actor_class is None:
+            actor_class_repr = None
+        elif isinstance(self.actor_class, str):
+            actor_class_repr = self.actor_class
+        else:
+            actor_class_repr = (
+                f"{self.actor_class.__module__}.{self.actor_class.__qualname__}"
+            )
+
         return {
             "model_key": self.model_key,
             "deployment_level": self.deployment_level.value,
@@ -62,6 +92,7 @@ class Deployment:
             "dedicated": self.dedicated,
             "node_id": self.node_id,
             "execution_timeout_seconds": self.execution_timeout_seconds,
+            "actor_class": actor_class_repr,
             "deployed": self.deployed,
         }
 
@@ -71,7 +102,9 @@ class Deployment:
         )
 
     def delete(self):
-        with trace_span("deployment.delete", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "deployment.delete", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             try:
                 actor = self.actor
                 ray.kill(actor, no_restart=True)
@@ -81,7 +114,9 @@ class Deployment:
                 pass
 
     def restart(self):
-        with trace_span("deployment.restart", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "deployment.restart", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             try:
                 actor = self.actor
                 ray.kill(actor, no_restart=False)
@@ -91,7 +126,9 @@ class Deployment:
                 pass
 
     def cache(self):
-        with trace_span("deployment.cache", attributes={"ndif.model.key": self.model_key}) as span:
+        with trace_span(
+            "deployment.cache", attributes={"ndif.model.key": self.model_key}
+        ) as span:
             try:
                 actor = self.actor
                 return actor.to_cache.remote(TracingContext.inject())
@@ -101,10 +138,13 @@ class Deployment:
                 return None
 
     def from_cache(self):
-        with trace_span("deployment.from_cache", attributes={
-            "ndif.model.key": self.model_key,
-            "ndif.deploy.gpus": str(self.gpus),
-        }) as span:
+        with trace_span(
+            "deployment.from_cache",
+            attributes={
+                "ndif.model.key": self.model_key,
+                "ndif.deploy.gpus": str(self.gpus),
+            },
+        ) as span:
             try:
                 actor = self.actor
                 return actor.from_cache.remote(self.gpus, TracingContext.inject())
@@ -114,11 +154,14 @@ class Deployment:
                 return None
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
-        with trace_span("deployment.create", attributes={
-            "ndif.model.key": self.model_key,
-            "ndif.deploy.node": node_name,
-            "ndif.deploy.gpus": str(self.gpus),
-        }) as span:
+        with trace_span(
+            "deployment.create",
+            attributes={
+                "ndif.model.key": self.model_key,
+                "ndif.deploy.node": node_name,
+                "ndif.deploy.gpus": str(self.gpus),
+            },
+        ) as span:
             try:
                 # Inject the assigned GPU memory allocation so the actor knows which GPUs to target
                 deployment_args.gpu_mem_bytes_by_id = self.gpus
@@ -138,7 +181,9 @@ class Deployment:
 
                 env_vars = {k: v for k, v in env_vars.items() if v is not None}
 
-                actor = ModelActor.options(
+                actor_class = self._resolve_actor_class()
+
+                actor = actor_class.options(
                     name=self.name,
                     resources={f"node:{node_name}": 0.01},
                     namespace="NDIF",
