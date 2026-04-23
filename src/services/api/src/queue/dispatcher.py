@@ -28,7 +28,7 @@ import pickle
 import time
 import traceback
 from typing import Optional
-
+import tempfile
 from enum import Enum
 
 from ..logging import set_logger
@@ -164,6 +164,35 @@ class Dispatcher:
         RedisProvider.sync_client.set("ray:connected", "1")
         self.logger.info(f"Connected to Ray")
 
+    def _load_request(self, data: bytes) -> BackendRequestModel:
+        """Load a request from either a temp file reference or direct pickle data.
+
+        Supports two modes:
+            - Temp file mode: data is "file:<filename>" string, load from disk
+            - Direct mode: data is raw pickled BackendRequestModel
+
+        Args:
+            data: Raw bytes from Redis queue.
+
+        Returns:
+            The deserialized BackendRequestModel.
+        """
+        try:
+            decoded = data.decode("utf-8")
+            if decoded.startswith("file:"):
+                # Temp file mode - extract filename and load from disk
+                filename = decoded[5:]  # Remove "file:" prefix
+                tmp_file = os.path.join(tempfile.gettempdir(), filename)
+                with open(tmp_file, "rb") as f:
+                    request = pickle.load(f)
+                os.remove(tmp_file)
+                return request
+        except (UnicodeDecodeError, ValueError):
+            pass
+
+        # Direct pickle mode (old way)
+        return pickle.loads(data)
+
     async def get(self) -> list[BackendRequestModel]:
         """Fetch pending requests from the Redis queue.
 
@@ -181,13 +210,13 @@ class Dispatcher:
         if result is None:
             return []
 
-        requests = [pickle.loads(result[1])]
+        requests = [self._load_request(result[1])]
 
         while len(requests) < 32:
             item = await RedisProvider.async_client.rpop("queue")
             if item is None:
                 break
-            requests.append(pickle.loads(item))
+            requests.append(self._load_request(item))
 
         return requests
 
