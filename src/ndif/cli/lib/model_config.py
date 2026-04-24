@@ -63,7 +63,7 @@ def load_model_config(
     file_path: Path,
     default_revision: Optional[str] = None,
     default_dedicated: bool = False,
-    default_actor_class: Optional[str] = None,
+    default_model_actor_class: Optional[str] = None,
 ) -> list[dict]:
     """Load model specifications from a YAML config file.
 
@@ -71,7 +71,7 @@ def load_model_config(
         file_path: Path to the YAML config file
         default_revision: Default revision to use when not specified in file
         default_dedicated: Default dedicated flag to use when not specified in file
-        default_actor_class: Default Ray actor class (dotted import path) to use
+        default_model_actor_class: Default Ray actor class (dotted import path) to use
             when not specified in file
 
     Returns:
@@ -102,7 +102,7 @@ def load_model_config(
                 "checkpoint": item,
                 "revision": default_revision,
                 "dedicated": default_dedicated,
-                "actor_class": default_actor_class,
+                "actor_class": default_model_actor_class,
             })
         elif isinstance(item, dict):
             # Full form: dict with checkpoint and optional revision/dedicated/actor_class
@@ -112,7 +112,7 @@ def load_model_config(
                 "checkpoint": item["checkpoint"],
                 "revision": item.get("revision", default_revision),
                 "dedicated": item.get("dedicated", default_dedicated),
-                "actor_class": item.get("actor_class", default_actor_class),
+                "actor_class": item.get("actor_class", default_model_actor_class),
             })
         else:
             raise ValueError(f"Invalid model entry (must be string or dict): {item}")

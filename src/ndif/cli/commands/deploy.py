@@ -66,7 +66,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
                     Path(config_file),
                     default_revision=revision,
                     default_dedicated=dedicated,
-                    default_actor_class=actor_class,
+                    default_model_actor_class=actor_class,
                 )
             except (FileNotFoundError, ValueError) as e:
                 raise click.ClickException(str(e))

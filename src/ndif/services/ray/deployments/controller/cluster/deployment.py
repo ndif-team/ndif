@@ -57,7 +57,7 @@ class Deployment:
         if self.actor_class is None:
             raise ValueError(
                 "actor_class was not set on Deployment — the controller should "
-                "have populated it from its default_actor_class before create()."
+                "have populated it from its default_model_actor_class before create()."
             )
         if isinstance(self.actor_class, str):
             module_path, _, class_name = self.actor_class.rpartition(".")
