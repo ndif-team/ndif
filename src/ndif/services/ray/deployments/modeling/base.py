@@ -49,6 +49,7 @@ from ...nn.security import (
 from ...nn.security.protected_objects import protect, clear_set_attrs
 from nnsight.intervention.tracing.globals import Globals
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
+from .code_extraction import get_user_code
 
 
 class BaseModelDeployment:
@@ -422,6 +423,12 @@ class BaseModelDeployment:
             span.add_event("deserializing_request")
             with Protector(WHITELISTED_MODULES_DESERIALIZATION):
                 request = self.request.deserialize(self.persistent_objects)
+
+            # Extract user code from the request for tracing/logging
+            user_code = get_user_code(request)
+            if user_code:
+                span.set_attribute("ndif.user_code", str(user_code))
+                self.logger.debug(f"User code:\n{user_code}")
 
             return request
 

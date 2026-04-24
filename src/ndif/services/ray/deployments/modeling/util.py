@@ -1,5 +1,7 @@
 import re
 import warnings
+import threading
+import ctypes
 from typing import Callable
 
 from accelerate.hooks import remove_hook_from_module
@@ -93,10 +95,6 @@ def get_downloaded_models():
     hf_info = scan_cache_dir()
 
     return [repo.repo_id for repo in hf_info.repos if downloaded(repo)]
-
-
-import threading
-import ctypes
 
 
 def kill_thread(ident: int, exc_type=SystemExit):
