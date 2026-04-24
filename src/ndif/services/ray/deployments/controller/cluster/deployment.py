@@ -13,7 +13,7 @@ from ......common.providers.objectstore import ObjectStoreProvider
 from ......common.providers.socketio import SioProvider
 from ......common.tracing import TracingContext, trace_span
 from ......common.types import MODEL_KEY
-from ...modeling.base import BaseModelDeployment, BaseModelDeploymentArgs, ModelActor
+from ...modeling.base import BaseModelDeployment, BaseModelDeploymentArgs
 
 logger = logging.getLogger("ndif")
 
@@ -49,11 +49,16 @@ class Deployment:
     def _resolve_actor_class(self) -> type[BaseModelDeployment]:
         """Resolve ``self.actor_class`` to a concrete Ray actor class.
 
-        Strings are imported as dotted paths. ``None`` falls back to the
-        default ``ModelActor``. Class objects are returned as-is.
+        Strings are imported as dotted paths; class objects are returned
+        as-is. The controller is expected to have already substituted its
+        configured default for any ``None`` at construction time, so a
+        ``None`` here is a programming error.
         """
         if self.actor_class is None:
-            return ModelActor
+            raise ValueError(
+                "actor_class was not set on Deployment — the controller should "
+                "have populated it from its default_actor_class before create()."
+            )
         if isinstance(self.actor_class, str):
             module_path, _, class_name = self.actor_class.rpartition(".")
             if not module_path:

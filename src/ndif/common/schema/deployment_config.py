@@ -20,7 +20,9 @@ class DeploymentConfig(BaseModel):
 
     Accepts either a dotted import path (e.g. ``"ndif.services.ray.deployments.modeling.base.ModelActor"``)
     resolvable inside the Ray actor's Python path, or a class object already
-    decorated with ``@ray.remote``. ``None`` uses the default ``ModelActor``.
+    decorated with ``@ray.remote``. ``None`` defers to the controller's
+    configured ``default_actor_class`` (set via ``NDIF_DEFAULT_ACTOR_CLASS``;
+    defaults to ``ModelActor``).
 
     A user-supplied class must already be ``@ray.remote``-decorated — it will
     be called as ``actor_class.options(...).remote(...)``; we do not wrap it,

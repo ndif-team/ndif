@@ -19,7 +19,8 @@ from ..lib.model_config import load_model_config
 @click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--dedicated', is_flag=True, help='Deploy as dedicated - will not be evicted (default: False)')
 @click.option('--actor-class', 'actor_class', default=None,
-              help='Dotted import path of the Ray actor class to use (default: ModelActor). '
+              help='Dotted import path of the Ray actor class to use (default: the '
+                   "controller's configured default, typically ModelActor). "
                    'With -f, acts as the default for entries that do not set actor_class themselves.')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')

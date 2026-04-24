@@ -38,6 +38,7 @@ class _ControllerActor:
         deployments: List[MODEL_KEY],
         model_import_path: str,
         default_execution_timeout_seconds: float,
+        default_actor_class: str,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
@@ -49,6 +50,7 @@ class _ControllerActor:
 
         self.model_import_path = model_import_path
         self.default_execution_timeout_seconds = default_execution_timeout_seconds
+        self.default_actor_class = default_actor_class
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
         self.default_padding_factor = default_padding_factor
@@ -63,6 +65,7 @@ class _ControllerActor:
             model_cache_percentage=self.model_cache_percentage,
             default_padding_factor=self.default_padding_factor,
             default_padding_bias=self.default_padding_bias,
+            default_actor_class=self.default_actor_class,
         )
 
         self.cluster.update_nodes()
@@ -78,6 +81,7 @@ class _ControllerActor:
         state = {
             "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
             "default_execution_timeout_seconds": self.default_execution_timeout_seconds,
+            "default_actor_class": self.default_actor_class,
             "model_cache_percentage": self.model_cache_percentage,
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "default_padding_factor": self.default_padding_factor,
@@ -614,6 +618,10 @@ class ControllerDeploymentArgs(BaseModel):
     model_import_path: str = "ndif.services.ray.deployments.modeling.model:app"
     default_execution_timeout_seconds: Optional[float] = float(
         os.environ.get("NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS", "3600")
+    )
+    default_actor_class: str = os.environ.get(
+        "NDIF_DEFAULT_ACTOR_CLASS",
+        "ndif.services.ray.deployments.modeling.base.ModelActor",
     )
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")

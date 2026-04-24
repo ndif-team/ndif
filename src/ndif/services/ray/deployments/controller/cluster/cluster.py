@@ -27,11 +27,13 @@ class Cluster:
         model_cache_percentage: float = 0.5,
         default_padding_factor: float = 0.15,
         default_padding_bias: int = 0,
+        default_actor_class: str = "ndif.services.ray.deployments.modeling.base.ModelActor",
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
         self.default_padding_factor = default_padding_factor
         self.default_padding_bias = default_padding_bias
+        self.default_actor_class = default_actor_class
         self.evaluator = ModelEvaluator(padding_factor=default_padding_factor, padding_bias=default_padding_bias)
 
         self._state = None
@@ -265,7 +267,7 @@ class Cluster:
                         dedicated=dedicated,
                         exclude=all_model_keys,
                         execution_timeout_seconds=config.execution_timeout_seconds,
-                        actor_class=config.actor_class,
+                        actor_class=config.actor_class or self.default_actor_class,
                     )
 
                     results["evictions"].update(candidate.evictions)
