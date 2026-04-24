@@ -3,9 +3,6 @@
 import click
 import ray
 
-# TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
-from nnsight import LanguageModel
-
 from ..lib.util import get_actor_handle
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
@@ -35,8 +32,11 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         check_prerequisites(ray_address=ray_address)
 
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
+        # Imported lazily — nnsight's import tree (transformers/diffusers/torch)
+        # otherwise adds ~7s to every CLI `--help` invocation.
         click.echo(f"Generating model key for {checkpoint}{f' (revision: {revision})' if revision else ''}...")
 
+        from nnsight import LanguageModel
         model = LanguageModel(checkpoint, revision=revision, dispatch=False)
         model_key = model.to_model_key()
         click.echo(f"Model key: {model_key}")
