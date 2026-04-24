@@ -1,5 +1,6 @@
 nnsight
 diffusers
+peft
 ray[serve]==2.50.0
 python-slugify
 # Telemetry
