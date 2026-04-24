@@ -48,7 +48,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["6", "7"]
+              count: ${N_DEVICES}
               capabilities: [ gpu ]
     environment:
       - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
