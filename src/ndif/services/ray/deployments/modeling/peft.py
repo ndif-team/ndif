@@ -2,7 +2,7 @@ import ray
 
 from nnsight.schema.request import RequestModel
 from peft import PeftModel
-
+from nnsight.intervention.envoy import Envoy
 from .base import BaseModelDeployment
 
 
@@ -24,10 +24,12 @@ class PEFTModelActor(BaseModelDeployment):
         repo_id = (self.request.extras or {}).get("peft_repo_id")
 
         if repo_id:
-            peft_model = PeftModel.from_pretrained(
-                self.model._module, repo_id, adapter_name=repo_id
+            peft_model = PeftModel.from_pretrained(self.model._module, repo_id)
+            Envoy.__init__(
+                self.model,
+                peft_model.get_base_model(),
+                interleaver=self.model.interleaver,
             )
-            self.model._update(peft_model)
             self.persistent_objects = self.model._remoteable_persistent_objects()
             self._peft_active = True
 
@@ -36,7 +38,11 @@ class PEFTModelActor(BaseModelDeployment):
     def cleanup(self) -> None:
         if getattr(self, "_peft_active", False):
             try:
-                self.model.update(self.model._module.unload())
+                Envoy.__init__(
+                    self.model,
+                    self.model._module.unload(),
+                    interleaver=self.model.interleaver,
+                )
                 self.persistent_objects = self.model._remoteable_persistent_objects()
             except Exception:
                 self.logger.exception("Failed to unload PEFT adapter")
