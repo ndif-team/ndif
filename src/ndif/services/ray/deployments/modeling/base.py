@@ -35,11 +35,9 @@ from .....common.tracing import (
 )
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.socketio import SioProvider
-from .....common.schema import (
-    BackendRequestModel,
-    BackendResponseModel,
-    BackendResultModel,
-)
+from .....common.schema.request import BackendRequestModel
+from .....common.schema.response import BackendResponseModel
+from .....common.schema.result import BackendResultModel
 from .....common.types import MODEL_KEY
 from ...nn.backend import RemoteExecutionBackend
 from ...nn.ops import StdoutRedirect

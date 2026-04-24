@@ -35,7 +35,7 @@ from ....common.logging import set_logger
 from ....common.providers.ray import RayProvider
 from ....common.providers.redis import RedisProvider
 from ....common.providers.objectstore import ObjectStoreProvider
-from ....common.schema import BackendRequestModel
+from ....common.schema.request import BackendRequestModel
 from ....common.tracing import (
     TracingContext,
     init_tracing,

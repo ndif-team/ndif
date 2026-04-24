@@ -11,7 +11,7 @@ from starlette.status import (
 from .config import AppConfig
 from ...common.types import API_KEY
 from .db import api_key_store
-from ...common.schema import BackendRequestModel
+from ...common.schema.request import BackendRequestModel
 from ...common.providers.redis import RedisProvider
 from ...common.tracing import trace_span
 

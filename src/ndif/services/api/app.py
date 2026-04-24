@@ -27,7 +27,8 @@ from .dependencies import validate_request, require_ray_connection
 from ...common.metrics import NetworkStatusMetric
 from ...common.providers.objectstore import ObjectStoreProvider
 from ...common.providers.redis import RedisProvider
-from ...common.schema import BackendRequestModel, BackendResponseModel
+from ...common.schema.request import BackendRequestModel
+from ...common.schema.response import BackendResponseModel
 
 # Init tracing
 init_tracing("ndif-api")

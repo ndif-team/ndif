@@ -29,7 +29,8 @@ from typing import Optional
 import ray
 from opentelemetry import trace
 
-from ....common.schema import BackendRequestModel, BackendResponseModel
+from ....common.schema.request import BackendRequestModel
+from ....common.schema.response import BackendResponseModel
 from ....common.tracing import (
     TracingContext,
     set_request_attributes,
