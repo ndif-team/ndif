@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from transformers import BitsAndBytesConfig, Mxfp4Config
 from transformers.modeling_utils import _get_device_map
 
 from nnsight.modeling.mixins import RemoteableMixin
@@ -51,6 +52,9 @@ from nnsight.intervention.tracing.globals import Globals
 from .util import kill_thread, load_with_cache_deletion_retry, remove_accelerate_hooks
 
 
+SUPPORTED_QUANTIZATION_METHODS = ["int4", "int8", "mxfp4"]
+
+
 class BaseModelDeployment:
     def __init__(
         self,
@@ -62,6 +66,7 @@ class BaseModelDeployment:
         *args,
         trace_context: Optional[Dict[str, str]] = None,
         extra_kwargs: Dict[str, Any] = {},
+        quantization: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -78,6 +83,7 @@ class BaseModelDeployment:
                 "ndif.model.gpu_mem_bytes_by_id": str(gpu_mem_bytes_by_id or {}),
                 "ndif.model.dispatch": dispatch,
                 "ndif.model.dtype": str(dtype),
+                "ndif.model.quantization": quantization or "none",
             },
         ) as span:
             self._init_trace_context = trace_context
@@ -92,6 +98,7 @@ class BaseModelDeployment:
             self.dtype = dtype
             self.extra_kwargs = extra_kwargs
             self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
+            self.quantization = quantization
 
             self.cached = False
 
@@ -166,6 +173,33 @@ class BaseModelDeployment:
                 max_memory[i] = 0
         return max_memory
 
+    def _build_quantization_config(self):
+        """Build a quantization config based on the quantization string.
+
+        Returns the appropriate transformers quantization config or None.
+        """
+        if not self.quantization:
+            return None
+
+        quant = self.quantization.lower()
+
+        if quant not in SUPPORTED_QUANTIZATION_METHODS:
+            raise ValueError(
+                f"Unsupported quantization method: {self.quantization}. "
+                f"Supported: {', '.join(SUPPORTED_QUANTIZATION_METHODS)}"
+            )
+
+        if quant == "int4":
+            return BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+        elif quant == "int8":
+            return BitsAndBytesConfig(load_in_8bit=True)
+        elif quant == "mxfp4":
+            return Mxfp4Config()
+
     def _verify_device_placement(self, module: torch.nn.Module, source: str):
         """Verify and log that model parameters are on the expected GPUs.
 
@@ -212,10 +246,16 @@ class BaseModelDeployment:
             torch.cuda.synchronize()
             self.logger.info(
                 f"Loading model from disk for model key {self.model_key} "
-                f"with gpu_mem_bytes_by_id {self.gpu_mem_bytes_by_id}..."
+                f"with gpu_mem_bytes_by_id {self.gpu_mem_bytes_by_id}, "
+                f"quantization={self.quantization}..."
             )
 
-            max_memory = self._build_max_memory()
+            quantization_config = self._build_quantization_config()
+
+            # Don't set max_memory when using quantization - BitsAndBytes/etc need
+            # more memory during loading (loads in fp16, then quantizes) and the
+            # memory behavior is complex. Let transformers handle it automatically.
+            max_memory = None if quantization_config else self._build_max_memory()
 
             model = load_with_cache_deletion_retry(
                 lambda: RemoteableMixin.from_model_key(
@@ -225,6 +265,7 @@ class BaseModelDeployment:
                     dispatch=self.dispatch,
                     torch_dtype=self.dtype,
                     attn_implementation="eager",
+                    quantization_config=quantization_config,
                     **self.extra_kwargs,
                 )
             )
@@ -645,6 +686,7 @@ class BaseModelDeploymentArgs(BaseModel):
     dtype: str | torch.dtype = torch.bfloat16
     gpu_mem_bytes_by_id: Dict[int, int] | None = None
     trace_context: Optional[Dict[str, str]] = None
+    quantization: Optional[str] = None
 
 
 @ray.remote(num_cpus=2, num_gpus=0, max_restarts=-1)

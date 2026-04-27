@@ -48,7 +48,23 @@ class ModelEvaluator:
             "dtype": str(torch.get_default_dtype()),
         }
 
-    def __call__(self, model_key: MODEL_KEY, padding_factor: float | None = None) -> Union[float, Exception]:
+    # Quantization size factors relative to bfloat16 (2 bytes/param).
+    # Note: This assumes the base model uses bfloat16 precision (which is hardcoded as the default in NDIF). Most large models
+    # that benefit from quantization are natively fp16/bf16, so this is reasonable.
+    # Worst case: a native fp32 model would have its quantized size over-estimated,
+    # which is a safe failure mode (may prevent deployment on smaller GPUs).
+    QUANTIZATION_FACTORS = {
+        "int8": 0.5,    # 1 byte/param vs 2 bytes/param
+        "int4": 0.25,   # 0.5 bytes/param vs 2 bytes/param
+        "mxfp4": 0.25,  # 0.5 bytes/param vs 2 bytes/param
+    }
+
+    def __call__(
+        self,
+        model_key: MODEL_KEY,
+        padding_factor: float | None = None,
+        quantization: str | None = None,
+    ) -> Union[float, Exception]:
         effective_padding = padding_factor if padding_factor is not None else self.padding_factor
 
         if model_key not in self.cache:
@@ -83,8 +99,14 @@ class ModelEvaluator:
             logger.debug(f"=> New model evaluated: {model_key} base_size: {base_size_bytes}")
 
         entry = self.cache[model_key]
-        padded_size = math.ceil(entry.base_size_in_bytes + entry.base_size_in_bytes * effective_padding + self.padding_bias)
+        quant_factor = self.QUANTIZATION_FACTORS[quantization] if quantization else 1.0
+        effective_size = entry.base_size_in_bytes * quant_factor
+        padded_size = math.ceil(effective_size + effective_size * effective_padding + self.padding_bias)
 
-        logger.debug(f"=> Model {model_key} size: {padded_size} (padding_factor: {effective_padding}, padding_bias: {self.padding_bias})")
+        logger.debug(
+            f"=> Model {model_key} size: {padded_size} "
+            f"(quantization: {quantization or 'none'}, factor: {quant_factor}, "
+            f"padding_factor: {effective_padding}, padding_bias: {self.padding_bias})"
+        )
 
         return padded_size

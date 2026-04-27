@@ -15,6 +15,7 @@ class DeploymentConfig(BaseModel):
     dedicated: bool = False
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    quantization: Optional[str] = None
     actor_class: Optional[Union[str, type]] = None
     """Ray actor class used to serve this deployment.
 

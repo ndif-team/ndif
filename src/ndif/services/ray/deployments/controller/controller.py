@@ -342,6 +342,7 @@ class _ControllerActor:
                 deployment_args = BaseModelDeploymentArgs(
                     model_key=deployment.model_key,
                     execution_timeout=execution_timeout,
+                    quantization=deployment.quantization,
                 )
 
                 # create() returns None always, but may fail internally

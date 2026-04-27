@@ -161,7 +161,7 @@ class Cluster:
             # First get the size of the models in bytes
             evaluated_configs = []
             for model_key, config in configs.items():
-                size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor)
+                size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor, quantization=config.quantization)
                 if isinstance(size_in_bytes, Exception):
                     tb = "".join(
                         traceback.format_exception(
@@ -267,6 +267,7 @@ class Cluster:
                         dedicated=dedicated,
                         exclude=all_model_keys,
                         execution_timeout_seconds=config.execution_timeout_seconds,
+                        quantization=config.quantization,
                         actor_class=config.actor_class or self.default_model_actor_class,
                     )
 

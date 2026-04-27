@@ -162,6 +162,7 @@ class Node:
         dedicated: Optional[bool] = None,
         exclude: Optional[Set[MODEL_KEY]] = None,
         execution_timeout_seconds: Optional[float] = None,
+        quantization: Optional[str] = None,
         actor_class: Optional[Union[str, type]] = None,
     ):
         # Evict the models from GPU that are needed to deploy the new model
@@ -178,6 +179,7 @@ class Node:
             dedicated=dedicated,
             node_id=self.id,
             execution_timeout_seconds=execution_timeout_seconds,
+            quantization=quantization,
             actor_class=actor_class,
         )
 

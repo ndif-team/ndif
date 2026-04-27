@@ -34,6 +34,7 @@ class Deployment:
         dedicated: bool = False,
         node_id: str = None,
         execution_timeout_seconds: float | None = None,
+        quantization: str | None = None,
         actor_class: Optional[Union[str, type]] = None,
     ):
         self.model_key = model_key
@@ -43,6 +44,7 @@ class Deployment:
         self.dedicated = dedicated
         self.node_id = node_id
         self.execution_timeout_seconds = execution_timeout_seconds
+        self.quantization = quantization
         self.actor_class = actor_class
         self.deployed = time.time()
 
@@ -97,6 +99,7 @@ class Deployment:
             "dedicated": self.dedicated,
             "node_id": self.node_id,
             "execution_timeout_seconds": self.execution_timeout_seconds,
+            "quantization": self.quantization,
             "actor_class": actor_class_repr,
             "deployed": self.deployed,
         }
