@@ -9,7 +9,6 @@ import subprocess
 import sys
 import platform
 import requests
-import redis as redis_sync
 
 from ..lib.session import get_current_session, get_env
 from ..lib.checks import check_redis, check_api
@@ -67,6 +66,7 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
 
     # Try to get cached env from Redis
     try:
+        import redis as redis_sync
         client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
         cached_env = client.get("env")
 
@@ -126,6 +126,7 @@ def _fetch_and_cache_env(api_url: str, broker_url: str, timeout: int = 30) -> by
     time.sleep(0.5)
 
     try:
+        import redis as redis_sync
         client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
         cached_env = client.get("env")
         client.close()

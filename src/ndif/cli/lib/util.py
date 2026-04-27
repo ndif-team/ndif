@@ -3,9 +3,6 @@
 import time
 from pathlib import Path
 
-import ray
-import redis.asyncio as redis
-
 
 # ASCII art for NDIF logo
 NDIF_LOGO = [
@@ -59,12 +56,13 @@ def get_service_dir(service_name: str) -> Path:
 # =============================================================================
 
 
-def get_controller_actor_handle(namespace: str = "NDIF") -> ray.actor.ActorHandle:
+def get_controller_actor_handle(namespace: str = "NDIF"):
     """Get a Ray actor handle for the controller actor."""
+    import ray
     return ray.get_actor("Controller", namespace=namespace)
 
 
-def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.ActorHandle:
+def get_actor_handle(model_key: str, namespace: str = "NDIF"):
     """Get a Ray actor handle by model key and namespace.
 
     Args:
@@ -74,6 +72,7 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.Actor
     Returns:
         Ray actor handle
     """
+    import ray
     return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
 
 
@@ -125,6 +124,7 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
         event_type: Type of event ("deploy" or "evict")
         model_key: Model key affected by the event
     """
+    import redis.asyncio as redis
     redis_client = redis.Redis.from_url(redis_url)
     try:
         await redis_client.xadd(
@@ -150,6 +150,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
     Returns:
         List of deployment dicts with repo_id, revision, dedicated, model_key, etc.
     """
+    import ray
     controller = get_controller_actor_handle()
     status_ref = controller.status.remote()
     status = ray.get(status_ref)
@@ -180,6 +181,7 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
     Raises:
         Exception: If an initialization error occurs (not a lookup failure)
     """
+    import ray
     start_time = time.time()
 
     while time.time() - start_time < timeout:

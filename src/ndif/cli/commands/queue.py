@@ -4,7 +4,6 @@ import pickle
 import time
 from datetime import timedelta
 import click
-import redis.asyncio as redis
 import asyncio
 
 from ..lib.checks import check_prerequisites
@@ -61,6 +60,7 @@ def queue(json_flag: bool, watch: bool, broker_url: str):
 
 async def _fetch_queue_state(broker_url: str) -> dict:
     """Fetch queue state from the dispatcher via Redis streams."""
+    import redis.asyncio as redis
     redis_client = redis.Redis.from_url(broker_url)
 
     try:
