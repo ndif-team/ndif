@@ -27,7 +27,7 @@ class PEFTModelActor(BaseModelDeployment):
             peft_model = PeftModel.from_pretrained(self.model._module, repo_id)
             Envoy.__init__(
                 self.model,
-                peft_model.get_base_model(),
+                peft_model,
                 interleaver=self.model.interleaver,
             )
             self.persistent_objects = self.model._remoteable_persistent_objects()
