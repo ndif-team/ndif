@@ -355,7 +355,9 @@ class BaseModelDeployment:
 
             max_memory = self._build_max_memory()
 
-            device_map = _get_device_map(self.model._module, "auto", max_memory, None)
+            device_map = _get_device_map(
+                self.model._module, "auto", max_memory, None, self.dtype
+            )
 
             remove_accelerate_hooks(self.model._module)
 
