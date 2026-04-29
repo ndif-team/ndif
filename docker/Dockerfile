@@ -17,8 +17,8 @@ COPY . /ndif
 WORKDIR /ndif
 
 # Install service requirements and the ndif CLI
-RUN uv pip install --system -r src/services/${NAME}/requirements.in \
-    && pip install . \
+RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
+    && uv pip install --system . --no-deps \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
     && find /usr/local/lib/python3.12 -name "*.pyo" -delete \

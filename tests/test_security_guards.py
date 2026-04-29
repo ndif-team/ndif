@@ -321,7 +321,7 @@ class TestGuardsDirect:
     """Direct tests of guard functions without remote execution."""
 
     def test_guarded_getattr_allowed(self):
-        from src.services.ray.src.ray.nn.security.guards import guarded_getattr
+        from ndif.services.ray.nn.security.guards import guarded_getattr
 
         class Obj:
             value = 42
@@ -335,7 +335,7 @@ class TestGuardsDirect:
         assert guarded_getattr(obj, "__name__", "fallback") is not None
 
     def test_guarded_getattr_blocked(self):
-        from src.services.ray.src.ray.nn.security.guards import guarded_getattr
+        from ndif.services.ray.nn.security.guards import guarded_getattr
 
         obj = object()
         with pytest.raises(AttributeError):
@@ -347,12 +347,12 @@ class TestGuardsDirect:
 
     def test_safe_getattr_in_builtins(self):
         """SAFE_BUILTINS[getattr] should be the guarded version."""
-        from src.services.ray.src.ray.nn.security.whitelist import SAFE_BUILTINS
-        from src.services.ray.src.ray.nn.security.guards import safe_getattr
+        from ndif.services.ray.nn.security.whitelist import SAFE_BUILTINS
+        from ndif.services.ray.nn.security.guards import safe_getattr
         assert SAFE_BUILTINS["getattr"] is safe_getattr
 
     def test_safe_getattr_blocks_dunders(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_getattr
+        from ndif.services.ray.nn.security.guards import safe_getattr
 
         obj = object()
         with pytest.raises(AttributeError):
@@ -363,7 +363,7 @@ class TestGuardsDirect:
             safe_getattr(obj, "__code__")
 
     def test_safe_getattr_allows_normal(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_getattr
+        from ndif.services.ray.nn.security.guards import safe_getattr
 
         class Obj:
             x = 42
@@ -372,25 +372,25 @@ class TestGuardsDirect:
 
     def test_safe_getattr_default_none(self):
         """safe_getattr(obj, 'missing', None) should return None, not raise."""
-        from src.services.ray.src.ray.nn.security.guards import safe_getattr
+        from ndif.services.ray.nn.security.guards import safe_getattr
 
         assert safe_getattr(object(), "nonexistent", None) is None
 
     def test_safe_getattr_no_default_raises(self):
         """safe_getattr(obj, 'missing') should raise AttributeError."""
-        from src.services.ray.src.ray.nn.security.guards import safe_getattr
+        from ndif.services.ray.nn.security.guards import safe_getattr
 
         with pytest.raises(AttributeError):
             safe_getattr(object(), "nonexistent")
 
     def test_safe_hasattr_blocks_dunders(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_hasattr
+        from ndif.services.ray.nn.security.guards import safe_hasattr
 
         assert safe_hasattr(object(), "__globals__") is False
         assert safe_hasattr(object(), "__code__") is False
 
     def test_safe_hasattr_allows_normal(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_hasattr
+        from ndif.services.ray.nn.security.guards import safe_hasattr
 
         class Obj:
             x = 1
@@ -399,7 +399,7 @@ class TestGuardsDirect:
         assert safe_hasattr(Obj(), "nonexistent") is False
 
     def test_safe_setattr_blocks_dunders(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_setattr
+        from ndif.services.ray.nn.security.guards import safe_setattr
 
         with pytest.raises(AttributeError):
             safe_setattr(object(), "__class__", int)
@@ -407,7 +407,7 @@ class TestGuardsDirect:
             safe_setattr(object(), "__dict__", {})
 
     def test_safe_delattr_blocks_dunders(self):
-        from src.services.ray.src.ray.nn.security.guards import safe_delattr
+        from ndif.services.ray.nn.security.guards import safe_delattr
 
         class Obj:
             __x__ = 1
@@ -416,27 +416,27 @@ class TestGuardsDirect:
             safe_delattr(Obj(), "__x__")
 
     def test_restricted_compile_valid(self):
-        from src.services.ray.src.ray.nn.security.guards import restricted_compile
+        from ndif.services.ray.nn.security.guards import restricted_compile
 
         code = restricted_compile("x = 1 + 2", mode="exec")
         assert code is not None
 
     def test_restricted_exec(self):
-        from src.services.ray.src.ray.nn.security.guards import restricted_exec
+        from ndif.services.ray.nn.security.guards import restricted_exec
 
         result = {}
         restricted_exec("x = 1 + 2", None, result)
         assert result.get("x") == 3
 
     def test_safe_builtins_has_allowed(self):
-        from src.services.ray.src.ray.nn.security.whitelist import SAFE_BUILTINS
+        from ndif.services.ray.nn.security.whitelist import SAFE_BUILTINS
 
         for name in ("print", "len", "range", "list", "dict", "int", "str"):
             assert name in SAFE_BUILTINS, f"{name} missing from SAFE_BUILTINS"
 
     def test_safe_builtins_missing_dangerous(self):
-        from src.services.ray.src.ray.nn.security.whitelist import SAFE_BUILTINS
-        from src.services.ray.src.ray.nn.security.guards import (
+        from ndif.services.ray.nn.security.whitelist import SAFE_BUILTINS
+        from ndif.services.ray.nn.security.guards import (
             restricted_compile,
             restricted_exec,
             safe_getattr,
@@ -465,7 +465,7 @@ class TestWhitelist:
     """Tests for whitelist configuration and module checking."""
 
     def test_whitelisted_module_strict(self):
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         strict = WhitelistedModule(name="torch", strict=True)
         assert strict.check("torch") is True
@@ -473,7 +473,7 @@ class TestWhitelist:
         assert strict.check("torchvision") is False
 
     def test_whitelisted_module_non_strict(self):
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         non_strict = WhitelistedModule(name="torch", strict=False)
         assert non_strict.check("torch") is True
@@ -482,14 +482,14 @@ class TestWhitelist:
         assert non_strict.check("torchvision") is False
 
     def test_blocked_submodules_loaded(self):
-        from src.services.ray.src.ray.nn.security.whitelist import BLOCKED_SUBMODULES
+        from ndif.services.ray.nn.security.whitelist import BLOCKED_SUBMODULES
 
         assert "torch.multiprocessing" in BLOCKED_SUBMODULES
         assert "torch.hub" in BLOCKED_SUBMODULES
         assert "numpy.ctypeslib" in BLOCKED_SUBMODULES
 
     def test_is_module_blocked(self):
-        from src.services.ray.src.ray.nn.security.whitelist import is_module_blocked
+        from ndif.services.ray.nn.security.whitelist import is_module_blocked
 
         # Exact match
         assert is_module_blocked("torch.multiprocessing") is True
@@ -503,7 +503,7 @@ class TestWhitelist:
         assert is_module_blocked("os") is False
 
     def test_is_module_allowed(self):
-        from src.services.ray.src.ray.nn.security.whitelist import (
+        from ndif.services.ray.nn.security.whitelist import (
             is_module_allowed,
             WHITELISTED_MODULES,
         )
@@ -523,7 +523,7 @@ class TestWhitelist:
         assert is_module_allowed("subprocess", WHITELISTED_MODULES) is False
 
     def test_dangerous_modules_not_whitelisted(self):
-        from src.services.ray.src.ray.nn.security.whitelist import (
+        from ndif.services.ray.nn.security.whitelist import (
             WHITELISTED_MODULES,
             is_module_whitelisted,
         )
@@ -543,8 +543,8 @@ class TestProtectedModule:
     """Tests for ProtectedModule (lazy getattr, immutability, cross-module blocking)."""
 
     def test_blocks_cross_module_access(self):
-        from src.services.ray.src.ray.nn.security.importer import ProtectedModule
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.importer import ProtectedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         fake_torch = ModuleType("torch")
         fake_os = ModuleType("os")
@@ -563,8 +563,8 @@ class TestProtectedModule:
             _ = protected.os
 
     def test_allows_submodules(self):
-        from src.services.ray.src.ray.nn.security.importer import ProtectedModule
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.importer import ProtectedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         fake_torch = ModuleType("torch")
         fake_nn = ModuleType("torch.nn")
@@ -579,8 +579,8 @@ class TestProtectedModule:
         assert isinstance(nn, ProtectedModule)
 
     def test_immutable(self):
-        from src.services.ray.src.ray.nn.security.importer import ProtectedModule
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.importer import ProtectedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         fake_torch = ModuleType("torch")
         fake_torch.save = lambda *args: "original"
@@ -596,8 +596,8 @@ class TestProtectedModule:
 
     def test_recursive_wrapping(self):
         """Submodules of submodules should also be wrapped."""
-        from src.services.ray.src.ray.nn.security.importer import ProtectedModule
-        from src.services.ray.src.ray.nn.security.whitelist import WhitelistedModule
+        from ndif.services.ray.nn.security.importer import ProtectedModule
+        from ndif.services.ray.nn.security.whitelist import WhitelistedModule
 
         fake_torch = ModuleType("torch")
         fake_nn = ModuleType("torch.nn")
@@ -635,7 +635,7 @@ class TestDeserialization:
 
     def _unpickle(self, data):
         from nnsight.intervention.serialization import CustomCloudUnpickler
-        from src.services.ray.src.ray.nn.security import (
+        from ndif.services.ray.nn.security import (
             Protector,
             WHITELISTED_MODULES_DESERIALIZATION,
         )
@@ -686,7 +686,7 @@ class TestDeserialization:
 
     def test_find_class_cleaned_up(self):
         from nnsight.intervention.serialization import CustomCloudUnpickler
-        from src.services.ray.src.ray.nn.security import (
+        from ndif.services.ray.nn.security import (
             Protector,
             WHITELISTED_MODULES_DESERIALIZATION,
         )
@@ -706,23 +706,23 @@ class TestSandboxFinder:
     """Tests for the SandboxFinder MetaPathFinder."""
 
     def test_finder_installed_during_protector(self):
-        from src.services.ray.src.ray.nn.security import Protector, WHITELISTED_MODULES
-        from src.services.ray.src.ray.nn.security.importer import SandboxFinder
+        from ndif.services.ray.nn.security import Protector, WHITELISTED_MODULES
+        from ndif.services.ray.nn.security.importer import SandboxFinder
 
         with Protector(WHITELISTED_MODULES):
             assert any(isinstance(f, SandboxFinder) for f in sys.meta_path)
 
     def test_finder_removed_after_protector(self):
-        from src.services.ray.src.ray.nn.security import Protector, WHITELISTED_MODULES
-        from src.services.ray.src.ray.nn.security.importer import SandboxFinder
+        from ndif.services.ray.nn.security import Protector, WHITELISTED_MODULES
+        from ndif.services.ray.nn.security.importer import SandboxFinder
 
         with Protector(WHITELISTED_MODULES):
             pass
         assert not any(isinstance(f, SandboxFinder) for f in sys.meta_path)
 
     def test_finder_returns_none_for_allowed(self):
-        from src.services.ray.src.ray.nn.security import WHITELISTED_MODULES
-        from src.services.ray.src.ray.nn.security.importer import SandboxFinder
+        from ndif.services.ray.nn.security import WHITELISTED_MODULES
+        from ndif.services.ray.nn.security.importer import SandboxFinder
 
         finder = SandboxFinder(WHITELISTED_MODULES)
         assert finder.find_spec("torch", None) is None
@@ -730,8 +730,8 @@ class TestSandboxFinder:
         assert finder.find_spec("numpy", None) is None
 
     def test_finder_blocks_non_whitelisted(self):
-        from src.services.ray.src.ray.nn.security import WHITELISTED_MODULES
-        from src.services.ray.src.ray.nn.security.importer import SandboxFinder
+        from ndif.services.ray.nn.security import WHITELISTED_MODULES
+        from ndif.services.ray.nn.security.importer import SandboxFinder
 
         finder = SandboxFinder(WHITELISTED_MODULES)
         spec = finder.find_spec("os", None)
@@ -741,8 +741,8 @@ class TestSandboxFinder:
         assert spec is not None
 
     def test_finder_blocks_blocked_submodules(self):
-        from src.services.ray.src.ray.nn.security import WHITELISTED_MODULES
-        from src.services.ray.src.ray.nn.security.importer import SandboxFinder
+        from ndif.services.ray.nn.security import WHITELISTED_MODULES
+        from ndif.services.ray.nn.security.importer import SandboxFinder
 
         finder = SandboxFinder(WHITELISTED_MODULES)
         spec = finder.find_spec("torch.multiprocessing", None)
@@ -761,33 +761,33 @@ class TestAuditHook:
     """Tests for the audit hook defense-in-depth layer."""
 
     def test_flag_disabled_outside_sandbox(self):
-        from src.services.ray.src.ray.nn.security.guards import sandbox_active
+        from ndif.services.ray.nn.security.guards import sandbox_active
 
         assert not getattr(sandbox_active, "enabled", False)
 
     def test_flag_enabled_inside_sandbox(self):
-        from src.services.ray.src.ray.nn.security import (
+        from ndif.services.ray.nn.security import (
             Protector,
             WHITELISTED_MODULES,
         )
-        from src.services.ray.src.ray.nn.security.guards import sandbox_active
+        from ndif.services.ray.nn.security.guards import sandbox_active
 
         with Protector(WHITELISTED_MODULES):
             assert getattr(sandbox_active, "enabled", False) is True
 
     def test_flag_disabled_after_sandbox(self):
-        from src.services.ray.src.ray.nn.security import (
+        from ndif.services.ray.nn.security import (
             Protector,
             WHITELISTED_MODULES,
         )
-        from src.services.ray.src.ray.nn.security.guards import sandbox_active
+        from ndif.services.ray.nn.security.guards import sandbox_active
 
         with Protector(WHITELISTED_MODULES):
             pass
         assert getattr(sandbox_active, "enabled", False) is False
 
     def test_blocked_events_defined(self):
-        from src.services.ray.src.ray.nn.security.guards import _BLOCKED_AUDIT_EVENTS
+        from ndif.services.ray.nn.security.guards import _BLOCKED_AUDIT_EVENTS
 
         assert "subprocess.Popen" in _BLOCKED_AUDIT_EVENTS
         assert "os.system" in _BLOCKED_AUDIT_EVENTS
@@ -803,7 +803,7 @@ class TestProtectedObjects:
     """Tests for model/tokenizer protection wrappers."""
 
     def test_blocks_to(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -812,7 +812,7 @@ class TestProtectedObjects:
             wrapped.to("cpu")
 
     def test_blocks_cuda(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -821,7 +821,7 @@ class TestProtectedObjects:
             wrapped.cuda()
 
     def test_blocks_cpu(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -830,7 +830,7 @@ class TestProtectedObjects:
             wrapped.cpu()
 
     def test_blocks_half(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -839,7 +839,7 @@ class TestProtectedObjects:
             wrapped.half()
 
     def test_blocks_float(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -848,7 +848,7 @@ class TestProtectedObjects:
             wrapped.float()
 
     def test_blocks_bfloat16(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -857,7 +857,7 @@ class TestProtectedObjects:
             wrapped.bfloat16()
 
     def test_blocks_requires_grad_(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -867,7 +867,7 @@ class TestProtectedObjects:
 
     def test_isinstance_preserved(self):
         """Wrapped object should still be instanceof the original class."""
-        from src.services.ray.src.ray.nn.security.protected_objects import protect
+        from ndif.services.ray.nn.security.protected_objects import protect
 
         module = torch.nn.Linear(10, 10)
         wrapped = protect(module)
@@ -881,7 +881,7 @@ class TestProtectedObjects:
         strict=True,
     )
     def test_clear_set_attrs(self):
-        from src.services.ray.src.ray.nn.security.protected_objects import (
+        from ndif.services.ray.nn.security.protected_objects import (
             protect,
             clear_set_attrs,
         )

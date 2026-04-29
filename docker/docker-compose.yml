@@ -11,6 +11,8 @@ services:
     ports:
       - ${NDIF_OBJECT_STORE_PORT}:9000
       - ${NDIF_OBJECT_STORE_CONSOLE_PORT}:9001
+    volumes:
+      - minio-data:/data
 
   postgres:
     image: postgres:16-alpine
@@ -166,6 +168,7 @@ services:
 volumes:
   grafana-storage:
   loki-data:
+  minio-data:
   prometheus-data:
   ray-data:
   influxdb2-data:

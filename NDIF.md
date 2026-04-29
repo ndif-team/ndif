@@ -18,7 +18,7 @@ If you already know what you're looking for, jump directly to the relevant secti
 
 ### ⚠️ Before you edit anything
 
-**Security sandbox (`src/services/ray/src/ray/nn/security/`)** is the highest-stakes area in the repo. User-submitted code runs there; a regression creates a sandbox escape. Before touching any file under that directory, read **[§7](#7-security)** in full *and* the directory's own `README.md`. Then run `pytest tests/test_security_guards.py --run-remote` against a live stack. Do not cargo-cult a pattern from elsewhere in the codebase into security code without understanding why each of the six layers exists.
+**Security sandbox (`src/ndif/services/ray/nn/security/`)** is the highest-stakes area in the repo. User-submitted code runs there; a regression creates a sandbox escape. Before touching any file under that directory, read **[§7](#7-security)** in full *and* the directory's own `README.md`. Then run `pytest tests/test_security_guards.py --run-remote` against a live stack. Do not cargo-cult a pattern from elsewhere in the codebase into security code without understanding why each of the six layers exists.
 
 **Invariants that look wrong but aren't** are collected in **[§14](#14-invariants)**. If you are about to "fix" something that seems over-complicated — especially `num_gpus=0` on the ModelActor, the two whitelists, or the `build()/apply()` ordering — check §14 first. Several things in this codebase were the second attempt and exist to dodge a specific failure mode.
 
@@ -64,21 +64,21 @@ The "what file do I change for X" table.
 
 | I want to change… | Start here |
 |---|---|
-| An API endpoint or HTTP validation | `src/services/api/src/app.py`, `dependencies.py` — §3 |
-| Request routing / queue behavior | `src/services/api/src/queue/dispatcher.py`, `processor.py` — §4 |
-| What happens when a model gets scheduled | `src/services/ray/src/ray/deployments/controller/cluster/{cluster,node,evaluator}.py` — §5.2–5.5 |
-| Model HOT/WARM/COLD transitions | `src/services/ray/src/ray/deployments/controller/cluster/deployment.py`, `controller.py::apply()` — §5.6 |
-| Model execution, timeouts, cleanup | `src/services/ray/src/ray/deployments/modeling/base.py` — §6 |
-| ⚠️ The sandbox (anything security) | `src/services/ray/src/ray/nn/security/` — §7 (read README.md first) |
-| What modules user code can import | `src/services/ray/src/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
-| Result/response serialization and storage | `src/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
-| Google Calendar scheduling | `src/services/ray/src/ray/deployments/controller/gcal/` — §5.7 |
-| Distributed tracing / Jaeger spans | `src/common/tracing/`, `src/services/api/src/tracing/` — §10.4 |
-| API keys / dev-mode Postgres | `src/services/api/src/db.py`, `src/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
+| An API endpoint or HTTP validation | `src/ndif/services/api/app.py`, `dependencies.py` — §3 |
+| Request routing / queue behavior | `src/ndif/services/api/queue/dispatcher.py`, `processor.py` — §4 |
+| What happens when a model gets scheduled | `src/ndif/services/ray/deployments/controller/cluster/{cluster,node,evaluator}.py` — §5.2–5.5 |
+| Model HOT/WARM/COLD transitions | `src/ndif/services/ray/deployments/controller/cluster/deployment.py`, `controller.py::apply()` — §5.6 |
+| Model execution, timeouts, cleanup | `src/ndif/services/ray/deployments/modeling/base.py` — §6 |
+| ⚠️ The sandbox (anything security) | `src/ndif/services/ray/nn/security/` — §7 (read README.md first) |
+| What modules user code can import | `src/ndif/services/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
+| Result/response serialization and storage | `src/ndif/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
+| Google Calendar scheduling | `src/ndif/services/ray/deployments/controller/gcal/` — §5.7 |
+| Distributed tracing / Jaeger spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
+| API keys / dev-mode Postgres | `src/ndif/services/api/db.py`, `src/ndif/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
 | A CLI command | `cli/commands/` — §11 |
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
-| The standalone uptime monitor | `src/services/monitor/` — §13 |
+| The standalone uptime monitor | `src/ndif/services/monitor/` — §13 |
 
 ### File index
 
@@ -86,45 +86,45 @@ A one-page map of the important files. Use this if you know the topic but not th
 
 | Path | What lives here |
 |---|---|
-| `src/services/api/src/app.py` | FastAPI endpoints: `/request`, `/response/{id}`, `/status`, `/env`, `/connected`, `/ping` |
-| `src/services/api/src/dependencies.py` | `validate_request` — api-key / version / hotswap checks |
-| `src/services/api/src/db.py` | `AccountsDB` wrapper + `NDIF_DEV_MODE` bypass |
-| `src/services/api/src/config.py` | `AppConfig` — API env vars |
-| `src/services/api/src/queue/dispatcher.py` | `Dispatcher` — reads Redis queue, routes to Processors, manages Ray connection |
-| `src/services/api/src/queue/processor.py` | `Processor` — per-model state machine (`PROVISIONING → DEPLOYING → READY ↔ BUSY`) |
-| `src/services/api/src/queue/util.py` | Ray client deadlock `patch()`, `controller_handle()`, `submit()` |
-| `src/services/ray/src/ray/deployments/controller/controller.py` | `_ControllerActor`, `build()`, `apply()`, `deploy()`, `evict()`, `flush_warm_cache()`, `status()`, `env()` |
-| `src/services/ray/src/ray/deployments/controller/cluster/cluster.py` | `Cluster` — multi-node state, deploy/evict orchestration |
-| `src/services/ray/src/ray/deployments/controller/cluster/node.py` | `Node` — single node's GPUs/CPU/cache; `evictions()` algorithm |
-| `src/services/ray/src/ray/deployments/controller/cluster/deployment.py` | `Deployment` + `DeploymentLevel` enum |
-| `src/services/ray/src/ray/deployments/controller/cluster/evaluator.py` | `ModelEvaluator` — meta-model size + padding |
-| `src/services/ray/src/ray/deployments/controller/gcal/controller.py` | `SchedulingControllerActor` — Controller subclass that pulls deployments from Google Calendar |
-| `src/services/ray/src/ray/deployments/controller/gcal/scheduler.py` | `SchedulingActor` — actual calendar poll loop |
-| `src/services/ray/src/ray/deployments/modeling/base.py` | `BaseModelDeployment`, `ModelActor`, `pre()`/`execute()`/`post()`/`cleanup()` |
-| `src/services/ray/src/ray/deployments/modeling/util.py` | `kill_thread()`, `load_with_cache_deletion_retry()`, `remove_accelerate_hooks()` |
-| `src/services/ray/src/ray/nn/backend.py` | `RemoteExecutionBackend` — bridge between NNsight and the Protector |
-| `src/services/ray/src/ray/nn/ops.py` | `StdoutRedirect` — print-capture during execution |
-| `src/services/ray/src/ray/nn/security/protector.py` | `Protector` — orchestrates the six sandbox layers |
-| `src/services/ray/src/ray/nn/security/importer.py` | `Importer`, `SandboxFinder`, `ProtectedModule`, `UnauthorizedModule` |
-| `src/services/ray/src/ray/nn/security/guards.py` | `guarded_getattr`, `SAFE_BUILTINS`, audit hook, `restricted_compile/exec` |
-| `src/services/ray/src/ray/nn/security/protected_objects.py` | `ProtectedObject`, `protect()`, `clear_set_attrs()` |
-| `src/services/ray/src/ray/nn/security/whitelist.yaml` | Policy: allowed modules, allowed builtins, blocked submodules, dunder lists |
-| `src/common/schema/request.py` | `BackendRequestModel` — `from_request`, `deserialize`, `create_response` |
-| `src/common/schema/response.py` | `BackendResponseModel` — `respond()` (Socket.IO / callback / save) |
-| `src/common/schema/result.py` | `BackendResultModel` + `TensorStoragePickler` |
-| `src/common/schema/mixins.py` | `ObjectStorageMixin`, `TelemetryMixin` |
-| `src/common/schema/deployment_config.py` | `DeploymentConfig` (dedicated, timeouts) |
-| `src/common/providers/redis.py` | `RedisProvider` — sync + async clients |
-| `src/common/providers/objectstore.py` | `ObjectStoreProvider` — MinIO/S3 via boto3 |
-| `src/common/providers/socketio.py` | `SioProvider` |
-| `src/common/providers/postgres.py` | `PostgresProvider` — connection pool |
-| `src/common/providers/mailgun.py` | `MailgunProvider` — email notifications (gcal errors, non-blocking callbacks) |
-| `src/common/providers/ray.py` | `RayProvider` — Ray client connection |
-| `src/common/tracing/setup.py` | `init_tracing()`, OTLP exporter |
-| `src/common/tracing/spans.py` | `trace_span()`, `set_request_attributes()` |
-| `src/common/tracing/context.py` | `TracingContext` — inject/extract for cross-process propagation |
-| `src/common/metrics/*.py` | `GPUMemMetric`, `ExecutionTimeMetric`, etc. — all write to InfluxDB |
-| `src/common/types.py` | `MODEL_KEY`, `API_KEY`, `SESSION_ID`, `REQUEST_ID` |
+| `src/ndif/services/api/app.py` | FastAPI endpoints: `/request`, `/response/{id}`, `/status`, `/env`, `/connected`, `/ping` |
+| `src/ndif/services/api/dependencies.py` | `validate_request` — api-key / version / hotswap checks |
+| `src/ndif/services/api/db.py` | `AccountsDB` wrapper + `NDIF_DEV_MODE` bypass |
+| `src/ndif/services/api/config.py` | `AppConfig` — API env vars |
+| `src/ndif/services/api/queue/dispatcher.py` | `Dispatcher` — reads Redis queue, routes to Processors, manages Ray connection |
+| `src/ndif/services/api/queue/processor.py` | `Processor` — per-model state machine (`PROVISIONING → DEPLOYING → READY ↔ BUSY`) |
+| `src/ndif/services/api/queue/util.py` | Ray client deadlock `patch()`, `controller_handle()`, `submit()` |
+| `src/ndif/services/ray/deployments/controller/controller.py` | `_ControllerActor`, `build()`, `apply()`, `deploy()`, `evict()`, `flush_warm_cache()`, `status()`, `env()` |
+| `src/ndif/services/ray/deployments/controller/cluster/cluster.py` | `Cluster` — multi-node state, deploy/evict orchestration |
+| `src/ndif/services/ray/deployments/controller/cluster/node.py` | `Node` — single node's GPUs/CPU/cache; `evictions()` algorithm |
+| `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | `Deployment` + `DeploymentLevel` enum |
+| `src/ndif/services/ray/deployments/controller/cluster/evaluator.py` | `ModelEvaluator` — meta-model size + padding |
+| `src/ndif/services/ray/deployments/controller/gcal/controller.py` | `SchedulingControllerActor` — Controller subclass that pulls deployments from Google Calendar |
+| `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` | `SchedulingActor` — actual calendar poll loop |
+| `src/ndif/services/ray/deployments/modeling/base.py` | `BaseModelDeployment`, `ModelActor`, `pre()`/`execute()`/`post()`/`cleanup()` |
+| `src/ndif/services/ray/deployments/modeling/util.py` | `kill_thread()`, `load_with_cache_deletion_retry()`, `remove_accelerate_hooks()` |
+| `src/ndif/services/ray/nn/backend.py` | `RemoteExecutionBackend` — bridge between NNsight and the Protector |
+| `src/ndif/services/ray/nn/ops.py` | `StdoutRedirect` — print-capture during execution |
+| `src/ndif/services/ray/nn/security/protector.py` | `Protector` — orchestrates the six sandbox layers |
+| `src/ndif/services/ray/nn/security/importer.py` | `Importer`, `SandboxFinder`, `ProtectedModule`, `UnauthorizedModule` |
+| `src/ndif/services/ray/nn/security/guards.py` | `guarded_getattr`, `SAFE_BUILTINS`, audit hook, `restricted_compile/exec` |
+| `src/ndif/services/ray/nn/security/protected_objects.py` | `ProtectedObject`, `protect()`, `clear_set_attrs()` |
+| `src/ndif/services/ray/nn/security/whitelist.yaml` | Policy: allowed modules, allowed builtins, blocked submodules, dunder lists |
+| `src/ndif/common/schema/request.py` | `BackendRequestModel` — `from_request`, `deserialize`, `create_response` |
+| `src/ndif/common/schema/response.py` | `BackendResponseModel` — `respond()` (Socket.IO / callback / save) |
+| `src/ndif/common/schema/result.py` | `BackendResultModel` + `TensorStoragePickler` |
+| `src/ndif/common/schema/mixins.py` | `ObjectStorageMixin`, `TelemetryMixin` |
+| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (dedicated, timeouts) |
+| `src/ndif/common/providers/redis.py` | `RedisProvider` — sync + async clients |
+| `src/ndif/common/providers/objectstore.py` | `ObjectStoreProvider` — MinIO/S3 via boto3 |
+| `src/ndif/common/providers/socketio.py` | `SioProvider` |
+| `src/ndif/common/providers/postgres.py` | `PostgresProvider` — connection pool |
+| `src/ndif/common/providers/mailgun.py` | `MailgunProvider` — email notifications (gcal errors, non-blocking callbacks) |
+| `src/ndif/common/providers/ray.py` | `RayProvider` — Ray client connection |
+| `src/ndif/common/tracing/setup.py` | `init_tracing()`, OTLP exporter |
+| `src/ndif/common/tracing/spans.py` | `trace_span()`, `set_request_attributes()` |
+| `src/ndif/common/tracing/context.py` | `TracingContext` — inject/extract for cross-process propagation |
+| `src/ndif/common/metrics/*.py` | `GPUMemMetric`, `ExecutionTimeMetric`, etc. — all write to InfluxDB |
+| `src/ndif/common/types.py` | `MODEL_KEY`, `API_KEY`, `SESSION_ID`, `REQUEST_ID` |
 | `cli/cli.py` | Click entry point |
 | `cli/commands/*.py` | One file per `ndif <command>` |
 | `cli/lib/session.py` | `SessionConfig`, `~/.ndif/` layout |
@@ -135,7 +135,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/services/monitor/` | Standalone uptime monitor — runs outside the stack |
+| `src/ndif/services/monitor/` | Standalone uptime monitor — runs outside the stack |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -450,11 +450,11 @@ Client (nnsight)
 The API service is a FastAPI application served by Gunicorn with Uvicorn workers. It serves as the entry point for all client requests, handles validation, and hosts the Dispatcher which coordinates with the Ray cluster.
 
 **Key files:**
-- `src/services/api/src/app.py` — FastAPI application and endpoints
-- `src/services/api/src/dependencies.py` — Request validation functions
-- `src/services/api/src/config.py` — Environment-based configuration
-- `src/services/api/src/db.py` — PostgreSQL API key store
-- `src/services/api/src/queue/` — Dispatcher and Processor
+- `src/ndif/services/api/app.py` — FastAPI application and endpoints
+- `src/ndif/services/api/dependencies.py` — Request validation functions
+- `src/ndif/services/api/config.py` — Environment-based configuration
+- `src/ndif/services/api/db.py` — PostgreSQL API key store
+- `src/ndif/services/api/queue/` — Dispatcher and Processor
 
 ### 3.1 FastAPI Application
 
@@ -570,7 +570,7 @@ All API configuration is loaded from environment variables via `AppConfig`:
 The API service is the easiest piece to iterate on because most of it has plain-Python unit tests:
 
 ```bash
-cd src/services/api
+cd src/ndif/services/api
 pytest                                    # unit tests (tests/unit/), no stack needed
 pytest tests/unit/test_dependencies.py    # validation rules specifically
 ```
@@ -585,7 +585,7 @@ python scripts/test.py                   # GPT-2 smoke trace against localhost:5
 pytest tests/test_nnsight.py --run-remote
 ```
 
-**Fast edit loop.** For pure endpoint edits, `make ta` is overkill — the API image only changes when `requirements.in` changes. You can bind-mount `src/services/api/` into the running `api` container, or just run `gunicorn` natively against the existing compose stack and point it at the same Redis. The Dispatcher re-connects to Ray on restart.
+**Fast edit loop.** For pure endpoint edits, `make ta` is overkill — the API image only changes when `requirements.in` changes. You can bind-mount `src/ndif/services/api/` into the running `api` container, or just run `gunicorn` natively against the existing compose stack and point it at the same Redis. The Dispatcher re-connects to Ray on restart.
 
 ---
 
@@ -599,10 +599,10 @@ The queue system is responsible for routing requests from the API endpoint to th
 - **Processor** — A per-model coordinator that manages deployment lifecycle and request execution
 
 **Key files:**
-- `src/services/api/src/queue/dispatcher.py`
-- `src/services/api/src/queue/processor.py`
-- `src/services/api/src/queue/config.py`
-- `src/services/api/src/queue/util.py`
+- `src/ndif/services/api/queue/dispatcher.py`
+- `src/ndif/services/api/queue/processor.py`
+- `src/ndif/services/api/queue/config.py`
+- `src/ndif/services/api/queue/util.py`
 
 ### 4.1 The Dispatcher
 
@@ -812,10 +812,10 @@ pytest tests/test_nnsight.py --run-remote           # basic request path
 The Ray service runs as a Ray cluster with a head node hosting the Controller actor and worker nodes hosting ModelActors. The Controller is the brain of the cluster — it tracks resources, manages deployments, and coordinates model lifecycle transitions.
 
 **Key files:**
-- `src/services/ray/src/ray/start.py` — Ray startup script
-- `src/services/ray/src/ray/deployments/controller/controller.py` — Controller actor
-- `src/services/ray/src/ray/deployments/controller/cluster/` — Cluster state management
-- `src/services/ray/src/ray/deployments/modeling/base.py` — ModelActor
+- `src/ndif/services/ray/start.py` — Ray startup script
+- `src/ndif/services/ray/deployments/controller/controller.py` — Controller actor
+- `src/ndif/services/ray/deployments/controller/cluster/` — Cluster state management
+- `src/ndif/services/ray/deployments/modeling/base.py` — ModelActor
 
 ### 5.1 The Controller
 
@@ -832,7 +832,7 @@ It is instantiated with configuration from environment variables (see also the c
 | Parameter | Env Variable | Default | Description |
 |-----------|-------------|---------|-------------|
 | `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
-| `model_import_path` | — | `src.ray.deployments.modeling.model:app` | Python path to ModelActor app factory |
+| `model_import_path` | — | `ndif.services.ray.deployments.modeling.model:app` | Python path to ModelActor app factory |
 | `default_execution_timeout_seconds` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden |
 | `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a non-dedicated model stays deployed before eviction |
 | `model_cache_percentage` | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory available for warm cache |
@@ -1042,8 +1042,8 @@ The ordering is critical: deletions and caches must complete before from-cache a
 NDIF can optionally drive dedicated deployments from a Google Calendar instead of a static `NDIF_DEPLOYMENTS` list or ad-hoc `ndif deploy` invocations. This is the mechanism that runs production NDIF: the schedule lives in a calendar that anyone authorized can edit, and the cluster automatically tracks it.
 
 **Key files:**
-- `src/services/ray/src/ray/deployments/controller/gcal/controller.py` — `SchedulingControllerActor`
-- `src/services/ray/src/ray/deployments/controller/gcal/scheduler.py` — `SchedulingActor`
+- `src/ndif/services/ray/deployments/controller/gcal/controller.py` — `SchedulingControllerActor`
+- `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` — `SchedulingActor`
 
 **Architecture:**
 
@@ -1073,7 +1073,7 @@ NDIF can optionally drive dedicated deployments from a Google Calendar instead o
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**How it's enabled.** `SchedulingControllerActor` is a `_ControllerActor` subclass. It replaces the regular `ControllerActor` when `NDIF_CONTROLLER_IMPORT_PATH` points at `src.ray.deployments.controller.gcal.controller`. Docker compose sets the scheduling env vars (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`) and the gcal variant takes over automatically.
+**How it's enabled.** `SchedulingControllerActor` is a `_ControllerActor` subclass. It replaces the regular `ControllerActor` when `NDIF_CONTROLLER_IMPORT_PATH` points at `ndif.services.ray.deployments.controller.gcal.controller`. Docker compose sets the scheduling env vars (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`) and the gcal variant takes over automatically.
 
 **Event format.** Each calendar event's **description** is a `MODEL_KEY`. The event's title is only used for human-readable display. Events are deployed as `dedicated=True`, which means they are protected from eviction (see §5.5) for as long as the event is live. When the event ends and the next poll sees no corresponding event, the model stops being dedicated and can be cached or deleted by the normal eviction path.
 
@@ -1130,9 +1130,9 @@ Ray's own dashboard (default `http://localhost:8265`) is useful for seeing actor
 The `ModelActor` is a Ray actor that holds a loaded model and executes user intervention code. It handles the complete lifecycle of a request: deserialization, sandboxed execution, result serialization, and cleanup.
 
 **Key files:**
-- `src/services/ray/src/ray/deployments/modeling/base.py` — BaseModelDeployment and ModelActor
-- `src/services/ray/src/ray/nn/backend.py` — RemoteExecutionBackend
-- `src/services/ray/src/ray/nn/ops.py` — StdoutRedirect
+- `src/ndif/services/ray/deployments/modeling/base.py` — BaseModelDeployment and ModelActor
+- `src/ndif/services/ray/nn/backend.py` — RemoteExecutionBackend
+- `src/ndif/services/ray/nn/ops.py` — StdoutRedirect
 
 ### 6.1 The ModelActor
 
@@ -1366,7 +1366,7 @@ NDIF executes arbitrary user-submitted Python code on shared GPU infrastructure.
 
 The security system is defense-in-depth: **six layers** that each catch a different class of attack, so that bypassing any one of them still leaves the rest in place. Nothing in this section is best-effort — every layer exists because it closes a specific hole that the other layers can't see.
 
-**Key files** (all under `src/services/ray/src/ray/nn/security/`):
+**Key files** (all under `src/ndif/services/ray/nn/security/`):
 
 | File | Role |
 |---|---|
@@ -1652,7 +1652,7 @@ Both classes run against a live stack. Do not "speed up" the loop by mocking out
 **Editing `whitelist.yaml`:**
 
 ```bash
-vim src/services/ray/src/ray/nn/security/whitelist.yaml
+vim src/ndif/services/ray/nn/security/whitelist.yaml
 make ta                                              # ⚠️ required — see §14.11
 pytest tests/test_security_guards.py --run-remote
 ```
@@ -1686,11 +1686,11 @@ Picking the wrong layer is a common mistake — e.g. adding a check in `guarded_
 NDIF uses Pydantic models for request/response serialization. These models handle the full lifecycle of data: receipt from the client, storage in object stores, and delivery back to the client.
 
 **Key files:**
-- `src/common/schema/request.py` — `BackendRequestModel`
-- `src/common/schema/response.py` — `BackendResponseModel`
-- `src/common/schema/result.py` — `BackendResultModel`
-- `src/common/schema/mixins.py` — `ObjectStorageMixin`, `TelemetryMixin`
-- `src/common/types.py` — Type aliases
+- `src/ndif/common/schema/request.py` — `BackendRequestModel`
+- `src/ndif/common/schema/response.py` — `BackendResponseModel`
+- `src/ndif/common/schema/result.py` — `BackendResultModel`
+- `src/ndif/common/schema/mixins.py` — `ObjectStorageMixin`, `TelemetryMixin`
+- `src/ndif/common/types.py` — Type aliases
 
 ### 8.1 BackendRequestModel
 
@@ -1830,10 +1830,10 @@ The complete response delivery flow:
 NDIF uses a provider pattern for external service connections. Each provider is a static class that manages its own connection lifecycle and exposes both sync and async interfaces where needed.
 
 **Key files:**
-- `src/common/providers/redis.py` — Redis connections
-- `src/common/providers/objectstore.py` — MinIO/S3 connections
-- `src/common/providers/socketio.py` — Socket.IO client
-- `src/common/providers/mailgun.py` — Email notifications
+- `src/ndif/common/providers/redis.py` — Redis connections
+- `src/ndif/common/providers/objectstore.py` — MinIO/S3 connections
+- `src/ndif/common/providers/socketio.py` — Socket.IO client
+- `src/ndif/common/providers/mailgun.py` — Email notifications
 
 ### 9.1 Redis
 
@@ -1878,7 +1878,7 @@ class AccountsDB:
     def key_has_hotswapping_access(self, key_id: API_KEY) -> bool
 ```
 
-These are called from `src/services/api/src/dependencies.py::validate_request` to authenticate incoming requests and decide whether the key is allowed to hotswap (§3.2). The connection pool is managed by `src/common/providers/postgres.py`, which reads `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_MIN_CONNECTIONS`, and `POSTGRES_MAX_CONNECTIONS`.
+These are called from `src/ndif/services/api/dependencies.py::validate_request` to authenticate incoming requests and decide whether the key is allowed to hotswap (§3.2). The connection pool is managed by `src/ndif/common/providers/postgres.py`, which reads `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_MIN_CONNECTIONS`, and `POSTGRES_MAX_CONNECTIONS`.
 
 **Dev-mode bypass.** When `NDIF_DEV_MODE=true` (the default in `.env.example`), `db.py` short-circuits every authentication call to return `True` and Postgres is not touched at all. This is what makes `scripts/test.py` and the remote pytest suite work against a fresh local stack without seeding any keys.
 
@@ -1939,8 +1939,8 @@ Pre-configured dashboards (in `telemetry/grafana/dashboards/`) provide:
 In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full request lifecycle across the API and Ray services. This is what lets you look at a single request in Jaeger and see every step: validation → queue push → dispatch → provisioning → actor load → `pre()` → `execute()` → `post()`.
 
 **Key files:**
-- `src/common/tracing/` — shared setup, used by the Ray service and Dispatcher
-- `src/services/api/src/tracing/` — API-specific wiring (FastAPI instrumentation + request attributes)
+- `src/ndif/common/tracing/` — shared setup, used by the Ray service and Dispatcher
+- `src/ndif/services/api/tracing/` — API-specific wiring (FastAPI instrumentation + request attributes)
 - Both directories expose `init_tracing(service_name)`, `trace_span(...)`, `set_request_attributes(span, request)`, and `TracingContext` for propagation
 
 **Setup.** Each service calls `init_tracing("ndif-<service>")` once at startup. This creates a `TracerProvider`, installs a `BatchSpanProcessor`, and — if `OTEL_EXPORTER_OTLP_ENDPOINT` is set — attaches an OTLP gRPC exporter pointing at Jaeger. If the env var is not set, tracing is a no-op (the spans are still created in memory but no exporter consumes them), so unit tests and ad-hoc runs work without Jaeger.
@@ -2086,14 +2086,12 @@ The Docker setup uses a multi-purpose `Dockerfile` with a `NAME` build arg:
 FROM astral/uv:python3.12-trixie-slim
 
 ARG NAME
-COPY src/services/${NAME}/requirements.in /tmp/requirements.in
-RUN uv pip install --system -r /tmp/requirements.in
+COPY . /ndif
+WORKDIR /ndif
+RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in && \
+    pip install . --no-deps
 
-RUN --mount=type=bind,source=/src,target=/tmp/src \
-    cp -rL /tmp/src/services/${NAME}/src / && \
-    cp /tmp/src/services/${NAME}/start.sh ./start.sh
-
-CMD bash ./start.sh
+CMD ndif start "${NAME}"
 ```
 
 This builds two images from the same Dockerfile:
@@ -2162,7 +2160,7 @@ All configuration is via environment variables. The defaults shown below are wha
 
 | Variable | Code Default | Description |
 |----------|---------|-------------|
-| `NDIF_CONTROLLER_IMPORT_PATH` | `src.ray.deployments.controller.controller` | Python path to Controller module |
+| `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller` | Python path to Controller module |
 | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden per-deployment |
 | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` (code), `0` (`.env.example`) | Min time before a non-dedicated model can be evicted |
@@ -2196,18 +2194,18 @@ All configuration is via environment variables. The defaults shown below are wha
 
 ### Overview
 
-`src/services/monitor/` is a **standalone** uptime monitor that is not part of the main NDIF stack. It lives in the repo so it can be maintained alongside the API/Ray services, but it **does not run inside docker compose** — it runs on a separate host via a cron job and is deployed with its own `run.sh` script. The goal is simple: answer "is NDIF up right now?" continuously and without depending on any of the components it is monitoring.
+`src/ndif/services/monitor/` is a **standalone** uptime monitor that is not part of the main NDIF stack. It lives in the repo so it can be maintained alongside the API/Ray services, but it **does not run inside docker compose** — it runs on a separate host via a cron job and is deployed with its own `run.sh` script. The goal is simple: answer "is NDIF up right now?" continuously and without depending on any of the components it is monitoring.
 
 **Why separate?** If the monitor ran inside the same docker stack, a compose failure would take the monitor down with it — exactly when you need it most. Pulling it out of the stack means "NDIF is down" and "the monitor can't see NDIF" are two independent signals.
 
 **Key files:**
-- `src/services/monitor/run.sh` — setup + cron deploy script
-- `src/services/monitor/jobs/monitor.py` — single unified monitor script
-- `src/services/monitor/jobs/util.py` — config loading, Discord webhook, log rotation
-- `src/services/monitor/dashboard/dashboard.py` — Flask backend serving uptime/latency charts
-- `src/services/monitor/dashboard/dashboard.html` — frontend (Chart.js, dark/light toggle)
-- `src/services/monitor/config.example.json` — example Discord webhook + message templates
-- `src/services/monitor/README.md` — operator guide
+- `src/ndif/services/monitor/run.sh` — setup + cron deploy script
+- `src/ndif/services/monitor/jobs/monitor.py` — single unified monitor script
+- `src/ndif/services/monitor/jobs/util.py` — config loading, Discord webhook, log rotation
+- `src/ndif/services/monitor/dashboard/dashboard.py` — Flask backend serving uptime/latency charts
+- `src/ndif/services/monitor/dashboard/dashboard.html` — frontend (Chart.js, dark/light toggle)
+- `src/ndif/services/monitor/config.example.json` — example Discord webhook + message templates
+- `src/ndif/services/monitor/README.md` — operator guide
 
 ### 13.1 What it does
 
@@ -2226,14 +2224,14 @@ export NDIF_API_KEY=your_key
 export INSTALL_DIR=~/ndif_monitor   # optional, default is ~/ndif_monitor
 
 # Inside the repo:
-cd src/services/monitor
+cd src/ndif/services/monitor
 ./run.sh
 ```
 
 `run.sh` is idempotent. It:
 - Creates a `monitor` conda env (Python 3.12) if it does not exist
-- Installs dependencies (`nnsight`, `requests`, `flask`) into that env
-- **Copies source files** into `$INSTALL_DIR/jobs/` and `$INSTALL_DIR/dashboard/` — the deployed monitor runs from the install dir, so repo changes do not affect it until you re-run `run.sh`
+- Installs the `ndif` package into that env — this pulls monitor's deps (`nnsight`, `requests`, `flask`) via the project's aggregated requirements
+- Cron invokes `python -m ndif.services.monitor.jobs.monitor` from the conda env's site-packages snapshot — repo changes do not affect a running deployment until you re-run `run.sh`
 - Creates `$INSTALL_DIR/config.json` from `config.example.json` if missing
 - Installs or updates a cron job (schedule from `MONITOR_CRON`, default `*/10 * * * *`)
 
@@ -2307,7 +2305,7 @@ Entries are cross-referenced from the section where the mechanism is first descr
 
 ### 14.1 `ModelActor` is declared with `num_gpus=0`
 
-*Location:* `src/services/ray/src/ray/deployments/modeling/base.py` — `@ray.remote(num_cpus=2, num_gpus=0, ...)`. See §6.1.
+*Location:* `src/ndif/services/ray/deployments/modeling/base.py` — `@ray.remote(num_cpus=2, num_gpus=0, ...)`. See §6.1.
 
 Ray's GPU scheduler allocates **whole GPUs by count**. If `ModelActor` were declared with `num_gpus=N`, three things NDIF needs would break:
 
@@ -2330,7 +2328,7 @@ model = RemoteableMixin.from_model_key(..., max_memory=max_memory_dict)
 
 ### 14.2 Two whitelists, not one
 
-*Location:* `src/services/ray/src/ray/nn/security/whitelist.yaml` + `whitelist.py`. See §7.4, §7.11.
+*Location:* `src/ndif/services/ray/nn/security/whitelist.yaml` + `whitelist.py`. See §7.4, §7.11.
 
 The sandbox has a **narrow execution whitelist** (`WHITELISTED_MODULES`) and a **broader deserialization whitelist** (`WHITELISTED_MODULES_DESERIALIZATION`). The broader one adds `pickle`, `cloudpickle`, `copyreg`, `nnsight.schema.request`, `nnsight.modeling`, `nnsight.intervention.*`, and `transformers`.
 
@@ -2344,7 +2342,7 @@ Both are real; neither is dead code. `ModelActor.pre()` activates the deserializ
 
 ### 14.3 `compile()` is stock Python, not RestrictedPython's AST transform
 
-*Location:* `src/services/ray/src/ray/nn/security/guards.py` — `restricted_compile`. See §7.10.
+*Location:* `src/ndif/services/ray/nn/security/guards.py` — `restricted_compile`. See §7.10.
 
 RestrictedPython's AST transformation rewrites identifiers it considers "suspicious." That includes nnsight's internal `__nnsight_tracer_*` names. With AST transformation on, valid nnsight tracer code fails to execute because RestrictedPython strips exactly the hooks nnsight relies on.
 
@@ -2361,7 +2359,7 @@ Runtime guards compensate:
 
 ### 14.4 `build()`/`apply()` ordering is delete → cache → from_cache → create
 
-*Location:* `src/services/ray/src/ray/deployments/controller/controller.py` — `_ControllerActor.apply()`. See §5.6.
+*Location:* `src/ndif/services/ray/deployments/controller/controller.py` — `_ControllerActor.apply()`. See §5.6.
 
 The apply step executes the `DeploymentDelta` in a specific order:
 
@@ -2378,7 +2376,7 @@ The apply step executes the `DeploymentDelta` in a specific order:
 
 ### 14.5 The Ray client deadlock patch
 
-*Location:* `src/services/api/src/queue/util.py` — `patch()`. See §4.4.
+*Location:* `src/ndif/services/api/queue/util.py` — `patch()`. See §4.4.
 
 The Dispatcher applies a monkey patch to `ray.util.client.dataclient.DataClient._async_send` that disables `ClientObjectRef.__del__` for the duration of each async send.
 
@@ -2390,7 +2388,7 @@ The patch is **narrow**: `__del__` is only skipped during `_async_send`, which m
 
 ### 14.6 `clear_set_attrs()` reverts writes instead of blocking them
 
-*Location:* `src/services/ray/src/ray/nn/security/protected_objects.py`. See §7.9.
+*Location:* `src/ndif/services/ray/nn/security/protected_objects.py`. See §7.9.
 
 `ProtectedObject` *tracks* attribute writes on the model/tokenizer and reverts them after each request via `clear_set_attrs()` in `cleanup()` (§6.5). It does **not** refuse the writes at write time.
 
@@ -2402,7 +2400,7 @@ The patch is **narrow**: `__del__` is only skipped during `_async_send`, which m
 
 ### 14.7 The audit hook is permanent per-process
 
-*Location:* `src/services/ray/src/ray/nn/security/guards.py` — audit hook registration. See §7.7.
+*Location:* `src/ndif/services/ray/nn/security/guards.py` — audit hook registration. See §7.7.
 
 `sys.addaudithook` has a Python-level limitation: **you cannot remove an audit hook once installed**. The hook persists for the lifetime of the process.
 
@@ -2414,7 +2412,7 @@ NDIF installs the hook once at module import time and uses a `threading.local` f
 
 ### 14.8 CUDA device-side assertion triggers a terminal self-kill
 
-*Location:* `src/services/ray/src/ray/deployments/modeling/base.py` — `exception()` → `restart()`. See §6.5.
+*Location:* `src/ndif/services/ray/deployments/modeling/base.py` — `exception()` → `restart()`. See §6.5.
 
 When user code triggers a CUDA device-side assertion, `BaseModelDeployment.exception()` detects the `"device-side assert triggered"` string and calls `restart()`, which invokes `ray.kill(actor, no_restart=False)` to have Ray respawn the actor from scratch.
 
@@ -2424,7 +2422,7 @@ When user code triggers a CUDA device-side assertion, `BaseModelDeployment.excep
 
 ### 14.9 Thread kills use `ctypes`, not cooperative cancellation
 
-*Location:* `src/services/ray/src/ray/deployments/modeling/util.py` — `kill_thread()`. See §6.4.
+*Location:* `src/ndif/services/ray/deployments/modeling/util.py` — `kill_thread()`. See §6.4.
 
 `kill_thread()` uses `ctypes.PyThreadState_SetAsyncExc` to inject a `SystemExit` exception into a running Python thread. This is the mechanism used when the `kill_switch` fires or the execution timeout expires (§6.4).
 
@@ -2438,7 +2436,7 @@ When user code triggers a CUDA device-side assertion, `BaseModelDeployment.excep
 
 ### 14.10 `UnauthorizedModule` defers errors until use
 
-*Location:* `src/services/ray/src/ray/nn/security/importer.py`. See §7.2.
+*Location:* `src/ndif/services/ray/nn/security/importer.py`. See §7.2.
 
 Non-whitelisted imports do not raise `ImportError` at `import` time. They return an `UnauthorizedModule` — a lazy placeholder that raises only when the user actually *uses* it (attribute access, calling, etc.).
 
@@ -2450,7 +2448,7 @@ Deferring the error until *use* has the right semantics: whitelisted libraries t
 
 ### 14.11 `whitelist.yaml` edits require an image rebuild
 
-*Location:* `src/services/ray/src/ray/nn/security/whitelist.yaml`. See §7.11.
+*Location:* `src/ndif/services/ray/nn/security/whitelist.yaml`. See §7.11.
 
 `whitelist.yaml` is **packaged into the Ray image at build time**, not bind-mounted. Editing it on disk and restarting containers does nothing — the container still has the old version baked in. You must run `make ta` (or at minimum rebuild the `ray` image) for a whitelist change to take effect.
 
@@ -2460,7 +2458,7 @@ Deferring the error until *use* has the right semantics: whitelisted libraries t
 
 ### 14.12 The Processor detects eviction via the `"Failed to look up actor"` string
 
-*Location:* `src/services/ray/src/ray/deployments/modeling/base.py::__call__` raises `LookupError("Failed to look up actor")` when `self.cached`. Matched by `src/services/api/src/queue/processor.py::execute`. See §4.4.
+*Location:* `src/ndif/services/ray/deployments/modeling/base.py::__call__` raises `LookupError("Failed to look up actor")` when `self.cached`. Matched by `src/ndif/services/api/queue/processor.py::execute`. See §4.4.
 
 When a `ModelActor` is cached to CPU (HOT → WARM), subsequent request dispatches to that actor raise `LookupError("Failed to look up actor")`. The Processor string-matches on this message to distinguish "my model got evicted" (recoverable, re-provision) from "Ray died" (unrecoverable, purge all Processors and reconnect).
 
@@ -2470,7 +2468,7 @@ When a `ModelActor` is cached to CPU (HOT → WARM), subsequent request dispatch
 
 ### 14.13 Garbage collection runs every 5 requests, not every request
 
-*Location:* `src/services/ray/src/ray/deployments/modeling/base.py` — `cleanup()`. See §6.5.
+*Location:* `src/ndif/services/ray/deployments/modeling/base.py` — `cleanup()`. See §6.5.
 
 `cleanup()` increments a counter and only calls `gc.collect()` when `self._request_count % 5 == 0`.
 
@@ -2535,7 +2533,7 @@ For the subsystem-specific tables that appear inline in earlier sections (§3.5,
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `NDIF_CONTROLLER_IMPORT_PATH` | — | `src.ray.deployments.controller.controller` | compose | Python path to the Controller app factory (swap to `...gcal.controller` to enable Google Calendar scheduling) |
+| `NDIF_CONTROLLER_IMPORT_PATH` | — | `ndif.services.ray.deployments.controller.controller` | compose | Python path to the Controller app factory (swap to `...gcal.controller` to enable Google Calendar scheduling) |
 | `NDIF_DEPLOYMENTS` | `""` | — | `ray/deployments/controller/controller.py` | Pipe-separated list of model keys to deploy as dedicated at startup |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | — | `ray/deployments/controller/controller.py` | Max execution time per request unless overridden per-deployment |
 | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `0` | `ray/deployments/controller/controller.py` | Min time before a non-dedicated model can be evicted |
@@ -2604,7 +2602,7 @@ Skipped when `NDIF_DEV_MODE=true`.
 
 ### 15.9 Monitor service (§13)
 
-Read only by the standalone `src/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack.
+Read only by the standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack.
 
 | Variable | Default | Description |
 |---|---|---|

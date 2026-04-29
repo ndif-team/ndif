@@ -23,13 +23,18 @@ ndif/
 ├── pyproject.toml            ← uv-based Python project (3.12+)
 ├── .env.example              ← all config via env vars; defaults live here
 │
-├── cli/                      ← `ndif` Click CLI (native dev mode)
 ├── docker/                   ← Dockerfile + docker-compose.yml (primary dev mode)
 ├── scripts/                  ← one-shot smoke scripts (`test.py`, `redeploy.py`)
 ├── telemetry/                ← grafana dashboards + prometheus config
 ├── tests/                    ← pytest suite (most tests need --run-remote)
 │
-└── src/
+└── src/ndif/                 ← the `ndif` package (src-layout; installed as `ndif`)
+    ├── cli/                  ← `ndif` Click CLI (native dev mode)
+    │   ├── cli.py            entry point (`ndif` console script)
+    │   ├── commands/         deploy, evict, start, stop, status, logs, …
+    │   ├── lib/              checks, deps, session, model_config, util
+    │   └── config/models.yaml
+    │
     ├── common/               ← shared code between services
     │   ├── schema/           ← Backend{Request,Response,Result}Model, mixins
     │   ├── providers/        ← redis, objectstore (MinIO/S3), socketio, mailgun, ray
@@ -40,39 +45,35 @@ ndif/
     │
     └── services/
         ├── api/              ← FastAPI + Gunicorn (Dispatcher lives here)
-        │   └── src/
-        │       ├── app.py            FastAPI app + endpoints
-        │       ├── dependencies.py   request validation
-        │       ├── db.py             PostgreSQL API-key store
-        │       ├── config.py, gunicorn.conf.py
-        │       └── queue/            Dispatcher + per-model Processor
+        │   ├── app.py            FastAPI app + endpoints
+        │   ├── dependencies.py   request validation
+        │   ├── db.py             PostgreSQL API-key store
+        │   ├── config.py, gunicorn.conf.py
+        │   └── queue/            Dispatcher + per-model Processor
         │
         ├── ray/              ← Ray cluster (Controller + ModelActors)
-        │   └── src/ray/
-        │       ├── start.py          controller startup
-        │       ├── resources.py      resource detection
-        │       ├── deployments/
-        │       │   ├── controller/
-        │       │   │   ├── controller.py
-        │       │   │   ├── cluster/  cluster.py / node.py / deployment.py / evaluator.py
-        │       │   │   └── gcal/     Google Calendar driven scheduling
-        │       │   └── modeling/
-        │       │       └── base.py   ModelActor (execution + sandbox invocation)
-        │       └── nn/
-        │           ├── backend.py    RemoteExecutionBackend (bridges NNsight)
-        │           ├── ops.py        StdoutRedirect
-        │           └── security/     sandbox — read this before touching it
-        │               ├── protector.py
-        │               ├── importer.py
-        │               ├── guards.py
-        │               ├── protected_objects.py
-        │               ├── whitelist.py / whitelist.yaml
-        │               └── README.md
+        │   ├── start.py          controller startup
+        │   ├── resources.py      resource detection
+        │   ├── deployments/
+        │   │   ├── controller/
+        │   │   │   ├── controller.py
+        │   │   │   ├── cluster/  cluster.py / node.py / deployment.py / evaluator.py
+        │   │   │   └── gcal/     Google Calendar driven scheduling
+        │   │   └── modeling/
+        │   │       └── base.py   ModelActor (execution + sandbox invocation)
+        │   └── nn/
+        │       ├── backend.py    RemoteExecutionBackend (bridges NNsight)
+        │       ├── ops.py        StdoutRedirect
+        │       └── security/     sandbox — read this before touching it
+        │           ├── protector.py
+        │           ├── importer.py
+        │           ├── guards.py
+        │           ├── protected_objects.py
+        │           ├── whitelist.py / whitelist.yaml
+        │           └── README.md
         │
-        ├── monitor/          ← standalone uptime monitor + Flask dashboard
-        │                       deploys outside the docker stack via run.sh + cron
-        │
-        └── base/             ← shared base image requirements
+        └── monitor/          ← uptime monitor + Flask dashboard
+                                deployed outside the docker stack via run.sh + cron
 ```
 
 ---
@@ -120,7 +121,7 @@ User-submitted intervention code runs inside a layered sandbox. **Never loosen g
 
 **Note:** compile uses stock `compile()`, not RestrictedPython's AST transform, because RestrictedPython collides with NNsight's internal variable names. Enforcement is runtime via the guards. This is intentional — don't "fix" it by reintroducing AST restriction.
 
-Before changing anything under `nn/security/`: read `src/services/ray/src/ray/nn/security/README.md` and run `pytest tests/test_security_guards.py --run-remote` against a live stack.
+Before changing anything under `nn/security/`: read `src/ndif/services/ray/nn/security/README.md` and run `pytest tests/test_security_guards.py --run-remote` against a live stack.
 
 ---
 
@@ -206,8 +207,8 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 ## Services beyond API/Ray/CLI
 
-- **`src/services/monitor/`** — standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Hits `/connected` every 10 min, runs nnsight traces on HOT models every 2 hours, posts Discord notifications on state change, and serves a Flask dashboard on port 8080. Has its own `README.md`.
-- **`src/services/ray/.../controller/gcal/`** — Google Calendar scheduler. Reads a calendar to drive dedicated deployments at specific times. Config lives in compose env (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`).
+- **`src/ndif/services/monitor/`** — standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Hits `/connected` every 10 min, runs nnsight traces on HOT models every 2 hours, posts Discord notifications on state change, and serves a Flask dashboard on port 8080. Has its own `README.md`.
+- **`src/ndif/services/ray/.../controller/gcal/`** — Google Calendar scheduler. Reads a calendar to drive dedicated deployments at specific times. Config lives in compose env (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`).
 - **`docker/postgres/`** — Postgres init SQL. Provides the dev-mode auth/API-key store wired into compose.
 
 ---
@@ -230,14 +231,14 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 | Task | Start here |
 |---|---|
-| Add an API endpoint | `src/services/api/src/app.py` + `dependencies.py` |
-| Change request validation | `src/services/api/src/dependencies.py`, `src/common/schema/request.py` |
-| Change routing / queue behavior | `src/services/api/src/queue/dispatcher.py`, `queue/processor.py` |
-| Change cluster scheduling / eviction | `src/services/ray/src/ray/deployments/controller/cluster/{cluster,node,evaluator}.py` |
-| Change model lifecycle (HOT/WARM/COLD) | `src/services/ray/src/ray/deployments/controller/cluster/deployment.py`, `controller.py` |
-| Change execution / cleanup | `src/services/ray/src/ray/deployments/modeling/base.py`, `src/services/ray/src/ray/nn/backend.py` |
-| Change the sandbox | `src/services/ray/src/ray/nn/security/` (read its README first) |
-| Change result/response storage | `src/common/schema/{result,response}.py`, `src/common/schema/mixins.py`, `src/common/providers/objectstore.py` |
+| Add an API endpoint | `src/ndif/services/api/app.py` + `dependencies.py` |
+| Change request validation | `src/ndif/services/api/dependencies.py`, `src/ndif/common/schema/request.py` |
+| Change routing / queue behavior | `src/ndif/services/api/queue/dispatcher.py`, `queue/processor.py` |
+| Change cluster scheduling / eviction | `src/ndif/services/ray/deployments/controller/cluster/{cluster,node,evaluator}.py` |
+| Change model lifecycle (HOT/WARM/COLD) | `src/ndif/services/ray/deployments/controller/cluster/deployment.py`, `controller.py` |
+| Change execution / cleanup | `src/ndif/services/ray/deployments/modeling/base.py`, `src/ndif/services/ray/nn/backend.py` |
+| Change the sandbox | `src/ndif/services/ray/nn/security/` (read its README first) |
+| Change result/response storage | `src/ndif/common/schema/{result,response}.py`, `src/ndif/common/schema/mixins.py`, `src/ndif/common/providers/objectstore.py` |
 | Change env/config | `.env.example` + the relevant service `config.py` |
 | Change CLI commands | `cli/commands/` |
 
