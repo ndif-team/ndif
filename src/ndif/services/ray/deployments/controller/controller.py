@@ -506,23 +506,20 @@ class _ControllerActor:
                 if application_name not in status:
                     continue
 
+                if deployment.model_key not in self.cluster.evaluator.cache:
+                    continue
+
+                entry = self.cluster.evaluator.cache[deployment.model_key]
+
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "dedicated": deployment.dedicated,
                     "model_key": deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].revision,
-                    "config": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].n_params,
+                    "repo_id": entry.config._name_or_path,
+                    "revision": entry.revision,
+                    "config": entry.config.to_json_string(),
+                    "n_params": entry.n_params,
                 }
 
                 if (
@@ -535,11 +532,7 @@ class _ControllerActor:
                         ),
                     }
 
-                existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config._name_or_path
-                )
+                existing_repo_ids.add(entry.config._name_or_path)
 
             for cached_deployment in node.cache.values():
                 application_name = cached_deployment.name
@@ -547,28 +540,21 @@ class _ControllerActor:
                 if application_name not in status:
                     continue
 
+                if cached_deployment.model_key not in self.cluster.evaluator.cache:
+                    continue
+
+                entry = self.cluster.evaluator.cache[cached_deployment.model_key]
+
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].revision,
-                    "config": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].n_params,
+                    "repo_id": entry.config._name_or_path,
+                    "revision": entry.revision,
+                    "config": entry.config.to_json_string(),
+                    "n_params": entry.n_params,
                 }
 
-                existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path
-                )
+                existing_repo_ids.add(entry.config._name_or_path)
 
         downloaded_models = get_downloaded_models()
 

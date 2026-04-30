@@ -317,8 +317,12 @@ class Dispatcher:
                 "Critical server error occurred. Please try again later. Sorry for the inconvenience."
             )
 
-            # Clear env cache since it comes from the Ray cluster
-            await RedisProvider.async_client.delete("env")
+            # Clear cached cluster-derived keys. status:requested has no TTL;
+            # if it's left set, the /status endpoint deadlocks (setnx fails →
+            # no trigger → status_worker xread blocks forever).
+            await RedisProvider.async_client.delete(
+                "env", "status", "status:requested"
+            )
 
             self.connect()
 
