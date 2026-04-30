@@ -52,7 +52,11 @@ class SchedulingControllerActor(_ControllerActor):
             else:
                 self.cluster.evaluator(model_key)
 
-                repo_id = self.cluster.evaluator.cache[model_key].config._name_or_path
+                if model_key not in self.cluster.evaluator.cache:
+                    continue
+
+                entry = self.cluster.evaluator.cache[model_key]
+                repo_id = entry.config._name_or_path
 
                 if repo_id in status["deployments"]:
                     del status["deployments"][repo_id]
@@ -61,12 +65,10 @@ class SchedulingControllerActor(_ControllerActor):
                     "deployment_level": DeploymentLevel.COLD.name,
                     "model_key": model_key,
                     "repo_id": repo_id,
-                    "revision": self.cluster.evaluator.cache[model_key].revision,
-                    "config": self.cluster.evaluator.cache[
-                        model_key
-                    ].config.to_json_string(),
+                    "revision": entry.revision,
+                    "config": entry.config.to_json_string(),
                     "schedule": schedule,
-                    "n_params": self.cluster.evaluator.cache[model_key].n_params,
+                    "n_params": entry.n_params,
                 }
 
         return status
