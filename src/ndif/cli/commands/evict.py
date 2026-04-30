@@ -1,11 +1,9 @@
 """Evict command for NDIF - evict (remove) a model deployment."""
 
 import click
-import ray
-import asyncio
 
-from ..lib.util import get_controller_actor_handle, get_model_key, notify_dispatcher
 from ..lib.checks import check_prerequisites
+from ..lib.evict import NDIFConnectivityError, evict as evict_lib
 from ..lib.session import get_env
 
 
@@ -32,143 +30,70 @@ def evict(checkpoints: tuple, revision: str, evict_all: bool, flush_cache: bool,
         ndif evict --all          # Evict all HOT deployments
         ndif evict --flush-cache  # Flush all WARM cache
     """
-    # Use session defaults if not provided
+    if flush_cache and (checkpoints or evict_all):
+        raise click.ClickException("--flush-cache cannot be combined with checkpoints or --all")
+    if not flush_cache and not evict_all and not checkpoints:
+        raise click.ClickException("Must provide either CHECKPOINTS, --all, or --flush-cache")
+    if evict_all and checkpoints:
+        raise click.ClickException("Cannot use both CHECKPOINTS and --all flag")
+
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     broker_url = broker_url or get_env("NDIF_BROKER_URL")
 
+    check_prerequisites(broker_url=broker_url, ray_address=ray_address)
+
     try:
-        # Check prerequisites silently
-        check_prerequisites(broker_url=broker_url, ray_address=ray_address)
-
-        # Validate arguments
         if flush_cache:
-            if checkpoints or evict_all:
-                click.echo("✗ Error: --flush-cache cannot be combined with checkpoints or --all", err=True)
-                raise click.Abort()
-        elif not evict_all and not checkpoints:
-            click.echo("✗ Error: Must provide either CHECKPOINTS, --all, or --flush-cache", err=True)
-            raise click.Abort()
-        elif evict_all and checkpoints:
-            click.echo("✗ Error: Cannot use both CHECKPOINTS and --all flag", err=True)
-            raise click.Abort()
-
-        # Connect to Ray (suppress verbose output)
-        click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
-
-        # Get controller actor handle
-        click.echo("Getting controller handle...")
-        controller = get_controller_actor_handle()
-
-        # Handle flush cache
-        if flush_cache:
-            click.echo("Flushing WARM cache from all nodes...")
-            results = ray.get(controller.flush_warm_cache.remote())
-
-            total_flushed = 0
-            total_memory = 0
-
-            for node_id, result in results.items():
-                flushed = result["flushed"]
-                memory = result["memory_freed_bytes"]
-                total_flushed += len(flushed)
-                total_memory += memory
-
-                if flushed:
-                    click.echo(f"  Node {node_id[:8]}...: {len(flushed)} model(s), {memory / (1024**3):.2f} GB freed")
-
-            if total_flushed == 0:
+            result = evict_lib(
+                flush_cache=True,
+                ray_address=ray_address,
+                broker_url=broker_url,
+                on_message=click.echo,
+            )
+            if not result["flushed"]:
                 click.echo("No WARM models to flush.")
             else:
-                click.echo(f"\n✓ Flushed {total_flushed} WARM model(s), freed {total_memory / (1024**3):.2f} GB")
+                gb = result["memory_freed_bytes"] / (1024 ** 3)
+                click.echo(f"\n✓ Flushed {len(result['flushed'])} WARM model(s), freed {gb:.2f} GB")
             return
 
-        # Determine which model keys to evict
         if evict_all:
-            # Get all deployed models from status
-            click.echo("Fetching all deployments...")
-            status_ref = controller.status.remote()
-            status = ray.get(status_ref)
-
-            # Extract model_keys from HOT deployments only
-            deployments = status.get("deployments", {})
-            model_keys = [
-                deployment_info["model_key"]
-                for deployment_info in deployments.values()
-                if "model_key" in deployment_info and deployment_info.get("deployment_level") == "HOT"
-            ]
-
-            if not model_keys:
-                click.echo("No deployments found to evict.")
-                return
-
+            result = evict_lib(
+                evict_all=True,
+                ray_address=ray_address,
+                broker_url=broker_url,
+                on_message=click.echo,
+            )
         else:
-            # Generate model keys for all checkpoints
-            model_keys = []
-            for checkpoint in checkpoints:
-                click.echo(f"Generating model key for {checkpoint}{f' (revision: {revision})' if revision else ''}...")
-                model_key = get_model_key(checkpoint, revision)
-                model_keys.append(model_key)
-                click.echo(f"  Model key: {model_key}")
+            result = evict_lib(
+                checkpoints=[(cp, revision) for cp in checkpoints],
+                ray_address=ray_address,
+                broker_url=broker_url,
+                on_message=click.echo,
+            )
 
-        # Evict the models
-        click.echo(f"Evicting {len(model_keys)} model(s)...")
+        # Summary
+        results = result["results"]
+        if not results:
+            click.echo("No deployments found to evict.")
+            return
 
-        object_ref = controller.evict.remote(model_keys=model_keys)
-        results = ray.get(object_ref)
-
-        # Build model_key -> checkpoint mapping for display
-        if evict_all:
-            # Use repo_id from deployments dict
-            key_to_name = {
-                d.get("model_key"): d.get("repo_id", d.get("model_key"))
-                for d in deployments.values()
-            }
-        else:
-            # Map model_keys back to checkpoints
-            key_to_name = dict(zip(model_keys, checkpoints))
-
-        # Display results
-        total_gpus_freed = 0
-        total_memory_freed = 0.0
-        evicted_count = 0
-        not_found_count = 0
-
-        for model_key, result in results.items():
-            display_name = key_to_name.get(model_key, model_key)
-
-            if result["status"] == "not_found":
-                if len(model_keys) == 1:
-                    click.echo(f"✗ {display_name} not found")
-                else:
-                    click.echo(f"  ✗ {display_name}: not found")
-                not_found_count += 1
-            else:
-                if len(model_keys) == 1:
-                    click.echo(f"✓ Evicted {display_name}")
-                    click.echo(f"  GPUs freed: {result['freed_gpus']}")
-                    click.echo(f"  Memory freed: {round(result['freed_memory_gbs'], 4)} GB")
-                else:
-                    click.echo(f"  ✓ {display_name}: evicted")
-
-                total_gpus_freed += result['freed_gpus']
-                total_memory_freed += result['freed_memory_gbs']
-                evicted_count += 1
-
-                # Notify dispatcher about eviction
-                asyncio.run(notify_dispatcher(broker_url, "evict", model_key))
-
-        # Summary (only for multiple models)
-        if len(model_keys) > 1:
+        evicted = [r for r in results if r["status"] == "evicted"]
+        not_found = [r for r in results if r["status"] == "not_found"]
+        if len(results) > 1:
             click.echo()
-            if evicted_count > 0:
-                click.echo(f"✓ Successfully evicted {evicted_count} model(s)")
-                click.echo(f"  Total GPUs freed: {total_gpus_freed}")
-                click.echo(f"  Total memory freed: {round(total_memory_freed, 4)} GB")
+            if evicted:
+                total_gpus = sum(r["freed_gpus"] for r in evicted)
+                total_mem = sum(r["freed_memory_gbs"] for r in evicted)
+                click.echo(f"✓ Successfully evicted {len(evicted)} model(s)")
+                click.echo(f"  Total GPUs freed: {total_gpus}")
+                click.echo(f"  Total memory freed: {round(total_mem, 4)} GB")
+            if not_found:
+                click.echo(f"✗ {len(not_found)} model(s) not found")
 
-            if not_found_count > 0:
-                click.echo(f"✗ {not_found_count} model(s) not found")
-
+    except NDIFConnectivityError as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        raise click.Abort()
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)
         raise click.Abort()

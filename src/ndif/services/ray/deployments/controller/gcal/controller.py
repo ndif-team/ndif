@@ -1,3 +1,13 @@
+"""Google Calendar driven scheduler.
+
+DEPRECATED: replaced by ``ndif.services.dashboard``, which pushes the
+schedule from a cron-driven FastAPI service instead of pulling from gcal.
+This module is kept for now so anyone with
+``NDIF_CONTROLLER_IMPORT_PATH=ndif.services.ray.deployments.controller.gcal.controller``
+isn't broken mid-migration. Plan to remove once the dashboard has run
+cleanly in production for a release cycle.
+"""
+
 import os
 import time
 
