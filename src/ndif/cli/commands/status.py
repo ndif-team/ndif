@@ -261,7 +261,7 @@ def format_state_verbose(state: dict):
                 click.echo(f"        Level: {dep.get('deployment_level', 'unknown')}")
                 click.echo(f"        GPUs: {dep.get('gpus', [])}")
                 click.echo(f"        Size: {dep.get('size_bytes', 0) / (1024**3):.2f} GB")
-                click.echo(f"        Dedicated: {dep.get('dedicated', False)}")
+                click.echo(f"        Pinned: {dep.get('pinned', False)}")
         else:
             click.echo("      (none)")
 

@@ -15,20 +15,20 @@ from ..lib.session import get_env
 @click.option('-f', '--file', 'config_file', type=click.Path(), help='YAML config file with model specs')
 @click.option('--sync', is_flag=True, help='Sync mode: evict models not in config file (requires -f)')
 @click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
-@click.option('--dedicated', is_flag=True, help='Deploy as dedicated - will not be evicted (default: False)')
+@click.option('--pinned', is_flag=True, help='Deploy as pinned - will not be evicted (default: False)')
 @click.option('--actor-class', 'actor_class', default=None,
               help='Dotted import path of the Ray actor class to use (default: the '
                    "controller's configured default, typically ModelActor). "
                    'With -f, acts as the default for entries that do not set actor_class themselves.')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedicated: bool, actor_class: str, ray_address: str, broker_url: str):
+def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinned: bool, actor_class: str, ray_address: str, broker_url: str):
     """Deploy one or more models without requiring to submit a request.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
 
     Models can be specified as arguments or via a config file (-f).
-    When using -f, per-model revision/dedicated settings in the file take precedence.
+    When using -f, per-model revision/pinned settings in the file take precedence.
 
     Use --sync with -f to make the cluster state match the config file exactly,
     evicting any models not specified in the file.
@@ -37,7 +37,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
     Examples:
         ndif deploy gpt2
         ndif deploy gpt2 meta-llama/Llama-3.1-8b
-        ndif deploy gpt2 --dedicated
+        ndif deploy gpt2 --pinned
         ndif deploy -f models.yaml
         ndif deploy -f models.yaml --sync    # Evict models not in file
     """
@@ -60,7 +60,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
             specs = load_model_config(
                 Path(config_file),
                 default_revision=revision,
-                default_dedicated=dedicated,
+                default_pinned=pinned,
                 default_model_actor_class=actor_class,
             )
         except (FileNotFoundError, ValueError) as e:
@@ -69,7 +69,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, dedi
     else:
         specs = [
             {"checkpoint": cp, "revision": revision,
-             "dedicated": dedicated, "actor_class": actor_class}
+             "pinned": pinned, "actor_class": actor_class}
             for cp in checkpoints
         ]
 

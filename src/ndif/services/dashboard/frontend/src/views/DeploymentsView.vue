@@ -13,7 +13,7 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const deployments = ref<Deployment[]>([])
 
-type LevelFilter = 'ALL' | 'HOT' | 'WARM' | 'COLD' | 'DEDICATED'
+type LevelFilter = 'ALL' | 'HOT' | 'WARM' | 'COLD' | 'PINNED'
 const levelFilter = ref<LevelFilter>('ALL')
 const search = ref('')
 const sortBy = ref<'level' | 'repo_id' | 'n_params'>('level')
@@ -92,12 +92,12 @@ async function load() {
 onMounted(load)
 
 const counts = computed(() => {
-  const out = { all: deployments.value.length, hot: 0, warm: 0, cold: 0, dedicated: 0 }
+  const out = { all: deployments.value.length, hot: 0, warm: 0, cold: 0, pinned: 0 }
   for (const d of deployments.value) {
     if (d.deployment_level === 'HOT') out.hot++
     else if (d.deployment_level === 'WARM') out.warm++
     else if (d.deployment_level === 'COLD') out.cold++
-    if (d.dedicated) out.dedicated++
+    if (d.pinned) out.pinned++
   }
   return out
 })
@@ -105,8 +105,8 @@ const counts = computed(() => {
 const filtered = computed(() => {
   let rows = deployments.value.slice()
 
-  if (levelFilter.value === 'DEDICATED') {
-    rows = rows.filter((d) => d.dedicated)
+  if (levelFilter.value === 'PINNED') {
+    rows = rows.filter((d) => d.pinned)
   } else if (levelFilter.value !== 'ALL') {
     rows = rows.filter((d) => d.deployment_level === levelFilter.value)
   }
@@ -124,8 +124,8 @@ const filtered = computed(() => {
       const ai = al === -1 ? order.length : al
       const bi = bl === -1 ? order.length : bl
       if (ai !== bi) return ai - bi
-      const ad = a.dedicated ? 1 : 0,
-        bd = b.dedicated ? 1 : 0
+      const ad = a.pinned ? 1 : 0,
+        bd = b.pinned ? 1 : 0
       if (ad !== bd) return bd - ad
       return (a.repo_id || a.model_key).localeCompare(b.repo_id || b.model_key)
     })
@@ -159,31 +159,21 @@ async function onDeploy(form: DeployForm) {
   try {
     const resp = await api.post<any>('/api/deployments/deploy', form)
     // Inspect the structured result so we can surface partial failures the
-    // controller didn't 500 over (e.g. CANT_ACCOMMODATE, FULL, "already
-    // deployed" with no actual promotion).
+    // controller didn't 500 over (e.g. CANT_ACCOMMODATE, FULL).
     const failed: string[] = []
-    let alreadyDeployed = false
     if (resp && Array.isArray(resp.deployments)) {
       for (const d of resp.deployments) {
         if (d.error) failed.push(`${d.checkpoint || d.model_key}: ${d.error}`)
-        if (d.status === 'DEPLOYED') alreadyDeployed = true
       }
     }
     if (failed.length) {
       showToast('err', `Deploy issues — ${failed.join('; ')}`)
       pending.value = pending.value.filter((p) => p.key !== placeholder.key)
-    } else if (alreadyDeployed) {
-      showToast(
-        'err',
-        `${form.checkpoint} was already in the controller's registry — ` +
-          `no new deploy was performed (controller bug). Try Restart from the card.`
-      )
-      pending.value = pending.value.filter((p) => p.key !== placeholder.key)
     } else {
       showToast(
         'ok',
-        form.dedicated
-          ? `Scheduled ${form.checkpoint} as dedicated`
+        form.pinned
+          ? `Deploying ${form.checkpoint} (pinned)…`
           : `Deploying ${form.checkpoint}…`
       )
     }
@@ -243,12 +233,9 @@ async function onEvict(d: Deployment) {
     await api.post('/api/deployments/evict', {
       model_key: d.model_key,
       checkpoint: d.repo_id,
-      revision: d.revision,
-      dedicated: !!d.dedicated
+      revision: d.revision
     })
-    showToast('ok', d.dedicated
-      ? `Unscheduled ${d.repo_id || d.model_key}`
-      : `Evicted ${d.repo_id || d.model_key}`)
+    showToast('ok', `Evicted ${d.repo_id || d.model_key}`)
     await load()
   } catch (e) {
     showToast('err', `Evict failed: ${(e as Error).message}`)
@@ -278,7 +265,7 @@ async function onEvict(d: Deployment) {
             { key: 'HOT', label: 'Hot', count: counts.hot, dot: 'hot' },
             { key: 'WARM', label: 'Warm', count: counts.warm, dot: 'warm' },
             { key: 'COLD', label: 'Cold', count: counts.cold, dot: 'cold' },
-            { key: 'DEDICATED', label: 'Pinned', count: counts.dedicated, dot: 'dedicated' }
+            { key: 'PINNED', label: 'Pinned', count: counts.pinned, dot: 'pinned' }
           ] as const)"
           :key="idx"
           :class="['chip', levelFilter === opt.key ? 'active ' + (opt.dot ?? '') : '']"
@@ -390,7 +377,7 @@ async function onEvict(d: Deployment) {
 .chip.active.hot { color: var(--green); border-color: var(--green); }
 .chip.active.warm { color: var(--amber); border-color: var(--amber); }
 .chip.active.cold { color: var(--blue); border-color: var(--blue); }
-.chip.active.dedicated { color: var(--accent); border-color: var(--accent); }
+.chip.active.pinned { color: var(--accent); border-color: var(--accent); }
 .chip-dot {
   width: 6px;
   height: 6px;
@@ -399,7 +386,7 @@ async function onEvict(d: Deployment) {
 .chip-dot.hot { background: var(--green); }
 .chip-dot.warm { background: var(--amber); }
 .chip-dot.cold { background: var(--blue); }
-.chip-dot.dedicated { background: var(--accent); }
+.chip-dot.pinned { background: var(--accent); }
 .chip-count {
   opacity: 0.6;
   font-size: 0.7rem;

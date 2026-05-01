@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """Reconcile the schedule store against the controller.
 
-Replaces the pull-based ``SchedulingActor`` (Google Calendar) with a
-push-based cron job:
+A push-based cron job that owns the schedule diff itself:
 
     1. Read ``schedule.json``.
-    2. Filter to events whose ``[start, end)`` window contains "now".
-    3. Hash that active set; bail if unchanged from last run.
-    4. Otherwise call ``deploy(specs, sync=True)`` so the controller's
-       set of dedicated models matches exactly. ``sync=True`` evicts anything
-       previously dedicated that's no longer scheduled.
-    5. Persist the new hash + per-event ``last_status`` / ``last_error`` back
-       to ``schedule.json``. Discord-notify failures.
+    2. Filter to events whose ``[start, end)`` window contains "now". An
+       event with ``end is None`` is open-ended ("active forever after start").
+    3. Compare the new active set against (a) the previously-pushed active
+       set persisted in ``.reconcile.state.json`` and (b) what the controller
+       actually has HOT right now.
+       - to_evict   = previously-active − new-active
+       - to_deploy  = new-active − currently-HOT (covers both "newly added"
+         and "drifted out — controller no longer has it")
+    4. Issue explicit evict / deploy CLI-lib calls. The controller no longer
+       has any "sync mode" of its own; pinned just means "do not evict".
+    5. Persist the new active set + per-event status back. Discord-notify
+       failures.
 
-Calendar-driven deployments are always ``dedicated=True`` (matches today's
-gcal semantics).
+Schedule entries always carry ``pinned=True`` (the schedule's whole purpose
+is to keep models up).
 
 Invoked from cron as::
 
@@ -25,12 +29,11 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
 import logging
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Optional
 
 import requests
 
@@ -44,26 +47,31 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s")
 
 
 # ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
 
 
 def _spec_from_event(e: ScheduleEvent) -> dict:
     return {
         "checkpoint": e.checkpoint,
         "revision": e.revision,
-        "dedicated": True,  # calendar entries are always dedicated
+        "pinned": True,  # schedule entries are always pinned
         "actor_class": e.actor_class,
         "padding_factor": e.padding_factor,
         "execution_timeout_seconds": e.execution_timeout_seconds,
     }
 
 
-def _hash_active(events: Iterable[ScheduleEvent]) -> str:
-    """Deterministic hash of the active set so we only push on change."""
-    rows = []
-    for e in events:
-        rows.append(json.dumps(_spec_from_event(e), sort_keys=True))
-    rows.sort()
-    return hashlib.sha256("\n".join(rows).encode()).hexdigest()
+def _pair(spec_or_event) -> tuple[str, Optional[str]]:
+    """The (checkpoint, revision) pair that identifies a deployment.
+
+    Schedule entries store ``revision``; ``/status`` deployments expose
+    ``repo_id`` and ``revision``. We compare on ``(checkpoint, revision or None)``
+    so the absent and explicit-null revisions match.
+    """
+    if isinstance(spec_or_event, ScheduleEvent):
+        return (spec_or_event.checkpoint, spec_or_event.revision or None)
+    return (spec_or_event["checkpoint"], spec_or_event.get("revision") or None)
 
 
 def _load_state(state_path: Path) -> dict:
@@ -80,41 +88,24 @@ def _save_state(state_path: Path, state: dict) -> None:
     state_path.write_text(json.dumps(state, indent=2))
 
 
-def _controller_has_all_active(active: list[ScheduleEvent], api_url: str) -> bool:
-    """Cheap pre-check: does the controller currently have every active
-    schedule entry deployed as HOT?
-
-    Why: the schedule-set hash is necessary but not sufficient. If NDIF
-    restarts (or an admin evicts a dedicated model out-of-band), the active
-    set hasn't changed but the controller has lost the deployments. Without
-    this check the cron would happily skip the push, leaving the schedule
-    silently unenforced.
-
-    Conservative on errors: if /status is unreachable, return False so we
-    fall through to a re-push. Better to push needlessly than to drop a
-    dedicated model.
+def _fetch_hot_pairs(api_url: str) -> Optional[set[tuple[str, Optional[str]]]]:
+    """Return the set of (repo_id, revision) currently HOT according to the
+    NDIF API's HTTP /status. ``None`` on transport error → callers should
+    treat that as "unknown" and lean toward re-deploying.
     """
     try:
         r = requests.get(f"{api_url.rstrip('/')}/status", timeout=10)
         r.raise_for_status()
     except requests.RequestException as e:
-        logger.warning("Cannot verify controller state via /status: %s", e)
-        return False
+        logger.warning("Cannot read /status to verify controller: %s", e)
+        return None
 
     deps = r.json().get("deployments") or {}
-    hot_pairs = {
+    return {
         (v.get("repo_id"), v.get("revision") or None)
         for v in deps.values()
         if v.get("deployment_level") == "HOT"
     }
-    for ev in active:
-        if (ev.checkpoint, ev.revision or None) not in hot_pairs:
-            logger.info(
-                "Controller missing active model %s (revision=%s); will re-push",
-                ev.checkpoint, ev.revision,
-            )
-            return False
-    return True
 
 
 def _notify_failures(failed: list[dict]) -> None:
@@ -141,18 +132,21 @@ def _notify_failures(failed: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# main entry
+# ---------------------------------------------------------------------------
 
 
 def reconcile_once(*, force: bool = False) -> dict:
-    """Run one reconcile pass. Used by cron and the FastAPI background task.
+    """Run one reconcile pass. Used by cron and by the FastAPI background
+    task that fires after a schedule write.
 
     Args:
-        force: If True, push to the controller even when the active set hash
-            hasn't changed. Useful after a hand-edit of ``schedule.json`` or
-            when manually re-running.
+        force: If True, treat every active entry as needing a re-deploy and
+            every disappeared entry as needing eviction, even if the
+            persisted state and controller agree.
 
     Returns:
-        ``{"changed": bool, "active": [model_key, ...], "result": <deploy result> | None}``
+        ``{"changed": bool, "active": [...], "evicted": [...], "deployed": [...]}``
     """
     settings = get_settings()
     store = ScheduleStore(settings.schedule_path)
@@ -161,65 +155,134 @@ def reconcile_once(*, force: bool = False) -> dict:
     events = store.list()
     active = filter_active(events, when=now)
 
-    new_hash = _hash_active(active)
     state = _load_state(settings.reconcile_state_path)
-    old_hash = state.get("hash")
+    prev_specs: list[dict] = state.get("active_specs", [])
+    prev_pairs = {_pair(s) for s in prev_specs}
 
-    # The hash detects schedule edits. The controller-state check detects
-    # drift caused by things outside the schedule (NDIF restart, admin
-    # evicts a dedicated model out-of-band, controller crash, etc).
-    hash_unchanged = new_hash == old_hash
-    controller_in_sync = (
-        not active or _controller_has_all_active(active, settings.ndif_api_url)
+    new_specs = [_spec_from_event(e) for e in active]
+    new_pairs = {_pair(s) for s in new_specs}
+
+    # Models we previously had pinned but no longer want pinned.
+    to_evict_pairs = sorted(prev_pairs - new_pairs)
+
+    # Verify the controller still has every active model HOT.  Anything in
+    # the active set that ISN'T currently HOT needs to be (re-)deployed.
+    hot_pairs = _fetch_hot_pairs(settings.ndif_api_url)
+    to_deploy_specs: list[dict] = []
+    for spec in new_specs:
+        p = _pair(spec)
+        if force:
+            to_deploy_specs.append(spec)
+        elif p not in prev_pairs:
+            # newly added to schedule
+            to_deploy_specs.append(spec)
+        elif hot_pairs is None or p not in hot_pairs:
+            # drifted out, or we couldn't verify — be safe, re-push
+            to_deploy_specs.append(spec)
+
+    if not to_evict_pairs and not to_deploy_specs:
+        logger.info(
+            "No change (%d active event(s)); controller in sync", len(active)
+        )
+        # Re-persist active_specs in case anything changed in the spec body
+        # (revision, padding_factor, etc.) without changing the (cp, rev) pair.
+        state["active_specs"] = new_specs
+        state["last_run"] = now.isoformat()
+        state["active_count"] = len(active)
+        _save_state(settings.reconcile_state_path, state)
+        return {
+            "changed": False,
+            "active": [e.checkpoint for e in active],
+            "evicted": [],
+            "deployed": [],
+        }
+
+    logger.info(
+        "Reconciling: evict=%d deploy=%d (active=%d)",
+        len(to_evict_pairs), len(to_deploy_specs), len(active),
     )
 
-    if hash_unchanged and controller_in_sync and not force:
-        logger.info("No change (%d active event(s)); controller state matches", len(active))
-        return {"changed": False, "active": [e.checkpoint for e in active], "result": None}
-
-    if hash_unchanged and not controller_in_sync:
-        logger.info("Schedule unchanged but controller drifted; re-pushing")
-
-    logger.info("Active set changed (%d event(s)); pushing to controller", len(active))
-
     # Import lazily — keeps the FastAPI startup cost low.
-    from ...dashboard.backend import ndif_client  # noqa: E402
+    from ..backend import ndif_client
 
-    specs = [_spec_from_event(e) for e in active]
-
-    if not specs:
-        # Nothing should be dedicated — sync evicts everything currently HOT
-        # if the desired set is empty. We pass an empty deploy with sync=True.
-        # ``deploy()`` handles the empty-spec case via the sync branch.
-        logger.info("Active set is empty; evicting any previously-dedicated models")
-
-    try:
-        result = ndif_client.deploy(specs, sync=True)
-    except ndif_client.NDIFConnectivityError as e:
-        logger.error("Reconcile aborted: %s", e)
-        return {"changed": False, "active": [e_.checkpoint for e_ in active], "result": None,
-                "error": str(e)}
-    except Exception as e:
-        logger.exception("Reconcile failed")
-        # Don't update the hash on hard failure so the next tick will retry.
-        return {"changed": False, "active": [e_.checkpoint for e_ in active], "result": None,
-                "error": str(e)}
-
-    # Echo the deploy_lib's progress lines into the cron log so admins can
-    # actually see what happened — these are the same lines the CLI prints.
-    for line in result.get("logs", []):
-        logger.info("[deploy] %s", line)
-    for d in result.get("deployments", []):
-        logger.info(
-            "[result] %s status=%s%s",
-            d.get("checkpoint"),
-            d.get("status"),
-            f" error={d['error']}" if d.get("error") else "",
-        )
-
-    # Update per-event status from the deploy result, mapping by checkpoint
-    by_checkpoint = {d["checkpoint"]: d for d in result.get("deployments", [])}
     failed: list[dict] = []
+    evicted_pairs: list[tuple] = []
+    deployed_pairs: list[tuple] = []
+
+    # ---- Evict removed entries -----------------------------------------
+    if to_evict_pairs:
+        try:
+            r = ndif_client.evict(checkpoints=[(cp, rev) for cp, rev in to_evict_pairs])
+            for line in r.get("logs", []):
+                logger.info("[evict] %s", line)
+            for entry in r.get("results", []):
+                logger.info(
+                    "[evict-result] %s status=%s",
+                    entry.get("model_key"), entry.get("status"),
+                )
+            evicted_pairs = list(to_evict_pairs)
+        except ndif_client.NDIFConnectivityError as e:
+            logger.error("Evict step aborted: %s", e)
+            return {
+                "changed": False,
+                "active": [e.checkpoint for e in active],
+                "evicted": [], "deployed": [],
+                "error": str(e),
+            }
+        except Exception as e:
+            logger.exception("Evict step failed")
+            return {
+                "changed": False,
+                "active": [e_.checkpoint for e_ in active],
+                "evicted": [], "deployed": [],
+                "error": str(e),
+            }
+
+    # ---- Deploy added / drifted entries --------------------------------
+    deploy_result: dict = {}
+    if to_deploy_specs:
+        try:
+            deploy_result = ndif_client.deploy(to_deploy_specs, sync=False)
+            for line in deploy_result.get("logs", []):
+                logger.info("[deploy] %s", line)
+            for d in deploy_result.get("deployments", []):
+                logger.info(
+                    "[deploy-result] %s status=%s%s",
+                    d.get("checkpoint"), d.get("status"),
+                    f" error={d['error']}" if d.get("error") else "",
+                )
+            deployed_pairs = [_pair(s) for s in to_deploy_specs]
+        except ndif_client.NDIFConnectivityError as e:
+            logger.error("Deploy step aborted: %s", e)
+            # Eviction already happened; persist that progress so we don't
+            # try to evict again next tick.
+            state["active_specs"] = new_specs
+            state["last_run"] = now.isoformat()
+            state["active_count"] = len(active)
+            _save_state(settings.reconcile_state_path, state)
+            return {
+                "changed": True,
+                "active": [e.checkpoint for e in active],
+                "evicted": [list(p) for p in evicted_pairs],
+                "deployed": [],
+                "error": str(e),
+            }
+        except Exception as e:
+            logger.exception("Deploy step failed")
+            state["active_specs"] = new_specs
+            state["last_run"] = now.isoformat()
+            state["active_count"] = len(active)
+            _save_state(settings.reconcile_state_path, state)
+            return {
+                "changed": True,
+                "active": [e_.checkpoint for e_ in active],
+                "evicted": [list(p) for p in evicted_pairs],
+                "deployed": [],
+                "error": str(e),
+            }
+
+    # Update per-event status from the deploy result
+    by_checkpoint = {d["checkpoint"]: d for d in deploy_result.get("deployments", [])}
     for ev in active:
         d = by_checkpoint.get(ev.checkpoint)
         if d is None:
@@ -232,7 +295,7 @@ def reconcile_once(*, force: bool = False) -> dict:
                 "error": d["error"],
             })
 
-    state["hash"] = new_hash
+    state["active_specs"] = new_specs
     state["last_run"] = now.isoformat()
     state["active_count"] = len(active)
     _save_state(settings.reconcile_state_path, state)
@@ -242,18 +305,21 @@ def reconcile_once(*, force: bool = False) -> dict:
     return {
         "changed": True,
         "active": [e.checkpoint for e in active],
-        "result": result,
+        "evicted": [list(p) for p in evicted_pairs],
+        "deployed": [list(p) for p in deployed_pairs],
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true",
-                        help="Push to controller even if the active set hash is unchanged")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Re-push every active entry, even if state agrees",
+    )
     args = parser.parse_args()
 
     out = reconcile_once(force=args.force)
-    print(json.dumps({k: v for k, v in out.items() if k != "result"}, default=str))
+    print(json.dumps(out, default=str))
     if out.get("error"):
         sys.exit(1)
 

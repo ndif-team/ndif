@@ -149,7 +149,7 @@ class Cluster:
             "ndif.cluster.num_nodes": len(self.nodes),
         }) as span:
             logger.info(
-                f"Cluster deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}..."
+                f"Cluster deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}..."
             )
 
             results = {"result": {}, "evictions": set()}
@@ -174,30 +174,12 @@ class Cluster:
                 else:
                     evaluated_configs.append((model_key, config, size_in_bytes))
 
-            # If any config is dedicated, evict deprecated dedicated deployments not in the new set.
-            has_dedicated = any(cfg.dedicated for _, cfg, _ in evaluated_configs)
-            if has_dedicated:
-                logger.info("=> Checking to evict deprecated dedicated deployments...")
-
-                for node in self.nodes.values():
-                    for model_key, deployment in list(node.deployments.items()):
-                        if deployment.dedicated and model_key not in all_model_keys:
-                            logger.info(
-                                f"==> Evicting deprecated dedicated deployment {model_key} from {node.name}"
-                            )
-
-                            results["evictions"].add(model_key)
-
-                            node.evict(model_key, exclude=all_model_keys)
-
-                            change = True
-
             # Sort models by size in descending order (deploy biggest ones first)
             sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
 
             # For each model to deploy, find the best node to deploy it on, if possible.
             for model_key, config, size_in_bytes in sorted_configs:
-                dedicated = config.dedicated
+                pinned = config.pinned
 
                 logger.info(
                     f"=> Analyzing deployment of {model_key} with size {size_in_bytes}..."
@@ -212,7 +194,7 @@ class Cluster:
                     )
 
                     # Evaluate the node to see if the model can be deployed on it.
-                    candidate = node.evaluate(model_key, size_in_bytes, dedicated=dedicated, exclude=all_model_keys)
+                    candidate = node.evaluate(model_key, size_in_bytes, pinned=pinned, exclude=all_model_keys)
 
                     logger.info(
                         f"==> Candidate: {candidate.candidate_level.name}, gpus: {candidate.gpus}, evictions: {candidate.evictions}"
@@ -264,7 +246,7 @@ class Cluster:
                         model_key,
                         candidate,
                         size_in_bytes,
-                        dedicated=dedicated,
+                        pinned=pinned,
                         exclude=all_model_keys,
                         execution_timeout_seconds=config.execution_timeout_seconds,
                         actor_class=config.actor_class or self.default_model_actor_class,

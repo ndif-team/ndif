@@ -72,7 +72,7 @@ The "what file do I change for X" table.
 | ⚠️ The sandbox (anything security) | `src/ndif/services/ray/nn/security/` — §7 (read README.md first) |
 | What modules user code can import | `src/ndif/services/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
 | Result/response serialization and storage | `src/ndif/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
-| Google Calendar scheduling | `src/ndif/services/ray/deployments/controller/gcal/` — §5.7 |
+| Pinned-deployment scheduling | `src/ndif/services/dashboard/` (schedule store + reconcile cron) — §5.7 |
 | Distributed tracing / Jaeger spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
 | API keys / dev-mode Postgres | `src/ndif/services/api/db.py`, `src/ndif/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
 | A CLI command | `cli/commands/` — §11 |
@@ -98,8 +98,6 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/services/ray/deployments/controller/cluster/node.py` | `Node` — single node's GPUs/CPU/cache; `evictions()` algorithm |
 | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | `Deployment` + `DeploymentLevel` enum |
 | `src/ndif/services/ray/deployments/controller/cluster/evaluator.py` | `ModelEvaluator` — meta-model size + padding |
-| `src/ndif/services/ray/deployments/controller/gcal/controller.py` | `SchedulingControllerActor` — Controller subclass that pulls deployments from Google Calendar |
-| `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` | `SchedulingActor` — actual calendar poll loop |
 | `src/ndif/services/ray/deployments/modeling/base.py` | `BaseModelDeployment`, `ModelActor`, `pre()`/`execute()`/`post()`/`cleanup()` |
 | `src/ndif/services/ray/deployments/modeling/util.py` | `kill_thread()`, `load_with_cache_deletion_retry()`, `remove_accelerate_hooks()` |
 | `src/ndif/services/ray/nn/backend.py` | `RemoteExecutionBackend` — bridge between NNsight and the Protector |
@@ -113,12 +111,12 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/common/schema/response.py` | `BackendResponseModel` — `respond()` (Socket.IO / callback / save) |
 | `src/ndif/common/schema/result.py` | `BackendResultModel` + `TensorStoragePickler` |
 | `src/ndif/common/schema/mixins.py` | `ObjectStorageMixin`, `TelemetryMixin` |
-| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (dedicated, timeouts) |
+| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (pinned, timeouts) |
 | `src/ndif/common/providers/redis.py` | `RedisProvider` — sync + async clients |
 | `src/ndif/common/providers/objectstore.py` | `ObjectStoreProvider` — MinIO/S3 via boto3 |
 | `src/ndif/common/providers/socketio.py` | `SioProvider` |
 | `src/ndif/common/providers/postgres.py` | `PostgresProvider` — connection pool |
-| `src/ndif/common/providers/mailgun.py` | `MailgunProvider` — email notifications (gcal errors, non-blocking callbacks) |
+| `src/ndif/common/providers/mailgun.py` | `MailgunProvider` — email notifications (non-blocking callbacks) |
 | `src/ndif/common/providers/ray.py` | `RayProvider` — Ray client connection |
 | `src/ndif/common/tracing/setup.py` | `init_tracing()`, OTLP exporter |
 | `src/ndif/common/tracing/spans.py` | `trace_span()`, `set_request_attributes()` |
@@ -177,7 +175,7 @@ A one-page map of the important files. Use this if you know the topic but not th
    - [Deployment Levels](#54-deployment-levels)
    - [Deployment Scheduling](#55-deployment-scheduling)
    - [The Build/Apply Cycle](#56-the-buildapply-cycle)
-   - [Google Calendar Scheduling](#57-google-calendar-scheduling)
+   - [Pinned-Deployment Scheduling](#57-pinned-deployment-scheduling)
    - [Iterating on this subsystem](#58-iterating-on-this-subsystem)
 6. [Model Execution](#6-model-execution)
    - [Overview](#overview-4)
@@ -483,7 +481,7 @@ Every request to `/request` passes through the `validate_request` dependency, wh
 
 3. **Python version validation** — Compares the client's Python version (from the `python-version` header) against the server's minimum. Only major.minor versions are compared.
 
-4. **Hotswapping access check** — Checks if the API key has the "hotswapping" tier, which allows deploying models that aren't in the dedicated schedule. This is stored in PostgreSQL's `key_tier_assignments` table.
+4. **Hotswapping access check** — Checks if the API key has the "hotswapping" tier, which allows deploying models that aren't in the pinned schedule. This is stored in PostgreSQL's `key_tier_assignments` table.
 
 ```python
 async def validate_request(raw_request: Request) -> BackendRequestModel:
@@ -724,17 +722,17 @@ async def processor_worker(self, provision: bool = True):
 
 The `provision()` method coordinates with the Controller to ensure the model is deployed:
 
-1. Check if the model is a **dedicated** deployment (scheduled via Google Calendar or CLI)
-2. If not dedicated, filter out requests without hotswapping access
+1. Check if the model is a **pinned** deployment (scheduled via the dashboard or CLI)
+2. If not pinned, filter out requests without hotswapping access
 3. Ask the Controller to deploy the model
 4. Handle evictions — the Controller may evict other models to free GPUs
 
-**Dedicated vs. Hotswapping:**
+**Pinned vs. Hotswapping:**
 
 NDIF has two deployment modes:
 
-- **Dedicated:** Models specified at startup or via the schedule. Available to all users.
-- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-dedicated models.
+- **Pinned:** Models specified at startup or via the schedule. Available to all users.
+- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-pinned models.
 
 **Status updates:**
 
@@ -831,10 +829,10 @@ It is instantiated with configuration from environment variables (see also the c
 
 | Parameter | Env Variable | Default | Description |
 |-----------|-------------|---------|-------------|
-| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
+| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (pinned) |
 | `model_import_path` | — | `ndif.services.ray.deployments.modeling.model:app` | Python path to ModelActor app factory |
 | `default_execution_timeout_seconds` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden |
-| `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a non-dedicated model stays deployed before eviction |
+| `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a non-pinned model stays deployed before eviction |
 | `model_cache_percentage` | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory available for warm cache |
 | `default_padding_factor` | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative memory-overhead padding for model-size estimates |
 | `default_padding_bias` | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | Additive memory-overhead padding for model-size estimates |
@@ -848,13 +846,13 @@ Node discovery is polled on its own interval:
 **Key responsibilities:**
 
 1. **Cluster state** — Track nodes, GPUs, and memory via periodic `update_nodes()` calls (driven by `check_nodes()` async loop)
-2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `dedicated`, `execution_timeout_seconds`, and similar per-model overrides.
+2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `pinned`, `execution_timeout_seconds`, and similar per-model overrides.
 3. **Warm cache management** — `flush_warm_cache(node_ids=None)` drops all WARM models on the specified nodes (or all nodes), transitioning them to COLD and returning the freed memory per node.
 4. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and also reports COLD (downloaded-but-not-deployed) models via `get_downloaded_models()`. `get_deployment(model_key)` returns a single deployment's state.
 5. **Environment info** — `env()` reports Python version and installed packages. Used by `ndif env` and `/env` to diagnose client/server version mismatches.
 6. **Internal state** — `get_state()` returns the full Controller + Cluster state for debugging.
 
-**Subclass: `SchedulingControllerActor`** (in `deployments/controller/gcal/`) extends `_ControllerActor` to pull dedicated deployments from a Google Calendar. See §5.7.
+**Pinned scheduling.** Pinned deployments are no longer driven by a Ray-side actor — they live in the dashboard's `schedule.json` and are pushed to this controller by the dashboard's reconcile cron. See §5.7.
 
 ### 5.2 Cluster Management
 
@@ -907,7 +905,7 @@ class CandidateLevel(IntEnum):
 ```
 
 4. **Select the best node** — pick the candidate with the lowest `CandidateLevel`. If multiple nodes tie, choose randomly.
-5. **Execute evictions** if needed — models are evicted by fewest GPUs first, respecting the minimum deployment time and dedicated status.
+5. **Execute evictions** if needed — models are evicted by fewest GPUs first, respecting the minimum deployment time and pinned status.
 
 **GPU assignment:**
 
@@ -981,27 +979,27 @@ class Deployment:
     deployment_level: DeploymentLevel    # HOT, WARM, or COLD
     gpus: list[int]                      # GPU indices (empty for WARM/COLD)
     size_bytes: int                      # Model size for resource accounting
-    dedicated: bool                      # Protected from eviction?
+    pinned: bool                         # Protected from eviction?
     node_id: str                         # Which node
     deployed: float                      # Timestamp (for minimum deployment time)
 ```
 
 ### 5.5 Deployment Scheduling
 
-The Controller enforces a **minimum deployment time** to prevent thrashing. Non-dedicated models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
+The Controller enforces a **minimum deployment time** to prevent thrashing. Non-pinned models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
 
 The eviction algorithm in `Node.evictions()`:
 
 ```python
-def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+def evictions(self, gpus_required: int, pinned: bool = False) -> List[MODEL_KEY]:
     deployments = sorted(self.deployments.values(), key=lambda x: len(x.gpus))
     gpus_needed = gpus_required - len(self.resources.available_gpus)
     evictions = []
 
     for deployment in deployments:
-        if deployment.dedicated:
-            continue  # Never evict dedicated models
-        if not dedicated and deployment hasn't reached minimum time:
+        if deployment.pinned:
+            continue  # Never evict pinned models
+        if not pinned and deployment hasn't reached minimum time:
             continue  # Respect minimum deployment time
         evictions.append(deployment.model_key)
         gpus_needed -= len(deployment.gpus)
@@ -1011,7 +1009,7 @@ def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_K
     return []  # Can't free enough GPUs
 ```
 
-Models with fewer GPUs are evicted first (to minimize disruption). Dedicated models are never evicted. The minimum deployment time is only waived when deploying another dedicated model.
+Models with fewer GPUs are evicted first (to minimize disruption). Pinned models are never evicted. The minimum deployment time is only waived when deploying another pinned model.
 
 ### 5.6 The Build/Apply Cycle
 
@@ -1037,60 +1035,49 @@ class DeploymentDelta:
 
 The ordering is critical: deletions and caches must complete before from-cache and creates, because they free the GPU resources needed by the new deployments. ⚠️ See §14 Invariants — this is load-bearing, not a stylistic choice.
 
-### 5.7 Google Calendar Scheduling
+### 5.7 Pinned-Deployment Scheduling
 
-NDIF can optionally drive dedicated deployments from a Google Calendar instead of a static `NDIF_DEPLOYMENTS` list or ad-hoc `ndif deploy` invocations. This is the mechanism that runs production NDIF: the schedule lives in a calendar that anyone authorized can edit, and the cluster automatically tracks it.
+Pinned deployments are driven by `services/dashboard/` — a small admin web app
+with a JSON-backed schedule store. The schedule defines which models should
+be HOT and pinned at any given time; a cron job inside the dashboard
+reconciles that desired set against the controller every 2 minutes (and
+again immediately on every schedule edit).
 
-**Key files:**
-- `src/ndif/services/ray/deployments/controller/gcal/controller.py` — `SchedulingControllerActor`
-- `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` — `SchedulingActor`
+**Key files** (full design in the dashboard's own `README.md`):
+- `src/ndif/services/dashboard/backend/schedule_store.py` — JSON CRUD over `schedule.json`
+- `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`
+- `src/ndif/services/dashboard/backend/routers/schedule.py` — REST CRUD that backs the dashboard's calendar UI
 
 **Architecture:**
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     Ray Head Node                             │
-│                                                                │
-│   SchedulingControllerActor  (extends _ControllerActor)       │
-│          │                                                    │
-│          │  ray.get(scheduler.get_schedule.remote())          │
-│          │  (used by status() to merge schedule into          │
-│          │   cluster state)                                   │
-│          ▼                                                    │
-│   SchedulingActor                                             │
-│          │                                                    │
-│          │  every SCHEDULING_CHECK_INTERVAL_S seconds:        │
-│          │    1. list events in [now, now+1s]                 │
-│          │    2. sanitize descriptions → MODEL_KEYs           │
-│          │    3. hash the set; skip if unchanged              │
-│          │    4. controller.deploy(                           │
-│          │         {key: DeploymentConfig(dedicated=True)})   │
-│          │    5. color successful events dark green;          │
-│          │       prefix failed events with "ERROR:"           │
-│          │       (and email the event creator via Mailgun)    │
-│          ▼                                                    │
-│   Google Calendar API  ◄──── service account credentials     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Dashboard backend (FastAPI, port 8081)                     │
+│                                                              │
+│   Vue calendar UI  ───────►  /api/schedule  ──► schedule.json
+│                                  │                           │
+│                                  ▼                           │
+│                          BackgroundTasks                     │
+│                                  │                           │
+│              every 2 min cron ───┴── reconcile_once()        │
+│                                  │                           │
+│                                  ▼                           │
+│   diff:  prev_active vs new_active vs controller HOT set    │
+│   evict = prev − new                                        │
+│   deploy = new − currently-HOT                              │
+│                                  │                           │
+│                                  ▼                           │
+│   ndif_client.evict / .deploy  ──► Ray controller (pinned=True)
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**How it's enabled.** `SchedulingControllerActor` is a `_ControllerActor` subclass. It replaces the regular `ControllerActor` when `NDIF_CONTROLLER_IMPORT_PATH` points at `ndif.services.ray.deployments.controller.gcal.controller`. Docker compose sets the scheduling env vars (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`) and the gcal variant takes over automatically.
+**Event format.** Each schedule entry is `(checkpoint, revision, start, end, …DeploymentConfig fields)`. An event with `end is None` is open-ended (active forever after `start`). Events deploy as `pinned=True`, protecting them from eviction (see §5.5) for the duration of their `[start, end)` window.
 
-**Event format.** Each calendar event's **description** is a `MODEL_KEY`. The event's title is only used for human-readable display. Events are deployed as `dedicated=True`, which means they are protected from eviction (see §5.5) for as long as the event is live. When the event ends and the next poll sees no corresponding event, the model stops being dedicated and can be cached or deleted by the normal eviction path.
+**Drift recovery.** The reconcile cron also queries the API's HTTP `/status` to see what's currently HOT. If a scheduled model isn't HOT — because Ray restarted, an admin manually evicted it, or the controller crashed — it's re-deployed regardless of whether the schedule itself changed.
 
-**Feedback loop.** The scheduler writes back to the calendar:
-- **Successful deployments** get colored `colorId=10` ("Basil" / dark green).
-- **Failed deployments** (the calendar references a model the cluster can't accommodate, or that fails to load) get their summary prefixed with `ERROR:` and the event creator receives an email via `MailgunProvider`.
+**Failure feedback.** Per-event `last_status` / `last_error` get written back to `schedule.json` after each push and surface in the dashboard UI. Hard failures additionally fire a Discord notification via the same webhook the connectivity monitor uses (see §13).
 
-This turns the calendar into both the source of truth and the status dashboard for dedicated deployments.
-
-**Config:**
-
-| Variable | Default | Description |
-|---|---|---|
-| `SCHEDULING_GOOGLE_CALENDAR_ID` | — | Calendar ID to poll |
-| `SCHEDULING_GOOGLE_CREDS_PATH` | — | Path to service account JSON inside the container |
-| `SCHEDULING_CHECK_INTERVAL_S` | `10` | Poll interval |
-| `SCHEDULING_DELAY_START_S` | `15` | Delay before first poll (lets worker nodes register with the head) |
+For the full UX (login, monitor view, deployments tab, calendar editing), see `src/ndif/services/dashboard/README.md`.
 
 ### 5.8 Iterating on this subsystem
 
@@ -2161,9 +2148,9 @@ All configuration is via environment variables. The defaults shown below are wha
 | Variable | Code Default | Description |
 |----------|---------|-------------|
 | `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller` | Python path to Controller module |
-| `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
+| `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (pinned) |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden per-deployment |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` (code), `0` (`.env.example`) | Min time before a non-dedicated model can be evicted |
+| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` (code), `0` (`.env.example`) | Min time before a non-pinned model can be evicted |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory for warm cache |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative memory-overhead padding |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | Additive memory-overhead padding |
@@ -2533,25 +2520,20 @@ For the subsystem-specific tables that appear inline in earlier sections (§3.5,
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `NDIF_CONTROLLER_IMPORT_PATH` | — | `ndif.services.ray.deployments.controller.controller` | compose | Python path to the Controller app factory (swap to `...gcal.controller` to enable Google Calendar scheduling) |
-| `NDIF_DEPLOYMENTS` | `""` | — | `ray/deployments/controller/controller.py` | Pipe-separated list of model keys to deploy as dedicated at startup |
+| `NDIF_CONTROLLER_IMPORT_PATH` | — | `ndif.services.ray.deployments.controller.controller` | compose | Python path to the Controller app factory |
+| `NDIF_DEPLOYMENTS` | `""` | — | `ray/deployments/controller/controller.py` | Pipe-separated list of model keys to deploy as pinned at startup |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | — | `ray/deployments/controller/controller.py` | Max execution time per request unless overridden per-deployment |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `0` | `ray/deployments/controller/controller.py` | Min time before a non-dedicated model can be evicted |
+| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `0` | `ray/deployments/controller/controller.py` | Min time before a non-pinned model can be evicted |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | — | `ray/deployments/controller/controller.py` | Fraction of CPU memory usable as WARM cache |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | — | `ray/deployments/controller/controller.py` | Multiplicative memory-overhead padding (see §5.3) |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | — | `ray/deployments/controller/controller.py` | Additive memory-overhead padding |
 | `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | — | `ray/deployments/controller/controller.py::check_nodes` | Interval for node discovery polling |
 
-### 15.4 Google Calendar scheduling (`SchedulingControllerActor`)
+### 15.4 Pinned-deployment scheduling (`services/dashboard/`)
 
-Only read when `NDIF_CONTROLLER_IMPORT_PATH` points at the gcal variant. See §5.7.
-
-| Variable | Code default | `.env.example` | Read in | Description |
-|---|---|---|---|---|
-| `SCHEDULING_GOOGLE_CALENDAR_ID` | `""` | — | `ray/deployments/controller/gcal/controller.py` | Calendar ID to poll |
-| `SCHEDULING_GOOGLE_CREDS_PATH` | `""` | — | `ray/deployments/controller/gcal/controller.py` | Path to service-account JSON (inside the container) |
-| `SCHEDULING_CHECK_INTERVAL_S` | `10` | — | `ray/deployments/controller/gcal/controller.py` | Calendar poll interval |
-| `SCHEDULING_DELAY_START_S` | `15` | — | `ray/deployments/controller/gcal/controller.py` | Delay before first poll (lets workers join) |
+Pinned deployments are now driven by the dashboard's schedule store and
+reconcile cron — no Ray-side scheduler env vars. See §5.7 and the dashboard's
+own `README.md` for the full set of `DASHBOARD_*` env vars.
 
 ### 15.5 Queue / Dispatcher
 
@@ -2571,7 +2553,7 @@ Only read when `NDIF_CONTROLLER_IMPORT_PATH` points at the gcal variant. See §5
 |---|---|---|---|---|
 | `PROVIDER_MAX_RETRIES` | `3` | — | `common/providers/__init__.py` | Retries for provider connects |
 | `PROVIDER_RETRY_INTERVAL_S` | `5` | — | `common/providers/__init__.py` | Retry interval (seconds) |
-| `MAILGUN_DOMAIN` | — | — | `common/providers/mailgun.py` | Mailgun domain (gcal error emails, non-blocking callbacks) |
+| `MAILGUN_DOMAIN` | — | — | `common/providers/mailgun.py` | Mailgun domain (non-blocking callbacks) |
 | `MAILGUN_API_KEY` | — | — | `common/providers/mailgun.py` | Mailgun API key |
 
 ### 15.7 PostgreSQL (auth)
@@ -2677,9 +2659,6 @@ ndif/
 │   │   │   │   │   │   │   ├── node.py         # Node + GPU accounting
 │   │   │   │   │   │   │   ├── deployment.py   # HOT/WARM/COLD lifecycle
 │   │   │   │   │   │   │   └── evaluator.py    # Model size evaluation
-│   │   │   │   │   │   └── gcal/                # Google Calendar scheduler
-│   │   │   │   │   │       ├── controller.py   # SchedulingControllerActor
-│   │   │   │   │   │       └── scheduler.py    # SchedulingActor (calendar poll)
 │   │   │   │   │   └── modeling/
 │   │   │   │   │       ├── base.py             # ModelActor / BaseModelDeployment
 │   │   │   │   │       └── util.py             # kill_thread, accelerate helpers
@@ -2738,7 +2717,7 @@ ndif/
 │           ├── request.py              # BackendRequestModel
 │           ├── response.py             # BackendResponseModel
 │           ├── result.py               # BackendResultModel
-│           ├── deployment_config.py    # DeploymentConfig (dedicated, timeouts, ...)
+│           ├── deployment_config.py    # DeploymentConfig (pinned, timeouts, ...)
 │           └── mixins.py               # ObjectStorageMixin, TelemetryMixin
 │
 ├── cli/

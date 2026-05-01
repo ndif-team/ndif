@@ -1,9 +1,8 @@
 # NDIF Dashboard
 
 A small admin web app for NDIF: monitoring (uptime, latency, cluster state)
-and a calendar-driven scheduler for dedicated deployments. Replaces the
-standalone `services/monitor/` dashboard and the Google Calendar scheduler
-in `services/ray/.../controller/gcal/` (push model instead of pull).
+and a calendar-driven scheduler for pinned deployments. Replaces the
+standalone `services/monitor/` dashboard.
 
 Three pieces:
 
@@ -71,20 +70,24 @@ reads these files directly.
 
 The reconcile cron diff-hashes the active set of scheduled events and only
 pushes when the set changes (or on the first run after a restart). Empty
-active set ⇒ all previously-dedicated models get evicted via `--sync`.
+active set ⇒ all previously-pinned models get evicted via `--sync`.
 
 The FastAPI schedule routes also call `reconcile_once()` as a background task
 on every write so user edits don't wait for the next 10-min tick.
 
 ## Schedule semantics
 
-- One model per event, always `dedicated=True` (matches the gcal scheduler
-  we are replacing).
+- One model per event, always `pinned=True`. `pinned` tells the controller
+  "do not evict this" — it does NOT imply any sync behavior (the controller
+  no longer has a sync mode).
+- An event is "active" while `start ≤ now < end`. An event with `end is None`
+  is open-ended (active forever after `start`).
 - Per-event fields mirror `DeploymentConfig`: `revision`, `actor_class`,
   `padding_factor`, `execution_timeout_seconds`.
-- An event is "active" while `start ≤ now < end`. The reconcile cron pushes
-  the active set with `sync=True`; anything previously dedicated and now
-  outside its window is evicted by the controller.
+- The reconcile cron does the diff itself:
+  - `to_evict = previously-active − new-active` → explicit `evict()` call
+  - `to_deploy = new-active − currently-HOT` → explicit `deploy(pinned=True)` call
+  Drift recovery (NDIF restart, manual evict) is folded into the deploy step.
 
 ## Frontend dev
 
@@ -135,14 +138,6 @@ dashboard/
     ├── index.html
     └── src/{main.ts,App.vue,router.ts,api.ts,stores,views,components,styles}
 ```
-
-## Replacing the gcal scheduler
-
-The dashboard provides the same end behavior as the old `SchedulingActor`
-(in `services/ray/deployments/controller/gcal/`) but as a push-from-cron
-rather than pull-from-actor. Once the dashboard has been running cleanly,
-the gcal actor should be unwired from the controller. See `controller.py`
-for the call site to disable.
 
 ## Future: Docker compose integration
 

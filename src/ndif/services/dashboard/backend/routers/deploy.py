@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api", tags=["admin"])
 class ModelSpec(BaseModel):
     checkpoint: str
     revision: Optional[str] = None
-    dedicated: bool = False
+    pinned: bool = False
     actor_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
@@ -48,7 +48,7 @@ def status_endpoint(
     settings: Settings = Depends(get_settings),
 ):
     """Proxy NDIF API's /status (HTTP, no Ray client needed) and tag each
-    deployment with ``dedicated: bool`` based on whether it matches an active
+    deployment with ``pinned: bool`` based on whether it matches an active
     schedule entry. The schedule store is the source of truth for "this
     model is currently pinned by the dashboard."
     """
@@ -63,13 +63,13 @@ def status_endpoint(
     # Build (checkpoint, revision) → True for currently-active schedule entries.
     store = ScheduleStore(settings.schedule_path)
     active = filter_active(store.list())
-    dedicated_keys = {(e.checkpoint, e.revision or None) for e in active}
+    pinned_keys = {(e.checkpoint, e.revision or None) for e in active}
 
     deployments = data.get("deployments") or {}
     for d in deployments.values():
         repo = d.get("repo_id")
         rev = d.get("revision") or None
-        d["dedicated"] = (repo, rev) in dedicated_keys
+        d["pinned"] = (repo, rev) in pinned_keys
 
     return data
 

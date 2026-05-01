@@ -350,7 +350,7 @@ class Dispatcher:
                 - processors: Dict mapping model_key to processor state dict.
                     Each processor state contains model_key, status,
                     status_changed_at, request_ids, current_request_id,
-                    current_request_started_at, and dedicated flag.
+                    current_request_started_at, and pinned flag.
         """
         processors_state = {
             model_key: processor.get_state()

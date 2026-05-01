@@ -159,7 +159,7 @@ class Node:
         model_key: MODEL_KEY,
         candidate: Candidate,
         size_bytes: int,
-        dedicated: Optional[bool] = None,
+        pinned: Optional[bool] = None,
         exclude: Optional[Set[MODEL_KEY]] = None,
         execution_timeout_seconds: Optional[float] = None,
         actor_class: Optional[Union[str, type]] = None,
@@ -175,7 +175,7 @@ class Node:
             deployment_level=DeploymentLevel.HOT,
             gpus=candidate.gpus,
             size_bytes=size_bytes,
-            dedicated=dedicated,
+            pinned=pinned,
             node_id=self.id,
             execution_timeout_seconds=execution_timeout_seconds,
             actor_class=actor_class,
@@ -245,17 +245,17 @@ class Node:
                 deployment_level=DeploymentLevel.WARM,
                 gpus={},
                 size_bytes=deployment.size_bytes,
-                dedicated=False,
+                pinned=False,
                 node_id=self.id,
                 actor_class=deployment.actor_class,
             )
 
-    def evictable(self, deployment: Deployment, dedicated: bool) -> bool:
+    def evictable(self, deployment: Deployment, pinned: bool) -> bool:
         """Check if a deployment can be evicted."""
-        if deployment.dedicated:
+        if deployment.pinned:
             return False
         if (
-            not dedicated
+            not pinned
             and self.minimum_deployment_time_seconds is not None
             and time.time() - deployment.deployed < self.minimum_deployment_time_seconds
         ):
@@ -266,7 +266,7 @@ class Node:
         self,
         gpus_needed: int,
         per_gpu_bytes: int,
-        dedicated: bool = False,
+        pinned: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
     ) -> tuple[List[MODEL_KEY], Dict[int, int]]:
         """Find cheapest evictions to make gpus_needed GPUs each have per_gpu_bytes available.
@@ -302,7 +302,7 @@ class Node:
         for mk, dep in self.deployments.items():
             if exclude is not None and mk in exclude:
                 continue
-            if not self.evictable(dep, dedicated):
+            if not self.evictable(dep, pinned):
                 continue
             for gpu_idx, alloc_bytes in dep.gpus.items():
                 occupants_by_gpu[gpu_idx].append((mk, alloc_bytes))
@@ -347,12 +347,12 @@ class Node:
         self,
         model_key: MODEL_KEY,
         model_size_in_bytes: int,
-        dedicated: bool = False,
+        pinned: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
     ) -> Candidate:
         if model_key in self.deployments:
-            if dedicated:
-                self.deployments[model_key].dedicated = True
+            if pinned:
+                self.deployments[model_key].pinned = True
 
             return Candidate(candidate_level=CandidateLevel.DEPLOYED)
 
@@ -385,7 +385,7 @@ class Node:
 
         # Need evictions
         evictions, gpus = self.find_evictions(
-            gpus_needed, per_gpu_bytes, dedicated=dedicated, exclude=exclude
+            gpus_needed, per_gpu_bytes, pinned=pinned, exclude=exclude
         )
         if not gpus:
             return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)

@@ -54,7 +54,7 @@ class ScheduleEventIn(BaseModel):
 
     ``end`` is optional: an event with ``end is None`` is open-ended (active
     forever after ``start``). Open-ended events are how the Deployments page
-    represents "make this dedicated" without forcing the admin to pick a
+    represents "make this pinned" without forcing the admin to pick a
     sunset time.
     """
 

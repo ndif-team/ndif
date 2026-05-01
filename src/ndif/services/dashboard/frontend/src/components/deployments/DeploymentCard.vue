@@ -7,7 +7,7 @@ export interface Deployment {
   revision?: string | null
   deployment_level?: 'HOT' | 'WARM' | 'COLD' | string
   application_state?: string
-  dedicated?: boolean
+  pinned?: boolean
   n_params?: number
   schedule?: { start_time?: string; end_time?: string; title?: string } | null
   // pending = optimistic placeholder for an in-flight deploy. The card
@@ -84,9 +84,13 @@ function onRestart() {
 
 function onEvict() {
   close()
-  const what = props.deployment.dedicated
-    ? `Evict (and unschedule) ${props.deployment.repo_id || props.deployment.model_key}?`
-    : `Evict ${props.deployment.repo_id || props.deployment.model_key}?`
+  const name = props.deployment.repo_id || props.deployment.model_key
+  // If this model is in an active schedule entry, the next reconcile tick
+  // will re-deploy it. The admin should remove the entry from the Schedule
+  // tab if they want it gone permanently.
+  const what = props.deployment.pinned
+    ? `Evict ${name}?\n\n(This is pinned. If a schedule entry covers it, the next reconcile will re-deploy it. Remove the entry from the Schedule tab to make it permanent.)`
+    : `Evict ${name}?`
   if (!confirm(what)) return
   emit('evict', props.deployment)
 }
@@ -166,9 +170,9 @@ function onMenuBlur(e: FocusEvent) {
             {{ deployment.application_state.toLowerCase() }}
           </span>
           <span
-            v-if="deployment.dedicated"
-            class="pill dedicated"
-            :title="deployment.schedule ? 'Scheduled deployment' : 'Pinned (dedicated)'"
+            v-if="deployment.pinned"
+            class="pill pinned"
+            :title="deployment.schedule ? 'Scheduled deployment' : 'Pinned'"
           >
             {{ scheduleLabel ? 'pinned · ' + scheduleLabel : 'pinned' }}
           </span>
@@ -391,7 +395,7 @@ function onMenuBlur(e: FocusEvent) {
   color: var(--blue);
   border-color: var(--blue);
 }
-.pill.dedicated {
+.pill.pinned {
   color: var(--accent);
   border-color: var(--accent);
   text-transform: none;

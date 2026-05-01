@@ -148,7 +148,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
         level: Deployment level to filter by ("HOT", "WARM", "COLD", or None for all)
 
     Returns:
-        List of deployment dicts with repo_id, revision, dedicated, model_key, etc.
+        List of deployment dicts with repo_id, revision, pinned, model_key, etc.
     """
     import ray
     controller = get_controller_actor_handle()

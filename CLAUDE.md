@@ -57,8 +57,7 @@ ndif/
         │   ├── deployments/
         │   │   ├── controller/
         │   │   │   ├── controller.py
-        │   │   │   ├── cluster/  cluster.py / node.py / deployment.py / evaluator.py
-        │   │   │   └── gcal/     Google Calendar driven scheduling
+        │   │   │   └── cluster/  cluster.py / node.py / deployment.py / evaluator.py
         │   │   └── modeling/
         │   │       └── base.py   ModelActor (execution + sandbox invocation)
         │   └── nn/
@@ -100,7 +99,7 @@ Three services, four infra dependencies:
 
 **Deployment levels:** `HOT` (on GPU) / `WARM` (CPU cache) / `COLD` (disk). The Controller's `build()`/`apply()` cycle produces a `DeploymentDelta` and executes it in order: **delete → cache → from_cache → create** (ordering is load-bearing — later steps need GPU freed by earlier ones).
 
-**Deploy vs hotswap:** Dedicated deployments (startup, CLI, Google Calendar schedule) are never evicted. Hotswapping is on-demand and requires the `hotswapping` tier on the API key; it can evict non-dedicated models after `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`.
+**Deploy vs hotswap:** Pinned deployments (startup, CLI, dashboard schedule) are never evicted. Hotswapping is on-demand and requires the `hotswapping` tier on the API key; it can evict non-pinned models after `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`.
 
 **Why Redis for the queue (not Ray):** the Dispatcher lives inside the API process as a Ray *client*; Redis is the lingua franca between the FastAPI endpoint, the Dispatcher, and the Socket.IO layer (which needs a cross-process broker anyway).
 
@@ -207,8 +206,8 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 ## Services beyond API/Ray/CLI
 
-- **`src/ndif/services/monitor/`** — standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Hits `/connected` every 10 min, runs nnsight traces on HOT models every 2 hours, posts Discord notifications on state change, and serves a Flask dashboard on port 8080. Has its own `README.md`.
-- **`src/ndif/services/ray/.../controller/gcal/`** — Google Calendar scheduler. Reads a calendar to drive dedicated deployments at specific times. Config lives in compose env (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`).
+- **`src/ndif/services/monitor/`** — standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Hits `/connected` every 10 min, runs nnsight traces on HOT models every 2 hours, posts Discord notifications on state change, and serves a Flask dashboard on port 8080. Has its own `README.md`. **Being replaced by `services/dashboard/`.**
+- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI). Owns the pinned-deployment schedule (`schedule.json`) and a reconcile cron that diffs the active set against the controller and pushes evict/deploy as needed. Replaces both `services/monitor/` and the old gcal scheduler. Has its own `README.md`.
 - **`docker/postgres/`** — Postgres init SQL. Provides the dev-mode auth/API-key store wired into compose.
 
 ---

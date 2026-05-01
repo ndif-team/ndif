@@ -40,7 +40,7 @@ def deploy(
 
     Args:
         specs: List of model spec dicts. Required key: ``checkpoint``.
-            Optional keys: ``revision``, ``dedicated``, ``actor_class``,
+            Optional keys: ``revision``, ``pinned``, ``actor_class``,
             ``padding_factor``, ``execution_timeout_seconds``.
         sync: If True, evict any current HOT models that are not in ``specs``
             before deploying. Mirrors ``ndif deploy --sync``.
@@ -89,21 +89,21 @@ def deploy(
             _sync_evict_extra_models(controller, model_keys_map, broker_url, on_message)
         )
 
-    # Order matches the existing CLI: non-dedicated batch, then dedicated batch.
-    for is_dedicated in (False, True):
+    # Order matches the existing CLI: non-pinned batch, then pinned batch.
+    for is_pinned in (False, True):
         batch_keys = [
             mk for mk, sp in model_keys_map.items()
-            if sp["dedicated"] == is_dedicated
+            if sp["pinned"] == is_pinned
         ]
         if not batch_keys:
             continue
 
-        label = " (dedicated)" if is_dedicated else ""
+        label = " (pinned)" if is_pinned else ""
         emit(on_message, f"\nDeploying {len(batch_keys)} model(s){label}...")
 
         configs = {
             mk: DeploymentConfig(
-                dedicated=is_dedicated,
+                pinned=is_pinned,
                 actor_class=model_keys_map[mk]["actor_class"],
                 padding_factor=model_keys_map[mk]["padding_factor"],
                 execution_timeout_seconds=model_keys_map[mk]["execution_timeout_seconds"],

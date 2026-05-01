@@ -7,7 +7,7 @@ export interface DeployForm {
   actor_class: string | null
   padding_factor: number | null
   execution_timeout_seconds: number | null
-  dedicated: boolean
+  pinned: boolean
 }
 
 const props = defineProps<{
@@ -27,7 +27,7 @@ const form = ref<DeployForm>({
   actor_class: null,
   padding_factor: null,
   execution_timeout_seconds: null,
-  dedicated: false,
+  pinned: false,
   ...(props.initial ?? {})
 })
 
@@ -92,12 +92,12 @@ function submit() {
         </label>
 
         <label class="field full check-field">
-          <input type="checkbox" v-model="form.dedicated" />
+          <input type="checkbox" v-model="form.pinned" />
           <span>
-            <strong>Dedicated</strong>
+            <strong>Pinned</strong>
             <span class="muted">
-              — pinned, won't be evicted. Adds an open-ended schedule entry
-              starting now.
+              — won't be evicted. Adds an open-ended schedule entry starting
+              now.
             </span>
           </span>
         </label>

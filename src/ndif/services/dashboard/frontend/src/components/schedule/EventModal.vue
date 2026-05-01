@@ -169,7 +169,7 @@ function toggleOpenEnded(e: Event) {
             <strong>Open-ended</strong>
             <span class="muted">
               — pinned forever, no end date. Use this when you want a model
-              dedicated indefinitely.
+              pinned indefinitely.
             </span>
           </span>
         </label>

@@ -151,28 +151,28 @@ class TestDeployEvictCycle:
         assert "gpt2" in result.output.lower() or "evict" in result.output.lower()
 
 
-class TestDeployDedicated:
-    """Test dedicated deployment flag."""
+class TestDeployPinned:
+    """Test pinned deployment flag."""
 
-    def test_deploy_dedicated_flag(self, runner):
-        """Deploy with --dedicated should mark model as dedicated."""
-        result = runner.invoke(cli, ["deploy", "gpt2", "--dedicated"])
+    def test_deploy_pinned_flag(self, runner):
+        """Deploy with --pinned should mark model as pinned."""
+        result = runner.invoke(cli, ["deploy", "gpt2", "--pinned"])
         assert result.exit_code == 0
-        assert "dedicated" in result.output.lower() or "Deploying" in result.output
+        assert "pinned" in result.output.lower() or "Deploying" in result.output
 
-    def test_dedicated_shows_in_status(self, runner):
-        """Dedicated deployment should show dedicated=true in status."""
-        # Deploy as dedicated
-        runner.invoke(cli, ["deploy", "gpt2", "--dedicated"])
+    def test_pinned_shows_in_status(self, runner):
+        """Pinned deployment should show pinned=true in status."""
+        # Deploy as pinned
+        runner.invoke(cli, ["deploy", "gpt2", "--pinned"])
 
         # Check status
         result = runner.invoke(cli, ["status", "--json-output"])
         assert result.exit_code == 0
         data = json.loads(result.output)
 
-        # Find gpt2 deployment and check dedicated flag
+        # Find gpt2 deployment and check pinned flag
         deployments = data.get("deployments", {})
         for key, dep in deployments.items():
             if "gpt2" in str(dep).lower():
-                assert dep.get("dedicated") is True, "gpt2 should be marked as dedicated"
+                assert dep.get("pinned") is True, "gpt2 should be marked as pinned"
                 break

@@ -112,8 +112,8 @@ class Processor:
         error_queue: Shared queue for reporting errors to Dispatcher.
         status: Current ProcessorStatus state.
         status_changed_at: Unix timestamp of the last status transition.
-        dedicated: Whether this is a dedicated (scheduled) model deployment.
-            None if not yet determined, True/False after check_dedicated().
+        pinned: Whether this is a pinned (scheduled) model deployment.
+            None if not yet determined, True/False after check_pinned().
         current_request_id: ID of the request currently being executed, or None.
         current_request_started_at: Unix timestamp when current request started, or None.
 
@@ -147,7 +147,7 @@ class Processor:
         self._status = ProcessorStatus.UNINITIALIZED
         self.status_changed_at: float = 0
 
-        self.dedicated: Optional[bool] = None
+        self.pinned: Optional[bool] = None
         self.current_request_id: Optional[str] = None
         self.current_request_started_at: Optional[float] = None
 
@@ -189,7 +189,7 @@ class Processor:
     async def enqueue(self, request: BackendRequestModel) -> None:
         """Add a request to the processing queue.
 
-        Validates that the request can be processed (either the model is dedicated
+        Validates that the request can be processed (either the model is pinned
         or the request has hotswapping enabled), adds it to the queue, and notifies
         the user of their queue position.
 
@@ -197,15 +197,15 @@ class Processor:
             request: The inference request to enqueue.
 
         Note:
-            If the model is not dedicated and the request doesn't have hotswapping
+            If the model is not pinned and the request doesn't have hotswapping
             enabled, the request is immediately rejected with an error response
             and not added to the queue.
         """
-        if self.dedicated is False and not request.hotswapping:
+        if self.pinned is False and not request.hotswapping:
             await request.create_response(
                 BackendResponseModel.JobStatus.ERROR,
                 logger,
-                "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                "Model is not pinned and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
             ).arespond()
 
             return
@@ -222,18 +222,18 @@ class Processor:
             ),
         )
 
-    async def check_dedicated(self, handle: ray.actor.ActorHandle) -> bool:
-        """Check if this model has a dedicated (scheduled) deployment.
+    async def check_pinned(self, handle: ray.actor.ActorHandle) -> bool:
+        """Check if this model has a pinned (scheduled) deployment.
 
         Queries the Controller to determine if the model is scheduled for
-        dedicated deployment, which affects whether non-hotswapping requests
+        pinned deployment, which affects whether non-hotswapping requests
         can be processed.
 
         Args:
             handle: Ray actor handle for the Controller.
 
         Returns:
-            True if the model has a dedicated deployment, False otherwise.
+            True if the model has a pinned deployment, False otherwise.
             Returns False if the deployment information cannot be retrieved.
         """
         result = await submit(handle, "get_deployment", self.model_key)
@@ -241,14 +241,14 @@ class Processor:
         if result is None:
             return False
 
-        return result.get("dedicated", False)
+        return result.get("pinned", False)
 
     async def provision(self) -> None:
         """Provision the model deployment via the Controller.
 
         This method handles the complete provisioning workflow:
-            1. Checks if the model is a dedicated deployment
-            2. Filters queue to remove invalid requests (non-hotswap on non-dedicated)
+            1. Checks if the model is a pinned deployment
+            2. Filters queue to remove invalid requests (non-hotswap on non-pinned)
             3. Requests the Controller to deploy the model
             4. Processes deployment results and handles evictions
 
@@ -272,9 +272,9 @@ class Processor:
             try:
                 controller = controller_handle()
 
-                self.dedicated = await self.check_dedicated(controller)
+                self.pinned = await self.check_pinned(controller)
 
-                if not self.dedicated and not self.queue.empty():
+                if not self.pinned and not self.queue.empty():
                     # Only filter if there are requests waiting.
                     # An empty queue means we're provisioning preemptively (e.g., from CLI).
                     hotswap = False
@@ -292,7 +292,7 @@ class Processor:
                             await request.create_response(
                                 BackendResponseModel.JobStatus.ERROR,
                                 logger,
-                                "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                                "Model is not pinned and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
                             ).arespond()
 
                     for request in valid_queue:
@@ -302,7 +302,7 @@ class Processor:
                         self.eviction_queue.put_nowait(
                             (
                                 self.model_key,
-                                "Model is not dedicated and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
+                                "Model is not pinned and hotswapping is not supported for this API key. See https://nnsight.net/status/ for a list of scheduled models.",
                             )
                         )
                         self.status = ProcessorStatus.CANCELLED
@@ -618,7 +618,7 @@ class Processor:
                 - current_request_id: ID of request being executed, or None.
                 - current_request_started_at: Unix timestamp when current
                     request started, or None.
-                - dedicated: Whether this is a dedicated deployment
+                - pinned: Whether this is a pinned deployment
                     (True/False/None).
         """
         request_ids = [req.id for req in self.queue._queue]
@@ -630,7 +630,7 @@ class Processor:
             "request_ids": request_ids,
             "current_request_id": self.current_request_id,
             "current_request_started_at": self.current_request_started_at,
-            "dedicated": self.dedicated,
+            "pinned": self.pinned,
         }
 
     async def kill_request(self, request_id: str) -> dict:
