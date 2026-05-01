@@ -47,10 +47,21 @@ def status_endpoint(
     _: str = Depends(require_auth),
     settings: Settings = Depends(get_settings),
 ):
-    """Proxy NDIF API's /status (HTTP, no Ray client needed) and tag each
-    deployment with ``pinned: bool`` based on whether it matches an active
-    schedule entry. The schedule store is the source of truth for "this
-    model is currently pinned by the dashboard."
+    """Proxy NDIF API's /status, dedupe HF cache shadows, and tag pinned.
+
+    Two passes:
+
+    1. **Dedupe**: ``get_downloaded_models()`` on the controller side surfaces
+       the local HF cache directory listing as COLD entries. Whenever HF was
+       hit with two different casings (e.g. "Llama-3.1-8b" and "Llama-3.1-8B"),
+       both directories exist on disk and both show up. If a non-COLD entry
+       exists for the same case-insensitive repo id, we drop the COLD shadow.
+    2. **Pinned tag**: a deployment is pinned if either (a) the controller's
+       DeploymentConfig says so or (b) its ``model_key`` matches an active
+       schedule entry. Schedule entries carry ``model_key`` from write-time
+       canonicalization (see ``routers/schedule.py``), so this is exact
+       string. The controller's True is preserved — we only OR in the
+       schedule signal.
     """
     try:
         resp = requests.get(f"{settings.ndif_api_url}/status", timeout=10)
@@ -60,16 +71,30 @@ def status_endpoint(
 
     data = resp.json()
 
-    # Build (checkpoint, revision) → True for currently-active schedule entries.
     store = ScheduleStore(settings.schedule_path)
-    active = filter_active(store.list())
-    pinned_keys = {(e.checkpoint, e.revision or None) for e in active}
+    pinned_keys = {e.model_key for e in filter_active(store.list()) if e.model_key}
 
-    deployments = data.get("deployments") or {}
-    for d in deployments.values():
+    deployments: dict = data.get("deployments") or {}
+
+    # ---- Dedupe HF cache shadows ----------------------------------------
+    by_repo: dict[tuple[str, Optional[str]], list[tuple[str, dict]]] = {}
+    for app_name, d in deployments.items():
         repo = d.get("repo_id")
-        rev = d.get("revision") or None
-        d["pinned"] = (repo, rev) in pinned_keys
+        if not repo:
+            continue
+        by_repo.setdefault((repo.lower(), d.get("revision") or None), []).append((app_name, d))
+
+    for entries in by_repo.values():
+        levels = {d.get("deployment_level") for _, d in entries}
+        if len(entries) > 1 and "COLD" in levels and (levels - {"COLD"}):
+            for app_name, d in entries:
+                if d.get("deployment_level") == "COLD":
+                    deployments.pop(app_name, None)
+
+    # ---- Tag pinned -----------------------------------------------------
+    for d in deployments.values():
+        from_schedule = d.get("model_key") in pinned_keys
+        d["pinned"] = bool(d.get("pinned")) or from_schedule
 
     return data
 

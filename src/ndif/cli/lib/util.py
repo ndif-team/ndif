@@ -116,6 +116,21 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
     return model_key
 
 
+def canonicalize_checkpoint(checkpoint: str, revision: str = None) -> tuple[str, str | None, str]:
+    """Resolve a user-typed checkpoint and return ``(canonical_checkpoint, revision, model_key)``.
+
+    HuggingFace repo IDs are case-insensitive — the API serves the same model
+    regardless of casing — but the canonical name has a specific capitalization
+    (e.g. ``meta-llama/Llama-3.1-8B``, not ``…-8b``). nnsight's
+    ``LanguageModel(...).to_model_key()`` does the HF resolution; we surface
+    the canonical repo_id AND the model_key from a single lookup so callers
+    can persist both (e.g. the schedule store) without paying the HF cost
+    twice.
+    """
+    model_key = get_model_key(checkpoint, revision)
+    return extract_repo_id_from_model_key(model_key), revision, model_key
+
+
 async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """Notify dispatcher of deployment changes via Redis streams.
 

@@ -56,6 +56,10 @@ class ScheduleEventIn(BaseModel):
     forever after ``start``). Open-ended events are how the Deployments page
     represents "make this pinned" without forcing the admin to pick a
     sunset time.
+
+    ``model_key`` is server-set: the schedule router resolves it via HF on
+    every write (see ``routers/schedule.py::_canonicalize``). Clients can
+    submit it (or omit it); the server overwrites unconditionally.
     """
 
     title: str
@@ -66,6 +70,7 @@ class ScheduleEventIn(BaseModel):
     actor_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    model_key: Optional[str] = None
 
     @field_validator("end")
     @classmethod
@@ -80,6 +85,8 @@ class ScheduleEventIn(BaseModel):
 
 class ScheduleEvent(ScheduleEventIn):
     id: str
+    # Required on the persisted form — every event has been canonicalized.
+    model_key: str  # type: ignore[assignment]
     created_at: dt.datetime
     updated_at: dt.datetime
     last_status: Optional[str] = None

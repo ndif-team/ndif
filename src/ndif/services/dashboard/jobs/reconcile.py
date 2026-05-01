@@ -6,9 +6,8 @@ A push-based cron job that owns the schedule diff itself:
     1. Read ``schedule.json``.
     2. Filter to events whose ``[start, end)`` window contains "now". An
        event with ``end is None`` is open-ended ("active forever after start").
-    3. Compare the new active set against (a) the previously-pushed active
-       set persisted in ``.reconcile.state.json`` and (b) what the controller
-       actually has HOT right now.
+    3. Diff against (a) the previously-pushed model_keys persisted in
+       ``.reconcile.state.json`` and (b) what the controller has HOT now.
        - to_evict   = previously-active − new-active
        - to_deploy  = new-active − currently-HOT (covers both "newly added"
          and "drifted out — controller no longer has it")
@@ -16,6 +15,10 @@ A push-based cron job that owns the schedule diff itself:
        has any "sync mode" of its own; pinned just means "do not evict".
     5. Persist the new active set + per-event status back. Discord-notify
        failures.
+
+Identity is the nnsight ``model_key`` — schedule entries get one stamped on
+write (see ``routers/schedule.py::_canonicalize``) and so do controller
+deployments via ``/status``. Comparison is exact-string.
 
 Schedule entries always carry ``pinned=True`` (the schedule's whole purpose
 is to keep models up).
@@ -28,7 +31,9 @@ Invoked from cron as::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import fcntl
 import json
 import logging
 import sys
@@ -62,18 +67,6 @@ def _spec_from_event(e: ScheduleEvent) -> dict:
     }
 
 
-def _pair(spec_or_event) -> tuple[str, Optional[str]]:
-    """The (checkpoint, revision) pair that identifies a deployment.
-
-    Schedule entries store ``revision``; ``/status`` deployments expose
-    ``repo_id`` and ``revision``. We compare on ``(checkpoint, revision or None)``
-    so the absent and explicit-null revisions match.
-    """
-    if isinstance(spec_or_event, ScheduleEvent):
-        return (spec_or_event.checkpoint, spec_or_event.revision or None)
-    return (spec_or_event["checkpoint"], spec_or_event.get("revision") or None)
-
-
 def _load_state(state_path: Path) -> dict:
     if not state_path.exists():
         return {}
@@ -88,10 +81,10 @@ def _save_state(state_path: Path, state: dict) -> None:
     state_path.write_text(json.dumps(state, indent=2))
 
 
-def _fetch_hot_pairs(api_url: str) -> Optional[set[tuple[str, Optional[str]]]]:
-    """Return the set of (repo_id, revision) currently HOT according to the
-    NDIF API's HTTP /status. ``None`` on transport error → callers should
-    treat that as "unknown" and lean toward re-deploying.
+def _fetch_hot_model_keys(api_url: str) -> Optional[set[str]]:
+    """Return the set of model_keys currently HOT according to NDIF API's
+    HTTP /status. ``None`` on transport error → callers should treat that as
+    "unknown" and lean toward re-deploying.
     """
     try:
         r = requests.get(f"{api_url.rstrip('/')}/status", timeout=10)
@@ -102,9 +95,9 @@ def _fetch_hot_pairs(api_url: str) -> Optional[set[tuple[str, Optional[str]]]]:
 
     deps = r.json().get("deployments") or {}
     return {
-        (v.get("repo_id"), v.get("revision") or None)
+        v["model_key"]
         for v in deps.values()
-        if v.get("deployment_level") == "HOT"
+        if v.get("deployment_level") == "HOT" and v.get("model_key")
     }
 
 
@@ -131,6 +124,40 @@ def _notify_failures(failed: list[dict]) -> None:
     ))
 
 
+def _persist_state(
+    state_path: Path,
+    *,
+    model_keys: list[str],
+    active_count: int,
+) -> None:
+    _save_state(state_path, {
+        "prev_model_keys": model_keys,
+        "active_count": active_count,
+        "last_run": dt.datetime.now(dt.timezone.utc).isoformat(),
+    })
+
+
+@contextlib.contextmanager
+def _reconcile_lock(state_path: Path):
+    """Serialize concurrent reconciles via flock on a sidecar lockfile.
+
+    Multiple FastAPI ``BackgroundTasks`` (one per schedule write) and the
+    every-2-min cron can otherwise interleave: each reads stale state,
+    computes its diff against it, and the last save wins — leaking models
+    or losing evictions. A blocking exclusive lock around the whole
+    read-diff-act-write sequence makes them serialize cleanly. Each pass
+    is bounded by the deploy/evict it runs, typically <30s.
+    """
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+    with open(lock_path, "a+") as fp:
+        fcntl.flock(fp, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fp, fcntl.LOCK_UN)
+
+
 # ---------------------------------------------------------------------------
 # main entry
 # ---------------------------------------------------------------------------
@@ -149,139 +176,103 @@ def reconcile_once(*, force: bool = False) -> dict:
         ``{"changed": bool, "active": [...], "evicted": [...], "deployed": [...]}``
     """
     settings = get_settings()
+    with _reconcile_lock(settings.reconcile_state_path):
+        return _reconcile_locked(settings, force=force)
+
+
+def _reconcile_locked(settings, *, force: bool) -> dict:
     store = ScheduleStore(settings.schedule_path)
 
-    now = dt.datetime.now(dt.timezone.utc)
     events = store.list()
-    active = filter_active(events, when=now)
+    active = filter_active(events)
+    new_keys: dict[str, ScheduleEvent] = {e.model_key: e for e in active}
 
     state = _load_state(settings.reconcile_state_path)
-    prev_specs: list[dict] = state.get("active_specs", [])
-    prev_pairs = {_pair(s) for s in prev_specs}
+    prev_keys: set[str] = set(state.get("prev_model_keys") or [])
 
-    new_specs = [_spec_from_event(e) for e in active]
-    new_pairs = {_pair(s) for s in new_specs}
+    # to_evict: was-pinned, not-anymore
+    to_evict = sorted(prev_keys - set(new_keys))
 
-    # Models we previously had pinned but no longer want pinned.
-    to_evict_pairs = sorted(prev_pairs - new_pairs)
+    # to_deploy: newly added OR drifted out of the controller's HOT set.
+    hot_keys = _fetch_hot_model_keys(settings.ndif_api_url)
+    if force:
+        to_deploy_events = list(new_keys.values())
+    else:
+        to_deploy_events = [
+            ev for mk, ev in new_keys.items()
+            if mk not in prev_keys or hot_keys is None or mk not in hot_keys
+        ]
 
-    # Verify the controller still has every active model HOT.  Anything in
-    # the active set that ISN'T currently HOT needs to be (re-)deployed.
-    hot_pairs = _fetch_hot_pairs(settings.ndif_api_url)
-    to_deploy_specs: list[dict] = []
-    for spec in new_specs:
-        p = _pair(spec)
-        if force:
-            to_deploy_specs.append(spec)
-        elif p not in prev_pairs:
-            # newly added to schedule
-            to_deploy_specs.append(spec)
-        elif hot_pairs is None or p not in hot_pairs:
-            # drifted out, or we couldn't verify — be safe, re-push
-            to_deploy_specs.append(spec)
+    new_keys_list = list(new_keys.keys())
+    active_count = len(active)
+    active_names = [e.checkpoint for e in active]
 
-    if not to_evict_pairs and not to_deploy_specs:
-        logger.info(
-            "No change (%d active event(s)); controller in sync", len(active)
-        )
-        # Re-persist active_specs in case anything changed in the spec body
-        # (revision, padding_factor, etc.) without changing the (cp, rev) pair.
-        state["active_specs"] = new_specs
-        state["last_run"] = now.isoformat()
-        state["active_count"] = len(active)
-        _save_state(settings.reconcile_state_path, state)
-        return {
-            "changed": False,
-            "active": [e.checkpoint for e in active],
-            "evicted": [],
-            "deployed": [],
-        }
+    if not to_evict and not to_deploy_events:
+        logger.info("No change (%d active event(s)); controller in sync", active_count)
+        _persist_state(settings.reconcile_state_path,
+                       model_keys=new_keys_list, active_count=active_count)
+        return {"changed": False, "active": active_names, "evicted": [], "deployed": []}
 
     logger.info(
         "Reconciling: evict=%d deploy=%d (active=%d)",
-        len(to_evict_pairs), len(to_deploy_specs), len(active),
+        len(to_evict), len(to_deploy_events), active_count,
     )
 
-    # Import lazily — keeps the FastAPI startup cost low.
+    # Lazy import — keeps the FastAPI startup cost low.
     from ..backend import ndif_client
 
+    evicted: list[str] = []
     failed: list[dict] = []
-    evicted_pairs: list[tuple] = []
-    deployed_pairs: list[tuple] = []
 
     # ---- Evict removed entries -----------------------------------------
-    if to_evict_pairs:
+    if to_evict:
         try:
-            r = ndif_client.evict(checkpoints=[(cp, rev) for cp, rev in to_evict_pairs])
-            for line in r.get("logs", []):
-                logger.info("[evict] %s", line)
-            for entry in r.get("results", []):
-                logger.info(
-                    "[evict-result] %s status=%s",
-                    entry.get("model_key"), entry.get("status"),
-                )
-            evicted_pairs = list(to_evict_pairs)
-        except ndif_client.NDIFConnectivityError as e:
-            logger.error("Evict step aborted: %s", e)
-            return {
-                "changed": False,
-                "active": [e.checkpoint for e in active],
-                "evicted": [], "deployed": [],
-                "error": str(e),
-            }
+            r = ndif_client.evict(model_keys=to_evict)
         except Exception as e:
-            logger.exception("Evict step failed")
+            level = "error" if isinstance(e, ndif_client.NDIFConnectivityError) else "exception"
+            getattr(logger, level)("Evict step failed: %s", e)
             return {
-                "changed": False,
-                "active": [e_.checkpoint for e_ in active],
-                "evicted": [], "deployed": [],
-                "error": str(e),
+                "changed": False, "active": active_names,
+                "evicted": [], "deployed": [], "error": str(e),
             }
+        for line in r.get("logs", []):
+            logger.info("[evict] %s", line)
+        for entry in r.get("results", []):
+            logger.info(
+                "[evict-result] %s status=%s",
+                entry.get("model_key"), entry.get("status"),
+            )
+        evicted = list(to_evict)
 
     # ---- Deploy added / drifted entries --------------------------------
     deploy_result: dict = {}
-    if to_deploy_specs:
+    if to_deploy_events:
         try:
-            deploy_result = ndif_client.deploy(to_deploy_specs, sync=False)
-            for line in deploy_result.get("logs", []):
-                logger.info("[deploy] %s", line)
-            for d in deploy_result.get("deployments", []):
-                logger.info(
-                    "[deploy-result] %s status=%s%s",
-                    d.get("checkpoint"), d.get("status"),
-                    f" error={d['error']}" if d.get("error") else "",
-                )
-            deployed_pairs = [_pair(s) for s in to_deploy_specs]
-        except ndif_client.NDIFConnectivityError as e:
-            logger.error("Deploy step aborted: %s", e)
-            # Eviction already happened; persist that progress so we don't
-            # try to evict again next tick.
-            state["active_specs"] = new_specs
-            state["last_run"] = now.isoformat()
-            state["active_count"] = len(active)
-            _save_state(settings.reconcile_state_path, state)
-            return {
-                "changed": True,
-                "active": [e.checkpoint for e in active],
-                "evicted": [list(p) for p in evicted_pairs],
-                "deployed": [],
-                "error": str(e),
-            }
+            deploy_result = ndif_client.deploy(
+                [_spec_from_event(e) for e in to_deploy_events],
+                sync=False,
+            )
         except Exception as e:
-            logger.exception("Deploy step failed")
-            state["active_specs"] = new_specs
-            state["last_run"] = now.isoformat()
-            state["active_count"] = len(active)
-            _save_state(settings.reconcile_state_path, state)
+            level = "error" if isinstance(e, ndif_client.NDIFConnectivityError) else "exception"
+            getattr(logger, level)("Deploy step failed: %s", e)
+            # Eviction already happened — persist so we don't try to evict
+            # the same models again next tick.
+            _persist_state(settings.reconcile_state_path,
+                           model_keys=new_keys_list, active_count=active_count)
             return {
-                "changed": True,
-                "active": [e_.checkpoint for e_ in active],
-                "evicted": [list(p) for p in evicted_pairs],
-                "deployed": [],
-                "error": str(e),
+                "changed": True, "active": active_names,
+                "evicted": evicted, "deployed": [], "error": str(e),
             }
+        for line in deploy_result.get("logs", []):
+            logger.info("[deploy] %s", line)
+        for d in deploy_result.get("deployments", []):
+            logger.info(
+                "[deploy-result] %s status=%s%s",
+                d.get("checkpoint"), d.get("status"),
+                f" error={d['error']}" if d.get("error") else "",
+            )
 
-    # Update per-event status from the deploy result
+    # Update per-event status from the deploy result, then notify
     by_checkpoint = {d["checkpoint"]: d for d in deploy_result.get("deployments", [])}
     for ev in active:
         d = by_checkpoint.get(ev.checkpoint)
@@ -295,19 +286,12 @@ def reconcile_once(*, force: bool = False) -> dict:
                 "error": d["error"],
             })
 
-    state["active_specs"] = new_specs
-    state["last_run"] = now.isoformat()
-    state["active_count"] = len(active)
-    _save_state(settings.reconcile_state_path, state)
-
+    _persist_state(settings.reconcile_state_path,
+                   model_keys=new_keys_list, active_count=active_count)
     _notify_failures(failed)
 
-    return {
-        "changed": True,
-        "active": [e.checkpoint for e in active],
-        "evicted": [list(p) for p in evicted_pairs],
-        "deployed": [list(p) for p in deployed_pairs],
-    }
+    deployed = [e.model_key for e in to_deploy_events]
+    return {"changed": True, "active": active_names, "evicted": evicted, "deployed": deployed}
 
 
 def main() -> None:

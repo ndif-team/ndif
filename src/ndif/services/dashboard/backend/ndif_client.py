@@ -1,12 +1,15 @@
 """Thin wrapper around the CLI lib functions for use from FastAPI / cron.
 
-We collect ``on_message`` lines into a list so the HTTP response can return
-the human-readable transcript alongside the structured result.
+The lib functions accept an ``on_message`` callback for streaming progress
+lines (matches what the CLI's ``click.echo`` does). Here we collect those
+lines into ``result["logs"]`` so HTTP responses carry the human-readable
+transcript alongside the structured result.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from functools import wraps
+from typing import Callable
 
 from ....cli.lib._common import NDIFConnectivityError
 from ....cli.lib.deploy import deploy as _deploy
@@ -26,103 +29,33 @@ __all__ = [
 ]
 
 
-def _collect_logs() -> tuple[list[str], callable]:
-    logs: list[str] = []
+def _with_logs(fn: Callable) -> Callable:
+    """Tee the lib function's ``on_message`` callback into ``result["logs"]``."""
 
-    def _on_message(msg: str) -> None:
-        logs.append(msg)
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        logs: list[str] = []
+        kwargs["on_message"] = logs.append
+        result = fn(*args, **kwargs)
+        if isinstance(result, dict):
+            result["logs"] = logs
+        return result
 
-    return logs, _on_message
-
-
-def deploy(
-    specs: list[dict],
-    *,
-    sync: bool = False,
-    ray_address: Optional[str] = None,
-    broker_url: Optional[str] = None,
-) -> dict:
-    logs, on_message = _collect_logs()
-    result = _deploy(
-        specs,
-        sync=sync,
-        ray_address=ray_address,
-        broker_url=broker_url,
-        on_message=on_message,
-    )
-    result["logs"] = logs
-    return result
+    return wrapper
 
 
-def evict(
-    model_keys: Optional[list[str]] = None,
-    checkpoints: Optional[list[tuple[str, Optional[str]]]] = None,
-    *,
-    ray_address: Optional[str] = None,
-    broker_url: Optional[str] = None,
-) -> dict:
-    logs, on_message = _collect_logs()
-    result = _evict(
-        model_keys=model_keys,
-        checkpoints=checkpoints,
-        ray_address=ray_address,
-        broker_url=broker_url,
-        on_message=on_message,
-    )
-    result["logs"] = logs
-    return result
+# CLI lib functions that accept ``on_message`` — wrap them once.
+deploy = _with_logs(_deploy)
+evict = _with_logs(_evict)
+restart = _with_logs(_restart)
+
+# Status is a cheap read with no progress to stream.
+status = _status
 
 
-def evict_all(
-    *,
-    ray_address: Optional[str] = None,
-    broker_url: Optional[str] = None,
-) -> dict:
-    logs, on_message = _collect_logs()
-    result = _evict(
-        evict_all=True,
-        ray_address=ray_address,
-        broker_url=broker_url,
-        on_message=on_message,
-    )
-    result["logs"] = logs
-    return result
+def evict_all(**kwargs) -> dict:
+    return evict(evict_all=True, **kwargs)
 
 
-def flush_warm_cache(
-    *,
-    ray_address: Optional[str] = None,
-    broker_url: Optional[str] = None,
-) -> dict:
-    logs, on_message = _collect_logs()
-    result = _evict(
-        flush_cache=True,
-        ray_address=ray_address,
-        broker_url=broker_url,
-        on_message=on_message,
-    )
-    result["logs"] = logs
-    return result
-
-
-def status(*, ray_address: Optional[str] = None) -> dict:
-    return _status(ray_address=ray_address)
-
-
-def restart(
-    checkpoint: Optional[str] = None,
-    *,
-    revision: Optional[str] = None,
-    model_key: Optional[str] = None,
-    ray_address: Optional[str] = None,
-) -> dict:
-    logs, on_message = _collect_logs()
-    result = _restart(
-        checkpoint or None,
-        revision=revision,
-        model_key=model_key,
-        ray_address=ray_address,
-        on_message=on_message,
-    )
-    result["logs"] = logs
-    return result
+def flush_warm_cache(**kwargs) -> dict:
+    return evict(flush_cache=True, **kwargs)
