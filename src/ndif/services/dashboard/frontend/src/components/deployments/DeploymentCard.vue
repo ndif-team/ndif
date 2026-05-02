@@ -33,7 +33,14 @@ function close() {
 }
 
 const levelClass = computed(() => 'level-' + (props.deployment.deployment_level || '').toLowerCase())
-const isCold = computed(() => props.deployment.deployment_level === 'COLD')
+// COLD and WARM are "not currently running" — show a single Deploy button
+// instead of restart/evict. WARM means the weights are CPU-cached, so the
+// deploy is fast (no HF download), but from the admin's perspective it's the
+// same operation as bringing a COLD model up.
+const isInactive = computed(() =>
+  props.deployment.deployment_level === 'COLD' ||
+  props.deployment.deployment_level === 'WARM'
+)
 const isPending = computed(() => !!props.deployment.pending)
 
 const params = computed(() => {
@@ -117,9 +124,10 @@ function onMenuBlur(e: FocusEvent) {
         <!-- Pending placeholder: just a pulse where the menu would be -->
         <span v-if="isPending" class="pulse-dot" aria-label="deploying"></span>
 
-        <!-- COLD: single Deploy button (model exists but isn't running) -->
+        <!-- COLD/WARM: single Deploy button (model isn't currently running).
+             WARM = weights cached on CPU, so the deploy is fast. -->
         <button
-          v-else-if="isCold"
+          v-else-if="isInactive"
           type="button"
           class="cold-deploy-btn"
           :disabled="busy"
@@ -128,7 +136,7 @@ function onMenuBlur(e: FocusEvent) {
           Deploy
         </button>
 
-        <!-- HOT/WARM: kebab → restart / evict -->
+        <!-- HOT only: kebab → restart / evict -->
         <div v-else class="menu-wrap" @focusout="onMenuBlur">
           <button
             class="kebab"
