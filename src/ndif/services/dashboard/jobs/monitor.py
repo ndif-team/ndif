@@ -2,7 +2,7 @@
 """Connectivity + model-trace monitor cron.
 
 Behaviorally identical to ``services/monitor/jobs/monitor.py``; only the
-default paths differ (``DASHBOARD_DATA_DIR`` / ``~/ndif_dashboard``) so the
+default paths differ (``NDIF_DASHBOARD_DATA_DIR`` / ``~/ndif_dashboard``) so the
 dashboard backend can read the same JSONL log files this script writes.
 
 Invoked from cron as::

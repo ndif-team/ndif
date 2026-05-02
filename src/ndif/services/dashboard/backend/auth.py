@@ -1,7 +1,7 @@
 """Authentication helpers — bcrypt + signed-cookie session.
 
 Keeps the design intentionally minimal:
-- Single admin (``DASHBOARD_USERNAME`` + ``DASHBOARD_PASSWORD_HASH``).
+- Single admin (``NDIF_DASHBOARD_USERNAME`` + ``NDIF_DASHBOARD_PASSWORD_HASH``).
 - Login returns an HttpOnly signed cookie (``itsdangerous.URLSafeTimedSerializer``).
 - ``require_auth`` FastAPI dependency reads the cookie and 401s if missing/expired.
 

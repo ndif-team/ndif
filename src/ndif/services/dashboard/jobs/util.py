@@ -13,7 +13,7 @@ from pathlib import Path
 import requests
 
 
-DEFAULT_DATA_DIR = Path(os.environ.get("DASHBOARD_DATA_DIR", str(Path.home() / "ndif_dashboard")))
+DEFAULT_DATA_DIR = Path(os.environ.get("NDIF_DASHBOARD_DATA_DIR", str(Path.home() / "ndif_dashboard")))
 DEFAULT_LOG_DIR = DEFAULT_DATA_DIR / "logs"
 DEFAULT_CONFIG = DEFAULT_DATA_DIR / "config.json"
 DEFAULT_MAX_DAYS = 30

@@ -1,36 +1,41 @@
 """Dashboard backend configuration.
 
-Resolution order for every setting: env var > default. The defaults are aimed
-at "running ``run.sh`` on the head node" — most paths point under ``~/ndif_dashboard``.
+Resolution order for every setting: env var > default.
 
 Env vars
 --------
-DASHBOARD_USERNAME            single admin username (required to log in)
-DASHBOARD_PASSWORD_HASH       bcrypt hash of the admin password (use the
-                              ``ndif.services.dashboard.backend.auth`` CLI
-                              helper to generate one)
-DASHBOARD_SESSION_SECRET      32+ byte random string used to sign cookies
-DASHBOARD_SESSION_TTL_DAYS    cookie TTL in days (default: 7)
-DASHBOARD_DATA_DIR            base dir for logs/state/schedule (default:
-                              ~/ndif_dashboard)
-DASHBOARD_FRONTEND_DIST       built Vue frontend dir to serve (default:
-                              <package>/frontend/dist)
-DASHBOARD_DEV_MODE            "true" disables auth (handy for frontend dev)
-NDIF_RAY_ADDRESS / NDIF_BROKER_URL — inherited by the cli/lib calls.
+NDIF_DASHBOARD_USERNAME           single admin username (required to log in)
+NDIF_DASHBOARD_PASSWORD_HASH      bcrypt hash of the admin password (generate
+                                  via ``python -m ndif.services.dashboard.\
+                                  backend.auth hash <password>``)
+NDIF_DASHBOARD_SESSION_SECRET     32+ byte random string used to sign cookies
+NDIF_DASHBOARD_SESSION_TTL_DAYS   cookie TTL in days (default: 7)
+NDIF_DASHBOARD_DATA_DIR           base dir for logs / state / schedule
+                                  (default: ~/ndif_dashboard)
+NDIF_DASHBOARD_FRONTEND_DIST      built Vue frontend dir to serve
+                                  (default: <package>/frontend/dist)
+NDIF_DASHBOARD_DEV_MODE           "true" disables auth (frontend dev only)
+
+NDIF_API_URL                      reused from the rest of the stack — the
+                                  dashboard reads this directly via Pydantic
+                                  ``validation_alias`` to proxy ``/api/status``
+                                  back through the public NDIF API.
+
+NDIF_RAY_ADDRESS / NDIF_BROKER_URL inherited by the cli/lib calls (deploy /
+                                  evict / restart / reconcile).
 """
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="DASHBOARD_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="NDIF_DASHBOARD_", extra="ignore")
 
     username: str = Field(default="admin")
     password_hash: str = Field(default="")
@@ -38,9 +43,13 @@ class Settings(BaseSettings):
     session_ttl_days: int = Field(default=7)
     dev_mode: bool = Field(default=False)
 
-    # NDIF API base URL — used for read-only /status proxying so the dashboard
-    # doesn't need a Ray client connection just to render the deployments page.
-    ndif_api_url: str = Field(default="http://localhost:5001")
+    # The NDIF API URL the dashboard's /api/status proxy hits. Reuses the
+    # standard NDIF_API_URL set by docker-compose for the rest of the stack;
+    # falls back to NDIF_DASHBOARD_API_URL if set, then the default.
+    ndif_api_url: str = Field(
+        default="http://localhost:5001",
+        validation_alias=AliasChoices("NDIF_DASHBOARD_API_URL", "NDIF_API_URL"),
+    )
 
     data_dir: Path = Field(default_factory=lambda: Path.home() / "ndif_dashboard")
     frontend_dist: Path = Field(

@@ -105,6 +105,42 @@ services:
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
+  dashboard:
+    image: dashboard:${NDIF_DASHBOARD_VERSION}
+    ports:
+      - "${NDIF_DASHBOARD_PORT}:${NDIF_DASHBOARD_PORT}"
+    env_file:
+      # ``format: raw`` disables shell-substitution on the env file — without
+      # it, a bcrypt ``$2b$12$…`` hash gets mangled by compose's ${} parser.
+      - path: ../.env.example
+        required: true
+        format: raw
+      - path: ../.env
+        required: false
+        format: raw
+    environment:
+      # Only the values that need compose-side interpolation live here.
+      # NDIF_DASHBOARD_USERNAME / PASSWORD_HASH / SESSION_SECRET / NDIF_API_KEY
+      # come straight from env_file above.
+      NDIF_DASHBOARD_DATA_DIR: /var/lib/dashboard
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+    volumes:
+      # Bind-mount the host's existing dashboard data dir so logs / schedule
+      # carry over from the standalone deployment. Override
+      # NDIF_DASHBOARD_HOST_DATA_DIR in .env if your data lives elsewhere.
+      - ${NDIF_DASHBOARD_HOST_DATA_DIR:-${HOME}/ndif_monitor}:/var/lib/dashboard
+      # HF cache + auth token — the deploy lib's get_model_key() resolves
+      # checkpoints via nnsight, which needs network access to HF and (for
+      # gated models like meta-llama/*) the user's HF token. Same mount the
+      # ray service uses.
+      - ~/.cache/huggingface/:/root/.cache/huggingface
+    depends_on:
+      - api
+      - ray
+      - message_broker
+
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
     network_mode: "host"

@@ -1,0 +1,67 @@
+# =============================================================================
+# Dashboard image — Vue 3 frontend + FastAPI backend + cron jobs.
+#
+# Multi-stage so the runtime image doesn't carry node:
+#   1) frontend-builder: builds the Vue SPA via `npm run build`
+#   2) runtime: python image with cron, ndif installed, dist/ copied in
+#
+# Built via:
+#   docker buildx build -t dashboard:latest -f docker/Dockerfile.dashboard .
+#
+# Runtime entrypoint is the standard `ndif start dashboard`, which dispatches
+# to ``services/dashboard/start.sh`` (the same script we use for non-Docker
+# dev). That script starts the cron daemon (if ``cron`` is on PATH and
+# /etc/cron.d is writable) and execs uvicorn in the foreground.
+# =============================================================================
+
+# ---- Stage 1: build the Vue frontend ----------------------------------------
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+# Copy package manifests first for better layer caching
+COPY src/ndif/services/dashboard/frontend/package.json \
+     src/ndif/services/dashboard/frontend/package-lock.json \
+     ./
+
+RUN npm ci --silent
+
+COPY src/ndif/services/dashboard/frontend/ ./
+RUN npm run build
+
+
+# ---- Stage 2: python runtime ------------------------------------------------
+FROM astral/uv:python3.12-trixie-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# build-essential + git for any pip wheels that need to compile;
+# cron for the in-container cron daemon.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends \
+         build-essential git cron \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG NAME=dashboard
+ENV NDIF_SERVICE=${NAME}
+
+COPY . /ndif
+WORKDIR /ndif
+
+# Drop the built dist/ outside the source tree at a fixed path. The env var
+# tells the FastAPI app where to serve from.
+COPY --from=frontend-builder /app/dist /srv/dashboard/frontend/dist
+ENV NDIF_DASHBOARD_FRONTEND_DIST=/srv/dashboard/frontend/dist
+
+RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
+    && uv pip install --system . --no-deps \
+    && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
+    && find /usr/local/lib/python3.12 -name "*.pyo" -delete \
+    && find /usr/local/lib/python3.12 -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/lib/python3.12 -type d -name "test" -exec rm -rf {} + 2>/dev/null || true \
+    && rm -rf /root/.cache
+
+SHELL ["/bin/bash", "-c"]
+CMD ndif start "${NDIF_SERVICE}" --verbose
