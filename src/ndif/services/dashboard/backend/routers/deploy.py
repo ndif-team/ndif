@@ -113,6 +113,10 @@ def deploy_endpoint(
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Surface the real message (e.g. HF gated repo, controller errors)
+        # so the frontend toast can show something actionable.
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
 
 @router.post("/evict")
@@ -145,3 +149,5 @@ def evict_endpoint(
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
