@@ -15,12 +15,12 @@ class RemoteExecutionBackend(Backend):
         self.protector = protector
 
     def __call__(self, tracer: Tracer):
-        Globals.stack = 0
-        Globals.enter()
 
         try:
             with trace_span("model_actor.nnsight_execute") as span:
-                num_mediators = len(tracer.mediators) if hasattr(tracer, 'mediators') else None
+                num_mediators = (
+                    len(tracer.mediators) if hasattr(tracer, "mediators") else None
+                )
                 if num_mediators is not None:
                     span.set_attribute("ndif.nnsight.num_mediators", num_mediators)
 
@@ -34,7 +34,5 @@ class RemoteExecutionBackend(Backend):
         finally:
             Globals.cache.clear()
             Globals.saves.clear()
-            Globals.exit()
-            Globals.stack = 0
 
         return saves
