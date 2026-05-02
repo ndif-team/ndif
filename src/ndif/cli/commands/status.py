@@ -6,7 +6,8 @@ import click
 import ray
 from collections import defaultdict
 
-from ..lib.util import get_controller_actor_handle, extract_repo_id_from_model_key
+from ...common.providers.ray import get_controller_actor_handle
+from ..lib.util import extract_repo_id_from_model_key
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 

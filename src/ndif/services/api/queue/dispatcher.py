@@ -42,9 +42,9 @@ from ....common.tracing import (
     set_request_attributes,
     trace_span,
 )
+from ....common.providers.ray import controller_handle, patch
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
-from .util import patch, controller_handle, submit
 
 
 class DispatcherEvent(str, Enum):
@@ -437,7 +437,7 @@ class Dispatcher:
 
                 handle = controller_handle()
 
-                status = await asyncio.wait_for(submit(handle, "status"), timeout=60)
+                status = await asyncio.wait_for(handle.status.remote(), timeout=60)
                 status = pickle.dumps(status)
 
                 await RedisProvider.async_client.publish("status:event", status)
@@ -595,7 +595,7 @@ class Dispatcher:
 
             # Get env info from controller
             handle = controller_handle()
-            env_info = await asyncio.wait_for(submit(handle, "env"), timeout=60)
+            env_info = await asyncio.wait_for(handle.env.remote(), timeout=60)
             env_bytes = pickle.dumps(env_info)
 
             # Cache the result (no expiration)

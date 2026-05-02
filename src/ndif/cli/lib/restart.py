@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ...common.providers.ray import get_model_actor_handle
 from ._common import NDIFConnectivityError, OnMessage, emit, ensure_ray_connected
 from .session import get_env
-from .util import get_actor_handle, get_model_key
+from .util import get_model_key
 
 
 def restart(
@@ -40,7 +41,7 @@ def restart(
     ensure_ray_connected(ray_address)
 
     emit(on_message, f"Getting actor handle for {model_key}...")
-    actor = get_actor_handle(model_key)
+    actor = get_model_actor_handle(model_key)
 
     emit(on_message, f"Restarting deployment for {model_key}...")
     ray.kill(actor, no_restart=False)

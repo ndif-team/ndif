@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+from ...common.providers.ray import get_controller_actor_handle
 from ...common.schema.deployment_config import DeploymentConfig
 from ._common import (
     NDIFConnectivityError,
@@ -20,7 +21,6 @@ from ._common import (
 )
 from .session import get_env
 from .util import (
-    get_controller_actor_handle,
     get_current_deployments,
     get_model_key,
     notify_dispatcher,

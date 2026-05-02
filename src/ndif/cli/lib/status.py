@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ...common.providers.ray import get_controller_actor_handle
 from ._common import NDIFConnectivityError, ensure_ray_connected
 from .session import get_env
-from .util import get_controller_actor_handle
 
 
 def status(*, ray_address: Optional[str] = None) -> dict:

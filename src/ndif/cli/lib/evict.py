@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+from ...common.providers.ray import get_controller_actor_handle
 from ._common import NDIFConnectivityError, OnMessage, check_prereqs, emit, ensure_ray_connected
 from .session import get_env
 from .util import (
-    get_controller_actor_handle,
     get_current_deployments,
     get_model_key,
     notify_dispatcher,

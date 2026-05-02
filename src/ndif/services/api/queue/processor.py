@@ -37,8 +37,8 @@ from ....common.tracing import (
     trace_span,
 )
 
+from ....common.providers.ray import controller_handle, get_model_actor_handle
 from .config import QueueConfig
-from .util import controller_handle, get_actor_handle, submit
 
 logger = logging.getLogger("ndif")
 
@@ -184,7 +184,7 @@ class Processor:
             Exception: If the actor cannot be found (e.g., not yet deployed
                 or has been evicted).
         """
-        return get_actor_handle(f"ModelActor:{self.model_key}")
+        return get_model_actor_handle(self.model_key)
 
     async def enqueue(self, request: BackendRequestModel) -> None:
         """Add a request to the processing queue.
@@ -236,7 +236,7 @@ class Processor:
             True if the model has a pinned deployment, False otherwise.
             Returns False if the deployment information cannot be retrieved.
         """
-        result = await submit(handle, "get_deployment", self.model_key)
+        result = await handle.get_deployment.remote(self.model_key)
 
         if result is None:
             return False
@@ -310,9 +310,7 @@ class Processor:
 
                 span.add_event("controller_deploy_requested")
 
-                result = await submit(
-                    controller,
-                    "deploy",
+                result = await controller.deploy.remote(
                     [self.model_key],
                     trace_context=TracingContext.inject(),
                 )
@@ -397,7 +395,7 @@ class Processor:
                 try:
                     handle = self.handle
 
-                    await submit(handle, "__ray_ready__")
+                    await handle.__ray_ready__.remote()
 
                     return  # Success - model is ready
 
@@ -462,7 +460,7 @@ class Processor:
                 # Re-inject context so Ray actor gets the current span as parent
                 request.trace_context = TracingContext.inject()
 
-                result = submit(handle, "__call__", request)
+                result = handle.__call__.remote(request)
 
                 result = await result
 
@@ -646,7 +644,7 @@ class Processor:
         if self.current_request_id == request_id:
             try:
                 handle = self.handle
-                await submit(handle, "cancel")
+                await handle.cancel.remote()
                 return {
                     "status": "cancelled_execution",
                     "message": f"Cancelled executing request {request_id}",

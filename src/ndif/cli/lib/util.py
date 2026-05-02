@@ -52,28 +52,9 @@ def get_service_dir(service_name: str) -> Path:
 
 
 # =============================================================================
-# Ray utilities
+# Ray utilities — see ``ndif.common.providers.ray`` for the actor handle
+# helpers (``get_controller_actor_handle``, ``get_model_actor_handle``).
 # =============================================================================
-
-
-def get_controller_actor_handle(namespace: str = "NDIF"):
-    """Get a Ray actor handle for the controller actor."""
-    import ray
-    return ray.get_actor("Controller", namespace=namespace)
-
-
-def get_actor_handle(model_key: str, namespace: str = "NDIF"):
-    """Get a Ray actor handle by model key and namespace.
-
-    Args:
-        model_key: Model key
-        namespace: Ray namespace (default: "NDIF")
-
-    Returns:
-        Ray actor handle
-    """
-    import ray
-    return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
 
 
 def get_model_key(checkpoint: str, revision: str = None) -> str:
@@ -166,6 +147,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
         List of deployment dicts with repo_id, revision, pinned, model_key, etc.
     """
     import ray
+    from ...common.providers.ray import get_controller_actor_handle
     controller = get_controller_actor_handle()
     status_ref = controller.status.remote()
     status = ray.get(status_ref)
@@ -197,11 +179,12 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
         Exception: If an initialization error occurs (not a lookup failure)
     """
     import ray
+    from ...common.providers.ray import get_model_actor_handle
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         try:
-            handle = get_actor_handle(model_key)
+            handle = get_model_actor_handle(model_key)
             ray.get(handle.__ray_ready__.remote())
             return True
         except Exception as e:
