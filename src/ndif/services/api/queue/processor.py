@@ -29,6 +29,7 @@ from typing import Optional
 import ray
 from opentelemetry import trace
 
+from ....common.metrics import QueueDepthMetric
 from ....common.schema.request import BackendRequestModel
 from ....common.schema.response import BackendResponseModel
 from ....common.tracing import (
@@ -211,6 +212,9 @@ class Processor:
             return
 
         self.queue.put_nowait(request)
+
+        # Record queue depth after adding request
+        QueueDepthMetric.update(self.model_key, self.queue.qsize())
 
         await self.reply(
             request=request,
@@ -537,6 +541,9 @@ class Processor:
                 continue
 
             request = await self.queue.get()
+
+            # Record queue depth after removing request
+            QueueDepthMetric.update(self.model_key, self.queue.qsize())
 
             self.status = ProcessorStatus.BUSY
 
