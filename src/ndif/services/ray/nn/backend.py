@@ -7,6 +7,7 @@ from nnsight.intervention.tracing.tracer import Tracer
 from nnsight.intervention.tracing.util import wrap_exception
 
 from ....common.tracing import trace_span
+from nnsight.intervention.tracing.globals import _ensure_mounted
 
 
 class RemoteExecutionBackend(Backend):
@@ -24,6 +25,7 @@ class RemoteExecutionBackend(Backend):
                 if num_mediators is not None:
                     span.set_attribute("ndif.nnsight.num_mediators", num_mediators)
 
+                _ensure_mounted()
                 with self.protector:
                     saves = tracer.execute(self.fn)
 
