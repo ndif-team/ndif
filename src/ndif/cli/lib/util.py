@@ -43,6 +43,7 @@ def get_ndif_root() -> Path:
     ``<repo>/src/ndif`` or ``site-packages/ndif``.
     """
     import ndif
+
     return Path(ndif.__file__).resolve().parent
 
 
@@ -71,7 +72,9 @@ def get_model_key(checkpoint: str, revision: str = None) -> str:
     # There should be a more lightweight way to do this.
     from nnsight import LanguageModel
 
-    model = LanguageModel(checkpoint, revision=revision, dispatch=False)
+    model = LanguageModel(
+        checkpoint, revision=revision, dispatch=False, trust_remote_code=True
+    )
     return model.to_model_key()
 
 
@@ -97,7 +100,9 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
     return model_key
 
 
-def canonicalize_checkpoint(checkpoint: str, revision: str = None) -> tuple[str, str | None, str]:
+def canonicalize_checkpoint(
+    checkpoint: str, revision: str = None
+) -> tuple[str, str | None, str]:
     """Resolve a user-typed checkpoint and return ``(canonical_checkpoint, revision, model_key)``.
 
     HuggingFace repo IDs are case-insensitive — the API serves the same model
@@ -121,6 +126,7 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
         model_key: Model key affected by the event
     """
     import redis.asyncio as redis
+
     redis_client = redis.Redis.from_url(redis_url)
     try:
         await redis_client.xadd(
@@ -129,7 +135,7 @@ async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
                 "event_type": event_type,
                 "model_key": model_key,
                 "timestamp": str(time.time()),
-            }
+            },
         )
     finally:
         await redis_client.aclose()
@@ -148,6 +154,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
     """
     import ray
     from ...common.providers.ray import get_controller_actor_handle
+
     controller = get_controller_actor_handle()
     status_ref = controller.status.remote()
     status = ray.get(status_ref)
@@ -156,8 +163,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
 
     if level:
         return [
-            dep for dep in deployments.values()
-            if dep.get("deployment_level") == level
+            dep for dep in deployments.values() if dep.get("deployment_level") == level
         ]
     return list(deployments.values())
 
@@ -180,6 +186,7 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
     """
     import ray
     from ...common.providers.ray import get_model_actor_handle
+
     start_time = time.time()
 
     while time.time() - start_time < timeout:
