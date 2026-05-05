@@ -38,7 +38,7 @@ if (stored === 'light' || stored === 'dark') {
   <div class="wrap">
     <header v-if="showChrome" class="app-header">
       <div class="row">
-        <span class="logo">NDIF<span class="cursor"></span></span>
+        <span class="logo"><img src="/ndif-logo.png" class="logo-mark" alt="" />NDIF</span>
         <nav class="tabs">
           <RouterLink to="/monitor">Monitor</RouterLink>
           <RouterLink to="/deployments">Deployments</RouterLink>

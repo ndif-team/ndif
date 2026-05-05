@@ -95,10 +95,7 @@ function submit() {
           <input type="checkbox" v-model="form.pinned" />
           <span>
             <strong>Pinned</strong>
-            <span class="muted">
-              — won't be evicted. Adds an open-ended schedule entry starting
-              now.
-            </span>
+            <span class="muted">— won't be evicted by hotswapping.</span>
           </span>
         </label>
 

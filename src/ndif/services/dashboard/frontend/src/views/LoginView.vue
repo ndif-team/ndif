@@ -34,7 +34,7 @@ async function submit() {
 <template>
   <div class="login-screen">
     <div class="login-card">
-      <div class="logo">NDIF<span class="cursor"></span></div>
+      <div class="logo"><img src="/ndif-logo.png" class="logo-mark" alt="" />NDIF</div>
       <p class="muted login-subtitle">SIGN IN</p>
 
       <form @submit.prevent="submit">

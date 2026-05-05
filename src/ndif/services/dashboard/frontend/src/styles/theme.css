@@ -7,10 +7,10 @@
 
 :root,
 [data-theme='light'] {
-  --bg: #ece7dc;
-  --surface: #e2ddd1;
-  --surface-2: #d8d2c4;
-  --border: #cac4b6;
+  --bg: #fffff0;
+  --surface: #f5efde;
+  --surface-2: #ebe5d2;
+  --border: #d8d2c0;
   --text: #2d2a26;
   --muted: #84807a;
   --green: #3a7d44;
@@ -147,21 +147,15 @@ header.app-header {
   font-family: 'VT323', monospace;
   font-size: 1.7rem;
   letter-spacing: 0.08em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
 }
 
-.cursor {
-  display: inline-block;
-  width: 0.5em;
-  height: 1em;
-  background: var(--accent);
-  margin-left: 0.15em;
-  animation: blink 1s steps(2) infinite;
-  vertical-align: text-bottom;
-}
-@keyframes blink {
-  to {
-    visibility: hidden;
-  }
+.logo-mark {
+  height: 1.4em;
+  width: auto;
+  display: block;
 }
 
 nav.tabs {
