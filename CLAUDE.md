@@ -1,6 +1,6 @@
 # CLAUDE.md — NDIF agent guide
 
-This file orients agents working in the NDIF repo. It is standalone: you should not need to load anything else to start. When you need more depth on design decisions, read `NDIF.md` (the human-facing source of truth, ~1760 lines).
+This file orients agents working in the NDIF repo. It is standalone: you should not need to load anything else to start. When you need more depth on design decisions, read `NDIF.md` (the human-facing source of truth, ~2700 lines).
 
 ---
 
@@ -8,7 +8,7 @@ This file orients agents working in the NDIF repo. It is standalone: you should 
 
 **NDIF** (National Deep Inference Fabric) is the server that executes [NNsight](https://github.com/ndif-team/nnsight) remote traces on shared GPU clusters. A client pickles intervention code + a model key, POSTs it to the API, NDIF routes it to a Ray actor holding that model, runs the user code inside a security sandbox, uploads results to MinIO, and streams status over Socket.IO.
 
-Python **3.12+** (see `pyproject.toml`). Packaged with `uv`. The repo contains three first-party services (API, Ray, CLI) plus a standalone Monitor service. The README still mentions Python 3.10/conda — that is stale; trust `pyproject.toml`.
+Python **3.12+** (see `pyproject.toml`). Packaged with `uv` as a single src-layout package (`ndif`). The repo contains four first-party services (API, Ray, Dashboard, and the legacy standalone Monitor that the Dashboard is replacing) plus the `ndif` CLI. The README still mentions Python 3.10/conda — that is stale; trust `pyproject.toml`.
 
 ---
 
@@ -36,8 +36,10 @@ ndif/
     │   └── config/models.yaml
     │
     ├── common/               ← shared code between services
-    │   ├── schema/           ← Backend{Request,Response,Result}Model, mixins
-    │   ├── providers/        ← redis, objectstore (MinIO/S3), socketio, mailgun, ray
+    │   ├── schema/           ← Backend{Request,Response,Result}Model, mixins, DeploymentConfig
+    │   │                       (no package-level re-exports — import from submodules)
+    │   ├── providers/        ← redis, objectstore (MinIO/S3), socketio, mailgun, postgres,
+    │   │                       ray (RayProvider + NDIFActorHandle — lean ClientActorHandle)
     │   ├── metrics/          ← InfluxDB metric classes
     │   ├── logging/          ← centralized logger setup
     │   ├── tracing/          ← OpenTelemetry / Jaeger
@@ -71,8 +73,15 @@ ndif/
         │           ├── whitelist.py / whitelist.yaml
         │           └── README.md
         │
-        └── monitor/          ← uptime monitor + Flask dashboard
-                                deployed outside the docker stack via run.sh + cron
+        ├── dashboard/        ← admin web app (Vue 3 + FastAPI), runs as a docker-compose service
+        │   ├── backend/      ← FastAPI app (auth, schedule CRUD, monitor read, ad-hoc deploy/evict)
+        │   ├── jobs/         ← cron entrypoints — monitor.py + reconcile.py
+        │   ├── frontend/     ← Vue 3 + Vite + TS SPA
+        │   └── start.sh      ← canonical entrypoint (used by both Docker and standalone)
+        │
+        └── monitor/          ← LEGACY standalone uptime monitor
+                                being replaced by services/dashboard/; kept for the
+                                existing ~/ndif_monitor/ deployment
 ```
 
 ---
@@ -149,11 +158,15 @@ Do not remove the mount — the expectation is that NDIF is developed alongside 
 ### Everyday commands
 
 ```bash
-make build          # build api:latest + ray:latest from docker/Dockerfile (NAME build-arg)
-make up             # bring up full stack (redis, minio, postgres, ray, api, prom, influx, grafana, loki, jaeger)
+make build          # build api:latest + ray:latest (docker/Dockerfile, NAME build-arg)
+                    # + dashboard:latest (docker/Dockerfile.dashboard, multi-stage node→python)
+make up             # bring up full stack (redis, minio, postgres, ray, api, dashboard,
+                    # prom, influx, grafana, loki, jaeger)
 make down           # tear down
 make ta             # down + build + up  ← use this after code edits
 ```
+
+`Makefile` declares `.PHONY: check-nnsight build up down ta` — without that, a stale `build/` directory at the repo root would make `make build` a silent no-op. Don't remove the `.PHONY` line.
 
 First-time setup: `make build && make up`. After editing source: `make ta`. If you only touched mounted code (e.g. nnsight), `make down && make up` may suffice.
 
@@ -172,6 +185,7 @@ Everything is env-var driven. `.env.example` has defaults and is loaded by both 
 | Port | Service |
 |---|---|
 | 5001 | API (NDIF_API_PORT) |
+| 8081 | Dashboard (NDIF_DASHBOARD_PORT) |
 | 6379 | Redis / broker |
 | 27018 | MinIO S3 |
 | 46805 | MinIO console |
@@ -183,7 +197,9 @@ Everything is env-var driven. `.env.example` has defaults and is loaded by both 
 
 ### Native mode (`ndif` CLI)
 
-The Click CLI in `cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif export`). Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
+The Click CLI in `src/ndif/cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif export`). Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
+
+The shared deploy/evict/restart/status logic lives under `src/ndif/cli/lib/{deploy,evict,restart,status}.py` — the dashboard backend imports the same helpers, so behavior stays consistent between the CLI and the web UI.
 
 ---
 
@@ -206,8 +222,8 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 ## Services beyond API/Ray/CLI
 
-- **`src/ndif/services/monitor/`** — standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Hits `/connected` every 10 min, runs nnsight traces on HOT models every 2 hours, posts Discord notifications on state change, and serves a Flask dashboard on port 8080. Has its own `README.md`. **Being replaced by `services/dashboard/`.**
-- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI). Owns the pinned-deployment schedule (`schedule.json`) and a reconcile cron that diffs the active set against the controller and pushes evict/deploy as needed. Replaces both `services/monitor/` and the old gcal scheduler. Has its own `README.md`.
+- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI), shipped as a docker-compose service. Owns three things: (1) the pinned-deployment schedule (`schedule.json`) and a 2-min reconcile cron that diffs the active set against the controller and pushes evict/deploy (`pinned=True`) as needed, (2) the uptime + per-HOT-model nnsight-trace monitor cron (10-min cadence, with Discord notifications), (3) the operational UI (login → cluster monitor / deployments / month-calendar schedule editor). Replaces both `services/monitor/` and the now-removed Ray-side gcal scheduler. Has its own `README.md`.
+- **`src/ndif/services/monitor/`** — LEGACY standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is kept for the existing `~/ndif_monitor/` deployment until the dashboard has been the primary monitor for a full release cycle. Don't put new work here.
 - **`docker/postgres/`** — Postgres init SQL. Provides the dev-mode auth/API-key store wired into compose.
 
 ---
@@ -216,13 +232,19 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 - **Whitelist edits rebuild Ray.** `whitelist.yaml` is packaged into the Ray image; edits require `make ta` (or at minimum a ray-image rebuild + restart) to take effect.
 - **`ModelActor` uses `num_gpus=0` on purpose.** GPU assignment is done via `CUDA_VISIBLE_DEVICES` so the Controller — not Ray's scheduler — owns GPU placement. Don't "fix" this by handing GPU scheduling back to Ray.
-- **Ray client deadlock patch.** The Dispatcher monkey-patches `DataClient._async_send` to work around a Ray lock contention bug. It's intentional; see `queue/util.py`.
+- **Ray client deadlock patch.** The Dispatcher monkey-patches `DataClient._async_send` to work around a Ray lock contention bug. It's intentional; see `common/providers/ray.py::patch()`.
+- **`NDIFActorHandle` skips Ray's descriptor-prefetch.** Stock `ClientActorHandle.__getattr__` does an RPC to fetch every method's signature and unpickles them on the client side, which drags `BackendRequestModel` → `botocore` → … into the import graph. Fine on api+ray; broken on the slim dashboard image. The override in `common/providers/ray.py` returns a minimal `NDIFClientRemoteMethod` that constructs the wire task directly. Don't reintroduce signature-bind on the dashboard path.
 - **CUDA device-side asserts are terminal.** A device-side assertion corrupts the CUDA context, so the ModelActor self-kills with `no_restart=False` and lets Ray respawn it. Expect this path if you see that error string.
 - **Thread kills are `ctypes`-based.** Timeouts / cancellations fire a `SystemExit` into the execution thread via `kill_thread()`. It's a last resort — not clean, but it prevents runaway user code from blocking the actor.
 - **`build()`/`apply()` ordering is load-bearing.** Delete → cache → from_cache → create. Reordering will starve later steps of GPUs.
 - **Deserialization has a separate, broader whitelist.** It is only active inside `ModelActor.pre()`. Execution uses the narrower set. Don't collapse them.
+- **Pinned deployments come from the dashboard's `schedule.json`.** The Ray-side gcal scheduler has been removed. To pin a model, edit the dashboard schedule (or POST to its `/api/schedule`); the reconcile cron diffs `prev_active` / `new_active` / currently-HOT and emits explicit `evict()` / `deploy(pinned=True)` calls. Drift recovery is folded into the deploy step.
+- **`DeploymentConfig.actor_class`** lets a deployment override the Ray actor class (dotted import path or pre-decorated `@ray.remote` class). `None` falls back to `NDIF_DEFAULT_MODEL_ACTOR_CLASS` (default `ndif.services.ray.deployments.modeling.base.ModelActor`).
+- **`common/schema/__init__.py` is empty on purpose.** The package-level re-exports were dropped to give `ndif --help` a sub-second cold start (was ~8s) — code should import directly from the submodule (`from ndif.common.schema.request import BackendRequestModel`).
+- **`trust_remote_code=True`** is passed to `RemoteableMixin.from_model_key` in both the controller's `evaluator.py` and `modeling/base.py`, so models that ship custom code (e.g. some HF gated repos) can load. The dashboard's deploy form also opts into `trust_remote_code` when resolving `model_key` via nnsight.
 - **Dev-mode Postgres.** `NDIF_DEV_MODE=true` skips API-key lookups entirely; nothing touches Postgres in that path. Tests rely on this.
-- **Two compose mount assumptions** that may not hold on a given machine: the nnsight source mount (above) and the HuggingFace cache mount (`~/.cache/huggingface`). Update both if your paths differ.
+- **Two compose mount assumptions** that may not hold on a given machine: the nnsight source mount (above) and the HuggingFace cache mount (`~/.cache/huggingface`, mounted into both the `ray` and `dashboard` services). Update both if your paths differ.
+- **Dashboard env-file format.** The dashboard service uses `env_file: format: raw` so a bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation. Don't switch it back to default `format` without escaping the hash.
 
 ---
 
@@ -239,7 +261,8 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 | Change the sandbox | `src/ndif/services/ray/nn/security/` (read its README first) |
 | Change result/response storage | `src/ndif/common/schema/{result,response}.py`, `src/ndif/common/schema/mixins.py`, `src/ndif/common/providers/objectstore.py` |
 | Change env/config | `.env.example` + the relevant service `config.py` |
-| Change CLI commands | `cli/commands/` |
+| Change CLI commands | `src/ndif/cli/commands/` |
+| Change dashboard / pinned-deployment schedule | `src/ndif/services/dashboard/` (read its `README.md` first) |
 
 ---
 
