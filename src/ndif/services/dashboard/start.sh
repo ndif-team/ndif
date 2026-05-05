@@ -23,7 +23,7 @@
 # Optional:
 #   NDIF_DASHBOARD_PORT                  default 8081
 #   NDIF_DASHBOARD_FRONTEND_DIST         default <package>/frontend/dist
-#   NDIF_DASHBOARD_MONITOR_URL           what the monitor cron probes; default https://api.ndif.us
+#   NDIF_DASHBOARD_MONITOR_URL           what the monitor cron probes; default http://localhost:5001
 #   NDIF_API_KEY                         needed by the monitor cron's model traces
 #   NDIF_DASHBOARD_MONITOR_CRON          default "*/10 * * * *"
 #   NDIF_DASHBOARD_RECONCILE_CRON        default "*/2 * * * *"
@@ -58,7 +58,7 @@ NDIF_API_KEY=${NDIF_API_KEY:-}
 NDIF_RAY_ADDRESS=${NDIF_RAY_ADDRESS:-}
 NDIF_BROKER_URL=${NDIF_BROKER_URL:-}
 
-${NDIF_DASHBOARD_MONITOR_CRON:-*/10 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.monitor --url ${NDIF_DASHBOARD_MONITOR_URL:-https://api.ndif.us} --log-dir $LOG_DIR --config $CONFIG >> $LOG_DIR/monitor.cron.log 2>&1
+${NDIF_DASHBOARD_MONITOR_CRON:-*/10 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.monitor --url ${NDIF_DASHBOARD_MONITOR_URL:-http://localhost:5001} --log-dir $LOG_DIR --config $CONFIG >> $LOG_DIR/monitor.cron.log 2>&1
 ${NDIF_DASHBOARD_RECONCILE_CRON:-*/2 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.reconcile >> $LOG_DIR/reconcile.cron.log 2>&1
 EOF
     chmod 0644 "$CRON_FILE"
@@ -74,7 +74,7 @@ fi
 echo "[dashboard] starting uvicorn on :$PORT"
 echo "[dashboard]   data dir:    $DATA_DIR"
 echo "[dashboard]   ndif API:    ${NDIF_API_URL:-http://localhost:5001}"
-echo "[dashboard]   monitor URL: ${NDIF_DASHBOARD_MONITOR_URL:-https://api.ndif.us}"
+echo "[dashboard]   monitor URL: ${NDIF_DASHBOARD_MONITOR_URL:-http://localhost:5001}"
 
 exec python -m uvicorn ndif.services.dashboard.backend.app:app \
     --host 0.0.0.0 --port "$PORT"

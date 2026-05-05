@@ -124,6 +124,10 @@ services:
       # come straight from env_file above.
       NDIF_DASHBOARD_DATA_DIR: /var/lib/dashboard
       NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      # Monitor cron probes the local api service from inside the bridge
+      # network — ``localhost`` would mean the dashboard container itself, so
+      # use the same host-IP route as NDIF_API_URL.
+      NDIF_DASHBOARD_MONITOR_URL: http://${HOST_IP}:${NDIF_API_PORT}
       NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
     volumes:

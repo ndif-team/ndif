@@ -37,7 +37,7 @@ from .util import (
 )
 
 
-DEFAULT_URL = "https://api.ndif.us"
+DEFAULT_URL = "http://localhost:5001"
 DEFAULT_MODEL_TIMEOUT = 60
 DEFAULT_MODEL_INTERVAL = 7200  # 2 hours
 

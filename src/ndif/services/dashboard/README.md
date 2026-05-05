@@ -65,7 +65,7 @@ the prefix `NDIF_DASHBOARD_` unless noted.
 | `NDIF_DASHBOARD_FRONTEND_DIST` | `…/dashboard/frontend/dist` | Built Vue SPA to serve |
 | `NDIF_DASHBOARD_PORT` | `8081` | Backend port |
 | `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host directory bind-mounted to `/var/lib/dashboard` (compose only) |
-| `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes (kept external on purpose) |
+| `NDIF_DASHBOARD_MONITOR_URL` | `http://localhost:5001` | Where the monitor cron probes. Override to the public URL (e.g. `https://api.ndif.us`) in prod so the probe exercises DNS + TLS + LB |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Schedule for the uptime cron |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Schedule for the reconcile cron |
 | `NDIF_API_URL` | from compose | Used by `/api/status` proxy. Reused from the rest of the stack. |
