@@ -1,0 +1,15 @@
+# Pinned to match the parent ndif package (ndif/pyproject.toml) so the two
+# installs don't fight over fastapi/uvicorn versions.
+fastapi==0.108.0
+uvicorn[standard]==0.24.0
+pydantic-settings>=2.1.0
+itsdangerous>=2.1.0
+bcrypt>=4.0.0
+python-multipart>=0.0.6
+requests
+nnsight
+# The reconcile cron drives deploy/evict/restart through the cli lib, which
+# uses the Ray client. Pinned to match services/ray/requirements.in.
+ray[client]==2.50.0
+# cli.lib.checks.check_redis + lib.deploy.notify_dispatcher need a redis client.
+redis

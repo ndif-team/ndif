@@ -67,11 +67,11 @@ def export(output_file: str, to_stdout: bool, ray_address: str):
             click.echo("Models:")
             for dep in hot_deployments:
                 repo_id = dep.get("repo_id", "unknown")
-                dedicated = dep.get("dedicated", False)
+                pinned = dep.get("pinned", False)
                 revision = dep.get("revision")
                 extras = []
-                if dedicated:
-                    extras.append("dedicated")
+                if pinned:
+                    extras.append("pinned")
                 if revision:
                     extras.append(f"rev: {revision}")
                 extra_str = f" ({', '.join(extras)})" if extras else ""
@@ -88,17 +88,17 @@ def _build_models_list(deployments: list[dict]) -> list:
     for dep in deployments:
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
-        dedicated = dep.get("dedicated", False)
+        pinned = dep.get("pinned", False)
         actor_class = dep.get("actor_class")
 
-        if not revision and not dedicated and not actor_class:
+        if not revision and not pinned and not actor_class:
             models.append(repo_id)
         else:
             entry = {"checkpoint": repo_id}
             if revision:
                 entry["revision"] = revision
-            if dedicated:
-                entry["dedicated"] = dedicated
+            if pinned:
+                entry["pinned"] = pinned
             if actor_class:
                 entry["actor_class"] = actor_class
             models.append(entry)

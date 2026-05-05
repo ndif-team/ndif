@@ -71,7 +71,7 @@ class _ControllerActor:
         self.cluster.update_nodes()
 
         if deployments and deployments != [""]:
-            self._deploy({key: DeploymentConfig(dedicated=True) for key in deployments})
+            self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
 
         asyncio.create_task(self.check_nodes())
 
@@ -123,7 +123,7 @@ class _ControllerActor:
             },
         ) as span:
             self.logger.info(
-                f"Deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}"
+                f"Deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}"
             )
 
             results, change = self.cluster.deploy(configs)
@@ -514,7 +514,7 @@ class _ControllerActor:
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
-                    "dedicated": deployment.dedicated,
+                    "pinned": deployment.pinned,
                     "model_key": deployment.model_key,
                     "repo_id": entry.config._name_or_path,
                     "revision": entry.revision,
@@ -523,7 +523,7 @@ class _ControllerActor:
                 }
 
                 if (
-                    not deployment.dedicated
+                    not deployment.pinned
                     and self.minimum_deployment_time_seconds is not None
                 ):
                     status[application_name]["schedule"] = {

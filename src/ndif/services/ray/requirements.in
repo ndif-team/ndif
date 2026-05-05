@@ -2,6 +2,7 @@ nnsight
 diffusers
 ray[serve]==2.50.0
 python-slugify
+redis
 # Telemetry
 prometheus_client
 loki-logger-handler

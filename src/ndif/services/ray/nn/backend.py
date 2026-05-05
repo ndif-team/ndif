@@ -7,6 +7,7 @@ from nnsight.intervention.tracing.tracer import Tracer
 from nnsight.intervention.tracing.util import wrap_exception
 
 from ....common.tracing import trace_span
+from nnsight.intervention.tracing.globals import _ensure_mounted
 
 
 class RemoteExecutionBackend(Backend):
@@ -15,15 +16,16 @@ class RemoteExecutionBackend(Backend):
         self.protector = protector
 
     def __call__(self, tracer: Tracer):
-        Globals.stack = 0
-        Globals.enter()
 
         try:
             with trace_span("model_actor.nnsight_execute") as span:
-                num_mediators = len(tracer.mediators) if hasattr(tracer, 'mediators') else None
+                num_mediators = (
+                    len(tracer.mediators) if hasattr(tracer, "mediators") else None
+                )
                 if num_mediators is not None:
                     span.set_attribute("ndif.nnsight.num_mediators", num_mediators)
 
+                _ensure_mounted()
                 with self.protector:
                     saves = tracer.execute(self.fn)
 
@@ -34,7 +36,5 @@ class RemoteExecutionBackend(Backend):
         finally:
             Globals.cache.clear()
             Globals.saves.clear()
-            Globals.exit()
-            Globals.stack = 0
 
         return saves

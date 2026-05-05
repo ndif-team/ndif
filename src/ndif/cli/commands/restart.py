@@ -1,10 +1,9 @@
 """Restart command for NDIF - restart a model actor."""
 
 import click
-import ray
 
-from ..lib.util import get_actor_handle
 from ..lib.checks import check_prerequisites
+from ..lib.restart import NDIFConnectivityError, restart as restart_lib
 from ..lib.session import get_env
 
 
@@ -25,35 +24,19 @@ def restart(checkpoint: str, revision: str, ray_address: str):
         ndif restart gpt2
         ndif restart meta-llama/Llama-2-7b-hf --revision main
     """
-    # Use session default if not provided
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    check_prerequisites(ray_address=ray_address)
+
     try:
-        # Check prerequisites silently
-        check_prerequisites(ray_address=ray_address)
-
-        # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        # Imported lazily — nnsight's import tree (transformers/diffusers/torch)
-        # otherwise adds ~7s to every CLI `--help` invocation.
-        click.echo(f"Generating model key for {checkpoint}{f' (revision: {revision})' if revision else ''}...")
-
-        from nnsight import LanguageModel
-        model = LanguageModel(checkpoint, revision=revision, dispatch=False)
-        model_key = model.to_model_key()
-        click.echo(f"Model key: {model_key}")
-
-        # Connect to Ray (suppress verbose output)
-        click.echo(f"Connecting to Ray at {ray_address}...")
-        ray.init(address=ray_address, ignore_reinit_error=True, logging_level="error")
-
-        # Get deployment actor handle and restart it
-        click.echo(f"Getting actor handle for {model_key}...")
-        actor = get_actor_handle(model_key)
-
-        click.echo(f"Restarting deployment for {model_key}...")
-        ray.kill(actor, no_restart=False)
-
-        click.echo("✓ Restart successful!")
-
+        restart_lib(
+            checkpoint,
+            revision=revision,
+            ray_address=ray_address,
+            on_message=click.echo,
+        )
+    except NDIFConnectivityError as e:
+        click.echo(f"✗ Error: {e}", err=True)
+        raise click.Abort()
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)
         raise click.Abort()

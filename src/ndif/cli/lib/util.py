@@ -52,28 +52,9 @@ def get_service_dir(service_name: str) -> Path:
 
 
 # =============================================================================
-# Ray utilities
+# Ray utilities — see ``ndif.common.providers.ray`` for the actor handle
+# helpers (``get_controller_actor_handle``, ``get_model_actor_handle``).
 # =============================================================================
-
-
-def get_controller_actor_handle(namespace: str = "NDIF"):
-    """Get a Ray actor handle for the controller actor."""
-    import ray
-    return ray.get_actor("Controller", namespace=namespace)
-
-
-def get_actor_handle(model_key: str, namespace: str = "NDIF"):
-    """Get a Ray actor handle by model key and namespace.
-
-    Args:
-        model_key: Model key
-        namespace: Ray namespace (default: "NDIF")
-
-    Returns:
-        Ray actor handle
-    """
-    import ray
-    return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
 
 
 def get_model_key(checkpoint: str, revision: str = None) -> str:
@@ -116,6 +97,21 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
     return model_key
 
 
+def canonicalize_checkpoint(checkpoint: str, revision: str = None) -> tuple[str, str | None, str]:
+    """Resolve a user-typed checkpoint and return ``(canonical_checkpoint, revision, model_key)``.
+
+    HuggingFace repo IDs are case-insensitive — the API serves the same model
+    regardless of casing — but the canonical name has a specific capitalization
+    (e.g. ``meta-llama/Llama-3.1-8B``, not ``…-8b``). nnsight's
+    ``LanguageModel(...).to_model_key()`` does the HF resolution; we surface
+    the canonical repo_id AND the model_key from a single lookup so callers
+    can persist both (e.g. the schedule store) without paying the HF cost
+    twice.
+    """
+    model_key = get_model_key(checkpoint, revision)
+    return extract_repo_id_from_model_key(model_key), revision, model_key
+
+
 async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
     """Notify dispatcher of deployment changes via Redis streams.
 
@@ -148,9 +144,10 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
         level: Deployment level to filter by ("HOT", "WARM", "COLD", or None for all)
 
     Returns:
-        List of deployment dicts with repo_id, revision, dedicated, model_key, etc.
+        List of deployment dicts with repo_id, revision, pinned, model_key, etc.
     """
     import ray
+    from ...common.providers.ray import get_controller_actor_handle
     controller = get_controller_actor_handle()
     status_ref = controller.status.remote()
     status = ray.get(status_ref)
@@ -182,11 +179,12 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
         Exception: If an initialization error occurs (not a lookup failure)
     """
     import ray
+    from ...common.providers.ray import get_model_actor_handle
     start_time = time.time()
 
     while time.time() - start_time < timeout:
         try:
-            handle = get_actor_handle(model_key)
+            handle = get_model_actor_handle(model_key)
             ray.get(handle.__ray_ready__.remote())
             return True
         except Exception as e:
