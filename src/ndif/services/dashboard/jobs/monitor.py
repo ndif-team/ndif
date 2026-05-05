@@ -199,16 +199,43 @@ def notify_status(config: dict, was_ok: bool, down_since: str | None, is_ok: boo
 
 
 def notify_model_failures(config: dict, failed: list, total: int) -> None:
+    """Discord-notify the set of failed models, capped at Discord's 2000-char limit.
+
+    Per-model error strings can be huge (full Python tracebacks from the
+    server side) — cap each line and the whole message so the webhook
+    always succeeds. Verbose tracebacks remain in models_*.log.
+    """
     webhook_url = config.get("discord_webhook")
     if not webhook_url or not failed:
         return
     messages = {**DEFAULT_MESSAGES, **config.get("messages", {})}
     mention = get_mention(config)
-    lines = [f"> **{r['model']}** — `{r['status']}`: {r.get('error', 'unknown')}" for r in failed]
-    send_discord(webhook_url, messages["models_failed"].format(
-        failed_count=len(failed), total=total,
-        mention=mention, model_list="\n".join(lines),
-    ))
+
+    DISCORD_LIMIT = 2000
+    PER_LINE_ERR_CHARS = 120  # short summary per line
+
+    def _summarize(err) -> str:
+        s = str(err or "unknown").splitlines()[0].strip()
+        return (s[:PER_LINE_ERR_CHARS] + "…") if len(s) > PER_LINE_ERR_CHARS else s
+
+    def _build(included, dropped):
+        lines = [f"> **{r['model']}** — `{r['status']}`: {_summarize(r.get('error'))}" for r in included]
+        if dropped:
+            lines.append(f"> …and {dropped} more (see models_*.log)")
+        return messages["models_failed"].format(
+            failed_count=len(failed), total=total,
+            mention=mention, model_list="\n".join(lines),
+        )
+
+    # Add models one at a time; stop when the next would exceed the limit.
+    included: list = []
+    for i, r in enumerate(failed):
+        candidate = _build(included + [r], len(failed) - (len(included) + 1))
+        if len(candidate) > DISCORD_LIMIT:
+            break
+        included.append(r)
+    msg = _build(included, len(failed) - len(included))
+    send_discord(webhook_url, msg)
 
 
 # ---- Main ----
