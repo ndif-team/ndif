@@ -5,7 +5,7 @@ import DeploymentCard, { type Deployment } from '@/components/deployments/Deploy
 import DeployModal, {
   type DeployForm
 } from '@/components/deployments/DeployModal.vue'
-import type { CacheValues } from '@/deploy'
+import { useCache } from '@/composables/useCache'
 
 interface StatusResponse {
   deployments: Record<string, Deployment>
@@ -25,15 +25,7 @@ const deployModalOpen = ref(false)
 const deployModalInitial = ref<Partial<DeployForm> | undefined>(undefined)
 const deploying = ref(false)
 const deployError = ref<string | null>(null)
-const cache = ref<CacheValues>({ repo_id: [], actor_class: [], envoy_class: [] })
-
-async function loadCache() {
-  try {
-    cache.value = await api.get<CacheValues>('/api/cache')
-  } catch {
-    // Non-fatal: dropdowns are an aid, not required for deploy.
-  }
-}
+const { cache, refresh: loadCache } = useCache()
 
 // In-flight deploys, rendered as placeholder cards above the server list
 // until a real deployment with matching (repo_id, revision) shows up. The
@@ -101,10 +93,7 @@ async function load() {
   }
 }
 
-onMounted(() => {
-  load()
-  loadCache()
-})
+onMounted(load)
 
 const counts = computed(() => {
   const out = { all: deployments.value.length, hot: 0, warm: 0, cold: 0, pinned: 0 }
