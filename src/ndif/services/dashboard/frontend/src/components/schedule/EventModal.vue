@@ -7,6 +7,7 @@ export interface EventForm {
   checkpoint: string
   revision: string | null
   actor_class: string | null
+  envoy_class: string | null
   padding_factor: number | null
   execution_timeout_seconds: number | null
   start: string
@@ -113,6 +114,14 @@ function toggleOpenEnded(e: Event) {
           <input
             v-model="form.actor_class"
             placeholder="ndif.services.ray.deployments.modeling.base.ModelActor"
+          />
+        </label>
+
+        <label class="field full">
+          Envoy class
+          <input
+            v-model="form.envoy_class"
+            placeholder="nnsight.modeling.language.LanguageModel"
           />
         </label>
 

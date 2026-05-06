@@ -115,14 +115,22 @@ def extract_cluster_info(status: dict) -> dict:
     }
 
 
-def _run_trace(repo_id: str, api_key: str) -> dict:
-    from nnsight import LanguageModel, CONFIG
+def _run_trace(model_key: str, api_key: str) -> dict:
+    """Trace a remote ``"Hello"`` against the given model.
+
+    Reconstructs the nnsight wrapper from the full ``model_key`` via
+    ``RemoteableMixin.from_model_key``, which handles class + repo_id +
+    revision in one shot. This avoids hardcoding ``LanguageModel`` so VLMs
+    and other envoy types are exercised under their own wrapper class.
+    """
+    from nnsight import CONFIG
+    from nnsight.modeling.mixins import RemoteableMixin
 
     CONFIG.API.APIKEY = api_key
-    result = {"model": repo_id}
+    result = {"model": model_key}
 
     try:
-        model = LanguageModel(repo_id)
+        model = RemoteableMixin.from_model_key(model_key, trust_remote_code=True)
     except Exception as e:
         result["status"] = "load_error"
         result["error"] = str(e)
@@ -144,13 +152,13 @@ def _run_trace(repo_id: str, api_key: str) -> dict:
     return result
 
 
-def check_model(repo_id: str, api_key: str, model_timeout: int) -> dict:
+def check_model(model_key: str, api_key: str, model_timeout: int) -> dict:
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_run_trace, repo_id, api_key)
+    future = executor.submit(_run_trace, model_key, api_key)
     try:
         return future.result(timeout=model_timeout)
     except concurrent.futures.TimeoutError:
-        return {"model": repo_id, "status": "timeout", "error": f"Exceeded {model_timeout}s timeout"}
+        return {"model": model_key, "status": "timeout", "error": f"Exceeded {model_timeout}s timeout"}
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
@@ -330,8 +338,14 @@ def main():
                 results = []
                 for m in hot_models:
                     repo_id = m.get("repo_id", "unknown")
+                    model_key = m.get("model_key")
+                    if not model_key:
+                        print(f"Skipping {repo_id}: no model_key in /status", flush=True)
+                        continue
                     print(f"Checking {repo_id}...", flush=True)
-                    result = check_model(repo_id, api_key, args.model_timeout)
+                    result = check_model(model_key, api_key, args.model_timeout)
+                    # Surface the human-readable repo_id in logs/notifications.
+                    result["model"] = repo_id
                     results.append(result)
                     print(f"  {result['status']} ({result.get('latency_s', 'N/A')}s)")
 

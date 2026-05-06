@@ -62,6 +62,7 @@ def _spec_from_event(e: ScheduleEvent) -> dict:
         "revision": e.revision,
         "pinned": True,  # schedule entries are always pinned
         "actor_class": e.actor_class,
+        "envoy_class": e.envoy_class,
         "padding_factor": e.padding_factor,
         "execution_timeout_seconds": e.execution_timeout_seconds,
     }

@@ -12,6 +12,7 @@ Schema (``schedule.json``)
           "checkpoint": "meta-llama/Llama-3.1-8B",
           "revision": null,
           "actor_class": null,
+          "envoy_class": null,
           "padding_factor": null,
           "execution_timeout_seconds": null,
           "start": "2026-05-01T00:00:00+00:00",
@@ -68,6 +69,7 @@ class ScheduleEventIn(BaseModel):
     end: Optional[dt.datetime] = None
     revision: Optional[str] = None
     actor_class: Optional[str] = None
+    envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     model_key: Optional[str] = None

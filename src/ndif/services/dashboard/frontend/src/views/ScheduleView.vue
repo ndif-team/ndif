@@ -2,7 +2,10 @@
 import { ref, onMounted, computed } from 'vue'
 import { api, ApiError } from '@/api'
 import MonthCalendar from '@/components/schedule/MonthCalendar.vue'
-import EventModal, { type EventForm } from '@/components/schedule/EventModal.vue'
+import EventModal, {
+  type EventForm
+} from '@/components/schedule/EventModal.vue'
+import { DEFAULT_ENVOY_CLASS } from '@/deploy'
 
 interface ScheduleEvent {
   id: string
@@ -10,6 +13,7 @@ interface ScheduleEvent {
   checkpoint: string
   revision: string | null
   actor_class: string | null
+  envoy_class: string | null
   padding_factor: number | null
   execution_timeout_seconds: number | null
   start: string
@@ -44,6 +48,7 @@ function emptyForm(start?: Date): EventForm {
     checkpoint: '',
     revision: null,
     actor_class: null,
+    envoy_class: DEFAULT_ENVOY_CLASS,
     padding_factor: null,
     execution_timeout_seconds: null,
     start: s.toISOString(),
@@ -104,6 +109,7 @@ function openEdit(eventId: string) {
     checkpoint: e.checkpoint,
     revision: e.revision,
     actor_class: e.actor_class,
+    envoy_class: e.envoy_class ?? DEFAULT_ENVOY_CLASS,
     padding_factor: e.padding_factor,
     execution_timeout_seconds: e.execution_timeout_seconds,
     start: e.start,
@@ -126,6 +132,7 @@ async function save(data: EventForm) {
       checkpoint: data.checkpoint,
       revision: data.revision || null,
       actor_class: data.actor_class || null,
+      envoy_class: data.envoy_class || null,
       padding_factor: data.padding_factor ?? null,
       execution_timeout_seconds: data.execution_timeout_seconds ?? null,
       start: data.start,

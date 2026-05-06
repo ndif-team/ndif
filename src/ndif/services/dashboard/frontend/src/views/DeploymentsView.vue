@@ -2,7 +2,9 @@
 import { onMounted, ref, computed } from 'vue'
 import { api, ApiError } from '@/api'
 import DeploymentCard, { type Deployment } from '@/components/deployments/DeploymentCard.vue'
-import DeployModal, { type DeployForm } from '@/components/deployments/DeployModal.vue'
+import DeployModal, {
+  type DeployForm
+} from '@/components/deployments/DeployModal.vue'
 
 interface StatusResponse {
   deployments: Record<string, Deployment>

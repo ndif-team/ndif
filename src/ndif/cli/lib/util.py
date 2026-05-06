@@ -58,21 +58,33 @@ def get_service_dir(service_name: str) -> Path:
 # =============================================================================
 
 
-def get_model_key(checkpoint: str, revision: str = None) -> str:
+DEFAULT_ENVOY_CLASS = "nnsight.modeling.language.LanguageModel"
+
+
+def get_model_key(
+    checkpoint: str,
+    revision: str = None,
+    envoy_class: str = None,
+) -> str:
     """Get the model key for a checkpoint.
 
     Args:
         checkpoint: Model checkpoint/repo ID
         revision: Model revision (default: None, uses model's default)
+        envoy_class: Dotted import path of the nnsight envoy class
+            (e.g. ``nnsight.modeling.language.LanguageModel``,
+            ``nnsight.modeling.vlm.VisionLanguageModel``). Defaults to
+            ``LanguageModel`` for back-compat.
 
     Returns:
         Model key string
     """
     # TODO: This is a temporary workaround to get the model key.
     # There should be a more lightweight way to do this.
-    from nnsight import LanguageModel
+    from nnsight.util import from_import_path
 
-    model = LanguageModel(
+    cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
+    model = cls(
         checkpoint, revision=revision, dispatch=False, trust_remote_code=True
     )
     return model.to_model_key()
@@ -101,19 +113,25 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
 
 
 def canonicalize_checkpoint(
-    checkpoint: str, revision: str = None
+    checkpoint: str,
+    revision: str = None,
+    envoy_class: str = None,
 ) -> tuple[str, str | None, str]:
     """Resolve a user-typed checkpoint and return ``(canonical_checkpoint, revision, model_key)``.
 
     HuggingFace repo IDs are case-insensitive — the API serves the same model
     regardless of casing — but the canonical name has a specific capitalization
     (e.g. ``meta-llama/Llama-3.1-8B``, not ``…-8b``). nnsight's
-    ``LanguageModel(...).to_model_key()`` does the HF resolution; we surface
+    ``<envoy_class>(...).to_model_key()`` does the HF resolution; we surface
     the canonical repo_id AND the model_key from a single lookup so callers
     can persist both (e.g. the schedule store) without paying the HF cost
     twice.
+
+    ``envoy_class`` selects which nnsight wrapper class to use (defaults to
+    ``LanguageModel``); the resulting model_key is prefixed with that class's
+    import path so the server can reconstruct it.
     """
-    model_key = get_model_key(checkpoint, revision)
+    model_key = get_model_key(checkpoint, revision, envoy_class)
     return extract_repo_id_from_model_key(model_key), revision, model_key
 
 

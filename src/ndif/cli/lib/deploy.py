@@ -41,7 +41,11 @@ def deploy(
     Args:
         specs: List of model spec dicts. Required key: ``checkpoint``.
             Optional keys: ``revision``, ``pinned``, ``actor_class``,
-            ``padding_factor``, ``execution_timeout_seconds``.
+            ``envoy_class``, ``padding_factor``, ``execution_timeout_seconds``.
+            ``envoy_class`` is the dotted import path of the nnsight wrapper
+            (default: ``nnsight.modeling.language.LanguageModel``); it
+            selects which class is used to compute the model_key and which
+            class the server reconstructs.
         sync: If True, evict any current HOT models that are not in ``specs``
             before deploying. Mirrors ``ndif deploy --sync``.
         ray_address: Ray address (defaults to ``NDIF_RAY_ADDRESS``).
@@ -72,7 +76,9 @@ def deploy(
     for spec in specs:
         rev_str = f" (revision: {spec['revision']})" if spec["revision"] else ""
         emit(on_message, f"Generating model key for {spec['checkpoint']}{rev_str}...")
-        model_key = get_model_key(spec["checkpoint"], spec["revision"])
+        model_key = get_model_key(
+            spec["checkpoint"], spec["revision"], spec.get("envoy_class")
+        )
         model_keys_map[model_key] = spec
         emit(on_message, f"  Model key: {model_key}")
 

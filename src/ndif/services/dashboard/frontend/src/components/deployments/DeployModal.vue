@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { DEFAULT_ENVOY_CLASS } from '@/deploy'
 
 export interface DeployForm {
   checkpoint: string
   revision: string | null
   actor_class: string | null
+  envoy_class: string | null
   padding_factor: number | null
   execution_timeout_seconds: number | null
   pinned: boolean
@@ -25,6 +27,7 @@ const form = ref<DeployForm>({
   checkpoint: '',
   revision: null,
   actor_class: null,
+  envoy_class: DEFAULT_ENVOY_CLASS,
   padding_factor: null,
   execution_timeout_seconds: null,
   pinned: false,
@@ -67,6 +70,14 @@ function submit() {
         <label class="field">
           Actor class
           <input v-model="form.actor_class" placeholder="(default)" />
+        </label>
+
+        <label class="field full">
+          Envoy class
+          <input
+            v-model="form.envoy_class"
+            placeholder="nnsight.modeling.language.LanguageModel"
+          />
         </label>
 
         <label class="field">

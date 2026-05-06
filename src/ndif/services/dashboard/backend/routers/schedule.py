@@ -29,7 +29,7 @@ def _canonicalize(payload: ScheduleEventIn) -> ScheduleEventIn:
 
     try:
         canon_cp, canon_rev, model_key = canonicalize_checkpoint(
-            payload.checkpoint, payload.revision
+            payload.checkpoint, payload.revision, payload.envoy_class
         )
     except Exception as e:
         raise HTTPException(

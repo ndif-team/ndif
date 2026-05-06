@@ -26,6 +26,7 @@ class ModelSpec(BaseModel):
     revision: Optional[str] = None
     pinned: bool = False
     actor_class: Optional[str] = None
+    envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
 

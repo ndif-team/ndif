@@ -27,6 +27,7 @@ class DeployRequest(BaseModel):
     checkpoint: str
     revision: Optional[str] = None
     actor_class: Optional[str] = None
+    envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     pinned: bool = False
