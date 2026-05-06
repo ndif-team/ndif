@@ -229,12 +229,22 @@ function onColdDeploy(d: Deployment) {
 async function onRestart(d: Deployment) {
   cardBusy.value = { ...cardBusy.value, [d.model_key]: 'restart' }
   try {
-    await api.post('/api/deployments/restart', {
+    // Backend now blocks until wait_for_model_ready and reports the
+    // outcome via status: "restarted" | "timeout" | "error". Surface
+    // those distinctly instead of a blanket "Restarted" toast.
+    const res = await api.post<any>('/api/deployments/restart', {
       model_key: d.model_key,
       checkpoint: d.repo_id,
       revision: d.revision
     })
-    showToast('ok', `Restarted ${d.repo_id || d.model_key}`)
+    const name = d.repo_id || d.model_key
+    if (res?.status === 'restarted') {
+      showToast('ok', `Restarted ${name}`)
+    } else if (res?.status === 'timeout') {
+      showToast('err', `Restart of ${name} timed out — actor still cold-loading`)
+    } else {
+      showToast('err', `Restart of ${name} failed: ${res?.error || 'unknown error'}`)
+    }
     await load()
   } catch (e) {
     showToast('err', `Restart failed: ${(e as Error).message}`)

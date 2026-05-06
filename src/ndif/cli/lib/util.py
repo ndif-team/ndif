@@ -192,17 +192,25 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
     Polls the model actor's __ray_ready__ method until it returns successfully,
     indicating the model is fully loaded and ready for inference.
 
+    Tolerated transient states (keep polling):
+    - ``"Failed to look up actor"`` — actor not yet registered (fresh deploy
+      mid-creation).
+    - ``RayActorError`` — actor died and is in the process of being respawned
+      (the path ``restart()`` triggers via ``ray.kill(no_restart=False)``).
+
     Args:
         model_key: The model key to wait for
         timeout: Maximum seconds to wait (default: 300 = 5 minutes)
 
     Returns:
-        True if model is ready, False if timeout or error
+        True if model is ready, False if timeout
 
     Raises:
-        Exception: If an initialization error occurs (not a lookup failure)
+        Exception: If an initialization error occurs (not a transient lookup
+            or actor-died failure).
     """
     import ray
+    import ray.exceptions
     from ...common.providers.ray import get_model_actor_handle
 
     start_time = time.time()
@@ -212,13 +220,17 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
             handle = get_model_actor_handle(model_key)
             ray.get(handle.__ray_ready__.remote())
             return True
+        except ray.exceptions.RayActorError:
+            # Actor is dying / being respawned — keep polling.
+            time.sleep(2)
+            continue
         except Exception as e:
             error_str = str(e)
-            # Actor doesn't exist yet - keep waiting
+            # Actor doesn't exist yet — keep waiting.
             if "Failed to look up actor" in error_str:
                 time.sleep(2)
                 continue
-            # Actual initialization error
+            # Actual initialization error.
             raise
 
     return False
