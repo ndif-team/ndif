@@ -72,13 +72,14 @@ The "what file do I change for X" table.
 | ⚠️ The sandbox (anything security) | `src/ndif/services/ray/nn/security/` — §7 (read README.md first) |
 | What modules user code can import | `src/ndif/services/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
 | Result/response serialization and storage | `src/ndif/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
-| Google Calendar scheduling | `src/ndif/services/ray/deployments/controller/gcal/` — §5.7 |
+| Pinned-deployment scheduling | `src/ndif/services/dashboard/` (schedule store + reconcile cron) — §5.7 |
 | Distributed tracing / Jaeger spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
 | API keys / dev-mode Postgres | `src/ndif/services/api/db.py`, `src/ndif/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
-| A CLI command | `cli/commands/` — §11 |
+| A CLI command | `src/ndif/cli/commands/` — §11 |
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
-| The standalone uptime monitor | `src/ndif/services/monitor/` — §13 |
+| Pinned-deployment scheduler / dashboard | `src/ndif/services/dashboard/` — §5.7, §13 |
+| The legacy uptime monitor | `src/ndif/services/monitor/` — §13 (being replaced by the dashboard) |
 
 ### File index
 
@@ -98,8 +99,6 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/services/ray/deployments/controller/cluster/node.py` | `Node` — single node's GPUs/CPU/cache; `evictions()` algorithm |
 | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | `Deployment` + `DeploymentLevel` enum |
 | `src/ndif/services/ray/deployments/controller/cluster/evaluator.py` | `ModelEvaluator` — meta-model size + padding |
-| `src/ndif/services/ray/deployments/controller/gcal/controller.py` | `SchedulingControllerActor` — Controller subclass that pulls deployments from Google Calendar |
-| `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` | `SchedulingActor` — actual calendar poll loop |
 | `src/ndif/services/ray/deployments/modeling/base.py` | `BaseModelDeployment`, `ModelActor`, `pre()`/`execute()`/`post()`/`cleanup()` |
 | `src/ndif/services/ray/deployments/modeling/util.py` | `kill_thread()`, `load_with_cache_deletion_retry()`, `remove_accelerate_hooks()` |
 | `src/ndif/services/ray/nn/backend.py` | `RemoteExecutionBackend` — bridge between NNsight and the Protector |
@@ -113,29 +112,32 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/common/schema/response.py` | `BackendResponseModel` — `respond()` (Socket.IO / callback / save) |
 | `src/ndif/common/schema/result.py` | `BackendResultModel` + `TensorStoragePickler` |
 | `src/ndif/common/schema/mixins.py` | `ObjectStorageMixin`, `TelemetryMixin` |
-| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (dedicated, timeouts) |
+| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (pinned, timeouts) |
 | `src/ndif/common/providers/redis.py` | `RedisProvider` — sync + async clients |
 | `src/ndif/common/providers/objectstore.py` | `ObjectStoreProvider` — MinIO/S3 via boto3 |
 | `src/ndif/common/providers/socketio.py` | `SioProvider` |
 | `src/ndif/common/providers/postgres.py` | `PostgresProvider` — connection pool |
-| `src/ndif/common/providers/mailgun.py` | `MailgunProvider` — email notifications (gcal errors, non-blocking callbacks) |
+| `src/ndif/common/providers/mailgun.py` | `MailgunProvider` — email notifications (non-blocking callbacks) |
 | `src/ndif/common/providers/ray.py` | `RayProvider` — Ray client connection |
 | `src/ndif/common/tracing/setup.py` | `init_tracing()`, OTLP exporter |
 | `src/ndif/common/tracing/spans.py` | `trace_span()`, `set_request_attributes()` |
 | `src/ndif/common/tracing/context.py` | `TracingContext` — inject/extract for cross-process propagation |
 | `src/ndif/common/metrics/*.py` | `GPUMemMetric`, `ExecutionTimeMetric`, etc. — all write to InfluxDB |
 | `src/ndif/common/types.py` | `MODEL_KEY`, `API_KEY`, `SESSION_ID`, `REQUEST_ID` |
-| `cli/cli.py` | Click entry point |
-| `cli/commands/*.py` | One file per `ndif <command>` |
-| `cli/lib/session.py` | `SessionConfig`, `~/.ndif/` layout |
-| `cli/lib/checks.py` | Pre-flight checks for `ndif start` |
-| `cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
+| `src/ndif/cli/cli.py` | Click entry point |
+| `src/ndif/cli/commands/*.py` | One file per `ndif <command>` |
+| `src/ndif/cli/lib/session.py` | `SessionConfig`, `~/.ndif/` layout |
+| `src/ndif/cli/lib/checks.py` | Pre-flight checks for `ndif start` |
+| `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
+| `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
 | `docker/Dockerfile` | Multi-purpose — `ARG NAME=api` or `NAME=ray` |
-| `docker/docker-compose.yml` | Full stack orchestration |
+| `docker/Dockerfile.dashboard` | Multi-stage (node build → python runtime) for the `dashboard` image |
+| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/ndif/services/monitor/` | Standalone uptime monitor — runs outside the stack |
+| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces `services/monitor/`) |
+| `src/ndif/services/monitor/` | Legacy standalone uptime monitor — being replaced by the dashboard |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -177,7 +179,7 @@ A one-page map of the important files. Use this if you know the topic but not th
    - [Deployment Levels](#54-deployment-levels)
    - [Deployment Scheduling](#55-deployment-scheduling)
    - [The Build/Apply Cycle](#56-the-buildapply-cycle)
-   - [Google Calendar Scheduling](#57-google-calendar-scheduling)
+   - [Pinned-Deployment Scheduling](#57-pinned-deployment-scheduling)
    - [Iterating on this subsystem](#58-iterating-on-this-subsystem)
 6. [Model Execution](#6-model-execution)
    - [Overview](#overview-4)
@@ -232,12 +234,13 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Docker](#121-docker)
     - [Native (CLI)](#122-native-cli)
     - [Configuration Reference](#123-configuration-reference)
-13. [Monitor Service](#13-monitor-service)
+13. [Dashboard and Monitor](#13-dashboard-and-monitor)
     - [Overview](#overview-11)
-    - [What it does](#131-what-it-does)
-    - [Deployment (outside the stack)](#132-deployment-outside-the-stack)
-    - [Dashboard](#133-dashboard)
+    - [Monitoring cron](#131-monitoring-cron)
+    - [Reconcile cron](#132-reconcile-cron)
+    - [Schedule semantics](#133-schedule-semantics)
     - [Configuration](#134-configuration)
+    - [Legacy services/monitor/](#135-legacy-servicesmonitor)
 14. [Invariants](#14-invariants) — ⚠️ read before "simplifying" anything
     - [`num_gpus=0` on ModelActor](#141-modelactor-is-declared-with-num_gpus0)
     - [Two whitelists](#142-two-whitelists-not-one)
@@ -483,7 +486,7 @@ Every request to `/request` passes through the `validate_request` dependency, wh
 
 3. **Python version validation** — Compares the client's Python version (from the `python-version` header) against the server's minimum. Only major.minor versions are compared.
 
-4. **Hotswapping access check** — Checks if the API key has the "hotswapping" tier, which allows deploying models that aren't in the dedicated schedule. This is stored in PostgreSQL's `key_tier_assignments` table.
+4. **Hotswapping access check** — Checks if the API key has the "hotswapping" tier, which allows deploying models that aren't in the pinned schedule. This is stored in PostgreSQL's `key_tier_assignments` table.
 
 ```python
 async def validate_request(raw_request: Request) -> BackendRequestModel:
@@ -724,17 +727,17 @@ async def processor_worker(self, provision: bool = True):
 
 The `provision()` method coordinates with the Controller to ensure the model is deployed:
 
-1. Check if the model is a **dedicated** deployment (scheduled via Google Calendar or CLI)
-2. If not dedicated, filter out requests without hotswapping access
+1. Check if the model is a **pinned** deployment (scheduled via the dashboard or CLI)
+2. If not pinned, filter out requests without hotswapping access
 3. Ask the Controller to deploy the model
 4. Handle evictions — the Controller may evict other models to free GPUs
 
-**Dedicated vs. Hotswapping:**
+**Pinned vs. Hotswapping:**
 
 NDIF has two deployment modes:
 
-- **Dedicated:** Models specified at startup or via the schedule. Available to all users.
-- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-dedicated models.
+- **Pinned:** Models specified at startup or via the schedule. Available to all users.
+- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-pinned models.
 
 **Status updates:**
 
@@ -795,7 +798,7 @@ pytest tests/test_nnsight.py --run-remote           # basic request path
 
 **Inspecting live state without shipping a request.** The Dispatcher exposes two side channels:
 
-- The `dispatcher:events` Redis stream accepts commands (`DEPLOY`, `EVICT`, `KILL_REQUEST`, `ENV`, `QUEUE_STATE_REQUEST`). `cli/commands/queue.py` uses this to read per-model queue depth. You can write a quick script that pushes `QUEUE_STATE_REQUEST` and reads the response.
+- The `dispatcher:events` Redis stream accepts commands (`DEPLOY`, `EVICT`, `KILL_REQUEST`, `ENV`, `QUEUE_STATE_REQUEST`). `src/ndif/cli/commands/queue.py` uses this to read per-model queue depth. You can write a quick script that pushes `QUEUE_STATE_REQUEST` and reads the response.
 - `ndif status` goes through the same pub/sub path and shows the full cluster state, including Processor status per model.
 
 **Common failure modes when you're changing this code:**
@@ -831,13 +834,14 @@ It is instantiated with configuration from environment variables (see also the c
 
 | Parameter | Env Variable | Default | Description |
 |-----------|-------------|---------|-------------|
-| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
+| `deployments` | `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (pinned) |
 | `model_import_path` | — | `ndif.services.ray.deployments.modeling.model:app` | Python path to ModelActor app factory |
 | `default_execution_timeout_seconds` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden |
-| `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a non-dedicated model stays deployed before eviction |
+| `minimum_deployment_time_seconds` | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Min time a non-pinned model stays deployed before eviction |
 | `model_cache_percentage` | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory available for warm cache |
 | `default_padding_factor` | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative memory-overhead padding for model-size estimates |
 | `default_padding_bias` | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | Additive memory-overhead padding for model-size estimates |
+| `default_model_actor_class` | `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | Dotted import path for the Ray actor class used to serve a deployment when `DeploymentConfig.actor_class` is `None` |
 
 Node discovery is polled on its own interval:
 
@@ -848,13 +852,13 @@ Node discovery is polled on its own interval:
 **Key responsibilities:**
 
 1. **Cluster state** — Track nodes, GPUs, and memory via periodic `update_nodes()` calls (driven by `check_nodes()` async loop)
-2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `dedicated`, `execution_timeout_seconds`, and similar per-model overrides.
+2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `pinned`, `execution_timeout_seconds`, and similar per-model overrides.
 3. **Warm cache management** — `flush_warm_cache(node_ids=None)` drops all WARM models on the specified nodes (or all nodes), transitioning them to COLD and returning the freed memory per node.
 4. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and also reports COLD (downloaded-but-not-deployed) models via `get_downloaded_models()`. `get_deployment(model_key)` returns a single deployment's state.
 5. **Environment info** — `env()` reports Python version and installed packages. Used by `ndif env` and `/env` to diagnose client/server version mismatches.
 6. **Internal state** — `get_state()` returns the full Controller + Cluster state for debugging.
 
-**Subclass: `SchedulingControllerActor`** (in `deployments/controller/gcal/`) extends `_ControllerActor` to pull dedicated deployments from a Google Calendar. See §5.7.
+**Pinned scheduling.** Pinned deployments are no longer driven by a Ray-side actor — they live in the dashboard's `schedule.json` and are pushed to this controller by the dashboard's reconcile cron. See §5.7.
 
 ### 5.2 Cluster Management
 
@@ -907,7 +911,7 @@ class CandidateLevel(IntEnum):
 ```
 
 4. **Select the best node** — pick the candidate with the lowest `CandidateLevel`. If multiple nodes tie, choose randomly.
-5. **Execute evictions** if needed — models are evicted by fewest GPUs first, respecting the minimum deployment time and dedicated status.
+5. **Execute evictions** if needed — models are evicted by fewest GPUs first, respecting the minimum deployment time and pinned status.
 
 **GPU assignment:**
 
@@ -981,27 +985,27 @@ class Deployment:
     deployment_level: DeploymentLevel    # HOT, WARM, or COLD
     gpus: list[int]                      # GPU indices (empty for WARM/COLD)
     size_bytes: int                      # Model size for resource accounting
-    dedicated: bool                      # Protected from eviction?
+    pinned: bool                         # Protected from eviction?
     node_id: str                         # Which node
     deployed: float                      # Timestamp (for minimum deployment time)
 ```
 
 ### 5.5 Deployment Scheduling
 
-The Controller enforces a **minimum deployment time** to prevent thrashing. Non-dedicated models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
+The Controller enforces a **minimum deployment time** to prevent thrashing. Non-pinned models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
 
 The eviction algorithm in `Node.evictions()`:
 
 ```python
-def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_KEY]:
+def evictions(self, gpus_required: int, pinned: bool = False) -> List[MODEL_KEY]:
     deployments = sorted(self.deployments.values(), key=lambda x: len(x.gpus))
     gpus_needed = gpus_required - len(self.resources.available_gpus)
     evictions = []
 
     for deployment in deployments:
-        if deployment.dedicated:
-            continue  # Never evict dedicated models
-        if not dedicated and deployment hasn't reached minimum time:
+        if deployment.pinned:
+            continue  # Never evict pinned models
+        if not pinned and deployment hasn't reached minimum time:
             continue  # Respect minimum deployment time
         evictions.append(deployment.model_key)
         gpus_needed -= len(deployment.gpus)
@@ -1011,7 +1015,7 @@ def evictions(self, gpus_required: int, dedicated: bool = False) -> List[MODEL_K
     return []  # Can't free enough GPUs
 ```
 
-Models with fewer GPUs are evicted first (to minimize disruption). Dedicated models are never evicted. The minimum deployment time is only waived when deploying another dedicated model.
+Models with fewer GPUs are evicted first (to minimize disruption). Pinned models are never evicted. The minimum deployment time is only waived when deploying another pinned model.
 
 ### 5.6 The Build/Apply Cycle
 
@@ -1037,60 +1041,49 @@ class DeploymentDelta:
 
 The ordering is critical: deletions and caches must complete before from-cache and creates, because they free the GPU resources needed by the new deployments. ⚠️ See §14 Invariants — this is load-bearing, not a stylistic choice.
 
-### 5.7 Google Calendar Scheduling
+### 5.7 Pinned-Deployment Scheduling
 
-NDIF can optionally drive dedicated deployments from a Google Calendar instead of a static `NDIF_DEPLOYMENTS` list or ad-hoc `ndif deploy` invocations. This is the mechanism that runs production NDIF: the schedule lives in a calendar that anyone authorized can edit, and the cluster automatically tracks it.
+Pinned deployments are driven by `services/dashboard/` — a small admin web app
+with a JSON-backed schedule store. The schedule defines which models should
+be HOT and pinned at any given time; a cron job inside the dashboard
+reconciles that desired set against the controller every 2 minutes (and
+again immediately on every schedule edit).
 
-**Key files:**
-- `src/ndif/services/ray/deployments/controller/gcal/controller.py` — `SchedulingControllerActor`
-- `src/ndif/services/ray/deployments/controller/gcal/scheduler.py` — `SchedulingActor`
+**Key files** (full design in the dashboard's own `README.md`):
+- `src/ndif/services/dashboard/backend/schedule_store.py` — JSON CRUD over `schedule.json`
+- `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`
+- `src/ndif/services/dashboard/backend/routers/schedule.py` — REST CRUD that backs the dashboard's calendar UI
 
 **Architecture:**
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     Ray Head Node                             │
-│                                                                │
-│   SchedulingControllerActor  (extends _ControllerActor)       │
-│          │                                                    │
-│          │  ray.get(scheduler.get_schedule.remote())          │
-│          │  (used by status() to merge schedule into          │
-│          │   cluster state)                                   │
-│          ▼                                                    │
-│   SchedulingActor                                             │
-│          │                                                    │
-│          │  every SCHEDULING_CHECK_INTERVAL_S seconds:        │
-│          │    1. list events in [now, now+1s]                 │
-│          │    2. sanitize descriptions → MODEL_KEYs           │
-│          │    3. hash the set; skip if unchanged              │
-│          │    4. controller.deploy(                           │
-│          │         {key: DeploymentConfig(dedicated=True)})   │
-│          │    5. color successful events dark green;          │
-│          │       prefix failed events with "ERROR:"           │
-│          │       (and email the event creator via Mailgun)    │
-│          ▼                                                    │
-│   Google Calendar API  ◄──── service account credentials     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Dashboard backend (FastAPI, port 8081)                     │
+│                                                              │
+│   Vue calendar UI  ───────►  /api/schedule  ──► schedule.json
+│                                  │                           │
+│                                  ▼                           │
+│                          BackgroundTasks                     │
+│                                  │                           │
+│              every 2 min cron ───┴── reconcile_once()        │
+│                                  │                           │
+│                                  ▼                           │
+│   diff:  prev_active vs new_active vs controller HOT set    │
+│   evict = prev − new                                        │
+│   deploy = new − currently-HOT                              │
+│                                  │                           │
+│                                  ▼                           │
+│   ndif_client.evict / .deploy  ──► Ray controller (pinned=True)
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**How it's enabled.** `SchedulingControllerActor` is a `_ControllerActor` subclass. It replaces the regular `ControllerActor` when `NDIF_CONTROLLER_IMPORT_PATH` points at `ndif.services.ray.deployments.controller.gcal.controller`. Docker compose sets the scheduling env vars (`SCHEDULING_GOOGLE_CALENDAR_ID`, `SCHEDULING_GOOGLE_CREDS_PATH`) and the gcal variant takes over automatically.
+**Event format.** Each schedule entry is `(checkpoint, revision, start, end, …DeploymentConfig fields)`. An event with `end is None` is open-ended (active forever after `start`). Events deploy as `pinned=True`, protecting them from eviction (see §5.5) for the duration of their `[start, end)` window.
 
-**Event format.** Each calendar event's **description** is a `MODEL_KEY`. The event's title is only used for human-readable display. Events are deployed as `dedicated=True`, which means they are protected from eviction (see §5.5) for as long as the event is live. When the event ends and the next poll sees no corresponding event, the model stops being dedicated and can be cached or deleted by the normal eviction path.
+**Drift recovery.** The reconcile cron also queries the API's HTTP `/status` to see what's currently HOT. If a scheduled model isn't HOT — because Ray restarted, an admin manually evicted it, or the controller crashed — it's re-deployed regardless of whether the schedule itself changed.
 
-**Feedback loop.** The scheduler writes back to the calendar:
-- **Successful deployments** get colored `colorId=10` ("Basil" / dark green).
-- **Failed deployments** (the calendar references a model the cluster can't accommodate, or that fails to load) get their summary prefixed with `ERROR:` and the event creator receives an email via `MailgunProvider`.
+**Failure feedback.** Per-event `last_status` / `last_error` get written back to `schedule.json` after each push and surface in the dashboard UI. Hard failures additionally fire a Discord notification via the same webhook the connectivity monitor uses (see §13).
 
-This turns the calendar into both the source of truth and the status dashboard for dedicated deployments.
-
-**Config:**
-
-| Variable | Default | Description |
-|---|---|---|
-| `SCHEDULING_GOOGLE_CALENDAR_ID` | — | Calendar ID to poll |
-| `SCHEDULING_GOOGLE_CREDS_PATH` | — | Path to service account JSON inside the container |
-| `SCHEDULING_CHECK_INTERVAL_S` | `10` | Poll interval |
-| `SCHEDULING_DELAY_START_S` | `15` | Delay before first poll (lets worker nodes register with the head) |
+For the full UX (login, monitor view, deployments tab, calendar editing), see `src/ndif/services/dashboard/README.md`.
 
 ### 5.8 Iterating on this subsystem
 
@@ -1226,19 +1219,20 @@ def execute(self, request: RequestModel) -> Any:
 ```python
 class RemoteExecutionBackend(Backend):
     def __call__(self, tracer: Tracer):
-        Globals.stack = 0
-        Globals.enter()
         try:
-            with self.protector:
-                saves = tracer.execute(self.fn)
+            with trace_span("model_actor.nnsight_execute") as span:
+                _ensure_mounted()                       # mount nnsight `.save` globals
+                with self.protector:
+                    saves = tracer.execute(self.fn)
         except Exception as e:
             raise wrap_exception(e, tracer.info) from None
         finally:
-            Globals.exit()
+            Globals.cache.clear()
+            Globals.saves.clear()
         return saves
 ```
 
-It activates the `Protector` (which patches `__import__` and builtins), then calls `tracer.execute()` with the user's compiled intervention function. The Protector context ensures all user code runs in the sandbox.
+It activates the `Protector` (which patches `__import__` and builtins), then calls `tracer.execute()` with the user's compiled intervention function. The Protector context ensures all user code runs in the sandbox. The `_ensure_mounted()` call comes from `nnsight.intervention.tracing.globals` and is required by recent nnsight versions before `tracer.execute()` runs — it (re)installs the `.save` machinery on the active globals. Cache/save state is cleared in `finally` instead of via the old `Globals.enter()/exit()` lifecycle.
 
 ### 6.4 Timeout and Cancellation
 
@@ -1981,10 +1975,11 @@ Docker compose ships a Jaeger service at `jaeger:4317` for OTLP gRPC and `jaeger
 The NDIF CLI (`ndif`) manages service lifecycles, monitoring, and operational tasks. It uses Click for command-line parsing and manages persistent sessions that track which services are running.
 
 **Key files:**
-- `cli/cli.py` — Main entry point
-- `cli/commands/` — Individual command implementations
-- `cli/lib/session.py` — Session management
-- `cli/config.py` — Configuration defaults
+- `src/ndif/cli/cli.py` — Main entry point
+- `src/ndif/cli/commands/` — Individual command implementations
+- `src/ndif/cli/lib/session.py` — Session management
+- `src/ndif/cli/lib/{deploy,evict,restart,status}.py` — Shared helpers used by both CLI commands and the dashboard backend
+- `src/ndif/cli/config.py` — Configuration defaults
 
 ### 11.1 Session Management
 
@@ -2098,17 +2093,23 @@ This builds two images from the same Dockerfile:
 - `api:latest` — The API service
 - `ray:latest` — The Ray head node
 
-The `docker-compose.yml` orchestrates seven services:
+`make build` additionally builds a third image, `dashboard:latest`, from `docker/Dockerfile.dashboard` (a multi-stage node-build → python-runtime image that bakes in the Vue SPA and the FastAPI backend; see `services/dashboard/README.md`).
+
+The `docker-compose.yml` orchestrates the following services:
 
 | Service | Image | Purpose |
 |---------|-------|---------|
 | `message_broker` | `redis` | Request queue, pub/sub, Socket.IO backend |
 | `minio` | `minio/minio` | Object storage for results |
+| `postgres` | `postgres:16-alpine` | API key store (dev-mode bypass available) |
 | `ray` | `ray:latest` | Ray head + Controller + ModelActors |
 | `api` | `api:latest` | FastAPI + Dispatcher |
+| `dashboard` | `dashboard:latest` | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
 | `prometheus` | `prom/prometheus` | Metrics collection |
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |
+| `loki` | `grafana/loki` | Centralized log storage |
+| `jaeger` | `jaegertracing/jaeger` | Distributed tracing UI + OTLP collector |
 
 **Build and run:**
 
@@ -2161,9 +2162,9 @@ All configuration is via environment variables. The defaults shown below are wha
 | Variable | Code Default | Description |
 |----------|---------|-------------|
 | `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller` | Python path to Controller module |
-| `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (dedicated) |
+| `NDIF_DEPLOYMENTS` | `""` | Pipe-separated model keys to deploy at startup (pinned) |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Max execution time per request when not overridden per-deployment |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` (code), `0` (`.env.example`) | Min time before a non-dedicated model can be evicted |
+| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` (code), `0` (`.env.example`) | Min time before a non-pinned model can be evicted |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of CPU memory for warm cache |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative memory-overhead padding |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | Additive memory-overhead padding |
@@ -2190,110 +2191,86 @@ All configuration is via environment variables. The defaults shown below are wha
 
 ---
 
-## 13. Monitor Service
+## 13. Dashboard and Monitor
 
 ### Overview
 
-`src/ndif/services/monitor/` is a **standalone** uptime monitor that is not part of the main NDIF stack. It lives in the repo so it can be maintained alongside the API/Ray services, but it **does not run inside docker compose** — it runs on a separate host via a cron job and is deployed with its own `run.sh` script. The goal is simple: answer "is NDIF up right now?" continuously and without depending on any of the components it is monitoring.
+`src/ndif/services/dashboard/` is the admin web app. It owns three things:
 
-**Why separate?** If the monitor ran inside the same docker stack, a compose failure would take the monitor down with it — exactly when you need it most. Pulling it out of the stack means "NDIF is down" and "the monitor can't see NDIF" are two independent signals.
+1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions. Replaces the standalone `services/monitor/`.
+2. **Pinned-deployment scheduling** — a JSON-backed schedule store + diff-based reconcile cron that pushes the active set to the controller (§5.7).
+3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (deploy / evict / restart, with WARM cards offering Deploy and HOT cards offering evict / restart), and a month calendar for editing the schedule.
+
+It ships as a docker-compose service alongside `api` and `ray`. The image is built from `docker/Dockerfile.dashboard` (multi-stage: node build of the Vue SPA → python runtime serving the SPA + the FastAPI backend) and runs a `cron` daemon for the monitor and reconcile jobs. Default port is `NDIF_DASHBOARD_PORT=8081`.
+
+The full operator-facing reference lives in `src/ndif/services/dashboard/README.md`. This section is the design-doc summary.
 
 **Key files:**
-- `src/ndif/services/monitor/run.sh` — setup + cron deploy script
-- `src/ndif/services/monitor/jobs/monitor.py` — single unified monitor script
-- `src/ndif/services/monitor/jobs/util.py` — config loading, Discord webhook, log rotation
-- `src/ndif/services/monitor/dashboard/dashboard.py` — Flask backend serving uptime/latency charts
-- `src/ndif/services/monitor/dashboard/dashboard.html` — frontend (Chart.js, dark/light toggle)
-- `src/ndif/services/monitor/config.example.json` — example Discord webhook + message templates
-- `src/ndif/services/monitor/README.md` — operator guide
+- `src/ndif/services/dashboard/backend/app.py` — FastAPI app
+- `src/ndif/services/dashboard/backend/auth.py` — bcrypt + signed-cookie session auth (with a CLI `hash` helper)
+- `src/ndif/services/dashboard/backend/schedule_store.py` — JSON-backed schedule CRUD, fcntl-locked
+- `src/ndif/services/dashboard/backend/ndif_client.py` — thin wrappers around `cli/lib/{deploy,evict,restart,status}.py` (the dashboard reuses the CLI's helpers rather than poking the controller directly)
+- `src/ndif/services/dashboard/backend/routers/{auth,monitor,schedule,deployments,deploy}.py`
+- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron (the body that used to live under `services/monitor/jobs/monitor.py`)
+- `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`. flock-serialized; schedule writes also trigger an immediate background reconcile.
+- `src/ndif/services/dashboard/start.sh` — canonical entrypoint, used by both Docker and standalone runs
+- `src/ndif/services/dashboard/frontend/` — Vue 3 + Vite + TS SPA
 
-### 13.1 What it does
+### 13.1 Monitoring cron
 
-A single script (`jobs/monitor.py`) runs every 10 minutes via cron. Each invocation:
+`jobs/monitor.py` runs every 10 minutes (configurable via `NDIF_DASHBOARD_MONITOR_CRON`). Each invocation:
 
-1. **Checks `/connected`** on the NDIF API — is it reachable and returning 200?
-2. **Every 2 hours** (or every run while recovering from downtime), fetches `/status`, enumerates HOT models, and runs a real nnsight trace against each one. This catches cases where the API is up but inference is broken (e.g. a model fell off the wire).
-3. **Sends Discord notifications** on *state transitions*: going down, still down, and coming back up. Failed model traces get a separate warning. "Still down" is rate-limited so a prolonged outage does not spam the channel.
+1. **Checks `/connected`** on `NDIF_DASHBOARD_MONITOR_URL` (default `https://api.ndif.us` — kept external on purpose so the probe exercises the public path: DNS, TLS, load balancer, etc.).
+2. **Every 2 hours** (or every run while recovering from downtime), fetches `/status`, enumerates HOT models, and runs a real nnsight trace against each one. Catches "API up, inference broken" cases. The `models_failed` Discord message is capped under 2000 chars to fit Discord's limit.
+3. **Sends Discord notifications** on state transitions (down / still-down / back-up). "Still down" is rate-limited.
 
-NDIF is considered **up** only after a full clean run — connected check + status fetch + every HOT-model trace — passes. Any partial failure leaves it in the **down** state.
+NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation) — same format the previous `services/monitor/` produced, so the existing dashboard data carries over via the bind mount.
 
-### 13.2 Deployment (outside the stack)
+### 13.2 Reconcile cron
 
-```bash
-export NDIF_API_KEY=your_key
-export INSTALL_DIR=~/ndif_monitor   # optional, default is ~/ndif_monitor
+`jobs/reconcile.py` runs every 2 minutes (configurable via `NDIF_DASHBOARD_RECONCILE_CRON`) and is also kicked off as a FastAPI background task on every schedule write so user edits don't wait for the next tick. A `flock` over `reconcile_once` serializes concurrent runs.
 
-# Inside the repo:
-cd src/ndif/services/monitor
-./run.sh
-```
+The diff is computed against three sets:
+- `prev_active` — what the schedule said was active on the last run
+- `new_active` — what the schedule says is active now
+- `currently_HOT` — what the controller's `/status` shows as HOT and pinned
 
-`run.sh` is idempotent. It:
-- Creates a `monitor` conda env (Python 3.12) if it does not exist
-- Installs the `ndif` package into that env — this pulls monitor's deps (`nnsight`, `requests`, `flask`) via the project's aggregated requirements
-- Cron invokes `python -m ndif.services.monitor.jobs.monitor` from the conda env's site-packages snapshot — repo changes do not affect a running deployment until you re-run `run.sh`
-- Creates `$INSTALL_DIR/config.json` from `config.example.json` if missing
-- Installs or updates a cron job (schedule from `MONITOR_CRON`, default `*/10 * * * *`)
+Then:
+- `to_evict = prev_active − new_active` — explicit `evict()` calls
+- `to_deploy = new_active − currently_HOT` — explicit `deploy(pinned=True)` calls
 
-Re-run `run.sh` after making changes to deploy them. The decoupling between "source in repo" and "deployed in install dir" is intentional: you can edit the monitor without worrying about a mid-deploy crashing the running cron job.
+Drift recovery (NDIF restart, manual evict, controller crash) is folded into the deploy step — anything in the schedule that isn't currently HOT gets re-deployed regardless of whether the schedule itself changed.
 
-**Install directory layout:**
+Per-event `last_status` / `last_error` are written back to `schedule.json` and surface in the dashboard UI; hard failures fire a Discord notification via the same webhook the monitor uses.
 
-```
-$INSTALL_DIR/
-  config.json         # Discord webhook + message templates
-  jobs/
-    monitor.py        # Main cron script
-    util.py           # Shared utilities
-  dashboard/
-    dashboard.py      # Flask server
-    dashboard.html    # Frontend
-  logs/
-    .state.json       # up/down state between runs
-    connected_YYYYMMDD.log
-    models_YYYYMMDD.log
-```
+### 13.3 Schedule semantics
 
-### 13.3 Dashboard
-
-The dashboard is a Flask server that reads the log files in `$INSTALL_DIR/logs/` and renders:
-- A connectivity calendar (click a day to see a 24-hour timeline of 10-minute check slots)
-- Average and per-model latency charts
-- Per-model uptime timelines (30 days, 2-hour resolution)
-
-Start it with:
-
-```bash
-python $INSTALL_DIR/dashboard/dashboard.py --log-dir $INSTALL_DIR/logs
-# Serves on port 8080 by default; --host and --port to override
-```
-
-It refreshes every 5 minutes. There is no login — expose it carefully.
+- One model per event, always `pinned=True`. `pinned` tells the controller "do not evict this" — there is no implicit sync mode (the controller no longer has one; the gcal scheduler that used to live in `services/ray/.../gcal/` has been removed).
+- An event is "active" while `start ≤ now < end`. `end is None` means open-ended.
+- Per-event fields mirror `DeploymentConfig`: `revision`, `actor_class`, `padding_factor`, `execution_timeout_seconds`. `model_key` is server-set via HF resolution at write time (so the schedule entries always carry the canonical `nnsight.modeling.<class>:{...}` form).
 
 ### 13.4 Configuration
 
-| Variable | Default | Description |
+Env-var driven; full table in `services/dashboard/README.md`. Highlights:
+
+| Env var | Default | Purpose |
 |---|---|---|
-| `INSTALL_DIR` | `~/ndif_monitor` | Where source, logs, and config live |
-| `NDIF_API_KEY` | — | API key for nnsight remote traces |
-| `MONITOR_CRON` | `*/10 * * * *` | Cron schedule expression |
+| `NDIF_DASHBOARD_PORT` | `8081` | Backend port |
+| `NDIF_DASHBOARD_USERNAME` | `admin` | Single admin user |
+| `NDIF_DASHBOARD_PASSWORD_HASH` | (empty — login disabled) | Bcrypt hash; generate via `python -m ndif.services.dashboard.backend.auth hash <password>` |
+| `NDIF_DASHBOARD_SESSION_SECRET` | unsafe placeholder | ≥32-byte random; rotates invalidate sessions |
+| `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
+| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) — defaults to the legacy monitor's data dir for continuity |
+| `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes |
+| `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Monitor schedule |
+| `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile schedule |
+| `NDIF_API_KEY` | (from `.env`) | Used by the monitor cron's nnsight model traces |
 
-`$INSTALL_DIR/config.json`:
+Compose-side note: the dashboard service uses `env_file` with `format: raw` so the bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation.
 
-```json
-{
-    "discord_webhook": "https://discord.com/api/webhooks/...",
-    "discord_role_id": "1252363632805806240",
-    "messages": {
-        "down": "...",
-        "still_down": "...",
-        "back_up": "...",
-        "models_failed": "..."
-    }
-}
-```
+### 13.5 Legacy `services/monitor/`
 
-Message templates support: `{reason}`, `{timestamp}`, `{down_since}`, `{mention}`, `{failed_count}`, `{total}`, `{model_list}`.
+`src/ndif/services/monitor/` is the previous standalone uptime monitor — a `run.sh`-deployed conda env + cron job + Flask dashboard, separate from the docker stack. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is still in the tree for now to support the existing `~/ndif_monitor/` deployment, but new work should go in the dashboard. Plan to remove it once the dashboard has been the primary monitor for one full release cycle.
 
 ---
 
@@ -2500,7 +2477,7 @@ For the subsystem-specific tables that appear inline in earlier sections (§3.5,
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `NDIF_BROKER_URL` | `redis://localhost:6379` | `redis://localhost:6379` | `common/providers/redis.py`, `api/src/config.py`, `api/src/queue/config.py` | Redis connection URL (queue, pub/sub, streams, Socket.IO backend) |
+| `NDIF_BROKER_URL` | `redis://localhost:6379` | `redis://localhost:6379` | `common/providers/redis.py`, `services/api/config.py`, `services/api/queue/config.py` | Redis connection URL (queue, pub/sub, streams, Socket.IO backend) |
 | `NDIF_BROKER_PORT` | — | `6379` | `.env.example` only | Port exposed by the redis container |
 | `NDIF_OBJECT_STORE_URL` | — | `http://localhost:27018` | `common/providers/objectstore.py` | MinIO/S3 endpoint |
 | `NDIF_OBJECT_STORE_PORT` | — | `27018` | `.env.example` | Host port for MinIO S3 API |
@@ -2511,16 +2488,16 @@ For the subsystem-specific tables that appear inline in earlier sections (§3.5,
 | `NDIF_OBJECT_STORE_SECRET_KEY` | — | `minioadmin` | `common/providers/objectstore.py` | MinIO secret key |
 | `NDIF_OBJECT_STORE_REGION` | — | `us-east-1` | `common/providers/objectstore.py` | S3 region |
 | `NDIF_OBJECT_STORE_VERIFY` | `false` | `false` | `common/providers/objectstore.py` | Verify TLS certs |
-| `NDIF_API_URL` | — | `http://localhost:5001` | `common/providers/socketio.py`, `cli/commands/start.py` | Public API URL |
+| `NDIF_API_URL` | — | `http://localhost:5001` | `common/providers/socketio.py`, `src/ndif/cli/commands/start.py`, dashboard | Public API URL |
 | `NDIF_API_PORT` | — | `5001` | `.env.example`, compose | API listen port |
 | `NDIF_API_WORKERS` | — | `1` | compose | Gunicorn worker count |
-| `NDIF_DEV_MODE` | `false` | `true` | `api/src/db.py`, `api/src/config.py` | If true, bypass API-key validation and skip Postgres |
+| `NDIF_DEV_MODE` | `false` | `true` | `services/api/db.py`, `services/api/config.py` | If true, bypass API-key validation and skip Postgres |
 
 ### 15.2 Ray cluster
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://localhost:10001` | `common/providers/ray.py`, `cli/commands/start.py` | Ray client connection address |
+| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://localhost:10001` | `common/providers/ray.py`, `src/ndif/cli/commands/start.py`, dashboard reconcile cron | Ray client connection address |
 | `NDIF_RAY_HEAD_PORT` | — | `6385` | `.env.example`, compose | Ray head node port |
 | `NDIF_RAY_CLIENT_PORT` | — | `10001` | `.env.example`, compose | Ray client protocol port |
 | `NDIF_RAY_DASHBOARD_PORT` | — | `8265` | `.env.example`, compose | Ray dashboard HTTP port |
@@ -2533,37 +2510,47 @@ For the subsystem-specific tables that appear inline in earlier sections (§3.5,
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `NDIF_CONTROLLER_IMPORT_PATH` | — | `ndif.services.ray.deployments.controller.controller` | compose | Python path to the Controller app factory (swap to `...gcal.controller` to enable Google Calendar scheduling) |
-| `NDIF_DEPLOYMENTS` | `""` | — | `ray/deployments/controller/controller.py` | Pipe-separated list of model keys to deploy as dedicated at startup |
+| `NDIF_CONTROLLER_IMPORT_PATH` | — | `ndif.services.ray.deployments.controller.controller` | compose | Python path to the Controller app factory |
+| `NDIF_DEPLOYMENTS` | `""` | — | `ray/deployments/controller/controller.py` | Pipe-separated list of model keys to deploy as pinned at startup |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | — | `ray/deployments/controller/controller.py` | Max execution time per request unless overridden per-deployment |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `0` | `ray/deployments/controller/controller.py` | Min time before a non-dedicated model can be evicted |
+| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `0` | `ray/deployments/controller/controller.py` | Min time before a non-pinned model can be evicted |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | — | `ray/deployments/controller/controller.py` | Fraction of CPU memory usable as WARM cache |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | — | `ray/deployments/controller/controller.py` | Multiplicative memory-overhead padding (see §5.3) |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MB) | — | `ray/deployments/controller/controller.py` | Additive memory-overhead padding |
 | `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | — | `ray/deployments/controller/controller.py::check_nodes` | Interval for node discovery polling |
 
-### 15.4 Google Calendar scheduling (`SchedulingControllerActor`)
+### 15.4 Dashboard / pinned-deployment scheduling (`services/dashboard/`)
 
-Only read when `NDIF_CONTROLLER_IMPORT_PATH` points at the gcal variant. See §5.7.
+Pinned deployments are driven by the dashboard's schedule store and reconcile cron — no Ray-side scheduler env vars (the previous gcal-driven scheduler has been removed). See §5.7, §13, and `services/dashboard/README.md` for the full reference.
 
-| Variable | Code default | `.env.example` | Read in | Description |
-|---|---|---|---|---|
-| `SCHEDULING_GOOGLE_CALENDAR_ID` | `""` | — | `ray/deployments/controller/gcal/controller.py` | Calendar ID to poll |
-| `SCHEDULING_GOOGLE_CREDS_PATH` | `""` | — | `ray/deployments/controller/gcal/controller.py` | Path to service-account JSON (inside the container) |
-| `SCHEDULING_CHECK_INTERVAL_S` | `10` | — | `ray/deployments/controller/gcal/controller.py` | Calendar poll interval |
-| `SCHEDULING_DELAY_START_S` | `15` | — | `ray/deployments/controller/gcal/controller.py` | Delay before first poll (lets workers join) |
+| Variable | Default | Description |
+|---|---|---|
+| `NDIF_DASHBOARD_VERSION` | `latest` | Tag used for the `dashboard` image in compose |
+| `NDIF_DASHBOARD_PORT` | `8081` | Dashboard backend port |
+| `NDIF_DASHBOARD_USERNAME` | `admin` | Admin username (single user) |
+| `NDIF_DASHBOARD_PASSWORD_HASH` | (empty — login disabled) | Bcrypt hash; `python -m ndif.services.dashboard.backend.auth hash <pw>` |
+| `NDIF_DASHBOARD_SESSION_SECRET` | unsafe placeholder | ≥32-byte random; signs session cookies |
+| `NDIF_DASHBOARD_SESSION_TTL_DAYS` | `7` | Cookie lifetime |
+| `NDIF_DASHBOARD_DEV_MODE` | `false` | If `true`, all routes bypass auth (frontend dev only) |
+| `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` (host) / `/var/lib/dashboard` (container) | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
+| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) |
+| `NDIF_DASHBOARD_FRONTEND_DIST` | `…/dashboard/frontend/dist` | Built Vue SPA to serve |
+| `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes |
+| `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Uptime cron schedule |
+| `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile cron schedule |
+| `NDIF_API_KEY` | — | API key the monitor cron uses for nnsight model traces |
 
 ### 15.5 Queue / Dispatcher
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `COORDINATOR_STATUS_CACHE_FREQ_S` | `120` | — | `api/src/queue/config.py` | How long `/status` responses are cached in Redis |
-| `COORDINATOR_PROCESSOR_REPLY_FREQ_S` | `3` | — | `api/src/queue/config.py` | How often a Processor sends status updates to queued users |
-| `STATUS_REQUEST_TIMEOUT_S` | `60` | — | `api/src/config.py` | Max wait for Controller status response |
-| `SOCKETIO_MAX_HTTP_BUFFER_SIZE` | `100000000` | — | `api/src/config.py` | Max Socket.IO message size (100 MB) |
-| `SOCKETIO_PING_TIMEOUT` | `60` | — | `api/src/config.py` | Socket.IO ping timeout |
-| `MIN_NNSIGHT_VERSION` | installed version | — | `api/src/config.py` | Reject clients below this nnsight version |
-| `MIN_PYTHON_VERSION` | installed version | — | `api/src/config.py` | Reject clients below this Python version |
+| `COORDINATOR_STATUS_CACHE_FREQ_S` | `120` | — | `services/api/queue/config.py` | How long `/status` responses are cached in Redis |
+| `COORDINATOR_PROCESSOR_REPLY_FREQ_S` | `3` | — | `services/api/queue/config.py` | How often a Processor sends status updates to queued users |
+| `STATUS_REQUEST_TIMEOUT_S` | `60` | — | `services/api/config.py` | Max wait for Controller status response |
+| `SOCKETIO_MAX_HTTP_BUFFER_SIZE` | `100000000` | — | `services/api/config.py` | Max Socket.IO message size (100 MB) |
+| `SOCKETIO_PING_TIMEOUT` | `60` | — | `services/api/config.py` | Socket.IO ping timeout |
+| `MIN_NNSIGHT_VERSION` | installed version | — | `services/api/config.py` | Reject clients below this nnsight version |
+| `MIN_PYTHON_VERSION` | installed version | — | `services/api/config.py` | Reject clients below this Python version |
 
 ### 15.6 Providers (shared)
 
@@ -2571,7 +2558,7 @@ Only read when `NDIF_CONTROLLER_IMPORT_PATH` points at the gcal variant. See §5
 |---|---|---|---|---|
 | `PROVIDER_MAX_RETRIES` | `3` | — | `common/providers/__init__.py` | Retries for provider connects |
 | `PROVIDER_RETRY_INTERVAL_S` | `5` | — | `common/providers/__init__.py` | Retry interval (seconds) |
-| `MAILGUN_DOMAIN` | — | — | `common/providers/mailgun.py` | Mailgun domain (gcal error emails, non-blocking callbacks) |
+| `MAILGUN_DOMAIN` | — | — | `common/providers/mailgun.py` | Mailgun domain (non-blocking callbacks) |
 | `MAILGUN_API_KEY` | — | — | `common/providers/mailgun.py` | Mailgun API key |
 
 ### 15.7 PostgreSQL (auth)
@@ -2600,9 +2587,9 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
-### 15.9 Monitor service (§13)
+### 15.9 Legacy monitor service (§13.5)
 
-Read only by the standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack.
+Read only by the legacy standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack and are scheduled for removal once the dashboard has fully replaced this service.
 
 | Variable | Default | Description |
 |---|---|---|
@@ -2617,178 +2604,129 @@ Read by the `ndif` CLI when bringing up native-mode dependencies.
 | Variable | Default | Description |
 |---|---|---|
 | `NDIF_SESSION_ROOT` | `~/.ndif` | Where CLI sessions are stored |
-| `MICROMAMBA_DIR` | `~/.local/bin` | Where `cli/lib/deps.py` bootstraps micromamba to install Redis/MinIO |
+| `MICROMAMBA_DIR` | `~/.local/bin` | Where `src/ndif/cli/lib/deps.py` bootstraps micromamba to install Redis/MinIO |
 
 ---
 
 ## File Structure Reference
 
+The repo is a single-package src-layout (`pip install .` puts everything under the `ndif` namespace; the CLI is `ndif.cli`, services are `ndif.services.*`, shared code is `ndif.common.*`).
+
 ```
 ndif/
-├── cli/
-│   ├── cli.py                          # Main CLI entry point (Click)
-│   ├── config.py                       # Environment variable defaults
-│   ├── commands/
-│   │   ├── start.py                    # ndif start
-│   │   ├── stop.py                     # ndif stop
-│   │   ├── restart.py                  # ndif restart
-│   │   ├── deploy.py                   # ndif deploy
-│   │   ├── evict.py                    # ndif evict
-│   │   ├── status.py                   # ndif status
-│   │   ├── logs.py                     # ndif logs
-│   │   ├── queue.py                    # ndif queue
-│   │   ├── kill.py                     # ndif kill
-│   │   ├── info.py                     # ndif info
-│   │   └── env.py                      # ndif env
-│   └── lib/
-│       ├── session.py                  # Session management
-│       ├── checks.py                   # Pre-flight checks
-│       ├── deps.py                     # Redis/MinIO startup
-│       └── util.py                     # Helpers
-│
-├── src/
-│   ├── services/
-│   │   ├── api/
-│   │   │   ├── src/
-│   │   │   │   ├── app.py              # FastAPI application
-│   │   │   │   ├── config.py           # API configuration
-│   │   │   │   ├── dependencies.py     # Request validation
-│   │   │   │   ├── db.py               # PostgreSQL API key store
-│   │   │   │   ├── gunicorn.conf.py    # Gunicorn configuration
-│   │   │   │   ├── tracing/            # OpenTelemetry wiring for API spans
-│   │   │   │   └── queue/
-│   │   │   │       ├── dispatcher.py   # Central request coordinator
-│   │   │   │       ├── processor.py    # Per-model lifecycle manager
-│   │   │   │       ├── config.py       # Queue configuration
-│   │   │   │       └── util.py         # Ray client helpers + deadlock patch
-│   │   │   ├── tests/                  # API unit tests
-│   │   │   ├── start.sh                # API startup script
-│   │   │   └── requirements.in         # API dependencies
-│   │   │
-│   │   ├── ray/
-│   │   │   ├── src/ray/
-│   │   │   │   ├── start.py            # Controller startup
-│   │   │   │   ├── resources.py        # Resource detection
-│   │   │   │   ├── deployments/
-│   │   │   │   │   ├── controller/
-│   │   │   │   │   │   ├── controller.py       # ControllerActor
-│   │   │   │   │   │   ├── cluster/
-│   │   │   │   │   │   │   ├── cluster.py      # Cluster state
-│   │   │   │   │   │   │   ├── node.py         # Node + GPU accounting
-│   │   │   │   │   │   │   ├── deployment.py   # HOT/WARM/COLD lifecycle
-│   │   │   │   │   │   │   └── evaluator.py    # Model size evaluation
-│   │   │   │   │   │   └── gcal/                # Google Calendar scheduler
-│   │   │   │   │   │       ├── controller.py   # SchedulingControllerActor
-│   │   │   │   │   │       └── scheduler.py    # SchedulingActor (calendar poll)
-│   │   │   │   │   └── modeling/
-│   │   │   │   │       ├── base.py             # ModelActor / BaseModelDeployment
-│   │   │   │   │       └── util.py             # kill_thread, accelerate helpers
-│   │   │   │   └── nn/
-│   │   │   │       ├── backend.py              # RemoteExecutionBackend
-│   │   │   │       ├── ops.py                  # StdoutRedirect
-│   │   │   │       └── security/               # ⚠️ read README.md before editing
-│   │   │   │           ├── protector.py        # Protector context manager
-│   │   │   │           ├── importer.py         # Importer, SandboxFinder, ProtectedModule
-│   │   │   │           ├── guards.py           # guarded getattr, audit hook, restricted compile/exec
-│   │   │   │           ├── protected_objects.py # ProtectedObject (model wrapper)
-│   │   │   │           ├── whitelist.py        # Loads whitelist.yaml into typed consts
-│   │   │   │           ├── whitelist.yaml      # Policy (modules, builtins, dunders, blocked submodules)
-│   │   │   │           └── README.md           # Threat model + layer reference
-│   │   │   ├── start.sh                # Ray head startup script
-│   │   │   └── start-worker.sh         # Ray worker startup script
-│   │   │
-│   │   ├── monitor/                    # Standalone uptime monitor (§13)
-│   │   │   ├── run.sh                  # Setup + cron deploy
-│   │   │   ├── config.example.json     # Discord webhook + message templates
-│   │   │   ├── jobs/
-│   │   │   │   ├── monitor.py          # Cron job (connectivity + model traces)
-│   │   │   │   └── util.py             # Config, discord, log rotation
-│   │   │   ├── dashboard/
-│   │   │   │   ├── dashboard.py        # Flask server
-│   │   │   │   └── dashboard.html      # Frontend (Chart.js)
-│   │   │   └── README.md
-│   │   │
-│   │   └── base/
-│   │       └── requirements.in         # Shared base dependencies
-│   │
-│   └── common/
-│       ├── types.py                    # Type aliases (MODEL_KEY, API_KEY, etc.)
-│       ├── logging/
-│       │   └── logger.py               # Centralized logging setup (Loki-aware)
-│       ├── tracing/                    # OpenTelemetry wiring (shared by API + Ray)
-│       │   ├── setup.py                # init_tracing, OTLP exporter
-│       │   ├── spans.py                # trace_span, set_request_attributes
-│       │   └── context.py              # TracingContext (propagation)
-│       ├── metrics/
-│       │   ├── metric.py               # Base metric class
-│       │   ├── gpu_mem.py              # GPU memory tracking
-│       │   ├── model_load_time.py      # Load time metrics
-│       │   ├── network_data.py         # Network I/O metrics
-│       │   ├── request_execution_time.py
-│       │   ├── request_response_size.py
-│       │   └── request_status_time.py
-│       ├── providers/
-│       │   ├── redis.py                # Redis client (sync + async)
-│       │   ├── objectstore.py          # MinIO/S3 client
-│       │   ├── socketio.py             # Socket.IO client
-│       │   ├── mailgun.py              # Email notifications
-│       │   ├── postgres.py             # PostgreSQL connection pool (auth)
-│       │   └── ray.py                  # Ray connection management
-│       └── schema/
-│           ├── request.py              # BackendRequestModel
-│           ├── response.py             # BackendResponseModel
-│           ├── result.py               # BackendResultModel
-│           ├── deployment_config.py    # DeploymentConfig (dedicated, timeouts, ...)
-│           └── mixins.py               # ObjectStorageMixin, TelemetryMixin
-│
-├── cli/
-│   ├── cli.py                          # Click entry point
-│   ├── config.py                       # ENV_VARS resolution
-│   ├── config/                         # Shipped model configs
-│   ├── commands/
-│   │   ├── start.py   stop.py   restart.py
-│   │   ├── deploy.py  evict.py  kill.py
-│   │   ├── status.py  queue.py  logs.py
-│   │   ├── info.py    env.py    export.py
-│   │   └── __init__.py
-│   ├── lib/
-│   │   ├── session.py                  # SessionConfig, ~/.ndif/ layout
-│   │   ├── checks.py                   # Pre-flight checks
-│   │   ├── deps.py                     # Redis/MinIO micromamba bootstrap
-│   │   ├── model_config.py             # Model config loader
-│   │   └── util.py
-│   ├── tests/
-│   └── README.md
+├── pyproject.toml                      # Python 3.12+, uv-managed
+├── Makefile                            # build (api+ray+dashboard images) / up / down / ta
+├── .env.example                        # Default env vars (loaded by Makefile + compose)
+├── NDIF.md                             # This file (design doc, for humans)
+├── CLAUDE.md                           # Agent guide
+├── README.md                           # Project overview
 │
 ├── docker/
-│   ├── Dockerfile                      # Multi-purpose (NAME=api or NAME=ray)
+│   ├── Dockerfile                      # Multi-purpose (ARG NAME=api or NAME=ray)
+│   ├── Dockerfile.dashboard            # Multi-stage (node build → python runtime)
 │   ├── docker-compose.yml              # Full stack orchestration
 │   └── postgres/
 │       └── init.sql                    # Dev-mode keys DB schema + test key
 │
 ├── telemetry/
-│   ├── grafana/
-│   │   ├── dashboards/                 # Pre-configured dashboards
-│   │   └── provisioning/               # Grafana data sources
-│   └── prometheus/
-│       └── prometheus.yml              # Scrape configuration
+│   ├── grafana/                        # Provisioning + pre-built dashboards
+│   └── prometheus/prometheus.yml       # Scrape config
 │
-├── tests/
-│   ├── conftest.py                     # Remote-test skip logic
-│   ├── test_nnsight.py                 # NNsight remote feature tests
-│   ├── test_security_guards.py         # Sandbox validation
-│   ├── test_user_code.py               # User code (de)serialization
-│   ├── test_hotswapping.py             # Scheduler / eviction / fractional GPUs
-│   └── reconnection/                   # Ray failure recovery tests
+├── tests/                              # Most need --run-remote against a live stack
+│   ├── conftest.py
+│   ├── test_nnsight.py
+│   ├── test_security_guards.py
+│   ├── test_user_code.py
+│   ├── test_hotswapping.py
+│   └── reconnection/
 │
 ├── scripts/
-│   ├── test.py                         # Smoke: GPT-2 trace via local API
+│   ├── test.py                         # GPT-2 smoke trace via local API
 │   └── redeploy.py
 │
-├── pyproject.toml                      # Python 3.12+, uv-managed
-├── Makefile                            # Build + run (resolves NNSIGHT_PATH)
-├── .env.example                        # Default configuration
-├── NDIF.md                             # This file (design doc, for humans)
-├── CLAUDE.md                           # Agent guide
-└── README.md                           # Project overview
+└── src/ndif/                           # The `ndif` package
+    ├── cli/
+    │   ├── cli.py                      # Click entry point (`ndif` console script)
+    │   ├── config.py                   # ENV_VARS resolution
+    │   ├── config/models.yaml          # Shipped model configs
+    │   ├── commands/                   # One file per `ndif <cmd>`
+    │   │   ├── start.py   stop.py   restart.py
+    │   │   ├── deploy.py  evict.py  kill.py
+    │   │   ├── status.py  queue.py  logs.py
+    │   │   └── info.py    env.py    export.py
+    │   ├── lib/
+    │   │   ├── session.py              # SessionConfig, ~/.ndif/ layout
+    │   │   ├── checks.py               # Pre-flight checks
+    │   │   ├── deps.py                 # Redis/MinIO micromamba bootstrap
+    │   │   ├── model_config.py         # Model config loader
+    │   │   ├── deploy.py / evict.py / restart.py / status.py
+    │   │   │                           # Reusable helpers (also called by services/dashboard/)
+    │   │   ├── _common.py
+    │   │   └── util.py
+    │   ├── tests/
+    │   └── README.md
+    │
+    ├── common/
+    │   ├── types.py                    # MODEL_KEY, API_KEY, SESSION_ID, REQUEST_ID
+    │   ├── logging/logger.py           # Centralized logging (Loki-aware)
+    │   ├── tracing/                    # OpenTelemetry wiring (shared by API + Ray)
+    │   │   ├── setup.py / spans.py / context.py
+    │   ├── metrics/                    # InfluxDB metric classes
+    │   ├── providers/
+    │   │   ├── redis.py / objectstore.py / socketio.py
+    │   │   ├── mailgun.py / postgres.py
+    │   │   └── ray.py                  # RayProvider + NDIFActorHandle (lean ClientActorHandle)
+    │   └── schema/                     # No package-level re-exports — import from submodules
+    │       ├── request.py              # BackendRequestModel
+    │       ├── response.py             # BackendResponseModel
+    │       ├── result.py               # BackendResultModel + TensorStoragePickler
+    │       ├── deployment_config.py    # DeploymentConfig (pinned, timeouts, actor_class, …)
+    │       └── mixins.py               # ObjectStorageMixin, TelemetryMixin
+    │
+    └── services/
+        ├── api/                        # FastAPI + Gunicorn (Dispatcher lives here)
+        │   ├── app.py                  # Endpoints
+        │   ├── config.py / dependencies.py / db.py / gunicorn.conf.py
+        │   ├── tracing/                # API-specific tracing
+        │   ├── queue/
+        │   │   ├── dispatcher.py / processor.py / config.py / util.py
+        │   ├── tests/
+        │   ├── start.sh
+        │   └── requirements.in
+        │
+        ├── ray/                        # Ray cluster (Controller + ModelActors)
+        │   ├── start.py / resources.py
+        │   ├── deployments/
+        │   │   ├── controller/
+        │   │   │   ├── controller.py
+        │   │   │   └── cluster/
+        │   │   │       └── cluster.py / node.py / deployment.py / evaluator.py
+        │   │   └── modeling/
+        │   │       └── base.py / util.py
+        │   ├── nn/
+        │   │   ├── backend.py / ops.py
+        │   │   └── security/           # ⚠️ read README.md before editing
+        │   │       ├── protector.py / importer.py / guards.py / protected_objects.py
+        │   │       └── whitelist.py / whitelist.yaml / README.md
+        │   ├── start.sh / start-worker.sh
+        │   └── requirements.in
+        │
+        ├── dashboard/                  # Admin web app + reconcile/monitor crons (§13)
+        │   ├── start.sh                # Canonical entrypoint (Docker + standalone)
+        │   ├── config.example.json     # Discord webhook + message templates
+        │   ├── requirements.in
+        │   ├── README.md
+        │   ├── backend/                # FastAPI app
+        │   │   ├── app.py / auth.py / config.py / log_reader.py
+        │   │   ├── ndif_client.py      # Wraps cli/lib/{deploy,evict,restart,status}.py
+        │   │   ├── schedule_store.py
+        │   │   └── routers/{auth,monitor,schedule,deployments,deploy}.py
+        │   ├── jobs/
+        │   │   ├── monitor.py          # Uptime + model traces
+        │   │   ├── reconcile.py        # Diff-based push of schedule.json → controller
+        │   │   └── util.py
+        │   └── frontend/               # Vue 3 + Vite + TS SPA
+        │
+        └── monitor/                    # Legacy standalone uptime monitor (§13.5)
+            └── (run.sh, jobs/, dashboard/, README.md — being replaced by services/dashboard/)
 ```

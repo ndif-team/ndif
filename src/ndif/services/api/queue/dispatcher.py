@@ -42,9 +42,9 @@ from ....common.tracing import (
     set_request_attributes,
     trace_span,
 )
+from ....common.providers.ray import controller_handle, patch
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
-from .util import patch, controller_handle, submit
 
 
 class DispatcherEvent(str, Enum):
@@ -317,8 +317,12 @@ class Dispatcher:
                 "Critical server error occurred. Please try again later. Sorry for the inconvenience."
             )
 
-            # Clear env cache since it comes from the Ray cluster
-            await RedisProvider.async_client.delete("env")
+            # Clear cached cluster-derived keys. status:requested has no TTL;
+            # if it's left set, the /status endpoint deadlocks (setnx fails →
+            # no trigger → status_worker xread blocks forever).
+            await RedisProvider.async_client.delete(
+                "env", "status", "status:requested"
+            )
 
             self.connect()
 
@@ -346,7 +350,7 @@ class Dispatcher:
                 - processors: Dict mapping model_key to processor state dict.
                     Each processor state contains model_key, status,
                     status_changed_at, request_ids, current_request_id,
-                    current_request_started_at, and dedicated flag.
+                    current_request_started_at, and pinned flag.
         """
         processors_state = {
             model_key: processor.get_state()
@@ -433,7 +437,7 @@ class Dispatcher:
 
                 handle = controller_handle()
 
-                status = await asyncio.wait_for(submit(handle, "status"), timeout=60)
+                status = await asyncio.wait_for(handle.status.remote(), timeout=60)
                 status = pickle.dumps(status)
 
                 await RedisProvider.async_client.publish("status:event", status)
@@ -591,7 +595,7 @@ class Dispatcher:
 
             # Get env info from controller
             handle = controller_handle()
-            env_info = await asyncio.wait_for(submit(handle, "env"), timeout=60)
+            env_info = await asyncio.wait_for(handle.env.remote(), timeout=60)
             env_bytes = pickle.dumps(env_info)
 
             # Cache the result (no expiration)

@@ -207,6 +207,9 @@ modules:
   - name: nnsight.intervention.envoy
     strict: false
 
+  - name: nnsight.intervention.tracing.globals 
+    strict: false
+
   - name: time
     strict: false
 

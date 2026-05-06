@@ -27,6 +27,12 @@ exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
 "ndif.services.ray.nn.security" = ["whitelist.yaml"]
 "ndif.services.monitor" = ["run.sh", "config.example.json"]
 "ndif.services.monitor.dashboard" = ["dashboard.html"]
+"ndif.services.dashboard" = ["start.sh", "config.example.json"]
+# The built Vue SPA isn't packaged into site-packages — Dockerfile.dashboard
+# copies it to /srv/dashboard/frontend/dist and points
+# NDIF_DASHBOARD_FRONTEND_DIST at that path. For non-Docker dev,
+# ``npm run build`` writes to the source tree's dist/ and config.py
+# auto-resolves it.
 "ndif.cli.config" = ["models.yaml"]
 
 [tool.setuptools.dynamic]

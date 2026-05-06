@@ -19,9 +19,16 @@ check-nnsight:
 	fi
 	@echo "Using nnsight from: $(NNSIGHT_PATH)"
 
+# All targets are recipes (no file-target collisions). Without this, the
+# stale ``build/`` dir at repo root makes ``make build`` a no-op
+# (Make treats the target as "up to date" because a directory by that
+# name exists).
+.PHONY: check-nnsight build up down ta
+
 build:
 	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
 	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
+	docker buildx build -t dashboard:latest -f docker/Dockerfile.dashboard .
 
 up: check-nnsight
 	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) && \
@@ -31,7 +38,4 @@ down:
 	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) && \
 	docker compose -p dev -f docker/docker-compose.yml down
 
-ta:
-	make down
-	make build
-	make up
+ta: down build up

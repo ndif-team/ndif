@@ -141,7 +141,9 @@ class BackendRequestModel(ObjectStorageMixin):
             f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}"
         )
 
+        # Record time spent in previous status BEFORE updating last_status
         if status != self.last_status and status != ResponseModel.JobStatus.LOG:
+            response.update_metric(self)
             logger.info(f"Updating last status: {status}")
             self.last_status = status
 

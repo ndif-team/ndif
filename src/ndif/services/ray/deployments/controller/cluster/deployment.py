@@ -31,7 +31,7 @@ class Deployment:
         deployment_level: DeploymentLevel,
         gpus: dict[int, int],
         size_bytes: int,
-        dedicated: bool = False,
+        pinned: bool = False,
         node_id: str = None,
         execution_timeout_seconds: float | None = None,
         actor_class: Optional[Union[str, type]] = None,
@@ -40,7 +40,7 @@ class Deployment:
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
-        self.dedicated = dedicated
+        self.pinned = pinned
         self.node_id = node_id
         self.execution_timeout_seconds = execution_timeout_seconds
         self.actor_class = actor_class
@@ -94,7 +94,7 @@ class Deployment:
             "deployment_level": self.deployment_level.value,
             "gpus": self.gpus,
             "size_bytes": self.size_bytes,
-            "dedicated": self.dedicated,
+            "pinned": self.pinned,
             "node_id": self.node_id,
             "execution_timeout_seconds": self.execution_timeout_seconds,
             "actor_class": actor_class_repr,

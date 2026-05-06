@@ -4,7 +4,6 @@ import pickle
 import time
 from datetime import timedelta
 import click
-import redis.asyncio as redis
 import asyncio
 
 from ..lib.checks import check_prerequisites
@@ -61,6 +60,7 @@ def queue(json_flag: bool, watch: bool, broker_url: str):
 
 async def _fetch_queue_state(broker_url: str) -> dict:
     """Fetch queue state from the dispatcher via Redis streams."""
+    import redis.asyncio as redis
     redis_client = redis.Redis.from_url(broker_url)
 
     try:
@@ -136,7 +136,7 @@ def _print_processor(processor: dict):
     """Print a single processor's state."""
     status = processor.get('status', 'unknown')
     current_request = processor.get('current_request_id')
-    dedicated = processor.get('dedicated')
+    pinned = processor.get('pinned')
     request_ids = processor.get('request_ids', [])
     status_changed_at = processor.get('status_changed_at')
     current_request_started_at = processor.get('current_request_started_at')
@@ -163,8 +163,8 @@ def _print_processor(processor: dict):
         status_display = f"{status_display} (for {duration})"
     click.echo(f"    Status: {status_display}")
 
-    if dedicated is not None:
-        click.echo(f"    Dedicated: {'Yes' if dedicated else 'No'}")
+    if pinned is not None:
+        click.echo(f"    Pinned: {'Yes' if pinned else 'No'}")
 
     click.echo(f"    Queue Depth: {len(request_ids)}")
 

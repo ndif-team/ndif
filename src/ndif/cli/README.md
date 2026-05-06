@@ -103,8 +103,8 @@ ndif deploy gpt2 meta-llama/Llama-3.1-8b
 # Deploy with specific revision
 ndif deploy meta-llama/Llama-2-7b-hf --revision main
 
-# Deploy as dedicated (won't be evicted)
-ndif deploy gpt2 --dedicated
+# Deploy as pinned (won't be evicted)
+ndif deploy gpt2 --pinned
 
 # Deploy from config file
 ndif deploy -f models.yaml
@@ -116,7 +116,7 @@ models:
   - gpt2                           # Simple form
   - checkpoint: meta-llama/Llama-3.1-8b
     revision: main
-    dedicated: true                # Full form with options
+    pinned: true                   # Full form with options
 ```
 
 ### Model Configuration Files

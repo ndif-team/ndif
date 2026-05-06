@@ -4,7 +4,6 @@ import os
 import pickle
 import time
 import click
-import redis.asyncio as redis
 import asyncio
 
 from ..lib.checks import check_prerequisites
@@ -64,6 +63,7 @@ def kill(request_id: str, broker_url: str):
 
 async def _kill_request(broker_url: str, request_id: str) -> dict:
     """Send kill request to dispatcher and wait for response."""
+    import redis.asyncio as redis
     redis_client = redis.Redis.from_url(broker_url)
 
     try:

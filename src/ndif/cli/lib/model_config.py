@@ -6,7 +6,7 @@ File format:
     models:
       - gpt2                                    # Simple: just checkpoint
       - checkpoint: meta-llama/Llama-3.1-8b     # Full: with options
-        dedicated: true
+        pinned: true
         revision: main
         actor_class: ray.deployments.modeling.base.ModelActor  # optional
 """
@@ -31,7 +31,7 @@ MODELS_YAML_TEMPLATE = """\
 #     - gpt2                              # Simple: just the checkpoint name
 #     - checkpoint: meta-llama/Llama-3.1-8b
 #       revision: main                    # Optional: specific revision/branch
-#       dedicated: true                   # Optional: won't be evicted (default: false)
+#       pinned: true                      # Optional: won't be evicted (default: false)
 #       actor_class: ray.deployments.modeling.base.ModelActor  # Optional: custom Ray actor class
 #
 # Commands:
@@ -62,7 +62,7 @@ def create_config_template(file_path: Path):
 def load_model_config(
     file_path: Path,
     default_revision: Optional[str] = None,
-    default_dedicated: bool = False,
+    default_pinned: bool = False,
     default_model_actor_class: Optional[str] = None,
 ) -> list[dict]:
     """Load model specifications from a YAML config file.
@@ -70,12 +70,12 @@ def load_model_config(
     Args:
         file_path: Path to the YAML config file
         default_revision: Default revision to use when not specified in file
-        default_dedicated: Default dedicated flag to use when not specified in file
+        default_pinned: Default pinned flag to use when not specified in file
         default_model_actor_class: Default Ray actor class (dotted import path) to use
             when not specified in file
 
     Returns:
-        List of model spec dicts with checkpoint, revision, dedicated, actor_class keys
+        List of model spec dicts with checkpoint, revision, pinned, actor_class keys
 
     Raises:
         FileNotFoundError: If file doesn't exist
@@ -101,17 +101,17 @@ def load_model_config(
             specs.append({
                 "checkpoint": item,
                 "revision": default_revision,
-                "dedicated": default_dedicated,
+                "pinned": default_pinned,
                 "actor_class": default_model_actor_class,
             })
         elif isinstance(item, dict):
-            # Full form: dict with checkpoint and optional revision/dedicated/actor_class
+            # Full form: dict with checkpoint and optional revision/pinned/actor_class
             if "checkpoint" not in item:
                 raise ValueError(f"Model entry missing 'checkpoint': {item}")
             specs.append({
                 "checkpoint": item["checkpoint"],
                 "revision": item.get("revision", default_revision),
-                "dedicated": item.get("dedicated", default_dedicated),
+                "pinned": item.get("pinned", default_pinned),
                 "actor_class": item.get("actor_class", default_model_actor_class),
             })
         else:
@@ -125,7 +125,7 @@ def save_model_config(file_path: Path, deployments: list[dict]):
 
     Args:
         file_path: Path to write the YAML config file
-        deployments: List of deployment dicts with repo_id, revision, dedicated keys
+        deployments: List of deployment dicts with repo_id, revision, pinned keys
     """
     # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,18 +135,18 @@ def save_model_config(file_path: Path, deployments: list[dict]):
     for dep in deployments:
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
-        dedicated = dep.get("dedicated", False)
+        pinned = dep.get("pinned", False)
         actor_class = dep.get("actor_class")
 
         # Use simple form if no special options
-        if not revision and not dedicated and not actor_class:
+        if not revision and not pinned and not actor_class:
             models.append(repo_id)
         else:
             entry = {"checkpoint": repo_id}
             if revision:
                 entry["revision"] = revision
-            if dedicated:
-                entry["dedicated"] = dedicated
+            if pinned:
+                entry["pinned"] = pinned
             if actor_class:
                 entry["actor_class"] = actor_class
             models.append(entry)

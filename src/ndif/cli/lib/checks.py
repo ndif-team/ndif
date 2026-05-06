@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import redis as redis_sync
 import requests
 import time
 import click
@@ -51,6 +50,7 @@ def check_redis(redis_url: str, timeout: int = 2) -> bool:
         True if Redis is reachable, False otherwise
     """
     try:
+        import redis as redis_sync
         client = redis_sync.Redis.from_url(redis_url, socket_connect_timeout=timeout)
         client.ping()
         client.close()

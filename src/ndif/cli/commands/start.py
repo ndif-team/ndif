@@ -52,7 +52,7 @@ def _apply_cli_overrides(api_url: str = None, broker_url: str = None,
 
 @click.command()
 @click.argument('service', type=click.Choice(
-    ['api', 'ray', 'broker', 'object-store', 'all'],
+    ['api', 'ray', 'broker', 'object-store', 'dashboard', 'all'],
     case_sensitive=False
 ), default='all')
 @click.option('--worker', is_flag=True, help='Start as Ray worker node (connects to existing head)')
@@ -97,6 +97,18 @@ def start(service: str, worker: bool, verbose: bool, timeout: int, api_url: str,
     # Handle worker mode
     if worker:
         _start_worker_mode(verbose)
+        return
+
+    # Fast-path: dashboard is independent of the SessionConfig / preflight
+    # machinery. It's a leaf service that just exec's its start.sh.
+    if service == 'dashboard':
+        proc = _start_dashboard_standalone(verbose)
+        if verbose and proc is not None:
+            try:
+                proc.wait()
+            except KeyboardInterrupt:
+                proc.terminate()
+                proc.wait(timeout=5)
         return
 
     # Check if there's already an active session
@@ -293,6 +305,11 @@ def _determine_services_to_start(service: str, config: SessionConfig, existing_s
                 services.append('api')
         else:
             services.append('api')
+    elif service == 'dashboard':
+        # No port-in-use guard: the dashboard is the only service that can
+        # run inside its own docker container, where the host-side port
+        # check would be wrong. start.sh refuses if its port is taken.
+        services.append('dashboard')
 
     return services
 
@@ -452,6 +469,36 @@ def _start_api(session: Session, verbose: bool):
         )
 
     session.mark_service_running('api', True)
+    return proc
+
+
+def _start_dashboard_standalone(verbose: bool):
+    """Run the dashboard's start.sh — no SessionConfig, no preflight.
+
+    The dashboard is a leaf service that depends only on env vars (see
+    ``services/dashboard/start.sh`` for the full list). It runs primarily
+    inside docker-compose where the rest of the ``ndif start`` machinery
+    (Ray ports, broker checks, model_config auto-deploy) is irrelevant.
+    For the standalone non-Docker path we still want the same script to
+    work, just without dragging the NDIF session in.
+    """
+    dashboard_service_dir = get_service_dir("dashboard")
+    start_script = dashboard_service_dir / "start.sh"
+
+    if not start_script.exists():
+        raise RuntimeError(f"start.sh not found at {start_script}")
+
+    click.echo("Starting NDIF dashboard service...")
+    if verbose:
+        click.echo(f"  Port: {os.environ.get('NDIF_DASHBOARD_PORT', '8081')}")
+        click.echo(f"  Data dir: {os.environ.get('NDIF_DASHBOARD_DATA_DIR', '~/ndif_dashboard')}")
+    click.echo()
+
+    proc = subprocess.Popen(
+        ['bash', str(start_script)],
+        cwd=dashboard_service_dir,
+        start_new_session=True,
+    )
     return proc
 
 

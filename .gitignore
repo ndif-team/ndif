@@ -7,3 +7,8 @@ ndif.egg-info
 build/
 dist/
 .env
+
+# dashboard frontend
+node_modules/
+.vite/
+*.tsbuildinfo

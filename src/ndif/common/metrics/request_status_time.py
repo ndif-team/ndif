@@ -35,7 +35,8 @@ class RequestStatusTimeMetric(Metric):
 
         request.last_status_time = _new_last_status_time
 
-        if _last_status_time is None:
+        # No previous timestamp or status - nothing to record yet
+        if _last_status_time is None or request.last_status is None:
             return
 
         time_delta = _new_last_status_time - _last_status_time

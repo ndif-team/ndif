@@ -66,8 +66,6 @@ services:
       - NDIF_RAY_DASHBOARD_GRPC_PORT=${NDIF_RAY_DASHBOARD_GRPC_PORT}
       - NDIF_RAY_TEMP_DIR=${NDIF_RAY_TEMP_DIR}
       - NDIF_CONTROLLER_IMPORT_PATH=${NDIF_CONTROLLER_IMPORT_PATH}
-      - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
-      - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
     env_file:
@@ -106,6 +104,48 @@ services:
       POSTGRES_DB: keys
       COORDINATOR_STATUS_CACHE_FREQ_S: 10
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
+
+  dashboard:
+    image: dashboard:${NDIF_DASHBOARD_VERSION}
+    ports:
+      - "${NDIF_DASHBOARD_PORT}:${NDIF_DASHBOARD_PORT}"
+    env_file:
+      # ``format: raw`` disables shell-substitution on the env file — without
+      # it, a bcrypt ``$2b$12$…`` hash gets mangled by compose's ${} parser.
+      - path: ../.env.example
+        required: true
+        format: raw
+      - path: ../.env
+        required: false
+        format: raw
+    environment:
+      # Only the values that need compose-side interpolation live here.
+      # NDIF_DASHBOARD_USERNAME / PASSWORD_HASH / SESSION_SECRET / NDIF_API_KEY
+      # come straight from env_file above.
+      NDIF_DASHBOARD_DATA_DIR: /var/lib/dashboard
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      # Monitor cron probes the local api service from inside the bridge
+      # network — ``localhost`` would mean the dashboard container itself, so
+      # use the same host-IP route as NDIF_API_URL.
+      NDIF_DASHBOARD_MONITOR_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+    volumes:
+      # HF cache + auth token — the deploy lib's get_model_key() resolves
+      # checkpoints via nnsight, which needs network access to HF and (for
+      # gated models like meta-llama/*) the user's HF token. Same mount the
+      # ray service uses.
+      #
+      # No /var/lib/dashboard mount: local docker stacks use the in-container
+      # path (gone on ``make ta``), so a fresh stack starts with empty logs /
+      # schedule / cache and never inherits stale config from a previous
+      # deployment. Production AWS overrides this with its own EBS-backed
+      # mount via ndif-aws's ServiceSchema.
+      - ~/.cache/huggingface/:/root/.cache/huggingface
+    depends_on:
+      - api
+      - ray
+      - message_broker
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}

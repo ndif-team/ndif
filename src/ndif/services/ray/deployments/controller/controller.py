@@ -71,7 +71,7 @@ class _ControllerActor:
         self.cluster.update_nodes()
 
         if deployments and deployments != [""]:
-            self._deploy({key: DeploymentConfig(dedicated=True) for key in deployments})
+            self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
 
         asyncio.create_task(self.check_nodes())
 
@@ -123,7 +123,7 @@ class _ControllerActor:
             },
         ) as span:
             self.logger.info(
-                f"Deploying models: {[(key, cfg.dedicated) for key, cfg in configs.items()]}"
+                f"Deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}"
             )
 
             results, change = self.cluster.deploy(configs)
@@ -506,27 +506,39 @@ class _ControllerActor:
                 if application_name not in status:
                     continue
 
+                if deployment.model_key not in self.cluster.evaluator.cache:
+                    continue
+
+                entry = self.cluster.evaluator.cache[deployment.model_key]
+
+                # Mirror the actor_class normalization in Deployment.get_state:
+                # accept dotted-path strings as-is; render decorated classes
+                # as ``module.qualname``; ``None`` → ``None``.
+                if deployment.actor_class is None:
+                    actor_class_repr = None
+                elif isinstance(deployment.actor_class, str):
+                    actor_class_repr = deployment.actor_class
+                else:
+                    actor_class_repr = (
+                        f"{deployment.actor_class.__module__}."
+                        f"{deployment.actor_class.__qualname__}"
+                    )
+
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
-                    "dedicated": deployment.dedicated,
+                    "pinned": deployment.pinned,
                     "model_key": deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].revision,
-                    "config": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].n_params,
+                    "repo_id": entry.config._name_or_path,
+                    "revision": entry.revision,
+                    "config": entry.config.to_json_string(),
+                    "n_params": entry.n_params,
+                    "size_bytes": deployment.size_bytes,
+                    "actor_class": actor_class_repr,
                 }
 
                 if (
-                    not deployment.dedicated
+                    not deployment.pinned
                     and self.minimum_deployment_time_seconds is not None
                 ):
                     status[application_name]["schedule"] = {
@@ -535,11 +547,7 @@ class _ControllerActor:
                         ),
                     }
 
-                existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
-                        deployment.model_key
-                    ].config._name_or_path
-                )
+                existing_repo_ids.add(entry.config._name_or_path)
 
             for cached_deployment in node.cache.values():
                 application_name = cached_deployment.name
@@ -547,28 +555,21 @@ class _ControllerActor:
                 if application_name not in status:
                     continue
 
+                if cached_deployment.model_key not in self.cluster.evaluator.cache:
+                    continue
+
+                entry = self.cluster.evaluator.cache[cached_deployment.model_key]
+
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
-                    "repo_id": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path,
-                    "revision": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].revision,
-                    "config": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config.to_json_string(),
-                    "n_params": self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].n_params,
+                    "repo_id": entry.config._name_or_path,
+                    "revision": entry.revision,
+                    "config": entry.config.to_json_string(),
+                    "n_params": entry.n_params,
                 }
 
-                existing_repo_ids.add(
-                    self.cluster.evaluator.cache[
-                        cached_deployment.model_key
-                    ].config._name_or_path
-                )
+                existing_repo_ids.add(entry.config._name_or_path)
 
         downloaded_models = get_downloaded_models()
 

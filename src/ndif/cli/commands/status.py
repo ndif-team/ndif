@@ -6,7 +6,8 @@ import click
 import ray
 from collections import defaultdict
 
-from ..lib.util import get_controller_actor_handle, extract_repo_id_from_model_key
+from ...common.providers.ray import get_controller_actor_handle
+from ..lib.util import extract_repo_id_from_model_key
 from ..lib.checks import check_prerequisites
 from ..lib.session import get_env
 
@@ -261,7 +262,7 @@ def format_state_verbose(state: dict):
                 click.echo(f"        Level: {dep.get('deployment_level', 'unknown')}")
                 click.echo(f"        GPUs: {dep.get('gpus', [])}")
                 click.echo(f"        Size: {dep.get('size_bytes', 0) / (1024**3):.2f} GB")
-                click.echo(f"        Dedicated: {dep.get('dedicated', False)}")
+                click.echo(f"        Pinned: {dep.get('pinned', False)}")
         else:
             click.echo("      (none)")
 
