@@ -9,6 +9,7 @@ export interface Deployment {
   application_state?: string
   pinned?: boolean
   n_params?: number
+  actor_class?: string | null
   schedule?: { start_time?: string; end_time?: string; title?: string } | null
   // pending = optimistic placeholder for an in-flight deploy. The card
   // shows a pulse + no badges/menu until the server-side state catches up.
@@ -43,11 +44,21 @@ const isInactive = computed(() =>
 )
 const isPending = computed(() => !!props.deployment.pending)
 
-const params = computed(() => {
-  const n = props.deployment.n_params
-  if (!n) return null
-  return n / 1e9 < 1 ? (n / 1e9).toFixed(1) + 'B' : Math.round(n / 1e9) + 'B'
+// Last segment of a dotted import path. ``foo.bar.Baz`` → ``Baz``.
+function basename(path: string | null | undefined): string | null {
+  if (!path) return null
+  const i = path.lastIndexOf('.')
+  return i === -1 ? path : path.slice(i + 1)
+}
+
+// Envoy class is the prefix before ``:`` in the model_key
+// (e.g. ``nnsight.modeling.vlm.VisionLanguageModel:{...}``).
+const envoyClass = computed(() => {
+  const k = props.deployment.model_key || ''
+  const i = k.indexOf(':')
+  return basename(i === -1 ? null : k.slice(0, i))
 })
+const actorClass = computed(() => basename(props.deployment.actor_class))
 
 function fmtRemaining(end: string | undefined): string | null {
   if (!end) return null
@@ -190,7 +201,18 @@ function onMenuBlur(e: FocusEvent) {
           <span v-if="deployment.revision" :title="'revision: ' + deployment.revision">
             ⌖ {{ deployment.revision }}
           </span>
-          <span v-if="params" :title="'parameters'">⊟ {{ params }}</span>
+          <span
+            v-if="envoyClass"
+            :title="'envoy class: ' + (deployment.model_key || '').split(':')[0]"
+          >
+            ◉ {{ envoyClass }}
+          </span>
+          <span
+            v-if="actorClass"
+            :title="'actor class: ' + deployment.actor_class"
+          >
+            ⏵ {{ actorClass }}
+          </span>
         </div>
       </template>
     </div>

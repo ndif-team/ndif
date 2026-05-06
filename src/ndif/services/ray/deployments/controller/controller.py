@@ -511,6 +511,19 @@ class _ControllerActor:
 
                 entry = self.cluster.evaluator.cache[deployment.model_key]
 
+                # Mirror the actor_class normalization in Deployment.get_state:
+                # accept dotted-path strings as-is; render decorated classes
+                # as ``module.qualname``; ``None`` → ``None``.
+                if deployment.actor_class is None:
+                    actor_class_repr = None
+                elif isinstance(deployment.actor_class, str):
+                    actor_class_repr = deployment.actor_class
+                else:
+                    actor_class_repr = (
+                        f"{deployment.actor_class.__module__}."
+                        f"{deployment.actor_class.__qualname__}"
+                    )
+
                 status[application_name] = {
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
@@ -520,6 +533,7 @@ class _ControllerActor:
                     "revision": entry.revision,
                     "config": entry.config.to_json_string(),
                     "n_params": entry.n_params,
+                    "actor_class": actor_class_repr,
                 }
 
                 if (

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { DEFAULT_ENVOY_CLASS, type CacheValues } from '@/deploy'
+import type { CacheValues } from '@/deploy'
+import AutocompleteInput from '@/components/AutocompleteInput.vue'
 
 export interface EventForm {
   id?: string
@@ -99,16 +100,12 @@ function toggleOpenEnded(e: Event) {
 
         <label class="field full">
           Checkpoint (HF repo id)
-          <input
+          <AutocompleteInput
             v-model="form.checkpoint"
             placeholder="meta-llama/Llama-3.1-8B"
-            list="event-repo-id-list"
-            autocomplete="off"
+            :options="cache?.repo_id ?? []"
             required
           />
-          <datalist id="event-repo-id-list">
-            <option v-for="r in cache?.repo_id ?? []" :key="r" :value="r" />
-          </datalist>
         </label>
 
         <label class="field">
@@ -118,28 +115,20 @@ function toggleOpenEnded(e: Event) {
 
         <label class="field">
           Actor class
-          <input
+          <AutocompleteInput
             v-model="form.actor_class"
             placeholder="ndif.services.ray.deployments.modeling.base.ModelActor"
-            list="event-actor-class-list"
-            autocomplete="off"
+            :options="cache?.actor_class ?? []"
           />
-          <datalist id="event-actor-class-list">
-            <option v-for="a in cache?.actor_class ?? []" :key="a" :value="a" />
-          </datalist>
         </label>
 
         <label class="field full">
           Envoy class
-          <input
+          <AutocompleteInput
             v-model="form.envoy_class"
             placeholder="nnsight.modeling.language.LanguageModel"
-            list="event-envoy-class-list"
-            autocomplete="off"
+            :options="cache?.envoy_class ?? []"
           />
-          <datalist id="event-envoy-class-list">
-            <option v-for="e in cache?.envoy_class ?? []" :key="e" :value="e" />
-          </datalist>
         </label>
 
         <label class="field">
