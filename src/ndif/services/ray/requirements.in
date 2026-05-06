@@ -1,4 +1,8 @@
 nnsight
+# Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
+# Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
+# silently bind to a Placeholder and the controller can't trace VLMs.
+torchvision
 diffusers
 ray[serve]==2.50.0
 python-slugify

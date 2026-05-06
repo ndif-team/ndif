@@ -8,6 +8,10 @@ bcrypt>=4.0.0
 python-multipart>=0.0.6
 requests
 nnsight
+# Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
+# Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
+# fail at get_model_key time inside the dashboard / reconcile path.
+torchvision
 # The reconcile cron drives deploy/evict/restart through the cli lib, which
 # uses the Ray client. Pinned to match services/ray/requirements.in.
 ray[client]==2.50.0
