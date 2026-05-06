@@ -9,6 +9,7 @@ export interface Deployment {
   application_state?: string
   pinned?: boolean
   n_params?: number
+  size_bytes?: number
   actor_class?: string | null
   schedule?: { start_time?: string; end_time?: string; title?: string } | null
   // pending = optimistic placeholder for an in-flight deploy. The card
@@ -59,6 +60,17 @@ const envoyClass = computed(() => {
   return basename(i === -1 ? null : k.slice(0, i))
 })
 const actorClass = computed(() => basename(props.deployment.actor_class))
+
+const params = computed(() => {
+  const n = props.deployment.n_params
+  if (!n) return null
+  return n / 1e9 < 1 ? (n / 1e9).toFixed(1) + 'B' : Math.round(n / 1e9) + 'B'
+})
+const sizeGB = computed(() => {
+  const b = props.deployment.size_bytes
+  if (!b) return null
+  return (b / 1024 ** 3).toFixed(1) + ' GB'
+})
 
 function fmtRemaining(end: string | undefined): string | null {
   if (!end) return null
@@ -201,6 +213,8 @@ function onMenuBlur(e: FocusEvent) {
           <span v-if="deployment.revision" :title="'revision: ' + deployment.revision">
             ⌖ {{ deployment.revision }}
           </span>
+          <span v-if="params" :title="'parameters'">⊟ {{ params }}</span>
+          <span v-if="sizeGB" :title="'GPU memory footprint'">⊞ {{ sizeGB }}</span>
           <span
             v-if="envoyClass"
             :title="'envoy class: ' + (deployment.model_key || '').split(':')[0]"

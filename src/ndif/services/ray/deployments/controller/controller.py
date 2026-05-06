@@ -533,6 +533,7 @@ class _ControllerActor:
                     "revision": entry.revision,
                     "config": entry.config.to_json_string(),
                     "n_params": entry.n_params,
+                    "size_bytes": deployment.size_bytes,
                     "actor_class": actor_class_repr,
                 }
 
