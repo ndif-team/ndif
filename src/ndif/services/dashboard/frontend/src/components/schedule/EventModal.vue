@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { DEFAULT_ENVOY_CLASS, type CacheValues } from '@/deploy'
 
 export interface EventForm {
   id?: string
@@ -20,6 +21,7 @@ const props = defineProps<{
   mode: 'create' | 'edit'
   saving?: boolean
   error?: string | null
+  cache?: CacheValues
 }>()
 
 const emit = defineEmits<{
@@ -100,8 +102,13 @@ function toggleOpenEnded(e: Event) {
           <input
             v-model="form.checkpoint"
             placeholder="meta-llama/Llama-3.1-8B"
+            list="event-repo-id-list"
+            autocomplete="off"
             required
           />
+          <datalist id="event-repo-id-list">
+            <option v-for="r in cache?.repo_id ?? []" :key="r" :value="r" />
+          </datalist>
         </label>
 
         <label class="field">
@@ -114,7 +121,12 @@ function toggleOpenEnded(e: Event) {
           <input
             v-model="form.actor_class"
             placeholder="ndif.services.ray.deployments.modeling.base.ModelActor"
+            list="event-actor-class-list"
+            autocomplete="off"
           />
+          <datalist id="event-actor-class-list">
+            <option v-for="a in cache?.actor_class ?? []" :key="a" :value="a" />
+          </datalist>
         </label>
 
         <label class="field full">
@@ -122,7 +134,12 @@ function toggleOpenEnded(e: Event) {
           <input
             v-model="form.envoy_class"
             placeholder="nnsight.modeling.language.LanguageModel"
+            list="event-envoy-class-list"
+            autocomplete="off"
           />
+          <datalist id="event-envoy-class-list">
+            <option v-for="e in cache?.envoy_class ?? []" :key="e" :value="e" />
+          </datalist>
         </label>
 
         <label class="field">

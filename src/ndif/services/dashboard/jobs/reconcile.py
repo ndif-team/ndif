@@ -247,12 +247,11 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
 
     # ---- Deploy added / drifted entries --------------------------------
     deploy_result: dict = {}
+    deploy_specs: list[dict] = []
     if to_deploy_events:
+        deploy_specs = [_spec_from_event(e) for e in to_deploy_events]
         try:
-            deploy_result = ndif_client.deploy(
-                [_spec_from_event(e) for e in to_deploy_events],
-                sync=False,
-            )
+            deploy_result = ndif_client.deploy(deploy_specs, sync=False)
         except Exception as e:
             level = "error" if isinstance(e, ndif_client.NDIFConnectivityError) else "exception"
             getattr(logger, level)("Deploy step failed: %s", e)
@@ -290,6 +289,14 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
     _persist_state(settings.reconcile_state_path,
                    model_keys=new_keys_list, active_count=active_count)
     _notify_failures(failed)
+
+    # Mirror successful schedule-driven deploys into the autocomplete cache,
+    # same as ad-hoc deploys do via the deployments router.
+    if deploy_specs:
+        from ..backend import cache_store
+        cache_store.add_from_deploy_result(
+            settings.cache_path, deploy_specs, deploy_result.get("deployments") or [],
+        )
 
     deployed = [e.model_key for e in to_deploy_events]
     return {"changed": True, "active": active_names, "evicted": evicted, "deployed": deployed}

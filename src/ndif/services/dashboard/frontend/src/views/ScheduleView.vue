@@ -5,7 +5,7 @@ import MonthCalendar from '@/components/schedule/MonthCalendar.vue'
 import EventModal, {
   type EventForm
 } from '@/components/schedule/EventModal.vue'
-import { DEFAULT_ENVOY_CLASS } from '@/deploy'
+import { DEFAULT_ENVOY_CLASS, type CacheValues } from '@/deploy'
 
 interface ScheduleEvent {
   id: string
@@ -37,6 +37,15 @@ const modalMode = ref<'create' | 'edit'>('create')
 const modalInitial = ref<EventForm>(emptyForm())
 const saving = ref(false)
 const saveError = ref<string | null>(null)
+const cache = ref<CacheValues>({ repo_id: [], actor_class: [], envoy_class: [] })
+
+async function loadCache() {
+  try {
+    cache.value = await api.get<CacheValues>('/api/cache')
+  } catch {
+    // Non-fatal — autocomplete is a convenience, not required.
+  }
+}
 
 function emptyForm(start?: Date): EventForm {
   const s = start ?? new Date()
@@ -67,7 +76,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCache()
+})
 
 function prevMonth() {
   if (month.value === 0) {
@@ -144,6 +156,9 @@ async function save(data: EventForm) {
       await api.put(`/api/schedule/${data.id}`, payload)
     }
     await load()
+    // The reconcile background task may have just deployed (and bumped the
+    // cache); refresh so the next modal sees the new entries.
+    loadCache()
     modalOpen.value = false
   } catch (e) {
     saveError.value =
@@ -246,6 +261,7 @@ const upcoming = computed(() => {
       :mode="modalMode"
       :saving="saving"
       :error="saveError"
+      :cache="cache"
       @save="save"
       @close="close"
       @delete="remove"

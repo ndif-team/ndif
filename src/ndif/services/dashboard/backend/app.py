@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import get_settings
 from .routers import auth as auth_router
+from .routers import cache as cache_router
 from .routers import deploy as deploy_router
 from .routers import deployments as deployments_router
 from .routers import monitor as monitor_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(schedule_router.router)
     app.include_router(deployments_router.router)
     app.include_router(deploy_router.router)
+    app.include_router(cache_router.router)
 
     @app.get("/api/health")
     def health():

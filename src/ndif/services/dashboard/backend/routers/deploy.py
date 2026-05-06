@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from ..auth import require_auth
 from ..config import Settings, get_settings
 from ..schedule_store import ScheduleStore, filter_active
-from .. import ndif_client
+from .. import cache_store, ndif_client
 
 
 router = APIRouter(prefix="/api", tags=["admin"])
@@ -104,12 +104,11 @@ def status_endpoint(
 def deploy_endpoint(
     payload: DeployRequest,
     _: str = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
 ):
+    specs = [s.model_dump() for s in payload.specs]
     try:
-        return ndif_client.deploy(
-            [s.model_dump() for s in payload.specs],
-            sync=payload.sync,
-        )
+        result = ndif_client.deploy(specs, sync=payload.sync)
     except ndif_client.NDIFConnectivityError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
@@ -118,6 +117,11 @@ def deploy_endpoint(
         # Surface the real message (e.g. HF gated repo, controller errors)
         # so the frontend toast can show something actionable.
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+    cache_store.add_from_deploy_result(
+        settings.cache_path, specs, result.get("deployments") or []
+    )
+    return result
 
 
 @router.post("/evict")

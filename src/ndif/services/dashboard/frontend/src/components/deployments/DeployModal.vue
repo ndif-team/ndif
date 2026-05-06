@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { DEFAULT_ENVOY_CLASS } from '@/deploy'
+import { DEFAULT_ENVOY_CLASS, type CacheValues } from '@/deploy'
 
 export interface DeployForm {
   checkpoint: string
@@ -16,6 +16,7 @@ const props = defineProps<{
   initial?: Partial<DeployForm>
   saving?: boolean
   error?: string | null
+  cache?: CacheValues
 }>()
 
 const emit = defineEmits<{
@@ -57,9 +58,14 @@ function submit() {
           <input
             v-model="form.checkpoint"
             placeholder="meta-llama/Llama-3.1-8B"
+            list="deploy-repo-id-list"
+            autocomplete="off"
             autofocus
             required
           />
+          <datalist id="deploy-repo-id-list">
+            <option v-for="r in cache?.repo_id ?? []" :key="r" :value="r" />
+          </datalist>
         </label>
 
         <label class="field">
@@ -69,7 +75,15 @@ function submit() {
 
         <label class="field">
           Actor class
-          <input v-model="form.actor_class" placeholder="(default)" />
+          <input
+            v-model="form.actor_class"
+            placeholder="(default)"
+            list="deploy-actor-class-list"
+            autocomplete="off"
+          />
+          <datalist id="deploy-actor-class-list">
+            <option v-for="a in cache?.actor_class ?? []" :key="a" :value="a" />
+          </datalist>
         </label>
 
         <label class="field full">
@@ -77,7 +91,12 @@ function submit() {
           <input
             v-model="form.envoy_class"
             placeholder="nnsight.modeling.language.LanguageModel"
+            list="deploy-envoy-class-list"
+            autocomplete="off"
           />
+          <datalist id="deploy-envoy-class-list">
+            <option v-for="e in cache?.envoy_class ?? []" :key="e" :value="e" />
+          </datalist>
         </label>
 
         <label class="field">

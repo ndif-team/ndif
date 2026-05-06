@@ -73,10 +73,19 @@ class Settings(BaseSettings):
     def monitor_config_path(self) -> Path:
         return self.data_dir / "config.json"
 
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache"
+
+    @property
+    def cache_path(self) -> Path:
+        return self.cache_dir / "values.json"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     s = Settings()
     s.data_dir.mkdir(parents=True, exist_ok=True)
     s.logs_dir.mkdir(parents=True, exist_ok=True)
+    s.cache_dir.mkdir(parents=True, exist_ok=True)
     return s

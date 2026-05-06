@@ -15,7 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..auth import require_auth
-from .. import ndif_client
+from ..config import Settings, get_settings
+from .. import cache_store, ndif_client
 
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,17 @@ def _log_action(action: str, payload, result: dict) -> None:
 
 
 @router.post("/deploy")
-def deploy_endpoint(payload: DeployRequest, _: str = Depends(require_auth)):
-    result = _call(ndif_client.deploy, [payload.model_dump()], sync=False)
+def deploy_endpoint(
+    payload: DeployRequest,
+    _: str = Depends(require_auth),
+    settings: Settings = Depends(get_settings),
+):
+    spec = payload.model_dump()
+    result = _call(ndif_client.deploy, [spec], sync=False)
     _log_action("deploy", payload, result)
+    cache_store.add_from_deploy_result(
+        settings.cache_path, [spec], result.get("deployments") or []
+    )
     return {"mode": "ad-hoc", **result}
 
 

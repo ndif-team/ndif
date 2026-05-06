@@ -5,6 +5,7 @@ import DeploymentCard, { type Deployment } from '@/components/deployments/Deploy
 import DeployModal, {
   type DeployForm
 } from '@/components/deployments/DeployModal.vue'
+import type { CacheValues } from '@/deploy'
 
 interface StatusResponse {
   deployments: Record<string, Deployment>
@@ -24,6 +25,15 @@ const deployModalOpen = ref(false)
 const deployModalInitial = ref<Partial<DeployForm> | undefined>(undefined)
 const deploying = ref(false)
 const deployError = ref<string | null>(null)
+const cache = ref<CacheValues>({ repo_id: [], actor_class: [], envoy_class: [] })
+
+async function loadCache() {
+  try {
+    cache.value = await api.get<CacheValues>('/api/cache')
+  } catch {
+    // Non-fatal: dropdowns are an aid, not required for deploy.
+  }
+}
 
 // In-flight deploys, rendered as placeholder cards above the server list
 // until a real deployment with matching (repo_id, revision) shows up. The
@@ -91,7 +101,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCache()
+})
 
 const counts = computed(() => {
   const out = { all: deployments.value.length, hot: 0, warm: 0, cold: 0, pinned: 0 }
@@ -180,6 +193,9 @@ async function onDeploy(form: DeployForm) {
       )
     }
     await load()
+    // Backend only writes the cache for entries whose deploy succeeded,
+    // so refresh after every deploy attempt to pick up the new values.
+    loadCache()
   } catch (e) {
     // Drop the placeholder on hard failure so the user isn't staring at
     // a permanent pulse for a deploy that never happened.
@@ -323,6 +339,7 @@ async function onEvict(d: Deployment) {
       :initial="deployModalInitial"
       :saving="deploying"
       :error="deployError"
+      :cache="cache"
       @submit="onDeploy"
       @close="deployModalOpen = false"
     />
