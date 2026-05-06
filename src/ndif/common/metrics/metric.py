@@ -7,12 +7,13 @@ import logging
 
 if os.getenv("INFLUXDB_ADDRESS") is not None:
     from influxdb_client import InfluxDBClient, WriteApi
-    from influxdb_client.client.write_api import WriteOptions
+    from influxdb_client.client.write_api import WriteOptions, SYNCHRONOUS
     from influxdb_client import Point
 else:
     WriteApi = Any
     Point = Any
     InfluxDBClient = Any
+    SYNCHRONOUS = None
 
 logger = logging.getLogger("ndif")
 
@@ -26,16 +27,31 @@ class Metric:
     def _init_client(cls):
         if cls._influx_client is not None:
             return
+
+        # Use synchronous writes in Ray service to avoid background thread
+        # issues with the Protector sandbox's global __import__ patch
+        use_sync = os.getenv("INFLUXDB_WRITE_SYNC", "").lower() in ("true", "1", "yes")
+
+        # Use shorter timeout for sync writes to avoid blocking model execution
+        # Default is 10s for batched, 1s for sync (configurable via INFLUXDB_TIMEOUT_MS)
+        default_timeout = 1000 if use_sync else 10000
+        timeout_ms = int(os.getenv("INFLUXDB_TIMEOUT_MS", default_timeout))
+
         cls._influx_client = InfluxDBClient(
             url=os.getenv("INFLUXDB_ADDRESS"),
             token=os.getenv("INFLUXDB_ADMIN_TOKEN"),
+            timeout=timeout_ms,
         )
-        cls.client = cls._influx_client.write_api(
-            write_options=WriteOptions(
-                batch_size=100,
-                flush_interval=5_000,
+
+        if use_sync:
+            cls.client = cls._influx_client.write_api(write_options=SYNCHRONOUS)
+        else:
+            cls.client = cls._influx_client.write_api(
+                write_options=WriteOptions(
+                    batch_size=100,
+                    flush_interval=5_000,
+                )
             )
-        )
         atexit.register(cls._shutdown)
 
     @classmethod
