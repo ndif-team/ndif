@@ -286,6 +286,19 @@ deserialization_modules:
   - name: transformers
     strict: false
 
+  # ``transformers_modules`` is the synthetic package transformers creates for
+  # ``trust_remote_code=True`` repos — each repo's custom code lands under
+  # ``transformers_modules.<owner>.<repo_path>.<commit_hash>.<module>`` (e.g.
+  # ``transformers_modules.lewtun.talkie_hyphen_1930_hyphen_…cfg…``). A trace
+  # against any such model carries config-class references in its pickled
+  # payload, and the deserialization importer blocks on the dynamic module
+  # name without this entry. Trade-off: any custom code those repos ship is
+  # now reachable inside the deserialization sandbox — acceptable here
+  # because the deploy already opted into ``trust_remote_code=True`` to load
+  # the model in the first place.
+  - name: transformers_modules
+    strict: false
+
 
 # =============================================================================
 # DUNDER ATTRIBUTES
