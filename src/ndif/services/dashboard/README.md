@@ -28,7 +28,6 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'
 #    NDIF_DASHBOARD_USERNAME=admin
 #    NDIF_DASHBOARD_PASSWORD_HASH=$2b$12$...    (literal — no escaping)
 #    NDIF_DASHBOARD_SESSION_SECRET=...
-#    NDIF_DASHBOARD_HOST_DATA_DIR=/path/to/host/dir   # bind-mounted to /var/lib/dashboard
 #    NDIF_API_KEY=...                                  # for monitor cron's model traces
 
 # 3. Build images and bring the stack up:
@@ -64,7 +63,6 @@ the prefix `NDIF_DASHBOARD_` unless noted.
 | `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
 | `NDIF_DASHBOARD_FRONTEND_DIST` | `…/dashboard/frontend/dist` | Built Vue SPA to serve |
 | `NDIF_DASHBOARD_PORT` | `8081` | Backend port |
-| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host directory bind-mounted to `/var/lib/dashboard` (compose only) |
 | `NDIF_DASHBOARD_MONITOR_URL` | `http://localhost:5001` | Where the monitor cron probes. Override to the public URL (e.g. `https://api.ndif.us`) in prod so the probe exercises DNS + TLS + LB |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Schedule for the uptime cron |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Schedule for the reconcile cron |

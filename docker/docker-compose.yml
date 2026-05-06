@@ -131,14 +131,16 @@ services:
       NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
     volumes:
-      # Bind-mount the host's existing dashboard data dir so logs / schedule
-      # carry over from the standalone deployment. Override
-      # NDIF_DASHBOARD_HOST_DATA_DIR in .env if your data lives elsewhere.
-      - ${NDIF_DASHBOARD_HOST_DATA_DIR:-${HOME}/ndif_monitor}:/var/lib/dashboard
       # HF cache + auth token — the deploy lib's get_model_key() resolves
       # checkpoints via nnsight, which needs network access to HF and (for
       # gated models like meta-llama/*) the user's HF token. Same mount the
       # ray service uses.
+      #
+      # No /var/lib/dashboard mount: local docker stacks use the in-container
+      # path (gone on ``make ta``), so a fresh stack starts with empty logs /
+      # schedule / cache and never inherits stale config from a previous
+      # deployment. Production AWS overrides this with its own EBS-backed
+      # mount via ndif-aws's ServiceSchema.
       - ~/.cache/huggingface/:/root/.cache/huggingface
     depends_on:
       - api
