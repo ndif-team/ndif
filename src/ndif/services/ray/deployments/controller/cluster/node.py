@@ -215,6 +215,17 @@ class Node:
         return None
 
     def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
+        # WARM eviction: nothing on GPU, just release CPU + drop from cache.
+        # The HOT path below tries to demote to cache — irrelevant when the
+        # model is already there.
+        if model_key in self.cache:
+            cached = self.cache.pop(model_key)
+            self.cpu_resources.release(cached.size_bytes)
+            logger.info(
+                f"Evicting WARM {model_key} from {self.name}, freed {cached.size_bytes} bytes"
+            )
+            return
+
         deployment = self.deployments[model_key]
 
         self.gpu_resources.release(deployment.gpus)
