@@ -94,7 +94,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/services/api/queue/dispatcher.py` | `Dispatcher` — reads Redis queue, routes to Processors, manages Ray connection |
 | `src/ndif/services/api/queue/processor.py` | `Processor` — per-model state machine (`PROVISIONING → DEPLOYING → READY ↔ BUSY`) |
 | `src/ndif/services/api/queue/util.py` | Ray client deadlock `patch()`, `controller_handle()`, `submit()` |
-| `src/ndif/services/ray/deployments/controller/controller.py` | `_ControllerActor`, `build()`, `apply()`, `deploy()`, `evict()`, `flush_warm_cache()`, `status()`, `env()` |
+| `src/ndif/services/ray/deployments/controller/controller.py` | `_ControllerActor`, `build()`, `apply()`, `deploy()`, `evict()`, `status()`, `env()` |
 | `src/ndif/services/ray/deployments/controller/cluster/cluster.py` | `Cluster` — multi-node state, deploy/evict orchestration |
 | `src/ndif/services/ray/deployments/controller/cluster/node.py` | `Node` — single node's GPUs/CPU/cache; `evictions()` algorithm |
 | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | `Deployment` + `DeploymentLevel` enum |
@@ -853,10 +853,9 @@ Node discovery is polled on its own interval:
 
 1. **Cluster state** — Track nodes, GPUs, and memory via periodic `update_nodes()` calls (driven by `check_nodes()` async loop)
 2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `pinned`, `execution_timeout_seconds`, and similar per-model overrides.
-3. **Warm cache management** — `flush_warm_cache(node_ids=None)` drops all WARM models on the specified nodes (or all nodes), transitioning them to COLD and returning the freed memory per node.
-4. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and also reports COLD (downloaded-but-not-deployed) models via `get_downloaded_models()`. `get_deployment(model_key)` returns a single deployment's state.
-5. **Environment info** — `env()` reports Python version and installed packages. Used by `ndif env` and `/env` to diagnose client/server version mismatches.
-6. **Internal state** — `get_state()` returns the full Controller + Cluster state for debugging.
+3. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and also reports COLD (downloaded-but-not-deployed) models via `get_downloaded_models()`. `get_deployment(model_key)` returns a single deployment's state.
+4. **Environment info** — `env()` reports Python version and installed packages. Used by `ndif env` and `/env` to diagnose client/server version mismatches.
+5. **Internal state** — `get_state()` returns the full Controller + Cluster state for debugging.
 
 **Pinned scheduling.** Pinned deployments are no longer driven by a Ray-side actor — they live in the dashboard's `schedule.json` and are pushed to this controller by the dashboard's reconcile cron. See §5.7.
 

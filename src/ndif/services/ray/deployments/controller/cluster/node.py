@@ -404,27 +404,3 @@ class Node:
         for cache in self.cache.values():
             cache.delete()
 
-    def flush_cache(self) -> dict:
-        """Flush all WARM models from CPU cache.
-
-        Returns:
-            Dict with flushed model keys and memory freed
-        """
-        flushed = []
-        memory_freed = 0
-
-        for model_key, deployment in list(self.cache.items()):
-            memory_freed += deployment.size_bytes
-            flushed.append(model_key)
-            del self.cache[model_key]
-
-        self.cpu_resources.release(memory_freed)
-
-        logger.info(
-            f"Flushed {len(flushed)} WARM model(s) from {self.name}, freed {memory_freed} bytes"
-        )
-
-        return {
-            "flushed": flushed,
-            "memory_freed_bytes": memory_freed,
-        }

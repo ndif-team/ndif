@@ -40,7 +40,6 @@ class EvictRequest(BaseModel):
     model_keys: Optional[list[str]] = None
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None
     evict_all: bool = False
-    flush_cache: bool = False
 
 
 @router.get("/status")
@@ -133,17 +132,14 @@ def evict_endpoint(
         bool(payload.model_keys),
         bool(payload.checkpoints),
         payload.evict_all,
-        payload.flush_cache,
     ]
     if sum(modes) != 1:
         raise HTTPException(
             status_code=400,
-            detail="Exactly one of model_keys, checkpoints, evict_all, flush_cache",
+            detail="Exactly one of model_keys, checkpoints, evict_all",
         )
 
     try:
-        if payload.flush_cache:
-            return ndif_client.flush_warm_cache()
         if payload.evict_all:
             return ndif_client.evict_all()
         return ndif_client.evict(

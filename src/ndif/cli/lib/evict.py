@@ -20,26 +20,23 @@ def evict(
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None,
     model_keys: Optional[list[str]] = None,
     evict_all: bool = False,
-    flush_cache: bool = False,
     ray_address: Optional[str] = None,
     broker_url: Optional[str] = None,
     on_message: OnMessage = None,
 ) -> dict:
     """Evict models from the cluster.
 
-    Provide exactly one of: ``checkpoints``, ``model_keys``, ``evict_all=True``,
-    ``flush_cache=True``.
+    Provide exactly one of: ``checkpoints``, ``model_keys``, ``evict_all=True``.
 
     Returns:
-        - ``flush_cache``: ``{"flushed": [...], "memory_freed_bytes": int, "node_count": int}``
-        - otherwise: ``{"results": [{"model_key", "status", "freed_gpus", "freed_memory_gbs"}]}``
+        ``{"results": [{"model_key", "status", "freed_gpus", "freed_memory_gbs"}]}``
     """
     import ray
 
-    modes = [bool(checkpoints), bool(model_keys), evict_all, flush_cache]
+    modes = [bool(checkpoints), bool(model_keys), evict_all]
     if sum(modes) != 1:
         raise ValueError(
-            "Specify exactly one of: checkpoints, model_keys, evict_all, flush_cache"
+            "Specify exactly one of: checkpoints, model_keys, evict_all"
         )
 
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
@@ -49,27 +46,6 @@ def evict(
     emit(on_message, f"Connecting to Ray at {ray_address}...")
     ensure_ray_connected(ray_address)
     controller = get_controller_actor_handle()
-
-    if flush_cache:
-        emit(on_message, "Flushing WARM cache from all nodes...")
-        node_results = ray.get(controller.flush_warm_cache.remote())
-
-        flushed: list[str] = []
-        total_memory = 0
-        for node_id, result in node_results.items():
-            flushed.extend(result.get("flushed", []))
-            total_memory += result.get("memory_freed_bytes", 0)
-            if result.get("flushed"):
-                emit(
-                    on_message,
-                    f"  Node {node_id[:8]}...: {len(result['flushed'])} model(s), "
-                    f"{result['memory_freed_bytes'] / (1024**3):.2f} GB freed",
-                )
-        return {
-            "flushed": flushed,
-            "memory_freed_bytes": total_memory,
-            "node_count": len(node_results),
-        }
 
     if evict_all:
         target_keys = [
