@@ -12,6 +12,7 @@ from typing_extensions import Self
 from nnsight.schema.request import RequestModel
 from nnsight.schema.response import ResponseModel
 
+from ..metrics import RequestErrorMetric
 from ..types import API_KEY, MODEL_KEY, REQUEST_ID, SESSION_ID
 from .mixins import ObjectStorageMixin
 from .response import BackendResponseModel
@@ -140,5 +141,8 @@ class BackendRequestModel(ObjectStorageMixin):
             response.update_metric(self)
             logger.info(f"Updating last status: {status}")
             self.last_status = status
+
+        if status == ResponseModel.JobStatus.ERROR:
+            RequestErrorMetric.update(self)
 
         return response
