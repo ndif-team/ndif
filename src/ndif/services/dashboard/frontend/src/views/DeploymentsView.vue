@@ -235,7 +235,15 @@ async function onWarmDeploy(d: Deployment) {
     showToast('ok', `Redeploying ${d.repo_id || d.model_key}…`)
     await load()
   } catch (e) {
-    showToast('err', `Redeploy failed: ${(e as Error).message}`)
+    // ApiError.detail can be a 422 validation object — fall back to .message
+    // so the toast reads like "Field required" instead of "[object Object]".
+    const msg =
+      e instanceof ApiError
+        ? typeof e.detail === 'string'
+          ? e.detail
+          : e.message
+        : (e as Error).message
+    showToast('err', `Redeploy failed: ${msg}`)
   } finally {
     const next = { ...cardBusy.value }
     delete next[d.model_key]
