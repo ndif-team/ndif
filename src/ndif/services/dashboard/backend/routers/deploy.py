@@ -29,6 +29,11 @@ class ModelSpec(BaseModel):
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    # When supplied, skip the canonicalize-via-wrapper step in cli/lib/deploy
+    # and use the model_key as-is. The dashboard's WARM "redeploy" path sets
+    # this from the existing deployment card so we don't pay a second
+    # ``get_model_key`` HF roundtrip just to recompute a key we already have.
+    model_key: Optional[str] = None
 
 
 class DeployRequest(BaseModel):
