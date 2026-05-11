@@ -215,6 +215,15 @@ class Node:
         return None
 
     def evict(self, model_key: MODEL_KEY, exclude: Optional[Set[MODEL_KEY]] = None):
+
+        if model_key in self.cache:
+            cached = self.cache.pop(model_key)
+            self.cpu_resources.release(cached.size_bytes)
+            logger.info(
+                f"Evicting WARM {model_key} from {self.name}, freed {cached.size_bytes} bytes"
+            )
+            return
+
         deployment = self.deployments[model_key]
 
         self.gpu_resources.release(deployment.gpus)
@@ -225,7 +234,9 @@ class Node:
             f"= {deployment.size_bytes} - {self.cpu_resources.available_memory_bytes}"
         )
 
-        cache_evictions = self.find_cache_evictions(deployment.size_bytes, exclude=exclude)
+        cache_evictions = self.find_cache_evictions(
+            deployment.size_bytes, exclude=exclude
+        )
 
         if cache_evictions is not None:
             for eviction_deployment in cache_evictions:
@@ -403,28 +414,3 @@ class Node:
             deployment.delete()
         for cache in self.cache.values():
             cache.delete()
-
-    def flush_cache(self) -> dict:
-        """Flush all WARM models from CPU cache.
-
-        Returns:
-            Dict with flushed model keys and memory freed
-        """
-        flushed = []
-        memory_freed = 0
-
-        for model_key, deployment in list(self.cache.items()):
-            memory_freed += deployment.size_bytes
-            flushed.append(model_key)
-            del self.cache[model_key]
-
-        self.cpu_resources.release(memory_freed)
-
-        logger.info(
-            f"Flushed {len(flushed)} WARM model(s) from {self.name}, freed {memory_freed} bytes"
-        )
-
-        return {
-            "flushed": flushed,
-            "memory_freed_bytes": memory_freed,
-        }

@@ -29,6 +29,11 @@ class ModelSpec(BaseModel):
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    # When supplied, skip the canonicalize-via-wrapper step in cli/lib/deploy
+    # and use the model_key as-is. The dashboard's WARM "redeploy" path sets
+    # this from the existing deployment card so we don't pay a second
+    # ``get_model_key`` HF roundtrip just to recompute a key we already have.
+    model_key: Optional[str] = None
 
 
 class DeployRequest(BaseModel):
@@ -40,7 +45,6 @@ class EvictRequest(BaseModel):
     model_keys: Optional[list[str]] = None
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None
     evict_all: bool = False
-    flush_cache: bool = False
 
 
 @router.get("/status")
@@ -133,17 +137,14 @@ def evict_endpoint(
         bool(payload.model_keys),
         bool(payload.checkpoints),
         payload.evict_all,
-        payload.flush_cache,
     ]
     if sum(modes) != 1:
         raise HTTPException(
             status_code=400,
-            detail="Exactly one of model_keys, checkpoints, evict_all, flush_cache",
+            detail="Exactly one of model_keys, checkpoints, evict_all",
         )
 
     try:
-        if payload.flush_cache:
-            return ndif_client.flush_warm_cache()
         if payload.evict_all:
             return ndif_client.evict_all()
         return ndif_client.evict(

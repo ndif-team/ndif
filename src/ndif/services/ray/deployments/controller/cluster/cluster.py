@@ -1,7 +1,7 @@
 import logging
 import random
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import ray
 from ray._private import services
@@ -282,52 +282,34 @@ class Cluster:
             for model_key in model_keys:
                 found = False
 
-                # Search for deployment across all nodes
-                for node_id, node in self.nodes.items():
-                    if model_key in node.deployments:
-                        deployment = node.deployments[model_key]
+                # Search HOT (node.deployments) first, then WARM (node.cache).
+                # node.evict() dispatches internally based on which dict the
+                # key lives in; we use the pre-eviction deployment record to
+                # build the result, since the entry is gone after evict().
+                for node in self.nodes.values():
+                    deployment = node.deployments.get(model_key) or node.cache.get(model_key)
+                    if deployment is None:
+                        continue
 
-                        # Evict from node (updates resources, removes from deployments)
-                        node.evict(model_key)
+                    node.evict(model_key)
 
-                        results[model_key] = {
-                            "status": "evicted",
-                            "node": node.name,
-                            "freed_gpus": len(deployment.gpus),
-                            "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
-                            "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
-                        }
-                        span.add_event("model_evicted", {
-                            "model_key": model_key,
-                            "node": node.name,
-                            "freed_gpus": len(deployment.gpus),
-                        })
-                        change = True
-                        found = True
-                        break
+                    results[model_key] = {
+                        "status": "evicted",
+                        "node": node.name,
+                        "freed_gpus": len(deployment.gpus),
+                        "freed_gpu_memory_bytes": sum(deployment.gpus.values()),
+                        "freed_memory_gbs": deployment.size_bytes / 1024 / 1024 / 1024,
+                    }
+                    span.add_event("model_evicted", {
+                        "model_key": model_key,
+                        "node": node.name,
+                        "freed_gpus": len(deployment.gpus),
+                    })
+                    change = True
+                    found = True
+                    break
 
                 if not found:
                     results[model_key] = {"status": "not_found"}
 
             return results, change
-
-    def flush_warm_cache(self, node_ids: Optional[List[str]] = None) -> dict:
-        """Flush WARM cache from specified nodes (or all nodes).
-
-        Args:
-            node_ids: List of node IDs to flush. If None, flush all nodes.
-
-        Returns:
-            Dict mapping node_id -> flush results
-        """
-        results = {}
-
-        if node_ids is not None:
-            target_nodes = [n for n in self.nodes.values() if n.id in node_ids]
-        else:
-            target_nodes = list(self.nodes.values())
-
-        for node in target_nodes:
-            results[node.id] = node.flush_cache()
-
-        return results

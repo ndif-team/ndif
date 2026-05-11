@@ -76,6 +76,9 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 "envoy_class": spec.get("envoy_class"),
                 "padding_factor": spec.get("padding_factor"),
                 "execution_timeout_seconds": spec.get("execution_timeout_seconds"),
+                # Optional pre-computed canonical key — when set, cli/lib/deploy
+                # skips ``get_model_key`` and uses this value verbatim.
+                "model_key": spec.get("model_key"),
             }
         )
     return out
