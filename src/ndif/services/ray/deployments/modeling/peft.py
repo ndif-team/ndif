@@ -10,42 +10,51 @@ from .base import BaseModelDeployment
 class PEFTModelActor(BaseModelDeployment):
     """Ray remote actor for PEFT-style model execution.
 
-    Reads ``peft_repo_id`` from the request's ``extras`` dict. If present,
-    the underlying HF model is wrapped in a ``PeftModel`` via
-    ``PeftModel.from_pretrained`` so the adapter is active during execution.
-    On cleanup the wrapper's ``unload()`` is called to strip the adapter
-    modules back off, and the original base module is restored so the shared
-    model is adapter-free for the next caller.
+    Reads ``peft_repo_id`` from the request's ``extras`` dict and tracks the
+    currently-loaded adapter across requests. The adapter is only swapped when
+    the requested ``peft_repo_id`` differs from the one already loaded, so
+    back-to-back requests for the same adapter reuse it in place rather than
+    paying the load/unload cost every call.
+
+    Transitions handled in ``pre()``:
+
+        current  requested  action
+        -------  ---------  ------
+        None     None       no-op
+        None     X          load X
+        X        X          no-op
+        X        Y          unload X, load Y
+        X        None       unload X
     """
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.current_peft_repo_id: str | None = None
+
     def pre(self) -> RequestModel:
-        self._peft_active = False
+        requested = (self.request.extras or {}).get("peft_repo_id")
 
-        repo_id = (self.request.extras or {}).get("peft_repo_id")
+        if requested != self.current_peft_repo_id:
+            if self.current_peft_repo_id is not None:
+                try:
+                    Envoy.__init__(
+                        self.model,
+                        self.model._module.unload(),
+                        interleaver=self.model.interleaver,
+                    )
+                except Exception:
+                    self.logger.exception("Failed to unload PEFT adapter")
+                self.current_peft_repo_id = None
 
-        if repo_id:
-            peft_model = PeftModel.from_pretrained(self.model._module, repo_id)
-            Envoy.__init__(
-                self.model,
-                peft_model,
-                interleaver=self.model.interleaver,
-            )
-            self.persistent_objects = self.model._remoteable_persistent_objects()
-            self._peft_active = True
-
-        return super().pre()
-
-    def cleanup(self) -> None:
-        if getattr(self, "_peft_active", False):
-            try:
+            if requested:
+                peft_model = PeftModel.from_pretrained(self.model._module, requested)
                 Envoy.__init__(
                     self.model,
-                    self.model._module.unload(),
+                    peft_model,
                     interleaver=self.model.interleaver,
                 )
-                self.persistent_objects = self.model._remoteable_persistent_objects()
-            except Exception:
-                self.logger.exception("Failed to unload PEFT adapter")
-            self._peft_active = False
+                self.current_peft_repo_id = requested
 
-        super().cleanup()
+            self.persistent_objects = self.model._remoteable_persistent_objects()
+
+        return super().pre()
