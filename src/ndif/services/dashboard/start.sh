@@ -49,6 +49,10 @@ if command -v cron >/dev/null 2>&1 && [ -w /etc/cron.d ]; then
     PYTHON="$(command -v python3 || command -v python)"
     LOG_DIR="$DATA_DIR/logs"
 
+    # Cron starts each job in a stripped env; without explicitly listing the
+    # vars below, reconcile + monitor lose HF_TOKEN and 401 on every gated
+    # repo (Llama, etc.) → schedule never comes up. Pass the dashboard
+    # container's HF auth + cache location through.
     cat > "$CRON_FILE" <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -57,6 +61,8 @@ NDIF_API_URL=${NDIF_API_URL:-http://api:5001}
 NDIF_API_KEY=${NDIF_API_KEY:-}
 NDIF_RAY_ADDRESS=${NDIF_RAY_ADDRESS:-}
 NDIF_BROKER_URL=${NDIF_BROKER_URL:-}
+HF_TOKEN=${HF_TOKEN:-}
+HF_HOME=${HF_HOME:-/root/.cache/huggingface}
 
 ${NDIF_DASHBOARD_MONITOR_CRON:-*/10 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.monitor --url ${NDIF_DASHBOARD_MONITOR_URL:-http://localhost:5001} --log-dir $LOG_DIR --config $CONFIG >> $LOG_DIR/monitor.cron.log 2>&1
 ${NDIF_DASHBOARD_RECONCILE_CRON:-*/2 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.reconcile >> $LOG_DIR/reconcile.cron.log 2>&1
