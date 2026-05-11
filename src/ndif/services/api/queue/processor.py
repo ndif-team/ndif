@@ -38,6 +38,7 @@ from ....common.tracing import (
 )
 
 from ....common.providers.ray import controller_handle, get_model_actor_handle
+from ....common.metrics import QueueDepthMetric, QueueWaitTimeMetric
 from .config import QueueConfig
 
 logger = logging.getLogger("ndif")
@@ -210,7 +211,14 @@ class Processor:
 
             return
 
+        request.queued_at = time.time()
         self.queue.put_nowait(request)
+
+        QueueDepthMetric.update(
+            str(self.model_key),
+            depth=self.queue.qsize(),
+            dispatched=1 if self.current_request_id is not None else 0,
+        )
 
         await self.reply(
             request=request,
@@ -446,8 +454,17 @@ class Processor:
             self.current_request_id = request.id
             self.current_request_started_at = time.time()
 
+            QueueDepthMetric.update(
+                str(self.model_key),
+                depth=self.queue.qsize(),
+                dispatched=1 if self.current_request_id is not None else 0,
+            )
+
             try:
                 handle = self.handle
+
+                if request.queued_at is not None:
+                    QueueWaitTimeMetric.update(request, time.time() - request.queued_at)
 
                 await request.create_response(
                     BackendResponseModel.JobStatus.DISPATCHED,
@@ -491,6 +508,11 @@ class Processor:
             finally:
                 self.current_request_id = None
                 self.current_request_started_at = None
+                QueueDepthMetric.update(
+                    str(self.model_key),
+                    depth=self.queue.qsize(),
+                    dispatched=0,
+                )
 
     async def processor_worker(self) -> None:
         """Main asyncio task managing the processor lifecycle and request loop.

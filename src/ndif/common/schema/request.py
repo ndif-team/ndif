@@ -42,6 +42,7 @@ class BackendRequestModel(ObjectStorageMixin):
 
     last_status: Optional[ResponseModel.JobStatus] = None
     last_status_time: Optional[float] = None
+    queued_at: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 
