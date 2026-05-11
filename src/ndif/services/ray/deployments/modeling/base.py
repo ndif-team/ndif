@@ -14,6 +14,7 @@ from torch.amp import autocast
 from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
 from transformers.modeling_utils import _get_device_map
 
+from nnsight.intervention.serialization import UnknownPersistentIdError
 from nnsight.modeling.mixins import RemoteableMixin
 from nnsight.modeling.mixins.remoteable import StreamTracer
 from nnsight.schema.request import RequestModel
@@ -421,8 +422,19 @@ class BaseModelDeployment:
             )
 
             span.add_event("deserializing_request")
-            with Protector(WHITELISTED_MODULES_DESERIALIZATION):
-                request = self.request.deserialize(self.persistent_objects)
+            try:
+                with Protector(WHITELISTED_MODULES_DESERIALIZATION):
+                    request = self.request.deserialize(self.persistent_objects)
+            except UnknownPersistentIdError as e:
+                raise RuntimeError(
+                    f"Unknown persistent id: {e.pid}. You might have differing "
+                    f"versions of critical packages locally than on NDIF, "
+                    f"resulting in a differing model architecture. Compare "
+                    f"environments and match versions of critical packages "
+                    f"using:\n"
+                    f"    from nnsight import ndif\n"
+                    f"    ndif.compare()"
+                ) from e
 
             return request
 
