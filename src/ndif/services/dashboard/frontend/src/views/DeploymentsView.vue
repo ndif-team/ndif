@@ -228,13 +228,9 @@ async function onWarmDeploy(d: Deployment) {
   try {
     // model_key short-circuits cli/lib/deploy's get_model_key canonicalize.
     await api.post('/api/deployments/deploy', {
-      specs: [
-        {
-          checkpoint: d.repo_id || d.model_key,
-          revision: d.revision ?? null,
-          model_key: d.model_key
-        }
-      ]
+      checkpoint: d.repo_id || d.model_key,
+      revision: d.revision ?? null,
+      model_key: d.model_key
     })
     showToast('ok', `Redeploying ${d.repo_id || d.model_key}…`)
     await load()
