@@ -75,12 +75,20 @@ def deploy(
     model_keys_map: dict[str, dict] = {}
     for spec in specs:
         rev_str = f" (revision: {spec['revision']})" if spec["revision"] else ""
-        emit(on_message, f"Generating model key for {spec['checkpoint']}{rev_str}...")
-        model_key = get_model_key(
-            spec["checkpoint"], spec["revision"], spec.get("envoy_class")
-        )
+        # Callers that already hold the canonical model_key (e.g. the
+        # dashboard's WARM redeploy path, which reads it off the existing
+        # deployment card) can short-circuit get_model_key entirely. Falls
+        # back to canonicalize for the normal "user-typed-a-checkpoint" flow.
+        if spec.get("model_key"):
+            model_key = spec["model_key"]
+            emit(on_message, f"Using provided model key for {spec['checkpoint']}{rev_str}: {model_key}")
+        else:
+            emit(on_message, f"Generating model key for {spec['checkpoint']}{rev_str}...")
+            model_key = get_model_key(
+                spec["checkpoint"], spec["revision"], spec.get("envoy_class")
+            )
+            emit(on_message, f"  Model key: {model_key}")
         model_keys_map[model_key] = spec
-        emit(on_message, f"  Model key: {model_key}")
 
     emit(on_message, f"Connecting to Ray at {ray_address}...")
     ensure_ray_connected(ray_address)

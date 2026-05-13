@@ -36,6 +36,8 @@ from ....common.providers.ray import RayProvider
 from ....common.providers.redis import RedisProvider
 from ....common.providers.objectstore import ObjectStoreProvider
 from ....common.schema.request import BackendRequestModel
+from opentelemetry import trace
+
 from ....common.tracing import (
     TracingContext,
     init_tracing,
@@ -210,20 +212,26 @@ class Dispatcher:
         with trace_span("dispatcher.dispatch", parent_context=parent_ctx) as span:
             set_request_attributes(span, request)
 
-            if request.model_key not in self.processors:
-                processor = Processor(
-                    request.model_key, self.eviction_queue, self.error_queue
-                )
+            try:
+                if request.model_key not in self.processors:
+                    processor = Processor(
+                        request.model_key, self.eviction_queue, self.error_queue
+                    )
 
-                self.processors[request.model_key] = processor
+                    self.processors[request.model_key] = processor
 
-                asyncio.create_task(processor.processor_worker())
+                    asyncio.create_task(processor.processor_worker())
 
-                span.add_event("processor_created")
+                    span.add_event("processor_created")
 
-            await self.processors[request.model_key].enqueue(request)
+                await self.processors[request.model_key].enqueue(request)
 
-            span.add_event("request_enqueued_to_processor")
+                span.add_event("request_enqueued_to_processor")
+
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                raise
 
     async def remove(self, model_key: str, message: str) -> None:
         """Remove a Processor and notify its queued users.

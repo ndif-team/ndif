@@ -32,6 +32,11 @@ class DeployRequest(BaseModel):
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     pinned: bool = False
+    # When supplied, cli/lib/deploy skips ``get_model_key`` and uses this
+    # value verbatim. The dashboard's WARM redeploy path sets this from
+    # the existing deployment card so we don't pay a second canonicalize
+    # round-trip for a key we already have.
+    model_key: Optional[str] = None
 
 
 class EvictRequest(BaseModel):

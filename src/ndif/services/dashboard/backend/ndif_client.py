@@ -23,7 +23,6 @@ __all__ = [
     "deploy",
     "evict",
     "evict_all",
-    "flush_warm_cache",
     "restart",
     "status",
 ]
@@ -55,7 +54,3 @@ status = _status
 
 def evict_all(**kwargs) -> dict:
     return evict(evict_all=True, **kwargs)
-
-
-def flush_warm_cache(**kwargs) -> dict:
-    return evict(flush_cache=True, **kwargs)

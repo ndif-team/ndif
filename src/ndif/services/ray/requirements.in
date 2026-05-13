@@ -8,6 +8,7 @@ peft
 ray[serve]==2.50.0
 python-slugify
 redis
+peft
 # Telemetry
 prometheus_client
 loki-logger-handler

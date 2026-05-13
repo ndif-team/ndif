@@ -171,26 +171,6 @@ class _ControllerActor:
 
             return results
 
-    def flush_warm_cache(self, node_ids: Optional[List[str]] = None) -> dict:
-        """Flush WARM cache from specified nodes (or all nodes).
-
-        This removes all WARM (CPU-cached) models, transitioning them to COLD.
-
-        Args:
-            node_ids: Optional list of node IDs to flush. Defaults to all nodes.
-
-        Returns:
-            Dict with per-node flush results including flushed model keys and memory freed.
-        """
-        results = self.cluster.flush_warm_cache(node_ids)
-
-        # Update state to remove flushed deployments
-        for node_id, flush_result in results.items():
-            for model_key in flush_result["flushed"]:
-                self.state.pop((node_id, model_key), None)
-
-        return results
-
     def build(self):
         with trace_span("controller.build") as span:
             new_state = {}
@@ -480,19 +460,36 @@ class _ControllerActor:
 
         status = {}
 
-        for actor_state in ray_status:
-            if actor_state.name.startswith("ModelActor:"):
-                if actor_state.state in {
-                    "DEPENDENCIES_UNREADY",
-                    "PENDING_CREATION",
-                    "RESTARTING",
-                }:
-                    application_state = "DEPLOYING"
-                elif actor_state.state == "ALIVE":
-                    application_state = "RUNNING"
-                elif actor_state.state == "DEAD":
-                    application_state = "UNHEALTHY"
+        # A single ModelActor name can have multiple Ray entries — every
+        # restart (ray.kill(no_restart=False), CUDA self-kill, etc.) leaves
+        # a DEAD record behind alongside the new ALIVE one. The previous
+        # loop just overwrote on each iteration, so whichever entry came
+        # last won — typically a stale DEAD record, leaving the dashboard
+        # showing "UNHEALTHY" for a perfectly healthy deployment.
+        #
+        # Collapse to the healthiest state for each name. RUNNING beats
+        # DEPLOYING beats UNHEALTHY — once a successor actor is up, the
+        # ghosts of its predecessors don't matter to the user.
+        STATE_PRIORITY = {"RUNNING": 0, "DEPLOYING": 1, "UNHEALTHY": 2}
 
+        for actor_state in ray_status:
+            if not actor_state.name.startswith("ModelActor:"):
+                continue
+            if actor_state.state in {
+                "DEPENDENCIES_UNREADY",
+                "PENDING_CREATION",
+                "RESTARTING",
+            }:
+                application_state = "DEPLOYING"
+            elif actor_state.state == "ALIVE":
+                application_state = "RUNNING"
+            elif actor_state.state == "DEAD":
+                application_state = "UNHEALTHY"
+            else:
+                continue
+
+            existing = status.get(actor_state.name, {}).get("application_state")
+            if existing is None or STATE_PRIORITY[application_state] < STATE_PRIORITY[existing]:
                 status[actor_state.name] = {
                     "application_state": application_state,
                 }

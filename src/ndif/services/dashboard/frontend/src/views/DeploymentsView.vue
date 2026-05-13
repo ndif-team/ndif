@@ -208,11 +208,47 @@ function openDeployModal(initial?: Partial<DeployForm>) {
   deployModalOpen.value = true
 }
 
-function onColdDeploy(d: Deployment) {
-  openDeployModal({
-    checkpoint: d.repo_id || '',
-    revision: d.revision ?? null
-  })
+function onCardDeploy(d: Deployment) {
+  // WARM has a kebab → Deploy that should redeploy the existing model_key
+  // as-is, no modal: every option the deploy modal would surface (actor_class,
+  // envoy_class, pinned…) is already pinned by the existing deployment.
+  // COLD keeps the modal so the user can override those before deploying.
+  if (d.deployment_level === 'WARM') {
+    onWarmDeploy(d)
+  } else {
+    openDeployModal({
+      checkpoint: d.repo_id || '',
+      revision: d.revision ?? null
+    })
+  }
+}
+
+async function onWarmDeploy(d: Deployment) {
+  cardBusy.value = { ...cardBusy.value, [d.model_key]: 'deploy' }
+  try {
+    // model_key short-circuits cli/lib/deploy's get_model_key canonicalize.
+    await api.post('/api/deployments/deploy', {
+      checkpoint: d.repo_id || d.model_key,
+      revision: d.revision ?? null,
+      model_key: d.model_key
+    })
+    showToast('ok', `Redeploying ${d.repo_id || d.model_key}…`)
+    await load()
+  } catch (e) {
+    // ApiError.detail can be a 422 validation object — fall back to .message
+    // so the toast reads like "Field required" instead of "[object Object]".
+    const msg =
+      e instanceof ApiError
+        ? typeof e.detail === 'string'
+          ? e.detail
+          : e.message
+        : (e as Error).message
+    showToast('err', `Redeploy failed: ${msg}`)
+  } finally {
+    const next = { ...cardBusy.value }
+    delete next[d.model_key]
+    cardBusy.value = next
+  }
 }
 
 async function onRestart(d: Deployment) {
@@ -329,7 +365,7 @@ async function onEvict(d: Deployment) {
         :busy="!!cardBusy[d.model_key]"
         @restart="onRestart"
         @evict="onEvict"
-        @deploy="onColdDeploy"
+        @deploy="onCardDeploy"
       />
     </div>
 

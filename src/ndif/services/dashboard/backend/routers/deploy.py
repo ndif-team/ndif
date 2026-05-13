@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-import requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -29,6 +28,11 @@ class ModelSpec(BaseModel):
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
+    # When supplied, skip the canonicalize-via-wrapper step in cli/lib/deploy
+    # and use the model_key as-is. The dashboard's WARM "redeploy" path sets
+    # this from the existing deployment card so we don't pay a second
+    # ``get_model_key`` HF roundtrip just to recompute a key we already have.
+    model_key: Optional[str] = None
 
 
 class DeployRequest(BaseModel):
@@ -40,7 +44,6 @@ class EvictRequest(BaseModel):
     model_keys: Optional[list[str]] = None
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None
     evict_all: bool = False
-    flush_cache: bool = False
 
 
 @router.get("/status")
@@ -48,9 +51,16 @@ def status_endpoint(
     _: str = Depends(require_auth),
     settings: Settings = Depends(get_settings),
 ):
-    """Proxy NDIF API's /status, dedupe HF cache shadows, and tag pinned.
+    """Fetch controller status directly via Ray, dedupe HF cache shadows, and tag pinned.
 
-    Two passes:
+    Bypasses the NDIF API's 10s Redis-backed cache (``COORDINATOR_STATUS_CACHE_FREQ_S``).
+    The dashboard's Deployments tab calls ``load()`` immediately after every
+    deploy / evict / restart action — if we went through the cached HTTP
+    path, the card you just acted on could read stale for up to 10s and
+    show the *previous* deployment_level. Hitting the controller actor
+    directly costs one Ray RPC per refresh and gives instant accuracy.
+
+    Two transforms on the payload:
 
     1. **Dedupe**: ``get_downloaded_models()`` on the controller side surfaces
        the local HF cache directory listing as COLD entries. Whenever HF was
@@ -65,12 +75,11 @@ def status_endpoint(
        schedule signal.
     """
     try:
-        resp = requests.get(f"{settings.ndif_api_url}/status", timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Cannot reach NDIF API: {e}")
-
-    data = resp.json()
+        data = ndif_client.status()
+    except ndif_client.NDIFConnectivityError as e:
+        raise HTTPException(status_code=503, detail=f"Cannot reach Ray: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
 
     store = ScheduleStore(settings.schedule_path)
     pinned_keys = {e.model_key for e in filter_active(store.list()) if e.model_key}
@@ -133,17 +142,14 @@ def evict_endpoint(
         bool(payload.model_keys),
         bool(payload.checkpoints),
         payload.evict_all,
-        payload.flush_cache,
     ]
     if sum(modes) != 1:
         raise HTTPException(
             status_code=400,
-            detail="Exactly one of model_keys, checkpoints, evict_all, flush_cache",
+            detail="Exactly one of model_keys, checkpoints, evict_all",
         )
 
     try:
-        if payload.flush_cache:
-            return ndif_client.flush_warm_cache()
         if payload.evict_all:
             return ndif_client.evict_all()
         return ndif_client.evict(

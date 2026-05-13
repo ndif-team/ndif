@@ -35,14 +35,13 @@ function close() {
 }
 
 const levelClass = computed(() => 'level-' + (props.deployment.deployment_level || '').toLowerCase())
-// COLD and WARM are "not currently running" — show a single Deploy button
-// instead of restart/evict. WARM means the weights are CPU-cached, so the
-// deploy is fast (no HF download), but from the admin's perspective it's the
-// same operation as bringing a COLD model up.
-const isInactive = computed(() =>
-  props.deployment.deployment_level === 'COLD' ||
-  props.deployment.deployment_level === 'WARM'
-)
+// COLD shows a standalone Deploy button (opens the deploy modal so the user
+// can pick actor_class / pinned / etc.). WARM uses a kebab menu with
+// Deploy + Evict — the Deploy goes through a fast-path that redeploys the
+// existing model_key as-is (no modal, no canonicalize round-trip) since
+// every option is already pinned by the existing deployment record.
+const isCold = computed(() => props.deployment.deployment_level === 'COLD')
+const isWarm = computed(() => props.deployment.deployment_level === 'WARM')
 const isPending = computed(() => !!props.deployment.pending)
 
 // Last segment of a dotted import path. ``foo.bar.Baz`` → ``Baz``.
@@ -126,6 +125,7 @@ function onEvict() {
 }
 
 function onDeploy() {
+  close()
   emit('deploy', props.deployment)
 }
 
@@ -147,10 +147,10 @@ function onMenuBlur(e: FocusEvent) {
         <!-- Pending placeholder: just a pulse where the menu would be -->
         <span v-if="isPending" class="pulse-dot" aria-label="deploying"></span>
 
-        <!-- COLD/WARM: single Deploy button (model isn't currently running).
-             WARM = weights cached on CPU, so the deploy is fast. -->
+        <!-- COLD: standalone Deploy button — opens the deploy modal so the
+             user can pick actor_class / pinned / etc. -->
         <button
-          v-else-if="isInactive"
+          v-else-if="isCold"
           type="button"
           class="cold-deploy-btn"
           :disabled="busy"
@@ -159,7 +159,25 @@ function onMenuBlur(e: FocusEvent) {
           Deploy
         </button>
 
-        <!-- HOT only: kebab → restart / evict -->
+        <!-- WARM: kebab → Deploy (fast-path redeploy via existing model_key) / Evict -->
+        <div v-else-if="isWarm" class="menu-wrap" @focusout="onMenuBlur">
+          <button
+            class="kebab"
+            type="button"
+            :disabled="busy"
+            aria-label="Actions"
+            @click.stop="menuOpen = !menuOpen"
+            @blur="onMenuBlur"
+          >
+            ⋯
+          </button>
+          <div v-if="menuOpen" class="menu" role="menu">
+            <button type="button" @click="onDeploy">Deploy</button>
+            <button type="button" class="danger" @click="onEvict">Evict</button>
+          </div>
+        </div>
+
+        <!-- HOT: kebab → Restart / Evict -->
         <div v-else class="menu-wrap" @focusout="onMenuBlur">
           <button
             class="kebab"

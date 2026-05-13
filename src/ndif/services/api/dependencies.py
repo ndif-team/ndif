@@ -2,6 +2,7 @@ import asyncio
 import uuid
 
 from fastapi import HTTPException, Request
+from opentelemetry import trace
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
@@ -69,9 +70,6 @@ async def validate_python_version(python_version: str) -> str:
         HTTPException: If the Python version is missing or incompatible.
     """
 
-    if AppConfig.dev_mode:
-        return python_version
-
     user_python_version = ".".join(python_version.split(".")[0:2])
 
     if user_python_version == "":
@@ -105,9 +103,6 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     Raises:
         HTTPException: If the nnsight version is missing or incompatible.
     """
-
-    if AppConfig.dev_mode:
-        return nnsight_version
 
     if nnsight_version == "":
         raise HTTPException(
@@ -190,19 +185,25 @@ async def validate_request(raw_request: Request) -> BackendRequestModel:
         span.set_attribute("ndif.client.nnsight_version", nnsight_version)
         span.set_attribute("ndif.client.python_version", python_version)
 
-        # # Validate using existing dependency functions (call them directly, not as dependencies)
-        await authenticate_api_key(api_key)
-        await validate_nnsight_version(nnsight_version)
-        await validate_python_version(python_version)
+        try:
+            # Validate using existing dependency functions (call them directly, not as dependencies)
+            await authenticate_api_key(api_key)
+            await validate_nnsight_version(nnsight_version)
+            await validate_python_version(python_version)
 
-        # Create BackendRequestModel
-        backend_request = BackendRequestModel.from_request(raw_request)
+            # Create BackendRequestModel
+            backend_request = BackendRequestModel.from_request(raw_request)
 
-        # Populate hotswapping access
-        backend_request.hotswapping = await check_hotswapping_access(api_key)
+            # Populate hotswapping access
+            backend_request.hotswapping = await check_hotswapping_access(api_key)
 
-        span.set_attribute("ndif.request.id", str(backend_request.id))
-        if backend_request.model_key:
-            span.set_attribute("ndif.model.key", str(backend_request.model_key))
+            span.set_attribute("ndif.request.id", str(backend_request.id))
+            if backend_request.model_key:
+                span.set_attribute("ndif.model.key", str(backend_request.model_key))
 
-        return backend_request
+            return backend_request
+
+        except Exception as e:
+            span.set_status(trace.StatusCode.ERROR, str(e))
+            span.record_exception(e)
+            raise
