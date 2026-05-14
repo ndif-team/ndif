@@ -1,4 +1,4 @@
-nnsight
+nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
 # Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
 # Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
 # silently bind to a Placeholder and the controller can't trace VLMs.

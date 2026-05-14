@@ -39,7 +39,7 @@ exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
 dependencies = { file = [
     "src/ndif/services/api/requirements.in",
     "src/ndif/services/ray/requirements.in",
-    "src/ndif/services/monitor/requirements.in",
+    "src/ndif/services/dashboard/requirements.in",
 ] }
 
 [dependency-groups]
