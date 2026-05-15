@@ -122,10 +122,10 @@ def add_from_deploy_result(
     of the ``model_key`` so case variants (``…-8b`` vs ``…-8B``) collapse
     to the form HF actually serves.
 
-    ``error is None`` is the success criterion — covers both ``"READY"``
-    (newly initialized) and ``"DEPLOYED"`` (already up). Anything with an
-    error attached (``CANT_ACCOMMODATE``, ``TIMEOUT``, exceptions during
-    ``wait_for_model_ready``, …) is silently skipped.
+    ``error is None`` is the success criterion — i.e. ``status == "READY"``
+    with every replica initialized. Anything with an error attached
+    (``"PARTIAL"`` ready-but-not-all, ``"ERROR"`` for placement failure,
+    timeouts during ``wait_for_replica_ready``, …) is silently skipped.
     """
     # Lazy import — keeps the cache module free of cli dependency.
     from ....cli.lib.util import extract_repo_id_from_model_key

@@ -24,6 +24,7 @@ class ModelSpec(BaseModel):
     checkpoint: str
     revision: Optional[str] = None
     pinned: bool = False
+    replicas: int = 1
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
@@ -44,6 +45,9 @@ class EvictRequest(BaseModel):
     model_keys: Optional[list[str]] = None
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None
     evict_all: bool = False
+    # When set with a single-target selector (one model_key or one checkpoint),
+    # only the specified replica is evicted.
+    replica: Optional[str] = None
 
 
 @router.get("/status")
@@ -155,6 +159,7 @@ def evict_endpoint(
         return ndif_client.evict(
             model_keys=payload.model_keys,
             checkpoints=payload.checkpoints,
+            replica=payload.replica,
         )
     except ndif_client.NDIFConnectivityError as e:
         raise HTTPException(status_code=503, detail=str(e))

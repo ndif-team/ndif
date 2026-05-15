@@ -32,6 +32,7 @@ class DeployRequest(BaseModel):
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     pinned: bool = False
+    replicas: int = 1
     # When supplied, cli/lib/deploy skips ``get_model_key`` and uses this
     # value verbatim. The dashboard's WARM redeploy path sets this from
     # the existing deployment card so we don't pay a second canonicalize
@@ -41,12 +42,18 @@ class DeployRequest(BaseModel):
 
 class EvictRequest(BaseModel):
     model_key: str
+    # When set, only the specific replica is evicted (rather than every
+    # HOT+WARM replica of the model_key).
+    replica: Optional[str] = None
 
 
 class RestartRequest(BaseModel):
     model_key: str
     checkpoint: Optional[str] = None
     revision: Optional[str] = None
+    # When set, only the specific replica is restarted (rather than every
+    # HOT replica of the model_key).
+    replica: Optional[str] = None
 
 
 def _call(fn: Callable, *args, **kwargs):
@@ -110,7 +117,11 @@ def deploy_endpoint(
 
 @router.post("/evict")
 def evict_endpoint(payload: EvictRequest, _: str = Depends(require_auth)):
-    result = _call(ndif_client.evict, model_keys=[payload.model_key])
+    result = _call(
+        ndif_client.evict,
+        model_keys=[payload.model_key],
+        replica=payload.replica,
+    )
     _log_action("evict", payload, result)
     return {"mode": "ad-hoc", **result}
 
@@ -122,6 +133,7 @@ def restart_endpoint(payload: RestartRequest, _: str = Depends(require_auth)):
         checkpoint=payload.checkpoint,
         revision=payload.revision,
         model_key=payload.model_key,
+        replica=payload.replica,
     )
     _log_action("restart", payload, result)
     return result

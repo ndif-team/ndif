@@ -72,6 +72,7 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 "checkpoint": spec["checkpoint"],
                 "revision": spec.get("revision"),
                 "pinned": bool(spec.get("pinned", False)),
+                "replicas": int(spec.get("replicas") or 1),
                 "actor_class": spec.get("actor_class"),
                 "envoy_class": spec.get("envoy_class"),
                 "padding_factor": spec.get("padding_factor"),
