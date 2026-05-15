@@ -16,9 +16,10 @@ from .....common.logging.logger import set_logger
 from .....common.providers.mailgun import MailgunProvider
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.socketio import SioProvider
+from .....common.schema.controller import DeployResponse, ReplicaState, ReplicaStates
 from .....common.schema.deployment_config import DeploymentConfig
 from .....common.tracing import TracingContext, init_tracing, trace_span
-from .....common.types import MODEL_KEY
+from .....common.types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
@@ -58,7 +59,10 @@ class _ControllerActor:
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
 
-        self.state: dict[tuple[str, str], Deployment] = dict()
+        # Keyed by (node_id, model_key, replica_id). Each replica is tracked
+        # independently so the build()/apply() diff can fire create/delete/
+        # cache/from_cache per replica without confusing siblings.
+        self.state: dict[tuple[str, str, str], Deployment] = dict()
 
         self.cluster = Cluster(
             minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
@@ -110,7 +114,7 @@ class _ControllerActor:
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
         ],
         trace_context: Optional[Dict[str, str]] = None,
-    ):
+    ) -> DeployResponse:
         configs = DeploymentConfig.normalize(deployments)
 
         parent_ctx = TracingContext.extract(trace_context)
@@ -126,20 +130,31 @@ class _ControllerActor:
                 f"Deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}"
             )
 
-            results, change = self.cluster.deploy(configs)
+            response = self.cluster.deploy(configs)
 
-            span.set_attribute("ndif.deploy.changed", change)
-            for model_key, status in results.get("result", {}).items():
+            span.set_attribute("ndif.deploy.changed", response.change)
+            for model_key, model_result in response.results.items():
                 span.add_event(
-                    "deploy_result", {"model_key": model_key, "status": str(status)}
+                    "deploy_result",
+                    {
+                        "model_key": model_key,
+                        "replicas": ",".join(model_result.replicas),
+                        "error": model_result.error or "",
+                    },
                 )
-            for evicted_key in results.get("evictions", set()):
-                span.add_event("deploy_eviction", {"model_key": evicted_key})
+            for evicted_model_key, evicted_replica_id in response.evictions:
+                span.add_event(
+                    "deploy_eviction",
+                    {
+                        "model_key": evicted_model_key,
+                        "replica_id": evicted_replica_id,
+                    },
+                )
 
-            if change:
+            if response.change:
                 self.apply()
 
-            return results
+            return response
 
     async def deploy(
         self,
@@ -147,29 +162,38 @@ class _ControllerActor:
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
         ],
         trace_context: Optional[Dict[str, str]] = None,
-    ):
+    ) -> DeployResponse:
         return self._deploy(deployments, trace_context=trace_context)
 
     def evict(
         self,
-        model_keys: List[MODEL_KEY],
+        model_key: MODEL_KEY,
+        replica_id: Optional[REPLICA_ID] = None,
         trace_context: Optional[Dict[str, str]] = None,
-    ):
-        """Evict models from the cluster."""
+    ) -> ReplicaStates:
+        """Evict replicas of a model.
+
+        If ``replica_id`` is provided, only that one replica is evicted.
+        Otherwise every HOT and WARM replica of ``model_key`` is evicted.
+        Returns the pre-eviction state of every replica that was evicted.
+        """
         parent_ctx = TracingContext.extract(trace_context)
         with trace_span(
             "controller.evict",
             parent_context=parent_ctx,
-            attributes={"ndif.model.keys": str(model_keys)},
+            attributes={
+                "ndif.model.key": model_key,
+                "ndif.replica.id": replica_id or "",
+            },
         ) as span:
-            results, change = self.cluster.evict(model_keys)
+            response = self.cluster.evict(model_key, replica_id)
 
-            span.set_attribute("ndif.evict.changed", change)
+            span.set_attribute("ndif.evict.count", len(response.replicas))
 
-            if change:
+            if response.replicas:
                 self.apply()
 
-            return results
+            return response
 
     def build(self):
         with trace_span("controller.build") as span:
@@ -182,21 +206,23 @@ class _ControllerActor:
 
             # For every node
             for id, node in self.cluster.nodes.items():
-                # For every cached deployment
-                for model_key, cached in node.cache.items():
+                # For every cached replica
+                for model_key, replica_id, cached in node.iter_cache():
                     # It will always exist in the state if its now cached.
-                    existing_deployment = self.state.pop((id, model_key))
+                    existing_deployment = self.state.pop((id, model_key, replica_id))
 
                     # If the deployment is hot, we need to actually cache it.
                     if existing_deployment.deployment_level == DeploymentLevel.HOT:
                         deployments_to_cache.append(cached)
 
                     # Update state.
-                    new_state[(id, model_key)] = cached
+                    new_state[(id, model_key, replica_id)] = cached
 
-                # For every deployed deployment
-                for model_key, deployment in node.deployments.items():
-                    existing_deployment = self.state.pop((id, model_key), None)
+                # For every deployed (HOT) replica
+                for model_key, replica_id, deployment in node.iter_deployments():
+                    existing_deployment = self.state.pop(
+                        (id, model_key, replica_id), None
+                    )
 
                     # If the deployment didn't exist before, we need to create it.
                     if existing_deployment is None:
@@ -205,10 +231,10 @@ class _ControllerActor:
                     elif existing_deployment.deployment_level == DeploymentLevel.WARM:
                         deployments_from_cache.append(deployment)
                     # Update state.
-                    new_state[(id, model_key)] = deployment
+                    new_state[(id, model_key, replica_id)] = deployment
 
             # For every deployment that doesn't exist in the new state, we need to delete it.
-            for (id, model_key), deployment in self.state.items():
+            for (id, model_key, replica_id), deployment in self.state.items():
                 deployments_to_delete.append(deployment)
 
             # Update state.
@@ -397,29 +423,56 @@ class _ControllerActor:
         Args:
             deployment: The deployment to remove.
         """
-        # Remove from state using node_id directly
-        state_key = (deployment.node_id, deployment.model_key)
+        # Remove from state using node_id + replica_id
+        state_key = (deployment.node_id, deployment.model_key, deployment.replica_id)
         if state_key in self.state:
             del self.state[state_key]
 
-        # Remove from the specific cluster node using node_id
+        # Remove from the specific cluster node using node_id + replica_id
         if deployment.node_id and deployment.node_id in self.cluster.nodes:
             node = self.cluster.nodes[deployment.node_id]
-            if deployment.model_key in node.deployments:
+            replicas = node.deployments.get(deployment.model_key)
+            if replicas is not None and deployment.replica_id in replicas:
                 # Return GPUs to the node
                 node.gpu_resources.release(deployment.gpus)
-                del node.deployments[deployment.model_key]
-            if deployment.model_key in node.cache:
+                del replicas[deployment.replica_id]
+                if not replicas:
+                    del node.deployments[deployment.model_key]
+            cached_replicas = node.cache.get(deployment.model_key)
+            if cached_replicas is not None and deployment.replica_id in cached_replicas:
                 # Return CPU memory to the node
                 node.cpu_resources.release(deployment.size_bytes)
-                del node.cache[deployment.model_key]
+                del cached_replicas[deployment.replica_id]
+                if not cached_replicas:
+                    del node.cache[deployment.model_key]
 
-    def get_deployment(self, model_key: MODEL_KEY) -> Optional[dict]:
-        """Get the deployment of a model key (or None if not found)."""
+    def get_deployment(
+        self,
+        model_key: MODEL_KEY,
+        replica_id: Optional[REPLICA_ID] = None,
+    ) -> ReplicaStates:
+        """List HOT deployments matching the query.
+
+        Always returns a ReplicaStates wrapper, even if the caller scoped to
+        a specific replica (in which case the list is 0 or 1 entries long).
+        WARM (cached) replicas are not included — callers wanting to inspect
+        the cache should use the full cluster state.
+        """
+        response = ReplicaStates()
         for node in self.cluster.nodes.values():
-            if model_key in node.deployments.keys():
-                return node.deployments[model_key].get_state()
-        return None
+            replicas = node.deployments.get(model_key, {})
+            if replica_id is not None:
+                deployment = replicas.get(replica_id)
+                if deployment is not None:
+                    response.replicas.append(
+                        ReplicaState(**deployment.get_state())
+                    )
+            else:
+                for deployment in replicas.values():
+                    response.replicas.append(
+                        ReplicaState(**deployment.get_state())
+                    )
+        return response
 
     def env(self) -> Dict[str, Any]:
         """Get the Python environment information.
@@ -473,7 +526,12 @@ class _ControllerActor:
         STATE_PRIORITY = {"RUNNING": 0, "DEPLOYING": 1, "UNHEALTHY": 2}
 
         for actor_state in ray_status:
-            if not actor_state.name.startswith("ModelActor:"):
+            # Actor names are now "{replica_id}:ModelActor:{model_key}".
+            # Match by substring so existing ModelActor: prefixed names from a
+            # previous release would also be picked up if they linger.
+            if ":ModelActor:" not in actor_state.name and not actor_state.name.startswith(
+                "ModelActor:"
+            ):
                 continue
             if actor_state.state in {
                 "DEPENDENCIES_UNREADY",
@@ -497,7 +555,7 @@ class _ControllerActor:
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
-            for deployment in node.deployments.values():
+            for _, _, deployment in node.iter_deployments():
                 application_name = deployment.name
 
                 if application_name not in status:
@@ -526,6 +584,7 @@ class _ControllerActor:
                     "deployment_level": deployment.deployment_level.name,
                     "pinned": deployment.pinned,
                     "model_key": deployment.model_key,
+                    "replica_id": deployment.replica_id,
                     "repo_id": entry.config._name_or_path,
                     "revision": entry.revision,
                     "config": entry.config.to_json_string(),
@@ -546,7 +605,7 @@ class _ControllerActor:
 
                 existing_repo_ids.add(entry.config._name_or_path)
 
-            for cached_deployment in node.cache.values():
+            for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
 
                 if application_name not in status:
@@ -560,6 +619,7 @@ class _ControllerActor:
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
+                    "replica_id": cached_deployment.replica_id,
                     "repo_id": entry.config._name_or_path,
                     "revision": entry.revision,
                     "config": entry.config.to_json_string(),
@@ -594,9 +654,10 @@ class _ControllerActor:
                         },
                         "deployments": {
                             model_key: {
-                                "gpus": deployment.gpus,
+                                replica_id: {"gpus": deployment.gpus}
+                                for replica_id, deployment in replicas.items()
                             }
-                            for model_key, deployment in node.deployments.items()
+                            for model_key, replicas in node.deployments.items()
                         },
                     }
                     for node_id, node in self.cluster.nodes.items()
