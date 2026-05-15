@@ -50,11 +50,15 @@ from .processor import Processor, ProcessorStatus
 
 
 class DispatcherEvent(str, Enum):
-    """Event types for the unified dispatcher events stream"""
+    """Event types for the unified dispatcher events stream.
+
+    Processor lifecycle is request-driven (a Processor is created on the
+    first request for a model_key and torn down when it sheds its last
+    replica), so there are no DEPLOY/EVICT events here — the controller does
+    not push state at the dispatcher.
+    """
 
     QUEUE_STATE_REQUEST = "queue_state_request"
-    DEPLOY = "deploy"
-    EVICT = "evict"
     KILL_REQUEST = "kill_request"
     ENV = "env"
 
@@ -334,18 +338,15 @@ class Dispatcher:
 
             self.connect()
 
-        # Log all errors
+        # Log all errors. With per-replica workers, individual errors are
+        # already surfaced to the user and drift is recovered inside the
+        # worker; the dispatcher only needs to handle connection-level
+        # purge/reconnect (above).
         for name, error in errors:
             tb_str = "".join(
                 traceback.format_exception(type(error), error, error.__traceback__)
             )
             self.logger.error(f"Error in component {name}: {error}\n{tb_str}")
-
-            # Only reset processor to READY if we didn't reconnect
-            # (if we reconnected, processors were purged)
-            if not needs_reconnect and name in self.processors:
-                processor = self.processors[name]
-                processor.status = ProcessorStatus.READY
 
     def get_state(self) -> dict[str, dict[str, object]]:
         """Get a snapshot of the dispatcher and all processor states.
@@ -500,12 +501,6 @@ class Dispatcher:
                     if event_type == DispatcherEvent.QUEUE_STATE_REQUEST:
                         await self._handle_queue_state_request(event_data)
 
-                    elif event_type == DispatcherEvent.DEPLOY:
-                        await self._handle_deploy_event(event_data)
-
-                    elif event_type == DispatcherEvent.EVICT:
-                        await self._handle_evict_event(event_data)
-
                     elif event_type == DispatcherEvent.KILL_REQUEST:
                         await self._handle_kill_request(event_data)
 
@@ -533,26 +528,6 @@ class Dispatcher:
             await RedisProvider.async_client.lpush(
                 response_key, pickle.dumps(error_state)
             )
-
-    async def _handle_deploy_event(self, event_data: dict) -> None:
-        """Handle DEPLOY event"""
-        model_key = event_data.get(b"model_key", b"").decode("utf-8")
-
-        if model_key not in self.processors:
-            processor = Processor(model_key, self.eviction_queue, self.error_queue)
-            self.processors[model_key] = processor
-            asyncio.create_task(processor.processor_worker())
-            self.logger.info(
-                f"Created processor for {model_key} due to deployment event"
-            )
-
-    async def _handle_evict_event(self, event_data: dict) -> None:
-        """Handle EVICT event"""
-        model_key = event_data.get(b"model_key", b"").decode("utf-8")
-
-        if model_key in self.processors:
-            await self.remove(model_key, "Model evicted by external command")
-            self.logger.info(f"Removed processor for {model_key} due to eviction event")
 
     async def _handle_kill_request(self, event_data: dict) -> None:
         """Handle KILL_REQUEST event"""
