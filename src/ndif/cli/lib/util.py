@@ -1,7 +1,12 @@
 """Utility functions for NDIF CLI"""
 
+import logging
 import time
 from pathlib import Path
+from typing import Iterable, Optional
+
+
+logger = logging.getLogger("ndif")
 
 
 # ASCII art for NDIF logo
@@ -84,9 +89,7 @@ def get_model_key(
     from nnsight.util import from_import_path
 
     cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
-    model = cls(
-        checkpoint, revision=revision, dispatch=False, trust_remote_code=True
-    )
+    model = cls(checkpoint, revision=revision, dispatch=False, trust_remote_code=True)
     return model.to_model_key()
 
 
@@ -135,6 +138,38 @@ def canonicalize_checkpoint(
     return extract_repo_id_from_model_key(model_key), revision, model_key
 
 
+def notify_reconcile(broker_url: Optional[str], model_keys: Iterable[str]) -> None:
+    """Tell the dispatcher to refresh its replica pool for one or more models.
+
+    Published to the ``dispatcher:events`` Redis stream as one or more
+    ``reconcile_model`` events, each carrying a single ``model_key``. The
+    dispatcher routes each event to the matching :class:`Processor` (if
+    one exists) which then calls ``Controller.get_deployment(model_key)``
+    and diffs the result against its current pool — spawning workers for
+    new replicas, cancelling workers for evicted ones.
+
+    Best-effort: a Redis hiccup must not break the deploy/evict that just
+    succeeded on the controller. We log and swallow.
+    """
+    keys = sorted({mk for mk in model_keys if mk})
+    if not keys:
+        return
+    try:
+        import redis
+
+        client = redis.Redis.from_url(broker_url)
+        try:
+            for mk in keys:
+                client.xadd(
+                    "dispatcher:events",
+                    {"event_type": "reconcile_model", "model_key": mk},
+                )
+        finally:
+            client.close()
+    except Exception as e:
+        logger.warning(f"Failed to notify dispatcher to reconcile {keys}: {e}")
+
+
 def get_current_deployments(level: str = "HOT") -> list[dict]:
     """Fetch current deployments from the controller.
 
@@ -162,9 +197,7 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
     return list(deployments.values())
 
 
-def wait_for_replica_ready(
-    model_key: str, replica_id: str, timeout: int = 300
-) -> bool:
+def wait_for_replica_ready(model_key: str, replica_id: str, timeout: int = 300) -> bool:
     """Wait for a specific replica's actor to be ready.
 
     Polls the actor's ``__ray_ready__`` until it returns successfully,

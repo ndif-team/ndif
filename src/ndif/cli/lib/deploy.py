@@ -27,6 +27,7 @@ from .session import get_env
 from .util import (
     get_current_deployments,
     get_model_key,
+    notify_reconcile,
     wait_for_replica_ready,
 )
 
@@ -221,6 +222,18 @@ def deploy(
                 on_message,
                 f"  - {eviction['model_key']} [{eviction['replica_id']}]",
             )
+
+    # Tell the dispatcher to refresh its replica pool for both the models
+    # we deployed (new replicas to pick up) and any models whose replicas
+    # the controller evicted to make room (their pools are now stale).
+    touched: set[str] = set()
+    for entry in deployments_result:
+        if entry.get("model_key"):
+            touched.add(entry["model_key"])
+    for eviction in all_evictions:
+        if eviction.get("model_key"):
+            touched.add(eviction["model_key"])
+    notify_reconcile(broker_url, touched)
 
     return {"deployments": deployments_result, "evictions": all_evictions}
 

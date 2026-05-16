@@ -10,6 +10,7 @@ from .session import get_env
 from .util import (
     get_current_deployments,
     get_model_key,
+    notify_reconcile,
 )
 
 
@@ -109,6 +110,11 @@ def evict(
                 }
             )
         out.append({"model_key": mk, "status": "evicted", "replicas": records})
+
+    # Tell the dispatcher to refresh its pool for every model we touched
+    # (even the not-found ones — defensive against the dispatcher having a
+    # stale entry for a model the controller no longer knows about).
+    notify_reconcile(broker_url, target_keys)
 
     return {"results": out}
 

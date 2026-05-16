@@ -154,6 +154,18 @@ class Processor:
         """Whether any replica is currently executing a request."""
         return any(replica.busy for replica in self.replicas.values())
 
+    def abort(self, reason: str) -> None:
+        """Mark this processor as cancelled and tell the dispatcher to remove it.
+
+        Idempotent — repeated calls are no-ops once status is CANCELLED.
+        Used from every "give up" path: failed provision, no replicas
+        placed, exception during setup, last-replica-exit tear-down.
+        """
+        if self.status == ProcessorStatus.CANCELLED:
+            return
+        self.eviction_queue.put_nowait((self.model_key, reason))
+        self.status = ProcessorStatus.CANCELLED
+
     async def enqueue(self, request: BackendRequestModel) -> None:
         """Add a request to the processing queue.
 
@@ -217,14 +229,10 @@ class Processor:
                 # are hotswap-eligible).
                 if not self.pinned and not self.queue.empty():
                     if not await self.filter_hotswap_queue():
-                        self.eviction_queue.put_nowait(
-                            (
-                                self.model_key,
-                                "Model is not pinned and hotswapping is not supported for this API key. "
-                                "See https://nnsight.net/status/ for a list of scheduled models.",
-                            )
+                        self.abort(
+                            "Model is not pinned and hotswapping is not supported for this API key. "
+                            "See https://nnsight.net/status/ for a list of scheduled models."
                         )
-                        self.status = ProcessorStatus.CANCELLED
                         return
                 # Already deployed replicas
                 if response.replicas:
@@ -236,13 +244,7 @@ class Processor:
                 result = await Replica.deploy(self.model_key, replicas=1)
 
                 if result.error:
-                    self.eviction_queue.put_nowait(
-                        (
-                            self.model_key,
-                            f"Failed to provision model: {result.error}",
-                        )
-                    )
-                    self.status = ProcessorStatus.CANCELLED
+                    self.abort(f"Failed to provision model: {result.error}")
                     return
 
                 for replica_id in result.replicas:
@@ -251,14 +253,10 @@ class Processor:
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
-                self.eviction_queue.put_nowait(
-                    (
-                        self.model_key,
-                        "Error provisioning model deployment. "
-                        "Please try again later. Sorry for the inconvenience.",
-                    )
+                self.abort(
+                    "Error provisioning model deployment. "
+                    "Please try again later. Sorry for the inconvenience."
                 )
-                self.status = ProcessorStatus.CANCELLED
                 self.error_queue.put_nowait((self.model_key, e))
 
     async def filter_hotswap_queue(self) -> bool:
@@ -295,6 +293,55 @@ class Processor:
             on_exit=self.on_replica_exit,
         )
 
+    async def reconcile(self) -> None:
+        """Re-sync the replica pool against the controller's current truth.
+
+        Called by the dispatcher when a CLI / dashboard mutation publishes
+        a ``RECONCILE_MODEL`` event for our model_key. Diffs
+        ``Controller.get_deployment(model_key)`` against the live pool:
+            - replica_ids on the controller but not in our pool → spawn
+            - replica_ids in our pool but not on the controller → cancel
+              (the Replica's on_exit hook handles removal + last-replica
+              tear-down)
+        Also refreshes ``self.pinned`` since pinned-ness can flip if a
+        schedule entry was added or removed.
+        """
+        with trace_span(
+            "processor.reconcile",
+            attributes={"ndif.model.key": self.model_key},
+        ) as span:
+            try:
+                response: ReplicaStates = await controller_handle().get_deployment.remote(
+                    self.model_key
+                )
+            except Exception as e:
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                span.record_exception(e)
+                self.error_queue.put_nowait((self.model_key, e))
+                return
+
+            desired = {r.replica_id for r in response.replicas}
+            have = set(self.replicas.keys())
+
+            for rid in desired - have:
+                logger.info(
+                    f"Reconcile {self.model_key}: spawning new replica {rid}"
+                )
+                self.spawn_replica(rid)
+
+            for rid in have - desired:
+                logger.info(
+                    f"Reconcile {self.model_key}: cancelling stale replica {rid}"
+                )
+                self.replicas[rid].cancel()
+
+            # pinned-ness can change (e.g. schedule entry added or removed)
+            if response.replicas:
+                self.pinned = response.replicas[0].pinned
+
+            span.set_attribute("ndif.reconcile.added", len(desired - have))
+            span.set_attribute("ndif.reconcile.removed", len(have - desired))
+
     def on_replica_exit(self, replica: Replica) -> None:
         """Called from each Replica's ``finally`` block as it tears down.
 
@@ -302,16 +349,11 @@ class Processor:
         replica — signals the dispatcher to tear the Processor down.
         """
         self.replicas.pop(replica.replica_id, None)
-
-        if not self.replicas and self.status != ProcessorStatus.CANCELLED:
-            self.eviction_queue.put_nowait(
-                (
-                    self.model_key,
-                    "Model deployment evicted. "
-                    "Please try again later. Sorry for the inconvenience.",
-                )
+        if not self.replicas:
+            self.abort(
+                "Model deployment evicted. "
+                "Please try again later. Sorry for the inconvenience."
             )
-            self.status = ProcessorStatus.CANCELLED
 
     async def processor_worker(self) -> None:
         """Walk the processor through its setup states and exit.

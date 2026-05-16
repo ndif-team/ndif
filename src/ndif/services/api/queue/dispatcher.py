@@ -54,13 +54,16 @@ class DispatcherEvent(str, Enum):
 
     Processor lifecycle is request-driven (a Processor is created on the
     first request for a model_key and torn down when it sheds its last
-    replica), so there are no DEPLOY/EVICT events here — the controller does
-    not push state at the dispatcher.
+    replica). The controller does not push state at the dispatcher — but
+    the CLI / dashboard *do* publish ``RECONCILE_MODEL`` after a deploy or
+    evict so the relevant Processor can refresh its replica pool against
+    the controller's current truth without waiting for drift detection.
     """
 
     QUEUE_STATE_REQUEST = "queue_state_request"
     KILL_REQUEST = "kill_request"
     ENV = "env"
+    RECONCILE_MODEL = "reconcile_model"
 
 
 class Dispatcher:
@@ -507,6 +510,9 @@ class Dispatcher:
                     elif event_type == DispatcherEvent.ENV:
                         await self._handle_env_event(event_data)
 
+                    elif event_type == DispatcherEvent.RECONCILE_MODEL:
+                        await self._handle_reconcile_model(event_data)
+
                     else:
                         self.logger.warning(f"Unknown event type: {event_type}")
 
@@ -592,4 +598,27 @@ class Dispatcher:
             error_result = {"error": str(e)}
             await RedisProvider.async_client.lpush(
                 response_key, pickle.dumps(error_result)
+            )
+
+    async def _handle_reconcile_model(self, event_data: dict) -> None:
+        """Forward a RECONCILE_MODEL signal to the matching Processor.
+
+        The CLI / dashboard publishes this after a successful deploy or
+        evict so the Processor can re-sync its replica pool against the
+        controller's current truth without waiting for drift detection.
+        If no Processor exists for this model_key the event is a no-op —
+        a future request will create one and its provision step will pull
+        fresh state.
+        """
+        model_key = event_data.get(b"model_key", b"").decode("utf-8")
+        if not model_key:
+            return
+        processor = self.processors.get(model_key)
+        if processor is None:
+            return
+        try:
+            await processor.reconcile()
+        except Exception as e:
+            self.logger.exception(
+                f"Reconcile failed for {model_key}: {e}"
             )

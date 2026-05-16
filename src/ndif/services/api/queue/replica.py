@@ -71,9 +71,7 @@ class Replica:
         return self.current_request is not None
 
     @classmethod
-    async def deploy(
-        cls, model_key: MODEL_KEY, replicas: int = 1
-    ) -> ModelDeployResult:
+    async def deploy(cls, model_key: MODEL_KEY, replicas: int = 1) -> ModelDeployResult:
         """Ask the controller to deploy ``replicas`` new replicas of ``model_key``.
 
         ``config.replicas`` is additive on the controller side, so this is
@@ -271,7 +269,7 @@ class Replica:
                     await request.create_response(
                         BackendResponseModel.JobStatus.ERROR,
                         logger,
-                        "Replica evicted before dispatch. Please try again.",
+                        "Replica evicted before dispatch. Sorry for the inconvenience. Please try again later.",
                     ).arespond()
                     return
 
@@ -287,6 +285,24 @@ class Replica:
                 request.trace_context = TracingContext.inject()
 
                 await handle.__call__.remote(request)
+
+            except asyncio.CancelledError:
+                # The worker task was cancelled mid-dispatch (almost always
+                # because Processor.reconcile saw our replica disappear from
+                # the controller and called replica.cancel(), e.g. after a
+                # user-initiated evict). CancelledError inherits from
+                # BaseException so the broader ``except Exception`` below
+                # would NOT have caught it — without this branch the user
+                # is left stuck on the DISPATCHED status forever. Surface
+                # an explicit error to the user, then re-raise so the
+                # worker still exits cleanly.
+                span.set_status(trace.StatusCode.ERROR, "cancelled")
+                await request.create_response(
+                    BackendResponseModel.JobStatus.ERROR,
+                    logger,
+                    "Replica was evicted while processing your request. Sorry for the inconvenience. Please try again later.",
+                ).arespond()
+                raise
 
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))

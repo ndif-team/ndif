@@ -3,13 +3,10 @@ import random
 import traceback
 from typing import Any, Dict, Optional
 
-import ray
 from ray._private import services
 from ray._private.state import GlobalState
 from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
-
-from opentelemetry import trace
 
 from ......common.schema.controller import (
     DeployResponse,
@@ -333,43 +330,65 @@ class Cluster:
         ) as span:
             response = ReplicaStates()
 
+            # Lookups against node.deployments / node.cache always go inline
+            # against the live dict — caching a local ref is unsafe because
+            # node.evict's HOT->WARM demotion creates a new inner dict via
+            # ``setdefault`` when the model_key wasn't already present in
+            # cache, so any pre-captured ref would go stale.
             for node in self.nodes.values():
-                hot = node.deployments.get(model_key, {})
-                warm = node.cache.get(model_key, {})
-
                 if replica_id is not None:
-                    rids = (
-                        [replica_id] if (replica_id in hot or replica_id in warm) else []
+                    # Targeted: single node.evict. HOT may demote to WARM
+                    # (preserving rid) — that's intentional, the user can
+                    # promote it back via the dot's Deploy. WARM evicts
+                    # fully. Rids are unique cluster-wide so we stop after
+                    # the first hit.
+                    dep = (
+                        node.deployments.get(model_key, {}).get(replica_id)
+                        or node.cache.get(model_key, {}).get(replica_id)
                     )
-                else:
-                    rids = list({*hot.keys(), *warm.keys()})
-
-                for rid in rids:
-                    # Snapshot pre-eviction state. Prefer HOT — if a replica
-                    # has both a HOT and WARM record it's HOT (the two dicts
-                    # never share a rid for the same model, but check both
-                    # for safety).
-                    dep = hot.get(rid) or warm.get(rid)
                     if dep is None:
-                        # Already gone — e.g. find_cache_evictions for an
-                        # earlier replica in this loop took it as collateral.
                         continue
-                    snapshot = ReplicaState(**dep.get_state())
+                    response.replicas.append(ReplicaState(**dep.get_state()))
+                    node.evict(model_key, replica_id)
+                    span.add_event(
+                        "replica_evicted",
+                        {
+                            "model_key": model_key,
+                            "replica_id": replica_id,
+                            "node": node.name,
+                        },
+                    )
+                    break
 
-                    # node.evict() of a HOT replica may demote it to WARM
-                    # (preserving rid) when CPU has room. Drain until the
-                    # replica is gone from both dicts.
-                    while rid in hot or rid in warm:
+                # Fan-out: every replica of this model_key on this node.
+                # node.evict's HOT->WARM demotion preserves rid, so each
+                # eviction is wrapped in a drain loop until both dicts
+                # have no entry for it.
+                rids = sorted(
+                    {
+                        *node.deployments.get(model_key, {}).keys(),
+                        *node.cache.get(model_key, {}).keys(),
+                    }
+                )
+                for rid in rids:
+                    dep = (
+                        node.deployments.get(model_key, {}).get(rid)
+                        or node.cache.get(model_key, {}).get(rid)
+                    )
+                    if dep is None:
+                        continue
+                    response.replicas.append(ReplicaState(**dep.get_state()))
+                    while (
+                        rid in node.deployments.get(model_key, {})
+                        or rid in node.cache.get(model_key, {})
+                    ):
                         node.evict(model_key, rid)
-
-                    response.replicas.append(snapshot)
                     span.add_event(
                         "replica_evicted",
                         {
                             "model_key": model_key,
                             "replica_id": rid,
                             "node": node.name,
-                            "freed_gpus": len(snapshot.gpus),
                         },
                     )
 
