@@ -46,6 +46,7 @@ from ....common.schema.request import BackendRequestModel
 from ....common.schema.response import BackendResponseModel
 from ....common.tracing import trace_span
 from ....common.types import MODEL_KEY, REPLICA_ID
+from .config import QueueConfig
 from .replica import Replica
 
 logger = logging.getLogger("ndif")
@@ -182,6 +183,9 @@ class Processor:
             ).arespond()
             return
 
+        # Stamp the enqueue time so the autoscaling loop can spot the
+        # oldest queued request and decide whether to scale up.
+        request.enqueued_at = time.time()
         self.queue.put_nowait(request)
 
         await self.reply(
@@ -356,14 +360,15 @@ class Processor:
             )
 
     async def processor_worker(self) -> None:
-        """Walk the processor through its setup states and exit.
+        """Walk the processor through setup, then run the autoscaling loop.
 
-        Replicas do the heavy lifting; this coroutine just transitions the
-        processor from PROVISIONING → DEPLOYING → READY (or short-circuits
-        to CANCELLED on a failed provision) and then returns. The Processor
-        stays alive as long as the dispatcher holds a reference to it in
-        ``dispatcher.processors[model_key]``; tear-down happens later via
-        the eviction queue when the last Replica exits.
+        Replicas do the request-serving work; this coroutine transitions
+        the processor from PROVISIONING → DEPLOYING → READY (or short-
+        circuits to CANCELLED on a failed provision), then drops into
+        ``autoscaling_loop`` which scales the pool up under sustained
+        queue pressure. The Processor exits the loop (and the task ends)
+        when ``status`` becomes CANCELLED — either because the dispatcher
+        purged us or because the last Replica exited.
         """
         self.status = ProcessorStatus.PROVISIONING
         await self.reply()
@@ -383,6 +388,56 @@ class Processor:
 
         self.status = ProcessorStatus.READY
         await self.reply()
+
+        await self.autoscaling_loop()
+
+    async def autoscaling_loop(self) -> None:
+        """Scale the replica pool up under sustained queue pressure.
+
+        Every ``NDIF_AUTOSCALING_INTERVAL_S`` seconds, peek at the head of
+        the queue. If its ``enqueued_at`` shows it's been waiting longer
+        than ``NDIF_AUTOSCALING_WAIT_THRESHOLD_S``, ask the controller to
+        add one more replica and sleep ``NDIF_AUTOSCALING_BACKOFF_S``
+        before re-checking — the backoff gives the new replica time to
+        come up and drain queue depth before we'd fire another scale-up.
+        """
+        while self.status != ProcessorStatus.CANCELLED:
+            head = self.queue._queue[0] if self.queue._queue else None
+            if head is not None and head.enqueued_at is not None:
+                wait = time.time() - head.enqueued_at
+                if wait > QueueConfig.autoscaling_wait_threshold_s:
+                    await self.scale_up(wait)
+                    await asyncio.sleep(QueueConfig.autoscaling_backoff_s)
+                    continue
+
+            await asyncio.sleep(QueueConfig.autoscaling_interval_s)
+
+    async def scale_up(self, wait: float) -> None:
+        """Ask the controller for one more replica and spawn its worker."""
+        with trace_span(
+            "processor.scale_up",
+            attributes={
+                "ndif.model.key": self.model_key,
+                "ndif.autoscale.queue_head_wait_s": wait,
+                "ndif.autoscale.current_replicas": len(self.replicas),
+            },
+        ) as span:
+            logger.info(
+                f"Autoscaling {self.model_key}: queue head has waited "
+                f"{wait:.1f}s (>{QueueConfig.autoscaling_wait_threshold_s}s); "
+                f"adding a replica."
+            )
+            result = await Replica.deploy(self.model_key, replicas=1)
+            if result.error:
+                span.set_attribute("ndif.autoscale.error", result.error)
+                logger.warning(
+                    f"Autoscaling {self.model_key} failed to add replica: "
+                    f"{result.error}"
+                )
+                return
+            for rid in result.replicas:
+                self.spawn_replica(rid)
+            span.set_attribute("ndif.autoscale.new_replicas", len(result.replicas))
 
     async def reply(
         self,

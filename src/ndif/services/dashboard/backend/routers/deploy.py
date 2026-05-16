@@ -58,7 +58,7 @@ def status_endpoint(
     """Fetch controller status directly via Ray, dedupe HF cache shadows,
     aggregate per-replica entries into one card per model_key, and tag pinned.
 
-    Bypasses the NDIF API's 10s Redis-backed cache (``COORDINATOR_STATUS_CACHE_FREQ_S``).
+    Bypasses the NDIF API's 10s Redis-backed cache (``NDIF_STATUS_CACHE_FREQ_S``).
     The dashboard's Deployments tab calls ``load()`` immediately after every
     deploy / evict / restart action — if we went through the cached HTTP
     path, the card you just acted on could read stale for up to 10s and

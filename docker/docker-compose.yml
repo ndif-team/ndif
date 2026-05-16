@@ -102,7 +102,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: keys
-      COORDINATOR_STATUS_CACHE_FREQ_S: 10
+      NDIF_STATUS_CACHE_FREQ_S: 10
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
   dashboard:
