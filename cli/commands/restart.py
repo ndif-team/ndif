@@ -3,15 +3,12 @@
 import click
 import ray
 
-# TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
-from nnsight import LanguageModel
-
-from .util import get_actor_handle
+from .util import get_actor_handle, get_model_key
 
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--revision', default=None, help='Model revision/branch (default: auto-detect from HuggingFace)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 def restart(checkpoint: str, revision: str, ray_address: str):
     """Restart a model deployment.
@@ -30,11 +27,9 @@ def restart(checkpoint: str, revision: str, ray_address: str):
     """
     try:
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
+        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'auto-detect'})...")
         
-        # TODO: revision bug ("main" is not always the default revision)
-        model = LanguageModel(checkpoint, revision=None, dispatch=False)
-        model_key = model.to_model_key()
+        model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
         # Connect to Ray

@@ -9,7 +9,7 @@ from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default='main', help='Model revision/branch (default: main)')
+@click.option('--revision', default=None, help='Model revision/branch (default: auto-detect from HuggingFace)')
 @click.option('--dedicated', is_flag=True, help='Deploy the model as dedicated - i.e. will not be evicted from hotswapping (default: False)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 @click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
@@ -26,9 +26,8 @@ def deploy(checkpoint: str, revision: str, dedicated: bool, ray_address: str, re
     
     try:
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        click.echo(f"Generating model key for {checkpoint} (revision: {revision})...")
+        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'auto-detect'})...")
         
-        # TODO: revision bug ("main" is not always the default revision)
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
 
