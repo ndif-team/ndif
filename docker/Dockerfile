@@ -14,8 +14,7 @@ ENV NDIF_SERVICE=${NAME}
 WORKDIR /ndif
 
 # Layer 1: torch + torchvision (large, rarely changes).
-RUN uv pip install --system torch torchvision \
-      --index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install --system torch torchvision 
 
 # Layer 2: service requirements. Only invalidated when this service's
 # requirements.in changes.
