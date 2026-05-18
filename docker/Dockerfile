@@ -11,14 +11,21 @@ RUN apt-get update -y \
 
 ARG NAME
 ENV NDIF_SERVICE=${NAME}
-
-# Copy the entire repo
-COPY . /ndif
 WORKDIR /ndif
 
-# Install service requirements and the ndif CLI
-RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
-    && uv pip install --system . --no-deps \
+# Layer 1: torch + torchvision (large, rarely changes).
+RUN uv pip install --system torch torchvision \
+      --index-url https://download.pytorch.org/whl/cu128
+
+# Layer 2: service requirements. Only invalidated when this service's
+# requirements.in changes.
+COPY src/ndif/services/${NAME}/requirements.in /ndif/src/ndif/services/${NAME}/requirements.in
+RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in
+
+# Layer 3: full source + local install. Invalidated on any source edit,
+# but the install itself is cheap (--no-deps).
+COPY . /ndif
+RUN uv pip install --system . --no-deps \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
     && find /usr/local/lib/python3.12 -name "*.pyo" -delete \
