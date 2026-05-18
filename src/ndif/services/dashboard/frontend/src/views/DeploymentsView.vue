@@ -405,7 +405,10 @@ async function onReplicaDeploy(d: Deployment, _replicaId: string) {
     <div class="row head">
       <h1 class="page-title">Deployments</h1>
       <div class="row">
-        <button class="btn" @click="load" :disabled="loading">Refresh</button>
+        <span v-if="loading" class="spinner" aria-label="Loading"></span>
+        <button class="btn" @click="load" :disabled="loading">
+          {{ loading ? 'Refreshing…' : 'Refresh' }}
+        </button>
         <button class="btn primary" @click="openDeployModal()">+ Deploy</button>
       </div>
     </div>
@@ -446,7 +449,10 @@ async function onReplicaDeploy(d: Deployment, _replicaId: string) {
 
     <div v-if="error" class="card error-card">{{ error }}</div>
 
-    <div v-if="loading && !deployments.length" class="card muted center">Loading...</div>
+    <div v-if="loading && !deployments.length" class="card muted center loading-card">
+      <div class="spinner large"></div>
+      <span>Loading deployments…</span>
+    </div>
 
     <div v-else-if="filtered.length === 0" class="card muted center">
       No deployments match your filters.
@@ -590,4 +596,30 @@ async function onReplicaDeploy(d: Deployment, _replicaId: string) {
 }
 .toast.ok { border-color: var(--green); color: var(--green); }
 .toast.err { border-color: var(--red); color: var(--red); }
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+.spinner.large {
+  width: 26px;
+  height: 26px;
+  border-width: 3px;
+}
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 </style>
