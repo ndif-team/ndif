@@ -58,7 +58,7 @@ class BackendRequestModel(ObjectStorageMixin):
     user_agent: Optional[str] = ""
     id: REQUEST_ID
     trace_context: Optional[Dict[str, str]] = None
-    extras: Dict[str, Any] = {}
+    env: Dict[str, Any] = {}
 
     def deserialize(self, persistent_objects: dict = None) -> RequestModel:
         request = self.request
@@ -88,8 +88,8 @@ class BackendRequestModel(ObjectStorageMixin):
         if model_key is not None:
             model_key = model_key.replace('"revision": "main"', '"revision": null')
 
-        extras_header = headers.get("ndif-extras", None)
-        extras = json.loads(extras_header) if extras_header else {}
+        env_header = headers.get("ndif-env", None)
+        env = json.loads(env_header) if env_header else {}
 
         return BackendRequestModel(
             id=str(request_id),
@@ -105,7 +105,7 @@ class BackendRequestModel(ObjectStorageMixin):
             content_length=int(headers.get("content-length", 0)),
             ip_address=request.client.host if request.client else "",
             user_agent=headers.get("user-agent", ""),
-            extras=extras,
+            env=env,
         )
 
     def create_response(
