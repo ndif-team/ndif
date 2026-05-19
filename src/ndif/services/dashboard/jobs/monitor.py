@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """Connectivity + model-trace monitor cron.
 
-Behaviorally identical to ``services/monitor/jobs/monitor.py``; only the
-default paths differ (``NDIF_DASHBOARD_DATA_DIR`` / ``~/ndif_dashboard``) so the
-dashboard backend can read the same JSONL log files this script writes.
+Runs every few minutes from cron. Each tick:
+
+1. Probes ``/connected`` (Ray client is alive) and ``/status`` (Controller
+   actor is responsive + has at least one HOT model). ``/connected`` alone
+   is too shallow — the Ray client can be alive while the Controller is
+   wedged — so we always need both.
+2. Logs cluster snapshot to ``cluster_*.log`` whenever ``/status`` returns.
+3. Every ``--model-interval`` seconds (default 2h), or on recovery from
+   a down state, also runs a remote nnsight trace against each HOT model
+   and logs the result to ``models_*.log``.
+4. Writes one connectivity datapoint to ``connected_*.log`` and updates
+   ``.state.json`` with the down/up transition. Fires Discord notifications
+   on transitions and on newly-failed model sets.
 
 Invoked from cron as::
 
@@ -40,6 +50,7 @@ from .util import (
 DEFAULT_URL = "http://localhost:5001"
 DEFAULT_MODEL_TIMEOUT = 60
 DEFAULT_MODEL_INTERVAL = 7200  # 2 hours
+SCRIPT_TIMEOUT = 480
 
 DEFAULT_MESSAGES = {
     "down": "🔴 **NDIF is DOWN** — {reason} at {timestamp} {mention}",
@@ -49,7 +60,7 @@ DEFAULT_MESSAGES = {
 }
 
 
-# ---- Checks ----
+# ---- Connectivity probes ----
 
 def check_connected(base_url: str) -> tuple[bool, str]:
     resp = requests.get(f"{base_url}/connected", timeout=TIMEOUT)
@@ -115,6 +126,32 @@ def extract_cluster_info(status: dict) -> dict:
     }
 
 
+def probe_health(base_url: str) -> tuple[bool, str, dict | None]:
+    """Return ``(is_ok, reason, status_data)``.
+
+    ``status_data`` is returned even when ``is_ok`` is False (e.g. zero HOT
+    models) so the caller can still write the cluster snapshot. It's ``None``
+    only when ``/status`` itself failed or wasn't attempted.
+    """
+    try:
+        ok, reason = check_connected(base_url)
+    except requests.RequestException:
+        return False, "API unreachable", None
+    if not ok:
+        return False, reason, None
+
+    try:
+        status_data = get_status(base_url)
+    except Exception:
+        return False, "/status unreachable", None
+
+    if not extract_hot_models(status_data):
+        return False, "no HOT models deployed", status_data
+    return True, "ok", status_data
+
+
+# ---- Model traces ----
+
 def _run_trace(model_key: str, api_key: str) -> dict:
     """Trace a remote ``"Hello"`` against the given model.
 
@@ -139,14 +176,12 @@ def _run_trace(model_key: str, api_key: str) -> dict:
     start = time.perf_counter()
     try:
         with model.trace("Hello", remote=True):
-            output = model.output.save()
-        elapsed = time.perf_counter() - start
+            model.output.save()
         result["status"] = "ok"
-        result["latency_s"] = round(elapsed, 3)
+        result["latency_s"] = round(time.perf_counter() - start, 3)
     except Exception as e:
-        elapsed = time.perf_counter() - start
         result["status"] = "error"
-        result["latency_s"] = round(elapsed, 3)
+        result["latency_s"] = round(time.perf_counter() - start, 3)
         result["error"] = str(e)
 
     return result
@@ -163,7 +198,40 @@ def check_model(model_key: str, api_key: str, model_timeout: int) -> dict:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-# ---- State ----
+def run_model_traces(hot_models: list[dict], api_key: str, timeout_s: int) -> list[dict]:
+    results = []
+    for m in hot_models:
+        repo_id = m.get("repo_id", "unknown")
+        model_key = m.get("model_key")
+        if not model_key:
+            print(f"Skipping {repo_id}: no model_key in /status", flush=True)
+            continue
+        print(f"Checking {repo_id}...", flush=True)
+        result = check_model(model_key, api_key, timeout_s)
+        # Surface the human-readable repo_id in logs/notifications.
+        result["model"] = repo_id
+        results.append(result)
+        print(f"  {result['status']} ({result.get('latency_s', 'N/A')}s)")
+    return results
+
+
+def model_check_due(state: dict, now_ts: str, interval_s: int) -> bool:
+    """True if the trace pass should run this tick.
+
+    Runs on recovery from down (``last_status != "ok"``), on first-ever run
+    (``last_model_check is None``), or once ``interval_s`` has elapsed.
+    """
+    if state["last_status"] != "ok":
+        return True
+    last_mc = state.get("last_model_check")
+    if last_mc is None:
+        return True
+    elapsed = (datetime.datetime.fromisoformat(now_ts) -
+               datetime.datetime.fromisoformat(last_mc)).total_seconds()
+    return elapsed >= interval_s
+
+
+# ---- State / log files ----
 
 def load_state(log_dir: Path) -> dict:
     state_file = log_dir / ".state.json"
@@ -178,12 +246,36 @@ def save_state(log_dir: Path, state: dict) -> None:
         json.dump(state, f)
 
 
+def write_cluster_log(log_dir: Path, today: str, timestamp: str, status_data: dict) -> None:
+    info = extract_cluster_info(status_data)
+    info["timestamp"] = timestamp
+    with open(log_dir / f"cluster_{today}.log", "a") as f:
+        f.write(json.dumps(info) + "\n")
+
+
+def write_connected_log(log_dir: Path, today: str, timestamp: str, is_ok: bool, reason: str) -> None:
+    entry = {"timestamp": timestamp, "status": "ok" if is_ok else reason}
+    with open(log_dir / f"connected_{today}.log", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def write_models_log(log_dir: Path, today: str, timestamp: str, results: list[dict]) -> None:
+    ok_count = sum(1 for r in results if r["status"] == "ok")
+    entry = {
+        "timestamp": timestamp,
+        "status": "ok" if ok_count == len(results) else "degraded",
+        "ok": ok_count, "total": len(results),
+        "results": results,
+    }
+    with open(log_dir / f"models_{today}.log", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 # ---- Notifications ----
 
 def format_discord_ts(iso_timestamp: str) -> str:
     dt = datetime.datetime.fromisoformat(iso_timestamp)
-    unix = int(dt.timestamp())
-    return f"<t:{unix}:f>"
+    return f"<t:{int(dt.timestamp())}:f>"
 
 
 def notify_status(config: dict, was_ok: bool, down_since: str | None, is_ok: bool, reason: str, timestamp: str) -> None:
@@ -191,12 +283,11 @@ def notify_status(config: dict, was_ok: bool, down_since: str | None, is_ok: boo
     if not webhook_url:
         return
     messages = {**DEFAULT_MESSAGES, **config.get("messages", {})}
-    mention = get_mention(config)
     fmt = {
         "reason": reason,
         "timestamp": format_discord_ts(timestamp),
         "down_since": format_discord_ts(down_since) if down_since else "unknown",
-        "mention": mention,
+        "mention": get_mention(config),
     }
     if was_ok and not is_ok:
         send_discord(webhook_url, messages["down"].format(**fmt))
@@ -220,7 +311,7 @@ def notify_model_failures(config: dict, failed: list, total: int) -> None:
     mention = get_mention(config)
 
     DISCORD_LIMIT = 2000
-    PER_LINE_ERR_CHARS = 120  # short summary per line
+    PER_LINE_ERR_CHARS = 120
 
     def _summarize(err) -> str:
         s = str(err or "unknown").splitlines()[0].strip()
@@ -237,18 +328,60 @@ def notify_model_failures(config: dict, failed: list, total: int) -> None:
 
     # Add models one at a time; stop when the next would exceed the limit.
     included: list = []
-    for i, r in enumerate(failed):
-        candidate = _build(included + [r], len(failed) - (len(included) + 1))
-        if len(candidate) > DISCORD_LIMIT:
+    for r in failed:
+        if len(_build(included + [r], len(failed) - (len(included) + 1))) > DISCORD_LIMIT:
             break
         included.append(r)
-    msg = _build(included, len(failed) - len(included))
-    send_discord(webhook_url, msg)
+    send_discord(webhook_url, _build(included, len(failed) - len(included)))
 
 
-# ---- Main ----
+def notify_if_failures_changed(config: dict, state: dict, results: list[dict]) -> None:
+    failed = [r for r in results if r["status"] != "ok"]
+    failed_set = sorted(r["model"] for r in failed)
+    if failed and failed_set != state.get("last_failed_models", []):
+        notify_model_failures(config, failed, len(results))
+    state["last_failed_models"] = failed_set
 
-SCRIPT_TIMEOUT = 480
+
+def record_status_transition(config: dict, state: dict, is_ok: bool, reason: str, timestamp: str) -> None:
+    """Apply the up/down state-machine transition and fire any Discord notify."""
+    was_ok = state["last_status"] == "ok"
+    down_since = timestamp if (not is_ok and was_ok) else state.get("down_since")
+    if not is_ok and was_ok:
+        state["down_since"] = timestamp
+    elif is_ok:
+        state["down_since"] = None
+    state["last_status"] = "ok" if is_ok else "down"
+    notify_status(config, was_ok, down_since, is_ok, reason, timestamp)
+
+
+# ---- Setup ----
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--url", default=DEFAULT_URL)
+    p.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
+    p.add_argument("--max-days", type=int, default=DEFAULT_MAX_DAYS)
+    p.add_argument("--config", default=str(DEFAULT_CONFIG))
+    p.add_argument("--api-key", default=None)
+    p.add_argument("--model-timeout", type=int, default=DEFAULT_MODEL_TIMEOUT)
+    p.add_argument("--model-interval", type=int, default=DEFAULT_MODEL_INTERVAL)
+    return p.parse_args()
+
+
+def resolve_api_key(args: argparse.Namespace, config: dict) -> str | None:
+    return args.api_key or os.environ.get("NDIF_API_KEY") or config.get("ndif_api_key")
+
+
+def acquire_lock(log_dir: Path):
+    """Single-instance lock. Returns the file handle — caller must keep it alive."""
+    lock_file = open(log_dir / ".monitor.lock", "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Another monitor instance is running, skipping")
+        sys.exit(0)
+    return lock_file
 
 
 def _timeout_handler(signum, frame):
@@ -256,135 +389,45 @@ def _timeout_handler(signum, frame):
     os._exit(2)
 
 
+# ---- Main ----
+
 def main():
     signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(SCRIPT_TIMEOUT)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=DEFAULT_URL)
-    parser.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
-    parser.add_argument("--max-days", type=int, default=DEFAULT_MAX_DAYS)
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG))
-    parser.add_argument("--api-key", default=None)
-    parser.add_argument("--model-timeout", type=int, default=DEFAULT_MODEL_TIMEOUT)
-    parser.add_argument("--model-interval", type=int, default=DEFAULT_MODEL_INTERVAL)
-    args = parser.parse_args()
-
-    api_key = args.api_key or os.environ.get("NDIF_API_KEY")
+    args = parse_args()
     config = load_config(Path(args.config))
-    if not api_key:
-        api_key = config.get("ndif_api_key")
+    api_key = resolve_api_key(args, config)
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-
-    lock_file = open(log_dir / ".monitor.lock", "w")
-    try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print("Another monitor instance is running, skipping")
-        sys.exit(0)
+    _lock = acquire_lock(log_dir)  # noqa: F841 — keep handle alive
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
     today = datetime.date.today().isoformat()
     state = load_state(log_dir)
 
-    is_ok = True
-    reason = "ok"
+    is_ok, reason, status_data = probe_health(args.url)
+    if status_data is not None:
+        write_cluster_log(log_dir, today, timestamp, status_data)
 
-    try:
-        is_ok, reason = check_connected(args.url)
-    except requests.RequestException:
-        is_ok = False
-        reason = "API unreachable"
-
-    model_check_due = False
-    if is_ok:
-        if state["last_status"] != "ok":
-            model_check_due = True
+    if is_ok and model_check_due(state, timestamp, args.model_interval):
+        state["last_model_check"] = timestamp
+        if api_key:
+            results = run_model_traces(
+                extract_hot_models(status_data), api_key, args.model_timeout,
+            )
+            write_models_log(log_dir, today, timestamp, results)
+            notify_if_failures_changed(config, state, results)
         else:
-            last_mc = state.get("last_model_check")
-            if last_mc is None:
-                model_check_due = True
-            else:
-                elapsed = (datetime.datetime.fromisoformat(timestamp) -
-                           datetime.datetime.fromisoformat(last_mc)).total_seconds()
-                model_check_due = elapsed >= args.model_interval
+            print("Warning: no API key set, skipping model traces")
 
-    if is_ok and model_check_due:
-        try:
-            status_data = get_status(args.url)
-            hot_models = extract_hot_models(status_data)
-
-            cluster_info = extract_cluster_info(status_data)
-            cluster_info["timestamp"] = timestamp
-            with open(log_dir / f"cluster_{today}.log", "a") as f:
-                f.write(json.dumps(cluster_info) + "\n")
-        except Exception:
-            is_ok = False
-            reason = "/status unreachable"
-            hot_models = []
-
-        if is_ok and len(hot_models) == 0:
-            is_ok = False
-            reason = "no HOT models deployed"
-
-        if is_ok:
-            state["last_model_check"] = timestamp
-
-            if not api_key:
-                print("Warning: no API key set, skipping model traces")
-            else:
-                results = []
-                for m in hot_models:
-                    repo_id = m.get("repo_id", "unknown")
-                    model_key = m.get("model_key")
-                    if not model_key:
-                        print(f"Skipping {repo_id}: no model_key in /status", flush=True)
-                        continue
-                    print(f"Checking {repo_id}...", flush=True)
-                    result = check_model(model_key, api_key, args.model_timeout)
-                    # Surface the human-readable repo_id in logs/notifications.
-                    result["model"] = repo_id
-                    results.append(result)
-                    print(f"  {result['status']} ({result.get('latency_s', 'N/A')}s)")
-
-                ok_count = sum(1 for r in results if r["status"] == "ok")
-                total = len(results)
-                model_entry = {
-                    "timestamp": timestamp,
-                    "status": "ok" if ok_count == total else "degraded",
-                    "ok": ok_count, "total": total,
-                    "results": results,
-                }
-                with open(log_dir / f"models_{today}.log", "a") as f:
-                    f.write(json.dumps(model_entry) + "\n")
-
-                failed = [r for r in results if r["status"] != "ok"]
-                failed_set = sorted(r["model"] for r in failed)
-                prev_failed = state.get("last_failed_models", [])
-                if failed and failed_set != prev_failed:
-                    notify_model_failures(config, failed, total)
-                state["last_failed_models"] = failed_set
-
-    connected_entry = {"timestamp": timestamp, "status": "ok" if is_ok else reason}
-    with open(log_dir / f"connected_{today}.log", "a") as f:
-        f.write(json.dumps(connected_entry) + "\n")
-
-    was_ok = state["last_status"] == "ok"
-    notify_down_since = timestamp if (not is_ok and was_ok) else state.get("down_since")
-    if not is_ok and was_ok:
-        state["down_since"] = timestamp
-    elif is_ok:
-        state["down_since"] = None
-    state["last_status"] = "ok" if is_ok else "down"
+    write_connected_log(log_dir, today, timestamp, is_ok, reason)
+    record_status_transition(config, state, is_ok, reason, timestamp)
     save_state(log_dir, state)
 
-    notify_status(config, was_ok, notify_down_since, is_ok, reason, timestamp)
-
-    rotate_logs(log_dir, "connected_*.log", args.max_days)
-    rotate_logs(log_dir, "models_*.log", args.max_days)
-    rotate_logs(log_dir, "cluster_*.log", args.max_days)
+    for pattern in ("connected_*.log", "models_*.log", "cluster_*.log"):
+        rotate_logs(log_dir, pattern, args.max_days)
 
     print(json.dumps({"timestamp": timestamp, "connected": is_ok, "reason": reason}))
     os._exit(1 if not is_ok else 0)
