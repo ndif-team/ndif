@@ -2,15 +2,16 @@
 
 import click
 import ray
+from typing import Optional
 
 from .util import get_actor_handle, get_model_key
 
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default=None, help='Model revision/branch (default: auto-detect from HuggingFace)')
+@click.option('--revision', default=None, help='Model revision/branch (default: unset/None)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
-def restart(checkpoint: str, revision: str, ray_address: str):
+def restart(checkpoint: str, revision: Optional[str], ray_address: str):
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -27,7 +28,7 @@ def restart(checkpoint: str, revision: str, ray_address: str):
     """
     try:
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'auto-detect'})...")
+        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'None'})...")
         
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")

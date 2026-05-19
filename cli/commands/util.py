@@ -5,7 +5,6 @@ from pathlib import Path
 import ray
 import redis.asyncio as redis
 from typing import Optional
-import requests
 
 
 def get_repo_root() -> Path:
@@ -86,55 +85,19 @@ def get_actor_handle(model_key: str, namespace: str = "NDIF") -> ray.actor.Actor
     return ray.get_actor(f"ModelActor:{model_key}", namespace=namespace)
 
 
-def get_default_revision(checkpoint: str) -> str:
-    """Get the default revision/branch for a model from HuggingFace.
-    
-    Args:
-        checkpoint: Model checkpoint ID (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
-        
-    Returns:
-        Default revision name (e.g., "main", "master")
-    """
-    try:
-        # Query HuggingFace model info API
-        url = f"https://huggingface.co/api/models/{checkpoint}"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        
-        model_info = response.json()
-        # Default branch is stored in 'sha' field for the default branch
-        # but we need to check the 'siblings' for branch info
-        if "siblings" in model_info:
-            # Find the default branch - usually listed first or marked as main/master
-            for sibling in model_info["siblings"]:
-                if sibling.get("rfilename") == ".gitattributes":
-                    # This indicates the repo structure; default is usually main
-                    return "main"
-        
-        # Fallback to common defaults
-        return "main"
-    except Exception:
-        # If API call fails, default to "main" as it's the most common default
-        return "main"
-
-
 def get_model_key(checkpoint: str, revision: Optional[str] = None) -> str:
     """Generate a model key for a checkpoint and revision.
     
     Args:
         checkpoint: Model checkpoint ID (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
-        revision: Model revision/branch. If None, uses the actual default from HuggingFace.
+        revision: Model revision/branch. If None, leaves revision unset for NDIF to resolve.
         
     Returns:
         Model key for use with NDIF
     """
     # TODO: This is a temporary workaround to get the model key. There should be a more lightweight way to do this.
     from nnsight import LanguageModel
-    
-    # If no revision specified, get the actual default from HuggingFace
-    if revision is None:
-        revision = get_default_revision(checkpoint)
-    
+
     model = LanguageModel(checkpoint, revision=revision, dispatch=False)
     return model.to_model_key()
 

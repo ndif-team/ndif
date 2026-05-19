@@ -3,16 +3,17 @@
 import click
 import ray
 import asyncio
+from typing import Optional
 
 from .util import get_controller_actor_handle, get_model_key, notify_dispatcher
 
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default=None, help='Model revision/branch (default: auto-detect from HuggingFace)')
+@click.option('--revision', default=None, help='Model revision/branch (default: unset/None)')
 @click.option('--ray-address', default='ray://localhost:10001', help='Ray address (default: ray://localhost:10001)')
 @click.option('--redis-url', default='redis://localhost:6379/', help='Redis URL (default: redis://localhost:6379/)')
-def evict(checkpoint: str, revision: str, ray_address: str, redis_url: str):
+def evict(checkpoint: str, revision: Optional[str], ray_address: str, redis_url: str):
     """Evict (remove) a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
@@ -26,7 +27,7 @@ def evict(checkpoint: str, revision: str, ray_address: str, redis_url: str):
     """
     try:
         # Generate model_key using nnsight (loads to meta device, no actual model loading)
-        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'auto-detect'})...")
+        click.echo(f"Generating model key for {checkpoint} (revision: {revision or 'None'})...")
 
         model_key = get_model_key(checkpoint, revision)
         click.echo(f"Model key: {model_key}")
