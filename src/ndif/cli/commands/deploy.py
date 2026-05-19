@@ -1,6 +1,7 @@
 """Deploy command for NDIF - Deploy a model without requiring to submit a request."""
 
 from pathlib import Path
+from typing import Optional
 
 import click
 
@@ -14,7 +15,7 @@ from ..lib.session import get_env
 @click.argument('checkpoints', nargs=-1)
 @click.option('-f', '--file', 'config_file', type=click.Path(), help='YAML config file with model specs')
 @click.option('--sync', is_flag=True, help='Sync mode: evict models not in config file (requires -f)')
-@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
+@click.option('--revision', default=None, help='Model revision/branch (default: unset/None)')
 @click.option('--pinned', is_flag=True, help='Deploy as pinned - will not be evicted (default: False)')
 @click.option('--actor-class', 'actor_class', default=None,
               help='Dotted import path of the Ray actor class to use (default: the '
@@ -22,7 +23,7 @@ from ..lib.session import get_env
                    'With -f, acts as the default for entries that do not set actor_class themselves.')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinned: bool, actor_class: str, ray_address: str, broker_url: str):
+def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: Optional[str], pinned: bool, actor_class: str, ray_address: str, broker_url: str):
     """Deploy one or more models without requiring to submit a request.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")

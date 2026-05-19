@@ -1,6 +1,7 @@
 """Evict command for NDIF - evict (remove) a model deployment."""
 
 import click
+from typing import Optional
 
 from ..lib.checks import check_prerequisites
 from ..lib.evict import NDIFConnectivityError, evict as evict_lib
@@ -9,11 +10,11 @@ from ..lib.session import get_env
 
 @click.command()
 @click.argument('checkpoints', nargs=-1)
-@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
+@click.option('--revision', default=None, help='Model revision/branch (default: unset/None)')
 @click.option('--all', 'evict_all', is_flag=True, help='Evict all HOT deployments')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def evict(checkpoints: tuple, revision: str, evict_all: bool, ray_address: str, broker_url: str):
+def evict(checkpoints: tuple, revision: Optional[str], evict_all: bool, ray_address: str, broker_url: str):
     """Evict (remove) one or more model deployments.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
