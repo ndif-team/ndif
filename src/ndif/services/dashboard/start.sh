@@ -2,7 +2,8 @@
 # Canonical run script for the dashboard.
 #
 # Used by:
-#   - the container's ``ndif start dashboard`` (CMD in Dockerfile.dashboard)
+#   - the container's ``ndif start dashboard`` (CMD in docker/Dockerfile,
+#     when built with --build-arg NAME=dashboard)
 #   - standalone dev: ``bash src/ndif/services/dashboard/start.sh``
 #
 # Behavior:

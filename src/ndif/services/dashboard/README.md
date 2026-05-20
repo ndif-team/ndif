@@ -15,9 +15,10 @@ Three pieces:
 ## Running it
 
 The dashboard ships as a docker-compose service alongside `api` and `ray`.
-A multi-stage `docker/Dockerfile.dashboard` (node build → python runtime)
-bakes both the FastAPI backend and the built Vue SPA into one image and
-starts a `cron` daemon for the monitor + reconcile jobs.
+The image is built from the unified `docker/Dockerfile` with `NAME=dashboard`;
+the Vue SPA is pre-built on the host by `make dashboard-frontend` (host-side
+`npm ci && npm run build`) and copied into the image. A `cron` daemon runs
+alongside uvicorn for the monitor + reconcile jobs.
 
 ```bash
 # 1. Generate a password hash + session secret (write to .env, see below)

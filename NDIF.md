@@ -130,8 +130,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/checks.py` | Pre-flight checks for `ndif start` |
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
-| `docker/Dockerfile` | Multi-purpose — `ARG NAME=api` or `NAME=ray` |
-| `docker/Dockerfile.dashboard` | Multi-stage (node build → python runtime) for the `dashboard` image |
+| `docker/Dockerfile` | Single Dockerfile for all image flavors — `ARG NAME=api`, `ray`, `dashboard`, or `all` (standalone). Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
 | `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
@@ -2088,11 +2087,14 @@ RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in && \
 CMD ndif start "${NAME}"
 ```
 
-This builds two images from the same Dockerfile:
-- `api:latest` — The API service
-- `ray:latest` — The Ray head node
+This builds three images from the same `docker/Dockerfile`, parameterized by `--build-arg NAME=`:
+- `api:latest` — The API service (`NAME=api`)
+- `ray:latest` — The Ray head node (`NAME=ray`)
+- `dashboard:latest` — The dashboard image (`NAME=dashboard`)
 
-`make build` additionally builds a third image, `dashboard:latest`, from `docker/Dockerfile.dashboard` (a multi-stage node-build → python-runtime image that bakes in the Vue SPA and the FastAPI backend; see `services/dashboard/README.md`).
+`make build` depends on the `dashboard-frontend` target, which runs `npm ci && npm run build` on the host (node 20+ required) and writes the Vue SPA to `src/ndif/services/dashboard/frontend/dist/`. The Dockerfile then COPYs that pre-built dist into the image — no node stage in the Dockerfile itself.
+
+There's also `make build-standalone` (`NAME=all`), which produces `ndif/ndif:latest` — a single image bundling api + ray + redis + minio (via micromamba) for one-shot demo use on Docker Hub. See `services/dashboard/README.md` for dashboard specifics.
 
 The `docker-compose.yml` orchestrates the following services:
 
@@ -2200,7 +2202,7 @@ All configuration is via environment variables. The defaults shown below are wha
 2. **Pinned-deployment scheduling** — a JSON-backed schedule store + diff-based reconcile cron that pushes the active set to the controller (§5.7).
 3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (deploy / evict / restart, with WARM cards offering Deploy and HOT cards offering evict / restart), and a month calendar for editing the schedule.
 
-It ships as a docker-compose service alongside `api` and `ray`. The image is built from `docker/Dockerfile.dashboard` (multi-stage: node build of the Vue SPA → python runtime serving the SPA + the FastAPI backend) and runs a `cron` daemon for the monitor and reconcile jobs. Default port is `NDIF_DASHBOARD_PORT=8081`.
+It ships as a docker-compose service alongside `api` and `ray`. The image is built from the unified `docker/Dockerfile` (`--build-arg NAME=dashboard`); the Vue SPA is pre-built on the host via `make dashboard-frontend` and copied in. A `cron` daemon runs alongside uvicorn for the monitor and reconcile jobs. Default port is `8081` (set `NDIF_DASHBOARD_PORT` to override; setting it also makes `ndif start all` include the dashboard).
 
 The full operator-facing reference lives in `src/ndif/services/dashboard/README.md`. This section is the design-doc summary.
 
@@ -2621,8 +2623,8 @@ ndif/
 ├── README.md                           # Project overview
 │
 ├── docker/
-│   ├── Dockerfile                      # Multi-purpose (ARG NAME=api or NAME=ray)
-│   ├── Dockerfile.dashboard            # Multi-stage (node build → python runtime)
+│   ├── Dockerfile                      # Single Dockerfile for every image flavor
+│   │                                     (ARG NAME=api / ray / dashboard / all)
 │   ├── docker-compose.yml              # Full stack orchestration
 │   └── postgres/
 │       └── init.sql                    # Dev-mode keys DB schema + test key

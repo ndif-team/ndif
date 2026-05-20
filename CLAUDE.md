@@ -158,12 +158,15 @@ Do not remove the mount — the expectation is that NDIF is developed alongside 
 ### Everyday commands
 
 ```bash
-make build          # build api:latest + ray:latest (docker/Dockerfile, NAME build-arg)
-                    # + dashboard:latest (docker/Dockerfile.dashboard, multi-stage node→python)
-make up             # bring up full stack (redis, minio, postgres, ray, api, dashboard,
-                    # prom, influx, grafana, loki, jaeger)
-make down           # tear down
-make ta             # down + build + up  ← use this after code edits
+make build              # builds api:latest + ray:latest + dashboard:latest from a
+                        # single docker/Dockerfile via NAME build-arg. Depends on
+                        # `dashboard-frontend` (host-side `npm ci && npm run build`
+                        # — node 20+ required).
+make build-standalone   # builds ndif/ndif:latest, the all-in-one image (NAME=all)
+make up                 # bring up full stack (redis, minio, postgres, ray, api,
+                        # dashboard, prom, influx, grafana, loki, jaeger)
+make down               # tear down
+make ta                 # down + build + up  ← use this after code edits
 ```
 
 `Makefile` declares `.PHONY: check-nnsight build up down ta` — without that, a stale `build/` directory at the repo root would make `make build` a silent no-op. Don't remove the `.PHONY` line.
