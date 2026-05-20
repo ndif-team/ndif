@@ -41,6 +41,11 @@ class BackendRequestModel(ObjectStorageMixin):
 
     last_status: Optional[ResponseModel.JobStatus] = None
     last_status_time: Optional[float] = None
+    # Unix timestamp at which the Processor took ownership of this request
+    # (i.e. ``Processor.enqueue`` ran). Used by the autoscaling loop on the
+    # Processor to decide when queue-head wait time has crossed the
+    # scale-up threshold. None on requests we never queued.
+    enqueued_at: Optional[float] = None
 
     request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
 

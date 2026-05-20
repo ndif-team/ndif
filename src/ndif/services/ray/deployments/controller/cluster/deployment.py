@@ -12,7 +12,7 @@ from ......common.providers.mailgun import MailgunProvider
 from ......common.providers.objectstore import ObjectStoreProvider
 from ......common.providers.socketio import SioProvider
 from ......common.tracing import TracingContext, trace_span
-from ......common.types import MODEL_KEY
+from ......common.types import MODEL_KEY, REPLICA_ID
 from ...modeling.base import BaseModelDeployment, BaseModelDeploymentArgs
 
 logger = logging.getLogger("ndif")
@@ -28,6 +28,7 @@ class Deployment:
     def __init__(
         self,
         model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
         deployment_level: DeploymentLevel,
         gpus: dict[int, int],
         size_bytes: int,
@@ -37,6 +38,7 @@ class Deployment:
         actor_class: Optional[Union[str, type]] = None,
     ):
         self.model_key = model_key
+        self.replica_id = replica_id
         self.deployment_level = deployment_level
         self.gpus = gpus
         self.size_bytes = size_bytes
@@ -71,7 +73,7 @@ class Deployment:
 
     @property
     def name(self):
-        return f"ModelActor:{self.model_key}"
+        return f"{self.replica_id}:ModelActor:{self.model_key}"
 
     @property
     def actor(self):
@@ -91,6 +93,7 @@ class Deployment:
 
         return {
             "model_key": self.model_key,
+            "replica_id": self.replica_id,
             "deployment_level": self.deployment_level.value,
             "gpus": self.gpus,
             "size_bytes": self.size_bytes,

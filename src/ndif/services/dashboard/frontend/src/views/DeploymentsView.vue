@@ -254,21 +254,32 @@ async function onWarmDeploy(d: Deployment) {
 async function onRestart(d: Deployment) {
   cardBusy.value = { ...cardBusy.value, [d.model_key]: 'restart' }
   try {
-    // Backend now blocks until wait_for_model_ready and reports the
-    // outcome via status: "restarted" | "timeout" | "error". Surface
-    // those distinctly instead of a blanket "Restarted" toast.
+    // Backend blocks until wait_for_replica_ready for every HOT replica
+    // and reports per-replica status. Roll the per-replica outcomes up
+    // into one toast — all-restarted (ok), partial / timeout / error
+    // (err) — with the failing replica_ids inline so the operator can
+    // chase one specific dot.
     const res = await api.post<any>('/api/deployments/restart', {
       model_key: d.model_key,
       checkpoint: d.repo_id,
       revision: d.revision
     })
     const name = d.repo_id || d.model_key
-    if (res?.status === 'restarted') {
-      showToast('ok', `Restarted ${name}`)
-    } else if (res?.status === 'timeout') {
-      showToast('err', `Restart of ${name} timed out — actor still cold-loading`)
+    const reps = Array.isArray(res?.replicas) ? res.replicas : []
+    const ok = reps.filter((r: any) => r?.status === 'restarted')
+    const failed = reps.filter((r: any) => r?.status !== 'restarted')
+    if (!reps.length) {
+      showToast('err', `Restart of ${name}: no HOT replicas`)
+    } else if (failed.length === 0) {
+      showToast('ok', `Restarted ${name} (${ok.length} replica(s))`)
     } else {
-      showToast('err', `Restart of ${name} failed: ${res?.error || 'unknown error'}`)
+      const detail = failed
+        .map((r: any) => `[${r.replica_id}] ${r.status}`)
+        .join(', ')
+      showToast(
+        'err',
+        `Restart of ${name}: ${ok.length}/${reps.length} ok — ${detail}`
+      )
     }
     await load()
   } catch (e) {
@@ -298,6 +309,95 @@ async function onEvict(d: Deployment) {
     cardBusy.value = next
   }
 }
+
+// "Add Replica" — additive deploy of one more replica for an existing
+// model. Reuses the WARM redeploy fast-path: passing ``model_key`` skips
+// cli/lib/deploy's canonicalize step. The controller's WARM→HOT
+// promotion path inside Node.deploy will reuse a cached replica if one
+// is available, which is why this also covers "promote a WARM dot".
+async function onAddReplica(d: Deployment) {
+  cardBusy.value = { ...cardBusy.value, [d.model_key]: 'deploy' }
+  try {
+    await api.post('/api/deployments/deploy', {
+      checkpoint: d.repo_id || d.model_key,
+      revision: d.revision ?? null,
+      model_key: d.model_key
+    })
+    showToast('ok', `Adding replica of ${d.repo_id || d.model_key}…`)
+    await load()
+  } catch (e) {
+    const msg =
+      e instanceof ApiError
+        ? typeof e.detail === 'string'
+          ? e.detail
+          : e.message
+        : (e as Error).message
+    showToast('err', `Add replica failed: ${msg}`)
+  } finally {
+    const next = { ...cardBusy.value }
+    delete next[d.model_key]
+    cardBusy.value = next
+  }
+}
+
+async function onReplicaRestart(d: Deployment, replicaId: string) {
+  cardBusy.value = { ...cardBusy.value, [d.model_key]: 'restart' }
+  try {
+    const res = await api.post<any>('/api/deployments/restart', {
+      model_key: d.model_key,
+      checkpoint: d.repo_id,
+      revision: d.revision,
+      replica: replicaId
+    })
+    const name = d.repo_id || d.model_key
+    const rep = (res?.replicas ?? [])[0]
+    if (rep?.status === 'restarted') {
+      showToast('ok', `Restarted ${name} [${replicaId}]`)
+    } else if (rep?.status === 'timeout') {
+      showToast('err', `Restart of ${name} [${replicaId}] timed out`)
+    } else {
+      showToast(
+        'err',
+        `Restart of ${name} [${replicaId}] failed: ${rep?.error || 'unknown error'}`
+      )
+    }
+    await load()
+  } catch (e) {
+    showToast('err', `Restart failed: ${(e as Error).message}`)
+  } finally {
+    const next = { ...cardBusy.value }
+    delete next[d.model_key]
+    cardBusy.value = next
+  }
+}
+
+async function onReplicaEvict(d: Deployment, replicaId: string) {
+  cardBusy.value = { ...cardBusy.value, [d.model_key]: 'evict' }
+  try {
+    await api.post('/api/deployments/evict', {
+      model_key: d.model_key,
+      checkpoint: d.repo_id,
+      revision: d.revision,
+      replica: replicaId
+    })
+    showToast('ok', `Evicted ${d.repo_id || d.model_key} [${replicaId}]`)
+    await load()
+  } catch (e) {
+    showToast('err', `Evict failed: ${(e as Error).message}`)
+  } finally {
+    const next = { ...cardBusy.value }
+    delete next[d.model_key]
+    cardBusy.value = next
+  }
+}
+
+// WARM-replica Deploy — additive deploy. The controller's WARM→HOT
+// promotion picks some WARM replica of this model_key (not necessarily
+// the exact one whose dot was clicked, but the user just wants a HOT
+// replica to appear). Same endpoint as onAddReplica.
+async function onReplicaDeploy(d: Deployment, _replicaId: string) {
+  await onAddReplica(d)
+}
 </script>
 
 <template>
@@ -305,7 +405,10 @@ async function onEvict(d: Deployment) {
     <div class="row head">
       <h1 class="page-title">Deployments</h1>
       <div class="row">
-        <button class="btn" @click="load" :disabled="loading">Refresh</button>
+        <span v-if="loading" class="spinner" aria-label="Loading"></span>
+        <button class="btn" @click="load" :disabled="loading">
+          {{ loading ? 'Refreshing…' : 'Refresh' }}
+        </button>
         <button class="btn primary" @click="openDeployModal()">+ Deploy</button>
       </div>
     </div>
@@ -346,7 +449,10 @@ async function onEvict(d: Deployment) {
 
     <div v-if="error" class="card error-card">{{ error }}</div>
 
-    <div v-if="loading && !deployments.length" class="card muted center">Loading...</div>
+    <div v-if="loading && !deployments.length" class="card muted center loading-card">
+      <div class="spinner large"></div>
+      <span>Loading deployments…</span>
+    </div>
 
     <div v-else-if="filtered.length === 0" class="card muted center">
       No deployments match your filters.
@@ -366,6 +472,10 @@ async function onEvict(d: Deployment) {
         @restart="onRestart"
         @evict="onEvict"
         @deploy="onCardDeploy"
+        @add-replica="onAddReplica"
+        @restart-replica="onReplicaRestart"
+        @evict-replica="onReplicaEvict"
+        @deploy-replica="onReplicaDeploy"
       />
     </div>
 
@@ -486,4 +596,30 @@ async function onEvict(d: Deployment) {
 }
 .toast.ok { border-color: var(--green); color: var(--green); }
 .toast.err { border-color: var(--red); color: var(--red); }
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+.spinner.large {
+  width: 26px;
+  height: 26px;
+  border-width: 3px;
+}
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 </style>

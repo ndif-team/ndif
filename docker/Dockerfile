@@ -14,21 +14,37 @@ RUN apt-get update -y \
 #   all                    → standalone all-in-one (published to Docker Hub)
 ARG NAME
 ENV NDIF_SERVICE=${NAME}
-
-COPY . /ndif
 WORKDIR /ndif
 
-# `all` installs ndif with its full pyproject deps (api+ray+monitor+dashboard
-# requirements, all wired up via tool.setuptools.dynamic). Per-service builds
-# install only that service's requirements + ndif --no-deps. Editable in
-# both cases so cli/config.py's load_dotenv resolves to /ndif/.env.example
-# and the dashboard's source-tree frontend_dist default works.
+# Layer 1: torch + torchvision. Largest install, rarely changes — kept
+# in its own layer so source edits don't re-download torch.
+RUN uv pip install --system torch torchvision
+
+# Layer 2: service requirements. Copy all four .in files so the layer
+# key reflects every flavor's deps; install conditionally.
+#   NAME=all → api + ray + dashboard requirements (full standalone)
+#   else     → just that service's requirements
+# Trade-off: changing one service's .in invalidates this layer for the
+# other flavors too. Acceptable since `make build` builds all three
+# together and shares the cache anyway.
+COPY src/ndif/services/api/requirements.in       /ndif/src/ndif/services/api/requirements.in
+COPY src/ndif/services/ray/requirements.in       /ndif/src/ndif/services/ray/requirements.in
+COPY src/ndif/services/dashboard/requirements.in /ndif/src/ndif/services/dashboard/requirements.in
 RUN if [ "$NAME" = "all" ]; then \
-        uv pip install --system -e .; \
+        uv pip install --system \
+            -r src/ndif/services/api/requirements.in \
+            -r src/ndif/services/ray/requirements.in \
+            -r src/ndif/services/dashboard/requirements.in; \
     else \
-        uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
-        && uv pip install --system -e . --no-deps; \
-    fi \
+        uv pip install --system -r src/ndif/services/${NAME}/requirements.in; \
+    fi
+
+# Layer 3: full source + editable install. Invalidated on any source
+# edit, but the install itself is cheap (--no-deps). Editable so
+# cli/config.py's load_dotenv finds /ndif/.env.example and the
+# dashboard's source-tree frontend_dist default resolves.
+COPY . /ndif
+RUN uv pip install --system -e . --no-deps \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
     && find /usr/local/lib/python3.12 -name "*.pyo" -delete \

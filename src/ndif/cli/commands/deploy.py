@@ -13,33 +13,41 @@ from ..lib.session import get_env
 @click.command()
 @click.argument('checkpoints', nargs=-1)
 @click.option('-f', '--file', 'config_file', type=click.Path(), help='YAML config file with model specs')
-@click.option('--sync', is_flag=True, help='Sync mode: evict models not in config file (requires -f)')
+@click.option('--sync', is_flag=True, help='Sync mode: match cluster to config (requires -f)')
 @click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
 @click.option('--pinned', is_flag=True, help='Deploy as pinned - will not be evicted (default: False)')
+@click.option('--replicas', type=int, default=1, show_default=True,
+              help='Number of replicas to add per model. Deploy is always additive: '
+                   'each invocation adds this many new replicas regardless of what is '
+                   'already running. With -f, acts as the default for entries that do '
+                   'not set replicas themselves.')
 @click.option('--actor-class', 'actor_class', default=None,
               help='Dotted import path of the Ray actor class to use (default: the '
                    "controller's configured default, typically ModelActor). "
                    'With -f, acts as the default for entries that do not set actor_class themselves.')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinned: bool, actor_class: str, ray_address: str, broker_url: str):
+def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinned: bool, replicas: int, actor_class: str, ray_address: str, broker_url: str):
     """Deploy one or more models without requiring to submit a request.
 
     CHECKPOINTS: One or more model checkpoints (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
 
-    Models can be specified as arguments or via a config file (-f).
-    When using -f, per-model revision/pinned settings in the file take precedence.
+    Deploy is **additive**: every invocation places ``--replicas N`` new
+    replicas per model regardless of what is already running. To bring the
+    cluster to an exact desired state, use ``-f config.yaml --sync``.
 
-    Use --sync with -f to make the cluster state match the config file exactly,
-    evicting any models not specified in the file.
+    Models can be specified as arguments or via a config file (-f). When
+    using -f, per-model revision/pinned/replicas settings in the file take
+    precedence over the corresponding flags.
 
     \b
     Examples:
-        ndif deploy gpt2
-        ndif deploy gpt2 meta-llama/Llama-3.1-8b
+        ndif deploy gpt2                            # add 1 gpt2 replica
+        ndif deploy gpt2 --replicas 3               # add 3 gpt2 replicas
+        ndif deploy gpt2 meta-llama/Llama-3.1-8b    # 1 of each
         ndif deploy gpt2 --pinned
-        ndif deploy -f models.yaml
-        ndif deploy -f models.yaml --sync    # Evict models not in file
+        ndif deploy -f models.yaml                  # additive from file
+        ndif deploy -f models.yaml --sync           # match cluster to file
     """
     if not checkpoints and not config_file:
         raise click.ClickException("Must specify either CHECKPOINTS or --file/-f")
@@ -47,6 +55,8 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinn
         raise click.ClickException("--sync requires --file/-f")
     if sync and checkpoints:
         raise click.ClickException("--sync cannot be used with checkpoint arguments")
+    if replicas < 1:
+        raise click.ClickException("--replicas must be >= 1")
 
     ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
     broker_url = broker_url or get_env("NDIF_BROKER_URL")
@@ -61,6 +71,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinn
                 Path(config_file),
                 default_revision=revision,
                 default_pinned=pinned,
+                default_replicas=replicas,
                 default_model_actor_class=actor_class,
             )
         except (FileNotFoundError, ValueError) as e:
@@ -69,7 +80,7 @@ def deploy(checkpoints: tuple, config_file: str, sync: bool, revision: str, pinn
     else:
         specs = [
             {"checkpoint": cp, "revision": revision,
-             "pinned": pinned, "actor_class": actor_class}
+             "pinned": pinned, "replicas": replicas, "actor_class": actor_class}
             for cp in checkpoints
         ]
 

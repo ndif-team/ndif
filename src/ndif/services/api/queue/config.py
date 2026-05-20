@@ -10,7 +10,7 @@ Values can be accessed as class attributes on QueueConfig.
 Example:
     >>> from .config import QueueConfig
     >>> redis_url = QueueConfig.broker_url
-    >>> reply_freq = QueueConfig.processor_reply_freq_s
+    >>> interval = QueueConfig.autoscaling_interval_s
 """
 
 import os
@@ -28,11 +28,22 @@ class QueueConfig:
             Environment variable: NDIF_BROKER_URL
             Default: redis://localhost:6379
         status_cache_freq_s: How long to cache cluster status in Redis (seconds).
-            Environment variable: COORDINATOR_STATUS_CACHE_FREQ_S
+            Environment variable: NDIF_STATUS_CACHE_FREQ_S
             Default: 120
-        processor_reply_freq_s: Interval between status updates to queued users (seconds).
-            Environment variable: COORDINATOR_PROCESSOR_REPLY_FREQ_S
-            Default: 3
+        autoscaling_interval_s: How often each Processor checks the head of
+            its queue to decide whether to scale up.
+            Environment variable: NDIF_AUTOSCALING_INTERVAL_S
+            Default: 5
+        autoscaling_wait_threshold_s: A Processor scales up when its oldest
+            queued request has been waiting longer than this many seconds.
+            Environment variable: NDIF_AUTOSCALING_WAIT_THRESHOLD_S
+            Default: 30
+        autoscaling_backoff_s: After scaling up, the Processor sleeps for
+            this many seconds before re-checking — gives the new replica
+            time to come up and absorb queue pressure before another
+            scale-up fires.
+            Environment variable: NDIF_AUTOSCALING_BACKOFF_S
+            Default: 120
 
     Example:
         >>> from .config import QueueConfig
@@ -42,7 +53,9 @@ class QueueConfig:
 
     broker_url: Optional[str]
     status_cache_freq_s: int
-    processor_reply_freq_s: int
+    autoscaling_interval_s: int
+    autoscaling_wait_threshold_s: int
+    autoscaling_backoff_s: int
 
     @classmethod
     def from_env(cls) -> None:
@@ -56,14 +69,22 @@ class QueueConfig:
         """
         cls.broker_url = os.environ.get("NDIF_BROKER_URL", "redis://localhost:6379")
 
-        status_cache_str = os.environ.get("COORDINATOR_STATUS_CACHE_FREQ_S", "120")
+        status_cache_str = os.environ.get("NDIF_STATUS_CACHE_FREQ_S", "120")
         cls.status_cache_freq_s = cls._parse_positive_int(
-            status_cache_str, "COORDINATOR_STATUS_CACHE_FREQ_S"
+            status_cache_str, "NDIF_STATUS_CACHE_FREQ_S"
         )
 
-        reply_freq_str = os.environ.get("COORDINATOR_PROCESSOR_REPLY_FREQ_S", "3")
-        cls.processor_reply_freq_s = cls._parse_positive_int(
-            reply_freq_str, "COORDINATOR_PROCESSOR_REPLY_FREQ_S"
+        cls.autoscaling_interval_s = cls._parse_positive_int(
+            os.environ.get("NDIF_AUTOSCALING_INTERVAL_S", "5"),
+            "NDIF_AUTOSCALING_INTERVAL_S",
+        )
+        cls.autoscaling_wait_threshold_s = cls._parse_positive_int(
+            os.environ.get("NDIF_AUTOSCALING_WAIT_THRESHOLD_S", "30"),
+            "NDIF_AUTOSCALING_WAIT_THRESHOLD_S",
+        )
+        cls.autoscaling_backoff_s = cls._parse_positive_int(
+            os.environ.get("NDIF_AUTOSCALING_BACKOFF_S", "120"),
+            "NDIF_AUTOSCALING_BACKOFF_S",
         )
 
     @classmethod
@@ -75,8 +96,10 @@ class QueueConfig:
         """
         return {
             "NDIF_BROKER_URL": cls.broker_url,
-            "COORDINATOR_STATUS_CACHE_FREQ_S": cls.status_cache_freq_s,
-            "COORDINATOR_PROCESSOR_REPLY_FREQ_S": cls.processor_reply_freq_s,
+            "NDIF_STATUS_CACHE_FREQ_S": cls.status_cache_freq_s,
+            "NDIF_AUTOSCALING_INTERVAL_S": cls.autoscaling_interval_s,
+            "NDIF_AUTOSCALING_WAIT_THRESHOLD_S": cls.autoscaling_wait_threshold_s,
+            "NDIF_AUTOSCALING_BACKOFF_S": cls.autoscaling_backoff_s,
         }
 
     @classmethod

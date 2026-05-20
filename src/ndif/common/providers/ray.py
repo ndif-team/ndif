@@ -202,8 +202,12 @@ def get_controller_actor_handle(namespace: str = "NDIF") -> NDIFActorHandle:
     return get_named_actor("Controller", namespace=namespace)
 
 
-def get_model_actor_handle(model_key: str, namespace: str = "NDIF") -> NDIFActorHandle:
-    return get_named_actor(f"ModelActor:{model_key}", namespace=namespace)
+def get_model_actor_handle(
+    model_key: str, replica_id: str, namespace: str = "NDIF"
+) -> NDIFActorHandle:
+    return get_named_actor(
+        f"{replica_id}:ModelActor:{model_key}", namespace=namespace
+    )
 
 
 # api/queue used a no-arg ``controller_handle()`` form — keep an alias so
