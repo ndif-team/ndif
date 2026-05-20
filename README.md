@@ -117,10 +117,11 @@ ndif env example          Print the bundled .env.example template
 ndif env --local          Show local system info
 ndif info                 Show current session info (paths, ports, running services)
 ndif status               Show cluster + deployment state (HOT/WARM/COLD)
-ndif deploy CHECKPOINT    Deploy a model (e.g. `ndif deploy gpt2`)
-ndif deploy -f FILE       Bulk-deploy from a models.yaml
-ndif evict  CHECKPOINT    Evict a model
-ndif restart CHECKPOINT   Restart a stuck/errored model actor
+ndif deploy CHECKPOINT [--replicas N]      Deploy a model. `--replicas N` is additive (adds N more
+                                           replicas of the same model_key); default 1.
+ndif deploy -f FILE                        Bulk-deploy from a models.yaml
+ndif evict  CHECKPOINT [--replica RID]     Evict the model (or just one replica)
+ndif restart CHECKPOINT [--replica RID]    Restart all replicas of a model (or just one)
 ndif queue                Show the dispatcher queue
 ndif logs SERVICE         Tail a service's log
 ndif kill JOB_ID          Kill a running job by id
@@ -246,6 +247,17 @@ Every variable has a sane default. Override any with `export VAR=value`, in a `.
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Activation-memory padding factor (fraction of param size). |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | Activation-memory padding bias (bytes). |
 | `NDIF_DEPLOYMENTS` | — | Pipe-delimited list of model keys to deploy at startup (alternative to `models.yaml`). |
+| `NDIF_STATUS_CACHE_FREQ_S` | `120` | How often the API re-caches `/status` from the controller in Redis. |
+
+#### Autoscaling
+
+Per-Processor autoscaling loop — one Processor per `model_key`. When the oldest queued request has waited longer than the threshold, the Processor asks the Controller for one more replica. Wait through the backoff before re-checking so the new replica has time to come up.
+
+| Variable | Default | Description |
+|---|---|---|
+| `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often each Processor checks queue-head wait time. |
+| `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Scale up when oldest queued request has waited longer than this. |
+| `NDIF_AUTOSCALING_BACKOFF_S` | `120` | After scaling up, wait this long before re-checking. |
 
 #### Dashboard
 
@@ -284,6 +296,16 @@ ndif status                                # check it's HOT
 
 The first deploy downloads weights from HuggingFace (cached in `HF_HOME`).
 
+### Scale a model to multiple replicas
+
+```bash
+ndif deploy openai-community/gpt2 --replicas 2   # 2 replicas behind the same queue
+ndif status                                       # two HOT entries, same model_key
+ndif evict openai-community/gpt2 --replica r2     # evict one specific replica
+```
+
+The Dispatcher load-balances requests across all HOT replicas of a `model_key`. A per-Processor autoscaling loop also adds replicas on its own when the queue head waits longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` (default 30s); see the Autoscaling env vars to tune.
+
 ### Auto-deploy models on startup
 
 Create `~/.ndif/models.yaml`:
@@ -292,6 +314,7 @@ Create `~/.ndif/models.yaml`:
 models:
   - checkpoint: openai-community/gpt2
     pinned: true                # never evicted by hot-swap
+    replicas: 2                 # serve from two replicas (default 1)
   - checkpoint: meta-llama/Llama-3.1-8B-Instruct
     pinned: true
 ```

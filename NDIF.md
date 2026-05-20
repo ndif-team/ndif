@@ -86,7 +86,7 @@ The "what file do I change for X" table.
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
 | Pinned-deployment scheduler / dashboard | `src/ndif/services/dashboard/` — §5.7, §13 |
-| The legacy uptime monitor | `src/ndif/services/monitor/` — §13 (being replaced by the dashboard) |
+| The (removed) legacy uptime monitor | §13.5 — folded into `services/dashboard/jobs/monitor.py` |
 
 ### File index
 
@@ -144,8 +144,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces `services/monitor/`) |
-| `src/ndif/services/monitor/` | Legacy standalone uptime monitor — being replaced by the dashboard |
+| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces the now-deleted `services/monitor/`) |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -248,7 +247,7 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Reconcile cron](#132-reconcile-cron)
     - [Schedule semantics](#133-schedule-semantics)
     - [Configuration](#134-configuration)
-    - [Legacy services/monitor/](#135-legacy-servicesmonitor)
+    - [(removed) Legacy services/monitor/](#135-removed-legacy-servicesmonitor)
 14. [Invariants](#14-invariants) — ⚠️ read before "simplifying" anything
     - [`num_gpus=0` on ModelActor](#141-modelactor-is-declared-with-num_gpus0)
     - [Two whitelists](#142-two-whitelists-not-one)
@@ -2304,9 +2303,9 @@ Env-var driven; full table in `services/dashboard/README.md`. Highlights:
 
 Compose-side note: the dashboard service uses `env_file` with `format: raw` so the bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation.
 
-### 13.5 Legacy `services/monitor/`
+### 13.5 (removed) Legacy `services/monitor/`
 
-`src/ndif/services/monitor/` is the previous standalone uptime monitor — a `run.sh`-deployed conda env + cron job + Flask dashboard, separate from the docker stack. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is still in the tree for now to support the existing `~/ndif_monitor/` deployment, but new work should go in the dashboard. Plan to remove it once the dashboard has been the primary monitor for one full release cycle.
+The directory has been deleted. The body lives at `src/ndif/services/dashboard/jobs/monitor.py`; the dashboard service runs it on a cron alongside the FastAPI app (see §13.2). Any old `~/ndif_monitor/` deployments should switch to the dashboard.
 
 ---
 
@@ -2645,15 +2644,9 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
-### 15.9 Legacy monitor service (§13.5)
+### 15.9 (removed) Legacy monitor service env vars
 
-Read only by the legacy standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack and are scheduled for removal once the dashboard has fully replaced this service.
-
-| Variable | Default | Description |
-|---|---|---|
-| `INSTALL_DIR` | `~/ndif_monitor` | Where monitor source, config, and logs live |
-| `NDIF_API_KEY` | — | API key used for nnsight remote traces from the monitor |
-| `MONITOR_CRON` | `*/10 * * * *` | Cron schedule for the monitor job |
+The `services/monitor/` directory has been deleted. Its env vars (`INSTALL_DIR`, `MONITOR_CRON`) are no longer consulted by anything in the tree. `NDIF_API_KEY` is still used by the dashboard's monitor cron (see `NDIF_DASHBOARD_*` above and §13.2).
 
 ### 15.10 CLI-only
 

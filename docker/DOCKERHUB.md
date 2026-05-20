@@ -170,6 +170,17 @@ Defaults applied at startup; override any with `-e VAR=value`.
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Activation-memory padding factor (fraction of param size). |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | Activation-memory padding bias (bytes). |
 | `NDIF_DEPLOYMENTS` | — | Pipe-delimited list of model keys to deploy at startup (alternative to `models.yaml`). |
+| `NDIF_STATUS_CACHE_FREQ_S` | `120` | How often the API re-caches `/status` from the controller in Redis. |
+
+### Autoscaling
+
+Per-Processor autoscaling loop. One Processor per `model_key`; when the oldest queued request has waited too long, the Processor asks the Controller for one more replica.
+
+| Variable | Default | Description |
+|---|---|---|
+| `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often each Processor checks queue-head wait time. |
+| `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Scale up when the oldest queued request has waited longer than this. |
+| `NDIF_AUTOSCALING_BACKOFF_S` | `120` | After scaling up, wait this long before re-checking. |
 
 ### Dashboard
 
