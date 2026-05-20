@@ -1,6 +1,7 @@
 """Restart command for NDIF - restart a model actor."""
 
 import click
+from typing import Optional
 
 from ..lib.checks import check_prerequisites
 from ..lib.restart import NDIFConnectivityError, restart as restart_lib
@@ -9,9 +10,9 @@ from ..lib.session import get_env
 
 @click.command()
 @click.argument('checkpoint')
-@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
+@click.option('--revision', default=None, help='Model revision/branch (default: unset/None)')
 @click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
-def restart(checkpoint: str, revision: str, ray_address: str):
+def restart(checkpoint: str, revision: Optional[str], ray_address: str):
     """Restart a model deployment.
 
     CHECKPOINT: Model checkpoint (e.g., "gpt2", "meta-llama/Llama-2-7b-hf")
