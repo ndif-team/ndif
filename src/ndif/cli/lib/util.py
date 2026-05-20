@@ -1,7 +1,10 @@
 """Utility functions for NDIF CLI"""
 
+import os
+import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 
 
 # ASCII art for NDIF logo
@@ -50,6 +53,60 @@ def get_ndif_root() -> Path:
 def get_service_dir(service_name: str) -> Path:
     """Get the filesystem directory for a given service (api, ray, monitor)."""
     return get_ndif_root() / "services" / service_name
+
+
+def spawn_service(
+    service_dir: Path,
+    script: str,
+    env_updates: Optional[dict] = None,
+    log_file: Optional[Path] = None,
+    verbose: bool = False,
+) -> subprocess.Popen:
+    """Spawn a service's start.sh in its own process group.
+
+    When ``verbose`` is True, stdout/stderr go to the terminal. Otherwise
+    they're captured to ``log_file`` (required in that mode).
+    """
+    start_script = service_dir / script
+    if not start_script.exists():
+        raise RuntimeError(f"{script} not found at {start_script}")
+
+    env = os.environ.copy()
+    if env_updates:
+        env.update(env_updates)
+
+    if verbose:
+        return subprocess.Popen(
+            ['bash', str(start_script)],
+            env=env,
+            cwd=service_dir,
+            start_new_session=True,
+        )
+
+    if log_file is None:
+        raise ValueError("log_file is required when verbose=False")
+
+    log_handle = open(log_file, 'w')
+    return subprocess.Popen(
+        ['bash', str(start_script)],
+        env=env,
+        cwd=service_dir,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+
+def terminate_process(proc: subprocess.Popen, timeout: int = 5) -> None:
+    """Politely terminate a process; fall back to SIGKILL on timeout."""
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 # =============================================================================

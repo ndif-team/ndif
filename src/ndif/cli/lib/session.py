@@ -147,6 +147,11 @@ class SessionConfig:
     # Node type: "head" (full NDIF) or "worker" (Ray worker only)
     node_type: str = "head"
 
+    # Dashboard port. Set only when the user has opted in by setting
+    # NDIF_DASHBOARD_PORT in the env (the trigger for including dashboard
+    # in `ndif start all`). Stays None otherwise.
+    dashboard_port: Optional[int] = None
+
     # Service states
     services: dict = field(default_factory=dict)
 
@@ -171,12 +176,26 @@ class SessionConfig:
         return config
 
     @classmethod
-    def from_environment(cls, session_id: str = None, node_type: str = "head") -> "SessionConfig":
+    def from_environment(
+        cls,
+        session_id: str = None,
+        node_type: str = "head",
+        *,
+        broker_url: Optional[str] = None,
+        object_store_url: Optional[str] = None,
+        api_url: Optional[str] = None,
+        ray_address: Optional[str] = None,
+        ray_dashboard_port: Optional[int] = None,
+    ) -> "SessionConfig":
         """Create a SessionConfig from current environment variables.
 
         Args:
             session_id: Optional session ID (generated if not provided)
             node_type: "head" (default) for full NDIF deployment, "worker" for Ray worker only
+
+        Keyword-only overrides — when non-None, take precedence over the
+        corresponding env var. Used by the CLI to thread ``--api-url`` etc.
+        through without mutating ``os.environ``.
 
         Returns:
             New SessionConfig with values from environment
@@ -185,14 +204,21 @@ class SessionConfig:
             session_id = datetime.now().strftime("session_%Y%m%d_%H%M%S")
 
         # Parse ports from URLs
-        broker_url = get_env("NDIF_BROKER_URL")
-        object_store_url = get_env("NDIF_OBJECT_STORE_URL")
-        api_url = get_env("NDIF_API_URL")
-        ray_address = get_env("NDIF_RAY_ADDRESS")
+        broker_url = broker_url if broker_url is not None else get_env("NDIF_BROKER_URL")
+        object_store_url = object_store_url if object_store_url is not None else get_env("NDIF_OBJECT_STORE_URL")
+        api_url = api_url if api_url is not None else get_env("NDIF_API_URL")
+        ray_address = ray_address if ray_address is not None else get_env("NDIF_RAY_ADDRESS")
 
         broker_port = urlparse(broker_url).port or 6379  # Default Redis port
         object_store_port = urlparse(object_store_url).port or 9000  # Default MinIO port
         api_port = urlparse(api_url).port or int(get_env("NDIF_API_PORT"))
+
+        # Dashboard port only enters the services dict when the user opted in
+        # by setting NDIF_DASHBOARD_PORT (the same trigger that includes it
+        # in `ndif start all`). Stays None / absent otherwise so stop / info
+        # don't act on a service that isn't running.
+        dashboard_port_env = os.environ.get("NDIF_DASHBOARD_PORT")
+        dashboard_port = int(dashboard_port_env) if dashboard_port_env else None
 
         # Initialize services based on node type
         if node_type == "worker":
@@ -207,6 +233,10 @@ class SessionConfig:
                 "broker": ServiceConfig(name="broker", port=broker_port, managed=True, running=False),
                 "object-store": ServiceConfig(name="object-store", port=object_store_port, managed=True, running=False),
             }
+            if dashboard_port is not None:
+                services["dashboard"] = ServiceConfig(
+                    name="dashboard", port=dashboard_port, managed=True, running=False,
+                )
 
         config = cls(
             session_id=session_id,
@@ -222,7 +252,10 @@ class SessionConfig:
             # Ray config
             ray_temp_dir=get_env("NDIF_RAY_TEMP_DIR"),
             ray_head_port=int(get_env("NDIF_RAY_HEAD_PORT")) if get_env("NDIF_RAY_HEAD_PORT") else None,
-            ray_dashboard_port=int(get_env("NDIF_RAY_DASHBOARD_PORT")) if get_env("NDIF_RAY_DASHBOARD_PORT") else None ,
+            ray_dashboard_port=(
+                ray_dashboard_port if ray_dashboard_port is not None
+                else (int(get_env("NDIF_RAY_DASHBOARD_PORT")) if get_env("NDIF_RAY_DASHBOARD_PORT") else None)
+            ),
             ray_serve_port=int(get_env("NDIF_RAY_SERVE_PORT")) if get_env("NDIF_RAY_SERVE_PORT") else None,
             ray_object_manager_port=int(get_env("NDIF_RAY_OBJECT_MANAGER_PORT")) if get_env("NDIF_RAY_OBJECT_MANAGER_PORT") else None,
             ray_dashboard_grpc_port=int(get_env("NDIF_RAY_DASHBOARD_GRPC_PORT")) if get_env("NDIF_RAY_DASHBOARD_GRPC_PORT") else None,
@@ -238,6 +271,9 @@ class SessionConfig:
             # Controller config
             controller_import_path=get_env("NDIF_CONTROLLER_IMPORT_PATH"),
             minimum_deployment_time_seconds=int(get_env("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")),
+
+            # Dashboard (only set when NDIF_DASHBOARD_PORT is in env)
+            dashboard_port=dashboard_port,
 
             # Services
             services=services,
@@ -322,17 +358,27 @@ class Session:
             return None
 
     @classmethod
-    def create(cls, session_id: str = None, node_type: str = "head") -> "Session":
+    def create(
+        cls,
+        config: Optional[SessionConfig] = None,
+        *,
+        session_id: str = None,
+        node_type: str = "head",
+    ) -> "Session":
         """Create a new session.
 
         Args:
-            session_id: Optional session ID (generated if not provided)
-            node_type: "head" (default) for full NDIF deployment, "worker" for Ray worker only
+            config: Pre-built SessionConfig. When None (default), one is
+                built from the environment — useful for callers that just
+                want defaults and have no CLI overrides to thread through.
+            session_id: Optional session ID (only used when ``config`` is None)
+            node_type: Only used when ``config`` is None
 
         Returns:
             New Session object
         """
-        config = SessionConfig.from_environment(session_id, node_type=node_type)
+        if config is None:
+            config = SessionConfig.from_environment(session_id, node_type=node_type)
         root = get_session_root()
         path = root / config.session_id
         path.mkdir(parents=True, exist_ok=True)
@@ -416,6 +462,22 @@ def end_session(session: Session):
 # =============================================================================
 # Port-based Process Detection
 # =============================================================================
+
+def get_service_port(session: "Session", service: str) -> Optional[int]:
+    """Return the listening port for a service from a session's config.
+
+    Returns ``None`` if the service is unknown or (in dashboard's case) not
+    enabled for this session.
+    """
+    port_map = {
+        'api': session.config.api_port,
+        'ray': session.config.ray_head_port,
+        'broker': session.config.broker_port,
+        'object-store': session.config.object_store_port,
+        'dashboard': session.config.dashboard_port,
+    }
+    return port_map.get(service)
+
 
 def get_pids_on_port(port: int) -> list[int]:
     """Get list of PIDs listening on a specific port.

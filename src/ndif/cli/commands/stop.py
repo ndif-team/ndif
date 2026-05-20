@@ -11,6 +11,7 @@ from ..lib.session import (
     get_current_session,
     end_session,
     get_pids_on_port,
+    get_service_port,
     kill_processes_on_port,
     is_port_in_use,
 )
@@ -18,7 +19,7 @@ from ..lib.session import (
 
 @click.command()
 @click.argument('service', type=click.Choice(
-    ['api', 'ray', 'broker', 'object-store', 'all'],
+    ['api', 'ray', 'broker', 'object-store', 'dashboard', 'all'],
     case_sensitive=False
 ), default='all')
 @click.option('--force', is_flag=True, help='Force kill processes (SIGKILL)')
@@ -73,8 +74,9 @@ def stop(service: str, force: bool):
 
     services_to_stop = []
     if service == 'all':
-        # Stop in reverse order: api, ray, then dependencies
-        services_to_stop = ['api', 'ray', 'broker', 'object-store']
+        # Stop in reverse start order: dashboard, api, ray, then dependencies.
+        # Dashboard depends on api/ray; api on broker/object-store/ray.
+        services_to_stop = ['dashboard', 'api', 'ray', 'broker', 'object-store']
     else:
         services_to_stop = [service]
 
@@ -82,7 +84,7 @@ def stop(service: str, force: bool):
     sig = signal.SIGKILL if force else signal.SIGTERM
 
     for svc in services_to_stop:
-        port = _get_service_port(session, svc)
+        port = get_service_port(session, svc)
         if port is None:
             continue
 
@@ -152,14 +154,3 @@ def stop(service: str, force: bool):
             click.echo(f"Still running: {', '.join(remaining)}")
     else:
         click.echo("\nNo services were running")
-
-
-def _get_service_port(session, service: str) -> int:
-    """Get the port for a service from session config."""
-    port_map = {
-        'api': session.config.api_port,
-        'ray': session.config.ray_head_port,
-        'broker': session.config.broker_port,
-        'object-store': session.config.object_store_port,
-    }
-    return port_map.get(service)
