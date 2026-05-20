@@ -16,7 +16,12 @@ from .....common.logging.logger import set_logger
 from .....common.providers.mailgun import MailgunProvider
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.socketio import SioProvider
-from .....common.schema.controller import DeployResponse, ReplicaState, ReplicaStates
+from .....common.schema.controller import (
+    DeployResponse,
+    ModelDeployResult,
+    ReplicaState,
+    ReplicaStates,
+)
 from .....common.schema.deployment_config import DeploymentConfig
 from .....common.tracing import TracingContext, init_tracing, trace_span
 from .....common.types import MODEL_KEY, REPLICA_ID
@@ -44,6 +49,7 @@ class _ControllerActor:
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
         default_padding_bias: int,
+        max_replicas: Optional[int],
     ):
         super().__init__()
 
@@ -56,6 +62,7 @@ class _ControllerActor:
         self.model_cache_percentage = model_cache_percentage
         self.default_padding_factor = default_padding_factor
         self.default_padding_bias = default_padding_bias
+        self.max_replicas = max_replicas
         self.runtime_context = ray.get_runtime_context()
         self.logger = set_logger("Controller")
 
@@ -90,6 +97,7 @@ class _ControllerActor:
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "default_padding_factor": self.default_padding_factor,
             "default_padding_bias": self.default_padding_bias,
+            "max_replicas": self.max_replicas,
         }
 
         if include_ray_state:
@@ -130,7 +138,39 @@ class _ControllerActor:
                 f"Deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}"
             )
 
-            response = self.cluster.deploy(configs)
+            response = DeployResponse()
+            if self.max_replicas is not None:
+                for model_key in list(configs.keys()):
+                    config = configs[model_key]
+                    existing = sum(
+                        len(node.deployments.get(model_key, {}))
+                        for node in self.cluster.nodes.values()
+                    )
+                    allowed = max(0, self.max_replicas - existing)
+                    if config.replicas > allowed:
+                        if allowed == 0:
+                            response.results[model_key] = ModelDeployResult(
+                                error=(
+                                    f"NDIF_MAX_REPLICAS={self.max_replicas} "
+                                    f"reached for {model_key} ({existing} HOT)."
+                                )
+                            )
+                            del configs[model_key]
+                        else:
+                            self.logger.info(
+                                f"Capping {model_key} replicas from "
+                                f"{config.replicas} to {allowed} "
+                                f"(existing HOT={existing}, "
+                                f"NDIF_MAX_REPLICAS={self.max_replicas})"
+                            )
+                            config.replicas = allowed
+
+            if configs:
+                cluster_response = self.cluster.deploy(configs)
+                for model_key, model_result in cluster_response.results.items():
+                    response.results[model_key] = model_result
+                response.evictions.update(cluster_response.evictions)
+                response.change = cluster_response.change
 
             span.set_attribute("ndif.deploy.changed", response.change)
             for model_key, model_result in response.results.items():
@@ -693,6 +733,11 @@ class ControllerDeploymentArgs(BaseModel):
     )
     default_padding_bias: Optional[int] = int(
         os.environ.get("NDIF_DEFAULT_PADDING_BIAS", str(500 * 1024 * 1024))
+    )
+    max_replicas: Optional[int] = (
+        int(os.environ["NDIF_MAX_REPLICAS"])
+        if os.environ.get("NDIF_MAX_REPLICAS", "").strip()
+        else None
     )
 
 

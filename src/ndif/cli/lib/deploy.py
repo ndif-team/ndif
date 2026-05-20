@@ -151,6 +151,7 @@ def deploy(
 
         for model_key in batch_keys:
             spec = model_keys_map[model_key]
+            requested = int(spec.get("replicas") or 1)
             result = response.results.get(model_key)
             replicas = list(result.replicas) if result else []
             entry: dict = {
@@ -169,6 +170,15 @@ def deploy(
                 entry["error"] = "no replicas placed"
                 emit(on_message, f"  ✗ {model_key}: no replicas placed")
             else:
+                if len(replicas) < requested:
+                    short = requested - len(replicas)
+                    emit(
+                        on_message,
+                        f"  ⚠ {model_key}: placed {len(replicas)} of "
+                        f"{requested} requested — {short} not placed "
+                        f"(controller may have hit NDIF_MAX_REPLICAS or "
+                        f"run out of capacity)",
+                    )
                 emit(
                     on_message,
                     f"  ⋯ {model_key}: provisioned {len(replicas)} replica(s), initializing...",
@@ -206,12 +216,24 @@ def deploy(
                     )
                     failed.append((rid, str(e)))
 
+            spec_requested = int(
+                model_keys_map[entry["model_key"]].get("replicas") or 1
+            )
+            short_placed = len(entry["replicas"]) < spec_requested
+
             if failed and not ready:
                 entry["status"] = "ERROR"
                 entry["error"] = "; ".join(f"[{rid}] {err}" for rid, err in failed)
             elif failed:
                 entry["status"] = "PARTIAL"
                 entry["error"] = "; ".join(f"[{rid}] {err}" for rid, err in failed)
+            elif short_placed:
+                entry["status"] = "PARTIAL"
+                entry["error"] = (
+                    f"placed {len(entry['replicas'])} of {spec_requested} "
+                    f"requested (controller may have hit NDIF_MAX_REPLICAS "
+                    f"or run out of capacity)"
+                )
             else:
                 entry["status"] = "READY"
 
