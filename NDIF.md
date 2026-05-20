@@ -86,7 +86,6 @@ The "what file do I change for X" table.
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
 | Pinned-deployment scheduler / dashboard | `src/ndif/services/dashboard/` — §5.7, §13 |
-| The (removed) legacy uptime monitor | §13.5 — folded into `services/dashboard/jobs/monitor.py` |
 
 ### File index
 
@@ -144,7 +143,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces the now-deleted `services/monitor/`) |
+| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -247,7 +246,6 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Reconcile cron](#132-reconcile-cron)
     - [Schedule semantics](#133-schedule-semantics)
     - [Configuration](#134-configuration)
-    - [(removed) Legacy services/monitor/](#135-removed-legacy-servicesmonitor)
 14. [Invariants](#14-invariants) — ⚠️ read before "simplifying" anything
     - [`num_gpus=0` on ModelActor](#141-modelactor-is-declared-with-num_gpus0)
     - [Two whitelists](#142-two-whitelists-not-one)
@@ -2230,7 +2228,7 @@ All configuration is via environment variables. The defaults shown below are wha
 
 `src/ndif/services/dashboard/` is the admin web app. It owns three things:
 
-1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions. Replaces the standalone `services/monitor/`.
+1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions.
 2. **Pinned-deployment scheduling** — a JSON-backed schedule store + diff-based reconcile cron that pushes the active set to the controller (§5.7).
 3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (one card per `model_key` with a row of per-replica dots — green = HOT+RUNNING, flashing amber↔green = HOT+DEPLOYING, red = HOT+UNHEALTHY, amber = WARM; hover a dot for Restart / Evict / Deploy on that one replica; the card kebab has "Restart All" / "Add Replica" / "Evict All"), and a month calendar for editing the schedule.
 
@@ -2246,7 +2244,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 - `src/ndif/services/dashboard/backend/schedule_store.py` — JSON-backed schedule CRUD, fcntl-locked
 - `src/ndif/services/dashboard/backend/ndif_client.py` — thin wrappers around `cli/lib/{deploy,evict,restart,status}.py` (the dashboard reuses the CLI's helpers rather than poking the controller directly)
 - `src/ndif/services/dashboard/backend/routers/{auth,monitor,schedule,deployments,deploy}.py`
-- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron (the body that used to live under `services/monitor/jobs/monitor.py`)
+- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron
 - `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`. flock-serialized; schedule writes also trigger an immediate background reconcile.
 - `src/ndif/services/dashboard/start.sh` — canonical entrypoint, used by both Docker and standalone runs
 - `src/ndif/services/dashboard/frontend/` — Vue 3 + Vite + TS SPA
@@ -2259,7 +2257,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 2. **Every 2 hours** (or every run while recovering from downtime), fetches `/status`, enumerates HOT models, and runs a real nnsight trace against each one. Catches "API up, inference broken" cases. The `models_failed` Discord message is capped under 2000 chars to fit Discord's limit.
 3. **Sends Discord notifications** on state transitions (down / still-down / back-up). "Still down" is rate-limited.
 
-NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation) — same format the previous `services/monitor/` produced, so the existing dashboard data carries over via the bind mount.
+NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation).
 
 ### 13.2 Reconcile cron
 
@@ -2295,17 +2293,13 @@ Env-var driven; full table in `services/dashboard/README.md`. Highlights:
 | `NDIF_DASHBOARD_PASSWORD_HASH` | (empty — login disabled) | Bcrypt hash; generate via `python -m ndif.services.dashboard.backend.auth hash <password>` |
 | `NDIF_DASHBOARD_SESSION_SECRET` | unsafe placeholder | ≥32-byte random; rotates invalidate sessions |
 | `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
-| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) — defaults to the legacy monitor's data dir for continuity |
+| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) |
 | `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Monitor schedule |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile schedule |
 | `NDIF_API_KEY` | (from `.env`) | Used by the monitor cron's nnsight model traces |
 
 Compose-side note: the dashboard service uses `env_file` with `format: raw` so the bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation.
-
-### 13.5 (removed) Legacy `services/monitor/`
-
-The directory has been deleted. The body lives at `src/ndif/services/dashboard/jobs/monitor.py`; the dashboard service runs it on a cron alongside the FastAPI app (see §13.2). Any old `~/ndif_monitor/` deployments should switch to the dashboard.
 
 ---
 
@@ -2644,11 +2638,7 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
-### 15.9 (removed) Legacy monitor service env vars
-
-The `services/monitor/` directory has been deleted. Its env vars (`INSTALL_DIR`, `MONITOR_CRON`) are no longer consulted by anything in the tree. `NDIF_API_KEY` is still used by the dashboard's monitor cron (see `NDIF_DASHBOARD_*` above and §13.2).
-
-### 15.10 CLI-only
+### 15.9 CLI-only
 
 Read by the `ndif` CLI when bringing up native-mode dependencies.
 
@@ -2778,7 +2768,4 @@ ndif/
         │   │   ├── reconcile.py        # Diff-based push of schedule.json → controller
         │   │   └── util.py
         │   └── frontend/               # Vue 3 + Vite + TS SPA
-        │
-        └── monitor/                    # Legacy standalone uptime monitor (§13.5)
-            └── (run.sh, jobs/, dashboard/, README.md — being replaced by services/dashboard/)
 ```

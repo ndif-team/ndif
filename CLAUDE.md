@@ -78,10 +78,6 @@ ndif/
         │   ├── jobs/         ← cron entrypoints — monitor.py + reconcile.py
         │   ├── frontend/     ← Vue 3 + Vite + TS SPA
         │   └── start.sh      ← canonical entrypoint (used by both Docker and standalone)
-        │
-        └── monitor/          ← LEGACY standalone uptime monitor
-                                being replaced by services/dashboard/; kept for the
-                                existing ~/ndif_monitor/ deployment
 ```
 
 ---
@@ -225,7 +221,7 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 ## Services beyond API/Ray/CLI
 
-- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI), shipped as a docker-compose service. Owns three things: (1) the pinned-deployment schedule (`schedule.json`) and a 2-min reconcile cron that diffs the active set against the controller and pushes evict/deploy (`pinned=True`) as needed, (2) the uptime + per-HOT-model nnsight-trace monitor cron (10-min cadence, with Discord notifications), (3) the operational UI (login → cluster monitor / deployments / month-calendar schedule editor). Replaces the now-deleted `services/monitor/` and the now-removed Ray-side gcal scheduler. Has its own `README.md`.
+- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI), shipped as a docker-compose service. Owns three things: (1) the pinned-deployment schedule (`schedule.json`) and a 2-min reconcile cron that diffs the active set against the controller and pushes evict/deploy (`pinned=True`) as needed, (2) the uptime + per-HOT-model nnsight-trace monitor cron (10-min cadence, with Discord notifications), (3) the operational UI (login → cluster monitor / deployments / month-calendar schedule editor). Has its own `README.md`.
 - **`docker/postgres/`** — Postgres init SQL. Provides the dev-mode auth/API-key store wired into compose.
 
 ---

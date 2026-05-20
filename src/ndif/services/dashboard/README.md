@@ -1,8 +1,7 @@
 # NDIF Dashboard
 
 A small admin web app for NDIF: monitoring (uptime, latency, cluster state)
-and a calendar-driven scheduler for pinned deployments. Replaces the
-standalone `services/monitor/` dashboard.
+and a calendar-driven scheduler for pinned deployments.
 
 Three pieces:
 
@@ -81,9 +80,8 @@ the prefix `NDIF_DASHBOARD_` unless noted.
 ```
 
 The monitor cron writes JSONL to `<data_dir>/logs/connected_*.log`,
-`models_*.log`, `cluster_*.log` and rotates on a 30-day window — same format
-the previous `services/monitor` job produced. The dashboard's monitor view
-reads these files directly.
+`models_*.log`, `cluster_*.log` and rotates on a 30-day window. The
+dashboard's monitor view reads these files directly.
 
 The FastAPI schedule routes also call `reconcile_once()` as a background task
 on every write so user edits don't wait for the next 2-min tick. A file
@@ -134,7 +132,7 @@ dashboard/
 │   └── routers/{auth,monitor,schedule,deployments,deploy}.py
 ├── jobs/
 │   ├── util.py             # discord / log helpers (data_dir-aware)
-│   ├── monitor.py          # uptime + model traces (was services/monitor/jobs/monitor.py)
+│   ├── monitor.py          # uptime + model traces
 │   └── reconcile.py        # push schedule.json → controller (diff-based, flock-serialized)
 └── frontend/               # Vue 3 + Vite + TS
     ├── package.json
