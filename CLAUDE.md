@@ -154,13 +154,15 @@ Do not remove the mount — the expectation is that NDIF is developed alongside 
 ### Everyday commands
 
 ```bash
-make build              # builds api:latest + ray:latest + dashboard:latest from a
-                        # single docker/Dockerfile via NAME build-arg. Depends on
-                        # `dashboard-frontend` (host-side `npm ci && npm run build`
-                        # — node 20+ required).
-make build-standalone   # builds ndif/ndif:latest, the all-in-one image (NAME=all)
-make up                 # bring up full stack (redis, minio, postgres, ray, api,
-                        # dashboard, prom, influx, grafana, loki, jaeger)
+make build              # builds the unified ndif/ndif image (one container
+                        # for every NDIF service; service selected at runtime
+                        # via NDIF_SERVICE). Depends on `dashboard-frontend`
+                        # (host-side `npm ci && npm run build` — node 20+).
+make push               # push ndif/ndif:latest + :VERSION to Docker Hub
+make run                # one-shot `docker run` of ndif/ndif:latest with the
+                        # standard port mappings + HF cache mount
+make up                 # bring up full stack via docker compose
+                        # (redis, minio, postgres, ray, api, dashboard, telemetry)
 make down               # tear down
 make ta                 # down + build + up  ← use this after code edits
 ```

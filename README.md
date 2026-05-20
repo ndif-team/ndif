@@ -422,7 +422,7 @@ pytest --run-remote             # against localhost:5001
 ### Docker dev loop
 
 ```bash
-make build                      # builds api / ray / dashboard images
+make build                      # builds the unified ndif/ndif image
 make up                         # docker-compose up
 make ta                         # down + build + up (use after code edits)
 ```

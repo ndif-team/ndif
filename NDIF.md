@@ -138,7 +138,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/checks.py` | Pre-flight checks for `ndif start` |
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
-| `docker/Dockerfile` | Single Dockerfile for all image flavors — `ARG NAME=api`, `ray`, `dashboard`, or `all` (standalone). Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
+| `docker/Dockerfile` | Single unified image — every NDIF service runs from it, selected at runtime via `NDIF_SERVICE`. Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
 | `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
@@ -2118,14 +2118,16 @@ RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in && \
 CMD ndif start "${NAME}"
 ```
 
-This builds three images from the same `docker/Dockerfile`, parameterized by `--build-arg NAME=`:
-- `api:latest` — The API service (`NAME=api`)
-- `ray:latest` — The Ray head node (`NAME=ray`)
-- `dashboard:latest` — The dashboard image (`NAME=dashboard`)
+This builds **one** image — `ndif/ndif:latest` (also tagged with the pyproject version). Every NDIF service runs from it; the consumer chooses which by setting `NDIF_SERVICE`:
 
-`make build` depends on the `dashboard-frontend` target, which runs `npm ci && npm run build` on the host (node 20+ required) and writes the Vue SPA to `src/ndif/services/dashboard/frontend/dist/`. The Dockerfile then COPYs that pre-built dist into the image — no node stage in the Dockerfile itself.
+| `NDIF_SERVICE=` | What runs |
+|---|---|
+| `all` (default) | broker + object-store + ray + api (+ dashboard if `NDIF_DASHBOARD_PORT` set). The Docker Hub demo experience. |
+| `api` / `ray` / `dashboard` | Just that service. Used by docker-compose, which sets the env var per service. |
 
-There's also `make build-standalone` (`NAME=all`), which produces `ndif/ndif:latest` — a single image bundling api + ray + redis + minio (via micromamba) for one-shot demo use on Docker Hub. See `services/dashboard/README.md` for dashboard specifics.
+`make build` depends on `dashboard-frontend`, which runs `npm ci && npm run build` on the host (node 20+ required) and writes the Vue SPA to `src/ndif/services/dashboard/frontend/dist/`. The Dockerfile COPYs the pre-built dist in.
+
+`make push` pushes both `ndif/ndif:latest` and `ndif/ndif:VERSION` to Docker Hub. `make run` is a one-shot `docker run` with the standard port mappings + HF cache mount.
 
 The `docker-compose.yml` orchestrates the following services:
 
@@ -2146,7 +2148,7 @@ The `docker-compose.yml` orchestrates the following services:
 **Build and run:**
 
 ```bash
-make build   # Build api and ray images
+make build   # Build the unified ndif/ndif image
 make up      # Start all containers
 make down    # Stop all containers
 make ta      # Full rebuild: down + build + up
@@ -2234,7 +2236,7 @@ All configuration is via environment variables. The defaults shown below are wha
 
 The backend's `/api/status` endpoint aggregates the controller's per-replica entries into one card per `model_key` with a `replicas: [...]` array. Card-level `deployment_level`, `application_state`, and `pinned` are the "best across siblings" (HOT > WARM > COLD; RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY; pinned-if-any).
 
-It ships as a docker-compose service alongside `api` and `ray`. The image is built from the unified `docker/Dockerfile` (`--build-arg NAME=dashboard`); the Vue SPA is pre-built on the host via `make dashboard-frontend` and copied in. A `cron` daemon runs alongside uvicorn for the monitor and reconcile jobs. Default port is `8081` (set `NDIF_DASHBOARD_PORT` to override; setting it also makes `ndif start all` include the dashboard).
+It ships as a docker-compose service alongside `api` and `ray` (same `ndif/ndif` image, started with `NDIF_SERVICE=dashboard`). The Vue SPA is pre-built on the host via `make dashboard-frontend` and copied into the image. A `cron` daemon runs alongside uvicorn for the monitor and reconcile jobs. Default port is `8081` (set `NDIF_DASHBOARD_PORT` to override; setting it also makes `ndif start all` include the dashboard).
 
 The full operator-facing reference lives in `src/ndif/services/dashboard/README.md`. This section is the design-doc summary.
 
@@ -2663,8 +2665,8 @@ ndif/
 ├── README.md                           # Project overview
 │
 ├── docker/
-│   ├── Dockerfile                      # Single Dockerfile for every image flavor
-│   │                                     (ARG NAME=api / ray / dashboard / all)
+│   ├── Dockerfile                      # Single unified image — every service
+│   │                                     runs from it (NDIF_SERVICE selects)
 │   ├── docker-compose.yml              # Full stack orchestration
 │   └── postgres/
 │       └── init.sql                    # Dev-mode keys DB schema + test key
