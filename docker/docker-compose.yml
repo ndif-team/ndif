@@ -34,7 +34,7 @@ services:
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
-      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
+      # - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
       - ray-data:/tmp/ray/
 
     ports:
@@ -108,7 +108,7 @@ services:
   dashboard:
     image: dashboard:${NDIF_DASHBOARD_VERSION}
     ports:
-      - "${NDIF_DASHBOARD_PORT}:${NDIF_DASHBOARD_PORT}"
+      - "${NDIF_DASHBOARD_PORT:-8081}:${NDIF_DASHBOARD_PORT:-8081}"
     env_file:
       # ``format: raw`` disables shell-substitution on the env file — without
       # it, a bcrypt ``$2b$12$…`` hash gets mangled by compose's ${} parser.
