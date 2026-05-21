@@ -8,6 +8,8 @@ ray[serve]==2.50.0
 python-slugify
 redis
 peft
+pandas
+einops
 # Telemetry
 prometheus_client
 loki-logger-handler
@@ -24,4 +26,3 @@ google
 # Security
 RestrictedPython>=7.0
 zstandard
-pandas
