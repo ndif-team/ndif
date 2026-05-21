@@ -13,6 +13,7 @@ from fastapi_socketio import SocketManager
 
 
 from opentelemetry import trace
+from opentelemetry.trace import format_trace_id
 
 from nnsight.schema.response import ResponseModel
 
@@ -110,8 +111,14 @@ async def request(
             if not response.blocking:
                 response.save()
 
-            # Run network status metric update in background
-            background_tasks.add_task(NetworkStatusMetric.update, backend_request)
+            # Run network status metric update in background. Capture the
+            # trace_id now so the metric record can be joined with the trace
+            # even though the background task runs outside this span.
+            ctx = span.get_span_context()
+            trace_id = format_trace_id(ctx.trace_id) if ctx and ctx.is_valid else None
+            background_tasks.add_task(
+                NetworkStatusMetric.update, backend_request, trace_id
+            )
 
             backend_request.request = await backend_request.request
 
