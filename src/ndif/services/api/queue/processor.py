@@ -400,12 +400,17 @@ class Processor:
         add one more replica and sleep ``NDIF_AUTOSCALING_BACKOFF_S``
         before re-checking — the backoff gives the new replica time to
         come up and drain queue depth before we'd fire another scale-up.
+        Scale-ups stop once ``NDIF_AUTOSCALING_MAX_REPLICAS`` replicas
+        are running.
         """
         while self.status != ProcessorStatus.CANCELLED:
             head = self.queue._queue[0] if self.queue._queue else None
             if head is not None and head.enqueued_at is not None:
                 wait = time.time() - head.enqueued_at
-                if wait > QueueConfig.autoscaling_wait_threshold_s:
+                if (
+                    wait > QueueConfig.autoscaling_wait_threshold_s
+                    and len(self.replicas) < QueueConfig.autoscaling_max_replicas
+                ):
                     await self.scale_up(wait)
                     await asyncio.sleep(QueueConfig.autoscaling_backoff_s)
                     continue

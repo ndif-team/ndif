@@ -44,6 +44,11 @@ class QueueConfig:
             scale-up fires.
             Environment variable: NDIF_AUTOSCALING_BACKOFF_S
             Default: 120
+        autoscaling_max_replicas: Upper bound on the number of replicas a
+            single model_key can be scaled to via autoscaling. The loop
+            stops requesting more once this many replicas are running.
+            Environment variable: NDIF_AUTOSCALING_MAX_REPLICAS
+            Default: 3
 
     Example:
         >>> from .config import QueueConfig
@@ -56,6 +61,7 @@ class QueueConfig:
     autoscaling_interval_s: int
     autoscaling_wait_threshold_s: int
     autoscaling_backoff_s: int
+    autoscaling_max_replicas: int
 
     @classmethod
     def from_env(cls) -> None:
@@ -86,6 +92,10 @@ class QueueConfig:
             os.environ.get("NDIF_AUTOSCALING_BACKOFF_S", "120"),
             "NDIF_AUTOSCALING_BACKOFF_S",
         )
+        cls.autoscaling_max_replicas = cls._parse_positive_int(
+            os.environ.get("NDIF_AUTOSCALING_MAX_REPLICAS", "3"),
+            "NDIF_AUTOSCALING_MAX_REPLICAS",
+        )
 
     @classmethod
     def to_env(cls) -> dict[str, object]:
@@ -100,6 +110,7 @@ class QueueConfig:
             "NDIF_AUTOSCALING_INTERVAL_S": cls.autoscaling_interval_s,
             "NDIF_AUTOSCALING_WAIT_THRESHOLD_S": cls.autoscaling_wait_threshold_s,
             "NDIF_AUTOSCALING_BACKOFF_S": cls.autoscaling_backoff_s,
+            "NDIF_AUTOSCALING_MAX_REPLICAS": cls.autoscaling_max_replicas,
         }
 
     @classmethod
