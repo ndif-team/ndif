@@ -86,7 +86,6 @@ The "what file do I change for X" table.
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
 | Pinned-deployment scheduler / dashboard | `src/ndif/services/dashboard/` — §5.7, §13 |
-| The legacy uptime monitor | `src/ndif/services/monitor/` — §13 (being replaced by the dashboard) |
 
 ### File index
 
@@ -139,14 +138,12 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/checks.py` | Pre-flight checks for `ndif start` |
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
-| `docker/Dockerfile` | Multi-purpose — `ARG NAME=api` or `NAME=ray` |
-| `docker/Dockerfile.dashboard` | Multi-stage (node build → python runtime) for the `dashboard` image |
+| `docker/Dockerfile` | Single unified image — every NDIF service runs from it, selected at runtime via `NDIF_SERVICE`. Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
 | `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces `services/monitor/`) |
-| `src/ndif/services/monitor/` | Legacy standalone uptime monitor — being replaced by the dashboard |
+| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -249,7 +246,6 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Reconcile cron](#132-reconcile-cron)
     - [Schedule semantics](#133-schedule-semantics)
     - [Configuration](#134-configuration)
-    - [Legacy services/monitor/](#135-legacy-servicesmonitor)
 14. [Invariants](#14-invariants) — ⚠️ read before "simplifying" anything
     - [`num_gpus=0` on ModelActor](#141-modelactor-is-declared-with-num_gpus0)
     - [Two whitelists](#142-two-whitelists-not-one)
@@ -2122,11 +2118,16 @@ RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in && \
 CMD ndif start "${NAME}"
 ```
 
-This builds two images from the same Dockerfile:
-- `api:latest` — The API service
-- `ray:latest` — The Ray head node
+This builds **one** image — `ndif/ndif:latest` (also tagged with the pyproject version). Every NDIF service runs from it; the consumer chooses which by setting `NDIF_SERVICE`:
 
-`make build` additionally builds a third image, `dashboard:latest`, from `docker/Dockerfile.dashboard` (a multi-stage node-build → python-runtime image that bakes in the Vue SPA and the FastAPI backend; see `services/dashboard/README.md`).
+| `NDIF_SERVICE=` | What runs |
+|---|---|
+| `all` (default) | broker + object-store + ray + api (+ dashboard if `NDIF_DASHBOARD_PORT` set). The Docker Hub demo experience. |
+| `api` / `ray` / `dashboard` | Just that service. Used by docker-compose, which sets the env var per service. |
+
+`make build` depends on `dashboard-frontend`, which runs `npm ci && npm run build` on the host (node 20+ required) and writes the Vue SPA to `src/ndif/services/dashboard/frontend/dist/`. The Dockerfile COPYs the pre-built dist in.
+
+`make push` pushes both `ndif/ndif:latest` and `ndif/ndif:VERSION` to Docker Hub. `make run` is a one-shot `docker run` with the standard port mappings + HF cache mount.
 
 The `docker-compose.yml` orchestrates the following services:
 
@@ -2135,9 +2136,9 @@ The `docker-compose.yml` orchestrates the following services:
 | `message_broker` | `redis` | Request queue, pub/sub, Socket.IO backend |
 | `minio` | `minio/minio` | Object storage for results |
 | `postgres` | `postgres:16-alpine` | API key store (dev-mode bypass available) |
-| `ray` | `ray:latest` | Ray head + Controller + ModelActors |
-| `api` | `api:latest` | FastAPI + Dispatcher |
-| `dashboard` | `dashboard:latest` | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
+| `ray` | `ndif/ndif:latest` (NDIF_SERVICE=ray) | Ray head + Controller + ModelActors |
+| `api` | `ndif/ndif:latest` (NDIF_SERVICE=api) | FastAPI + Dispatcher |
+| `dashboard` | `ndif/ndif:latest` (NDIF_SERVICE=dashboard) | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
 | `prometheus` | `prom/prometheus` | Metrics collection |
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |
@@ -2147,7 +2148,7 @@ The `docker-compose.yml` orchestrates the following services:
 **Build and run:**
 
 ```bash
-make build   # Build api and ray images
+make build   # Build the unified ndif/ndif image
 make up      # Start all containers
 make down    # Stop all containers
 make ta      # Full rebuild: down + build + up
@@ -2229,13 +2230,13 @@ All configuration is via environment variables. The defaults shown below are wha
 
 `src/ndif/services/dashboard/` is the admin web app. It owns three things:
 
-1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions. Replaces the standalone `services/monitor/`.
+1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions.
 2. **Pinned-deployment scheduling** — a JSON-backed schedule store + diff-based reconcile cron that pushes the active set to the controller (§5.7).
 3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (one card per `model_key` with a row of per-replica dots — green = HOT+RUNNING, flashing amber↔green = HOT+DEPLOYING, red = HOT+UNHEALTHY, amber = WARM; hover a dot for Restart / Evict / Deploy on that one replica; the card kebab has "Restart All" / "Add Replica" / "Evict All"), and a month calendar for editing the schedule.
 
 The backend's `/api/status` endpoint aggregates the controller's per-replica entries into one card per `model_key` with a `replicas: [...]` array. Card-level `deployment_level`, `application_state`, and `pinned` are the "best across siblings" (HOT > WARM > COLD; RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY; pinned-if-any).
 
-It ships as a docker-compose service alongside `api` and `ray`. The image is built from `docker/Dockerfile.dashboard` (multi-stage: node build of the Vue SPA → python runtime serving the SPA + the FastAPI backend) and runs a `cron` daemon for the monitor and reconcile jobs. Default port is `NDIF_DASHBOARD_PORT=8081`.
+It ships as a docker-compose service alongside `api` and `ray` (same `ndif/ndif` image, started with `NDIF_SERVICE=dashboard`). The Vue SPA is pre-built on the host via `make dashboard-frontend` and copied into the image. A `cron` daemon runs alongside uvicorn for the monitor and reconcile jobs. Default port is `8081` (set `NDIF_DASHBOARD_PORT` to override; setting it also makes `ndif start all` include the dashboard).
 
 The full operator-facing reference lives in `src/ndif/services/dashboard/README.md`. This section is the design-doc summary.
 
@@ -2245,7 +2246,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 - `src/ndif/services/dashboard/backend/schedule_store.py` — JSON-backed schedule CRUD, fcntl-locked
 - `src/ndif/services/dashboard/backend/ndif_client.py` — thin wrappers around `cli/lib/{deploy,evict,restart,status}.py` (the dashboard reuses the CLI's helpers rather than poking the controller directly)
 - `src/ndif/services/dashboard/backend/routers/{auth,monitor,schedule,deployments,deploy}.py`
-- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron (the body that used to live under `services/monitor/jobs/monitor.py`)
+- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron
 - `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`. flock-serialized; schedule writes also trigger an immediate background reconcile.
 - `src/ndif/services/dashboard/start.sh` — canonical entrypoint, used by both Docker and standalone runs
 - `src/ndif/services/dashboard/frontend/` — Vue 3 + Vite + TS SPA
@@ -2258,7 +2259,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 2. **Every 2 hours** (or every run while recovering from downtime), fetches `/status`, enumerates HOT models, and runs a real nnsight trace against each one. Catches "API up, inference broken" cases. The `models_failed` Discord message is capped under 2000 chars to fit Discord's limit.
 3. **Sends Discord notifications** on state transitions (down / still-down / back-up). "Still down" is rate-limited.
 
-NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation) — same format the previous `services/monitor/` produced, so the existing dashboard data carries over via the bind mount.
+NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation).
 
 ### 13.2 Reconcile cron
 
@@ -2294,17 +2295,13 @@ Env-var driven; full table in `services/dashboard/README.md`. Highlights:
 | `NDIF_DASHBOARD_PASSWORD_HASH` | (empty — login disabled) | Bcrypt hash; generate via `python -m ndif.services.dashboard.backend.auth hash <password>` |
 | `NDIF_DASHBOARD_SESSION_SECRET` | unsafe placeholder | ≥32-byte random; rotates invalidate sessions |
 | `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
-| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) — defaults to the legacy monitor's data dir for continuity |
+| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) |
 | `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Monitor schedule |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile schedule |
 | `NDIF_API_KEY` | (from `.env`) | Used by the monitor cron's nnsight model traces |
 
 Compose-side note: the dashboard service uses `env_file` with `format: raw` so the bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation.
-
-### 13.5 Legacy `services/monitor/`
-
-`src/ndif/services/monitor/` is the previous standalone uptime monitor — a `run.sh`-deployed conda env + cron job + Flask dashboard, separate from the docker stack. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is still in the tree for now to support the existing `~/ndif_monitor/` deployment, but new work should go in the dashboard. Plan to remove it once the dashboard has been the primary monitor for one full release cycle.
 
 ---
 
@@ -2643,17 +2640,7 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
-### 15.9 Legacy monitor service (§13.5)
-
-Read only by the legacy standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack and are scheduled for removal once the dashboard has fully replaced this service.
-
-| Variable | Default | Description |
-|---|---|---|
-| `INSTALL_DIR` | `~/ndif_monitor` | Where monitor source, config, and logs live |
-| `NDIF_API_KEY` | — | API key used for nnsight remote traces from the monitor |
-| `MONITOR_CRON` | `*/10 * * * *` | Cron schedule for the monitor job |
-
-### 15.10 CLI-only
+### 15.9 CLI-only
 
 Read by the `ndif` CLI when bringing up native-mode dependencies.
 
@@ -2678,8 +2665,8 @@ ndif/
 ├── README.md                           # Project overview
 │
 ├── docker/
-│   ├── Dockerfile                      # Multi-purpose (ARG NAME=api or NAME=ray)
-│   ├── Dockerfile.dashboard            # Multi-stage (node build → python runtime)
+│   ├── Dockerfile                      # Single unified image — every service
+│   │                                     runs from it (NDIF_SERVICE selects)
 │   ├── docker-compose.yml              # Full stack orchestration
 │   └── postgres/
 │       └── init.sql                    # Dev-mode keys DB schema + test key
@@ -2783,7 +2770,4 @@ ndif/
         │   │   ├── reconcile.py        # Diff-based push of schedule.json → controller
         │   │   └── util.py
         │   └── frontend/               # Vue 3 + Vite + TS SPA
-        │
-        └── monitor/                    # Legacy standalone uptime monitor (§13.5)
-            └── (run.sh, jobs/, dashboard/, README.md — being replaced by services/dashboard/)
 ```

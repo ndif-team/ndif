@@ -22,15 +22,16 @@ include = ["ndif*"]
 exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
 
 [tool.setuptools.package-data]
+"ndif" = [".env.example"]
 "ndif.services.api" = ["start.sh"]
 "ndif.services.ray" = ["start.sh", "start-worker.sh"]
 "ndif.services.ray.nn.security" = ["whitelist.yaml"]
 "ndif.services.dashboard" = ["start.sh", "config.example.json"]
-# The built Vue SPA isn't packaged into site-packages — Dockerfile.dashboard
-# copies it to /srv/dashboard/frontend/dist and points
-# NDIF_DASHBOARD_FRONTEND_DIST at that path. For non-Docker dev,
-# ``npm run build`` writes to the source tree's dist/ and config.py
-# auto-resolves it.
+# The built Vue SPA isn't packaged into site-packages — the docker
+# build copies it in at the source-tree path (editable install means
+# the dashboard config's default frontend_dist resolves there). For
+# non-Docker dev, ``make dashboard-frontend`` (npm run build) writes
+# to the source tree's dist/ and config.py auto-resolves it.
 "ndif.cli.config" = ["models.yaml"]
 
 [tool.setuptools.dynamic]
