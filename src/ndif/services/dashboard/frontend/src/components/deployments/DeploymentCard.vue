@@ -1,17 +1,33 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
+// One replica record inside a Deployment's ``replicas`` array. The
+// dashboard's /api/status aggregates per-replica entries from the
+// controller into the parent Deployment, so each model gets one card and
+// each card carries N of these.
+export interface ReplicaInfo {
+  replica_id: string
+  deployment_level?: 'HOT' | 'WARM' | string
+  application_state?: string
+  pinned?: boolean
+}
+
 export interface Deployment {
   model_key: string
   repo_id?: string
   revision?: string | null
+  // Card-level "best" across replicas (HOT > WARM > COLD).
   deployment_level?: 'HOT' | 'WARM' | 'COLD' | string
+  // Card-level "best" across replicas (RUNNING > DEPLOYING > NOT_STARTED >
+  // UNHEALTHY).
   application_state?: string
+  // OR across replicas; also OR'd with the active schedule.
   pinned?: boolean
   n_params?: number
   size_bytes?: number
   actor_class?: string | null
   schedule?: { start_time?: string; end_time?: string; title?: string } | null
+  replicas?: ReplicaInfo[]
   // pending = optimistic placeholder for an in-flight deploy. The card
   // shows a pulse + no badges/menu until the server-side state catches up.
   pending?: boolean
@@ -26,6 +42,10 @@ const emit = defineEmits<{
   restart: [d: Deployment]
   evict: [d: Deployment]
   deploy: [d: Deployment]
+  addReplica: [d: Deployment]
+  restartReplica: [d: Deployment, replicaId: string]
+  evictReplica: [d: Deployment, replicaId: string]
+  deployReplica: [d: Deployment, replicaId: string]
 }>()
 
 const menuOpen = ref(false)
@@ -35,14 +55,29 @@ function close() {
 }
 
 const levelClass = computed(() => 'level-' + (props.deployment.deployment_level || '').toLowerCase())
+
 // COLD shows a standalone Deploy button (opens the deploy modal so the user
-// can pick actor_class / pinned / etc.). WARM uses a kebab menu with
-// Deploy + Evict — the Deploy goes through a fast-path that redeploys the
-// existing model_key as-is (no modal, no canonicalize round-trip) since
-// every option is already pinned by the existing deployment record.
+// can pick actor_class / pinned / etc.). WARM and HOT use a kebab menu
+// with "Add Replica" + actions appropriate to the card-level state.
 const isCold = computed(() => props.deployment.deployment_level === 'COLD')
 const isWarm = computed(() => props.deployment.deployment_level === 'WARM')
+const isHot = computed(() => props.deployment.deployment_level === 'HOT')
 const isPending = computed(() => !!props.deployment.pending)
+
+const replicas = computed<ReplicaInfo[]>(() => props.deployment.replicas || [])
+
+// Counts for the small "M/N ready" badge under the state pill.
+const replicaCounts = computed(() => {
+  let ready = 0
+  let total = 0
+  for (const r of replicas.value) {
+    if (r.deployment_level === 'HOT') {
+      total++
+      if (r.application_state === 'RUNNING') ready++
+    }
+  }
+  return { ready, total }
+})
 
 // Last segment of a dotted import path. ``foo.bar.Baz`` → ``Baz``.
 function basename(path: string | null | undefined): string | null {
@@ -105,21 +140,53 @@ const scheduleLabel = computed(() => {
   return fmtRemaining(s.end_time)
 })
 
+// ---- replica dot styling ---------------------------------------------------
+
+function replicaClass(r: ReplicaInfo): string {
+  const lvl = r.deployment_level
+  const state = r.application_state
+  const cls = ['replica-dot']
+  if (r.pinned) cls.push('pinned')
+  if (lvl === 'WARM') cls.push('warm')
+  else if (lvl === 'HOT') {
+    cls.push('hot')
+    if (state === 'RUNNING') cls.push('running')
+    else if (state === 'DEPLOYING' || state === 'NOT_STARTED')
+      cls.push('deploying')
+    else if (state === 'UNHEALTHY') cls.push('unhealthy')
+  }
+  return cls.join(' ')
+}
+
+function replicaTooltip(r: ReplicaInfo): string {
+  const bits: string[] = [r.replica_id]
+  if (r.deployment_level) bits.push(r.deployment_level.toLowerCase())
+  if (r.application_state) bits.push(r.application_state.toLowerCase())
+  if (r.pinned) bits.push('pinned')
+  return bits.join(' · ')
+}
+
+// ---- handlers --------------------------------------------------------------
+
 function onRestart() {
   close()
-  if (!confirm(`Restart ${props.deployment.repo_id || props.deployment.model_key}?`)) return
+  const name = props.deployment.repo_id || props.deployment.model_key
+  const n = replicas.value.filter((r) => r.deployment_level === 'HOT').length
+  if (!confirm(`Restart ${n} replica(s) of ${name}?`)) return
   emit('restart', props.deployment)
 }
 
 function onEvict() {
   close()
   const name = props.deployment.repo_id || props.deployment.model_key
+  const n = replicas.value.length
   // If this model is in an active schedule entry, the next reconcile tick
   // will re-deploy it. The admin should remove the entry from the Schedule
   // tab if they want it gone permanently.
+  const noun = n === 1 ? 'replica' : 'replicas'
   const what = props.deployment.pinned
-    ? `Evict ${name}?\n\n(This is pinned. If a schedule entry covers it, the next reconcile will re-deploy it. Remove the entry from the Schedule tab to make it permanent.)`
-    : `Evict ${name}?`
+    ? `Evict all ${n} ${noun} of ${name}?\n\n(This is pinned. If a schedule entry covers it, the next reconcile will re-deploy it. Remove the entry from the Schedule tab to make it permanent.)`
+    : `Evict all ${n} ${noun} of ${name}?`
   if (!confirm(what)) return
   emit('evict', props.deployment)
 }
@@ -127,6 +194,23 @@ function onEvict() {
 function onDeploy() {
   close()
   emit('deploy', props.deployment)
+}
+
+function onAddReplica() {
+  close()
+  emit('addReplica', props.deployment)
+}
+
+function onReplicaRestart(r: ReplicaInfo) {
+  emit('restartReplica', props.deployment, r.replica_id)
+}
+
+function onReplicaEvict(r: ReplicaInfo) {
+  emit('evictReplica', props.deployment, r.replica_id)
+}
+
+function onReplicaDeploy(r: ReplicaInfo) {
+  emit('deployReplica', props.deployment, r.replica_id)
 }
 
 function onMenuBlur(e: FocusEvent) {
@@ -159,7 +243,7 @@ function onMenuBlur(e: FocusEvent) {
           Deploy
         </button>
 
-        <!-- WARM: kebab → Deploy (fast-path redeploy via existing model_key) / Evict -->
+        <!-- WARM (no HOT replicas): Add Replica + Evict All -->
         <div v-else-if="isWarm" class="menu-wrap" @focusout="onMenuBlur">
           <button
             class="kebab"
@@ -172,13 +256,13 @@ function onMenuBlur(e: FocusEvent) {
             ⋯
           </button>
           <div v-if="menuOpen" class="menu" role="menu">
-            <button type="button" @click="onDeploy">Deploy</button>
-            <button type="button" class="danger" @click="onEvict">Evict</button>
+            <button type="button" @click="onAddReplica">Add Replica</button>
+            <button type="button" class="danger" @click="onEvict">Evict All</button>
           </div>
         </div>
 
-        <!-- HOT: kebab → Restart / Evict -->
-        <div v-else class="menu-wrap" @focusout="onMenuBlur">
+        <!-- HOT: Restart All + Add Replica + Evict All -->
+        <div v-else-if="isHot" class="menu-wrap" @focusout="onMenuBlur">
           <button
             class="kebab"
             type="button"
@@ -190,8 +274,9 @@ function onMenuBlur(e: FocusEvent) {
             ⋯
           </button>
           <div v-if="menuOpen" class="menu" role="menu">
-            <button type="button" @click="onRestart">Restart</button>
-            <button type="button" class="danger" @click="onEvict">Evict</button>
+            <button type="button" @click="onRestart">Restart All</button>
+            <button type="button" @click="onAddReplica">Add Replica</button>
+            <button type="button" class="danger" @click="onEvict">Evict All</button>
           </div>
         </div>
       </div>
@@ -225,6 +310,49 @@ function onMenuBlur(e: FocusEvent) {
           >
             {{ scheduleLabel ? 'pinned · ' + scheduleLabel : 'pinned' }}
           </span>
+          <span
+            v-if="replicaCounts.total > 1"
+            class="pill replica-count"
+            :title="'HOT replicas ready / total'"
+          >
+            {{ replicaCounts.ready }}/{{ replicaCounts.total }} ready
+          </span>
+        </div>
+
+        <!-- Replica dots — one per replica, hover shows per-replica actions. -->
+        <div v-if="replicas.length" class="replica-row">
+          <div
+            v-for="r in replicas"
+            :key="r.replica_id"
+            class="replica-wrap"
+          >
+            <span
+              :class="replicaClass(r)"
+              :title="replicaTooltip(r)"
+              :aria-label="replicaTooltip(r)"
+              tabindex="0"
+            ></span>
+            <div class="replica-menu" role="menu">
+              <div class="replica-menu-label">{{ r.replica_id }}</div>
+              <button
+                v-if="r.deployment_level === 'HOT'"
+                type="button"
+                @click.stop="onReplicaRestart(r)"
+              >
+                Restart
+              </button>
+              <button
+                v-else-if="r.deployment_level === 'WARM'"
+                type="button"
+                @click.stop="onReplicaDeploy(r)"
+              >
+                Deploy
+              </button>
+              <button type="button" class="danger" @click.stop="onReplicaEvict(r)">
+                Evict
+              </button>
+            </div>
+          </div>
         </div>
 
         <div class="meta">
@@ -463,6 +591,118 @@ function onMenuBlur(e: FocusEvent) {
   text-transform: none;
   letter-spacing: 0.04em;
   font-size: 0.65rem;
+}
+.pill.replica-count {
+  color: var(--muted);
+  border-color: var(--border);
+  text-transform: none;
+  letter-spacing: 0.04em;
+  font-size: 0.65rem;
+}
+
+/* ----- Replica dots ----- */
+.replica-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.1rem 0;
+}
+.replica-wrap {
+  position: relative;
+}
+.replica-dot {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.15s;
+  outline: none;
+}
+.replica-dot:hover,
+.replica-dot:focus {
+  transform: scale(1.25);
+}
+.replica-dot.hot.running {
+  background: var(--green);
+  border-color: var(--green);
+}
+.replica-dot.hot.deploying {
+  background: var(--amber);
+  border-color: var(--amber);
+  animation: deploy-flash 1s ease-in-out infinite;
+}
+.replica-dot.hot.unhealthy {
+  background: var(--red);
+  border-color: var(--red);
+}
+.replica-dot.warm {
+  background: var(--amber);
+  border-color: var(--amber);
+}
+.replica-dot.pinned {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+@keyframes deploy-flash {
+  0%, 100% {
+    background: var(--amber);
+    border-color: var(--amber);
+  }
+  50% {
+    background: var(--green);
+    border-color: var(--green);
+  }
+}
+
+/* Hover popover menu for a single replica. Sticks slightly to the dot via
+   the small padding band so the cursor can travel from dot to menu without
+   re-triggering the hover boundary. */
+.replica-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  flex-direction: column;
+  min-width: 100px;
+  z-index: 6;
+  padding-top: 0.05rem;
+}
+.replica-wrap:hover .replica-menu,
+.replica-wrap:focus-within .replica-menu {
+  display: flex;
+}
+.replica-menu-label {
+  font-family: 'Space Mono', monospace;
+  font-size: 0.65rem;
+  color: var(--muted);
+  padding: 0.35rem 0.6rem 0.15rem;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.replica-menu button {
+  appearance: none;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  font-family: 'Space Mono', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.replica-menu button:hover {
+  background: var(--surface-2);
+}
+.replica-menu button.danger {
+  color: var(--red);
 }
 
 .meta {

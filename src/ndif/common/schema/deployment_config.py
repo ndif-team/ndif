@@ -13,6 +13,7 @@ class DeploymentConfig(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     pinned: bool = False
+    replicas: int = 1
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     actor_class: Optional[Union[str, type]] = None

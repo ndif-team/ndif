@@ -102,7 +102,14 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: keys
-      COORDINATOR_STATUS_CACHE_FREQ_S: 10
+      NDIF_STATUS_CACHE_FREQ_S: 10
+      # Short autoscaling timers so the tests/report/test_autoscaling.py
+      # suite can exercise scale-up in seconds rather than minutes.
+      # Production stacks should use the QueueConfig defaults
+      # (interval=5s, threshold=30s, backoff=120s).
+      NDIF_AUTOSCALING_INTERVAL_S: 1
+      NDIF_AUTOSCALING_WAIT_THRESHOLD_S: 5
+      NDIF_AUTOSCALING_BACKOFF_S: 10
       OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
 
   dashboard:

@@ -45,17 +45,23 @@ RUN apt-get update -y \
 
 ARG NAME=dashboard
 ENV NDIF_SERVICE=${NAME}
-
-COPY . /ndif
 WORKDIR /ndif
+
+# Layer 1: service requirements. Only invalidated when dashboard's
+# requirements.in changes.
+COPY src/ndif/services/${NAME}/requirements.in /ndif/src/ndif/services/${NAME}/requirements.in
+RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in
+
+# Layer 2: full source + local install. Invalidated on any source edit,
+# but the install itself is cheap (--no-deps).
+COPY . /ndif
 
 # Drop the built dist/ outside the source tree at a fixed path. The env var
 # tells the FastAPI app where to serve from.
 COPY --from=frontend-builder /app/dist /srv/dashboard/frontend/dist
 ENV NDIF_DASHBOARD_FRONTEND_DIST=/srv/dashboard/frontend/dist
 
-RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in \
-    && uv pip install --system . --no-deps \
+RUN uv pip install --system . --no-deps \
     && find /usr/local/lib/python3.12 -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
     && find /usr/local/lib/python3.12 -name "*.pyc" -delete \
     && find /usr/local/lib/python3.12 -name "*.pyo" -delete \

@@ -1,7 +1,12 @@
 """Utility functions for NDIF CLI"""
 
+import logging
 import time
 from pathlib import Path
+from typing import Iterable, Optional
+
+
+logger = logging.getLogger("ndif")
 
 
 # ASCII art for NDIF logo
@@ -84,9 +89,7 @@ def get_model_key(
     from nnsight.util import from_import_path
 
     cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
-    model = cls(
-        checkpoint, revision=revision, dispatch=False, trust_remote_code=True
-    )
+    model = cls(checkpoint, revision=revision, dispatch=False, trust_remote_code=True)
     return model.to_model_key()
 
 
@@ -135,28 +138,36 @@ def canonicalize_checkpoint(
     return extract_repo_id_from_model_key(model_key), revision, model_key
 
 
-async def notify_dispatcher(redis_url: str, event_type: str, model_key: str):
-    """Notify dispatcher of deployment changes via Redis streams.
+def notify_reconcile(broker_url: Optional[str], model_keys: Iterable[str]) -> None:
+    """Tell the dispatcher to refresh its replica pool for one or more models.
 
-    Args:
-        redis_url: Redis connection URL
-        event_type: Type of event ("deploy" or "evict")
-        model_key: Model key affected by the event
+    Published to the ``dispatcher:events`` Redis stream as one or more
+    ``reconcile_model`` events, each carrying a single ``model_key``. The
+    dispatcher routes each event to the matching :class:`Processor` (if
+    one exists) which then calls ``Controller.get_deployment(model_key)``
+    and diffs the result against its current pool — spawning workers for
+    new replicas, cancelling workers for evicted ones.
+
+    Best-effort: a Redis hiccup must not break the deploy/evict that just
+    succeeded on the controller. We log and swallow.
     """
-    import redis.asyncio as redis
-
-    redis_client = redis.Redis.from_url(redis_url)
+    keys = sorted({mk for mk in model_keys if mk})
+    if not keys:
+        return
     try:
-        await redis_client.xadd(
-            "dispatcher:events",
-            {
-                "event_type": event_type,
-                "model_key": model_key,
-                "timestamp": str(time.time()),
-            },
-        )
-    finally:
-        await redis_client.aclose()
+        import redis
+
+        client = redis.Redis.from_url(broker_url)
+        try:
+            for mk in keys:
+                client.xadd(
+                    "dispatcher:events",
+                    {"event_type": "reconcile_model", "model_key": mk},
+                )
+        finally:
+            client.close()
+    except Exception as e:
+        logger.warning(f"Failed to notify dispatcher to reconcile {keys}: {e}")
 
 
 def get_current_deployments(level: str = "HOT") -> list[dict]:
@@ -186,11 +197,11 @@ def get_current_deployments(level: str = "HOT") -> list[dict]:
     return list(deployments.values())
 
 
-def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
-    """Wait for a model actor to be ready.
+def wait_for_replica_ready(model_key: str, replica_id: str, timeout: int = 300) -> bool:
+    """Wait for a specific replica's actor to be ready.
 
-    Polls the model actor's __ray_ready__ method until it returns successfully,
-    indicating the model is fully loaded and ready for inference.
+    Polls the actor's ``__ray_ready__`` until it returns successfully,
+    indicating the replica is fully loaded and ready for inference.
 
     Tolerated transient states (keep polling):
     - ``"Failed to look up actor"`` — actor not yet registered (fresh deploy
@@ -199,15 +210,15 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
       (the path ``restart()`` triggers via ``ray.kill(no_restart=False)``).
 
     Args:
-        model_key: The model key to wait for
-        timeout: Maximum seconds to wait (default: 300 = 5 minutes)
+        model_key: The model key.
+        replica_id: The specific replica to wait on.
+        timeout: Maximum seconds to wait (default: 300 = 5 minutes).
 
     Returns:
-        True if model is ready, False if timeout
+        True if ready, False if timeout.
 
     Raises:
-        Exception: If an initialization error occurs (not a transient lookup
-            or actor-died failure).
+        Exception: On a non-transient initialization error.
     """
     import ray
     import ray.exceptions
@@ -217,20 +228,16 @@ def wait_for_model_ready(model_key: str, timeout: int = 300) -> bool:
 
     while time.time() - start_time < timeout:
         try:
-            handle = get_model_actor_handle(model_key)
+            handle = get_model_actor_handle(model_key, replica_id)
             ray.get(handle.__ray_ready__.remote())
             return True
         except ray.exceptions.RayActorError:
-            # Actor is dying / being respawned — keep polling.
             time.sleep(2)
             continue
         except Exception as e:
-            error_str = str(e)
-            # Actor doesn't exist yet — keep waiting.
-            if "Failed to look up actor" in error_str:
+            if "Failed to look up actor" in str(e):
                 time.sleep(2)
                 continue
-            # Actual initialization error.
             raise
 
     return False
