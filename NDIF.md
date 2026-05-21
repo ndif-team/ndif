@@ -2136,9 +2136,9 @@ The `docker-compose.yml` orchestrates the following services:
 | `message_broker` | `redis` | Request queue, pub/sub, Socket.IO backend |
 | `minio` | `minio/minio` | Object storage for results |
 | `postgres` | `postgres:16-alpine` | API key store (dev-mode bypass available) |
-| `ray` | `ray:latest` | Ray head + Controller + ModelActors |
-| `api` | `api:latest` | FastAPI + Dispatcher |
-| `dashboard` | `dashboard:latest` | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
+| `ray` | `ndif/ndif:latest` (NDIF_SERVICE=ray) | Ray head + Controller + ModelActors |
+| `api` | `ndif/ndif:latest` (NDIF_SERVICE=api) | FastAPI + Dispatcher |
+| `dashboard` | `ndif/ndif:latest` (NDIF_SERVICE=dashboard) | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
 | `prometheus` | `prom/prometheus` | Metrics collection |
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |

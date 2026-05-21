@@ -198,7 +198,7 @@ Everything is env-var driven. `.env.example` has defaults and is loaded by both 
 
 ### Native mode (`ndif` CLI)
 
-The Click CLI in `src/ndif/cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif export`). Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
+The Click CLI in `src/ndif/cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif env example`, `ndif doctor`, `ndif export`). The group-level `--env-file PATH` flag (and CWD `./.env` auto-discovery) thread `.env` config through. Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
 
 The shared deploy/evict/restart/status logic lives under `src/ndif/cli/lib/{deploy,evict,restart,status}.py` — the dashboard backend imports the same helpers, so behavior stays consistent between the CLI and the web UI.
 
