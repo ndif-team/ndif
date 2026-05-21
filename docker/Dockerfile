@@ -16,8 +16,7 @@ WORKDIR /ndif
 
 # Layer 1: torch + torchvision. Largest install, rarely changes — kept
 # in its own layer so source edits don't re-download torch.
-RUN uv pip install --system torch torchvision \
-        --extra-index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install --system torch torchvision
 
 # Layer 2: per-service requirements. Copy ONLY the .in files (not the
 # rest of the source) so this layer is invalidated only when a
