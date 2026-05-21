@@ -114,6 +114,7 @@ Defaults applied at startup; override any with `-e VAR=value`.
 |---|---|---|
 | `NDIF_DEV_MODE` | `true` | If `true`, skips API-key validation (any key works). Set `false` only if you also wire up Postgres for the keys DB. |
 | `NDIF_API_KEY` | — | Default API key used by internal cron jobs (dashboard monitor). Not consulted in dev mode. |
+| `NDIF_SESSION_ROOT` | `~/.ndif/sessions` | Where session metadata + logs live inside the container. |
 
 ### API
 
@@ -181,6 +182,7 @@ Per-Processor autoscaling loop. One Processor per `model_key`; when the oldest q
 | `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often each Processor checks queue-head wait time. |
 | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Scale up when the oldest queued request has waited longer than this. |
 | `NDIF_AUTOSCALING_BACKOFF_S` | `120` | After scaling up, wait this long before re-checking. |
+| `NDIF_AUTOSCALING_MAX_REPLICAS` | `3` | Upper bound on the per-`model_key` replica pool. The loop stops requesting more once this many replicas are running. |
 
 ### Dashboard
 
