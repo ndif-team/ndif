@@ -75,7 +75,7 @@ def get_model_key(
 
     Args:
         checkpoint: Model checkpoint/repo ID
-        revision: Model revision (default: None, uses model's default)
+        revision: Model revision (default: None/unset, resolved by NDIF)
         envoy_class: Dotted import path of the nnsight envoy class
             (e.g. ``nnsight.modeling.language.LanguageModel``,
             ``nnsight.modeling.vlm.VisionLanguageModel``). Defaults to

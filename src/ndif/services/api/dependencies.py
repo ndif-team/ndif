@@ -45,8 +45,8 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
         raise HTTPException(
             status_code=HTTP_400_BAD_REQUEST,
             detail=f"Invalid API key format: '{api_key}'. "
-                   f"API keys must be in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. "
-                   f"You can obtain a valid API key from https://login.ndif.us",
+            f"API keys must be in the format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. "
+            f"You can obtain a valid API key from https://login.ndif.us",
         )
 
     if not await asyncio.to_thread(api_key_store.api_key_exists, api_key):
@@ -103,6 +103,9 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     Raises:
         HTTPException: If the nnsight version is missing or incompatible.
     """
+
+    if AppConfig.dev_mode:
+        return nnsight_version
 
     if nnsight_version == "":
         raise HTTPException(

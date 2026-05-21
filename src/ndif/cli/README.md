@@ -115,7 +115,7 @@ ndif deploy -f models.yaml
 models:
   - gpt2                           # Simple form
   - checkpoint: meta-llama/Llama-3.1-8b
-    revision: main
+    revision: null
     pinned: true                   # Full form with options
 ```
 

@@ -1,6 +1,7 @@
 """Evict command for NDIF - evict (remove) replicas of a model deployment."""
 
 import click
+from typing import Optional
 
 from ..lib.checks import check_prerequisites
 from ..lib.evict import NDIFConnectivityError, evict as evict_lib
@@ -8,13 +9,22 @@ from ..lib.session import get_env
 
 
 @click.command()
-@click.argument('checkpoints', nargs=-1)
-@click.option('--revision', default=None, help='Model revision/branch (default: model\'s default)')
-@click.option('--replica', default=None,
-              help='Target a single replica by id (requires exactly one checkpoint)')
-@click.option('--all', 'evict_all', is_flag=True, help='Evict every HOT deployment')
-@click.option('--ray-address', default=None, help='Ray address (default: from NDIF_RAY_ADDRESS)')
-@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
+@click.argument("checkpoints", nargs=-1)
+@click.option(
+    "--revision", default=None, help="Model revision/branch (default: model's default)"
+)
+@click.option(
+    "--replica",
+    default=None,
+    help="Target a single replica by id (requires exactly one checkpoint)",
+)
+@click.option("--all", "evict_all", is_flag=True, help="Evict every HOT deployment")
+@click.option(
+    "--ray-address", default=None, help="Ray address (default: from NDIF_RAY_ADDRESS)"
+)
+@click.option(
+    "--broker-url", default=None, help="Broker URL (default: from NDIF_BROKER_URL)"
+)
 def evict(
     checkpoints: tuple,
     revision: str,

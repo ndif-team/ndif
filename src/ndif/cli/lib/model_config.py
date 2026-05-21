@@ -7,7 +7,7 @@ File format:
       - gpt2                                    # Simple: just checkpoint
       - checkpoint: meta-llama/Llama-3.1-8b     # Full: with options
         pinned: true
-        revision: main
+    revision: null
         actor_class: ray.deployments.modeling.base.ModelActor  # optional
 """
 
@@ -30,7 +30,7 @@ MODELS_YAML_TEMPLATE = """\
 #   models:
 #     - gpt2                              # Simple: just the checkpoint name (1 replica)
 #     - checkpoint: meta-llama/Llama-3.1-8b
-#       revision: main                    # Optional: specific revision/branch
+#       revision: null                    # Optional: leave null for NDIF default resolution
 #       pinned: true                      # Optional: won't be evicted (default: false)
 #       replicas: 2                       # Optional: how many replicas (default: 1)
 #       actor_class: ray.deployments.modeling.base.ModelActor  # Optional: custom Ray actor class
