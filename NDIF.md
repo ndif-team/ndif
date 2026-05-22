@@ -80,7 +80,7 @@ The "what file do I change for X" table.
 | What modules user code can import | `src/ndif/services/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
 | Result/response serialization and storage | `src/ndif/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
 | Pinned-deployment scheduling | `src/ndif/services/dashboard/` (schedule store + reconcile cron) — §5.7 |
-| Distributed tracing / Jaeger spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
+| Distributed tracing / Tempo spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
 | API keys / dev-mode Postgres | `src/ndif/services/api/db.py`, `src/ndif/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
 | A CLI command | `src/ndif/cli/commands/` — §11 |
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
@@ -139,7 +139,7 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
 | `docker/Dockerfile` | Single unified image — every NDIF service runs from it, selected at runtime via `NDIF_SERVICE`. Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
-| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
+| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, tempo) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
@@ -229,7 +229,7 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Metrics](#101-metrics)
     - [Logging](#102-logging)
     - [Grafana Dashboards](#103-grafana-dashboards)
-    - [Distributed Tracing (OpenTelemetry → Jaeger)](#104-distributed-tracing-opentelemetry--jaeger)
+    - [Distributed Tracing (OpenTelemetry → Tempo)](#104-distributed-tracing-opentelemetry--tempo)
 11. [CLI](#11-cli)
     - [Overview](#overview-9)
     - [Session Management](#111-session-management)
@@ -316,7 +316,7 @@ And several external dependencies:
 | **MinIO** | S3-compatible object storage for results and responses |
 | **PostgreSQL** | API key storage and tier management (dev-mode bypass available) |
 | **Prometheus / InfluxDB / Grafana / Loki** | Metrics, logs, and dashboards |
-| **Jaeger (OTLP)** | Distributed tracing across API ↔ Ray |
+| **Tempo (OTLP)** | Distributed tracing across API ↔ Ray (traces queryable from the Grafana Tempo datasource) |
 
 The project targets **Python 3.12+** and is packaged with [`uv`](https://github.com/astral-sh/uv) (see `pyproject.toml`). Any reference to Python 3.10 or conda-only setup in older docs is stale.
 
@@ -1131,7 +1131,7 @@ ndif queue                         # per-model queue depth
 
 Ray's own dashboard (default `http://localhost:8265`) is useful for seeing actor state, log streams, and task graphs — especially when investigating `build()/apply()` bugs or `_monitor_deployment()` failures.
 
-**Tracing.** Every significant Controller action emits an OpenTelemetry span (`controller.deploy`, `controller.build`, `controller.apply`, `controller.monitor_deployment`). If you bring up the Jaeger service (it's in docker compose), you can watch a `deploy()` call and see exactly which delta items were created, which futures were awaited, and which actors became ready. See §10.4.
+**Tracing.** Every significant Controller action emits an OpenTelemetry span (`controller.deploy`, `controller.build`, `controller.apply`, `controller.monitor_deployment`). With the Tempo service running (it's in docker compose), open Grafana → Explore → Tempo and you can watch a `deploy()` call and see exactly which delta items were created, which futures were awaited, and which actors became ready. See §10.4.
 
 **Common failure modes when you're changing this code:**
 - A new deployment stays `DEPLOYING` forever → the `_monitor_deployment` task hit an exception. Check `ray_dashboard → logs` for the actor and for the Controller.
@@ -1353,7 +1353,7 @@ pytest tests/test_hotswapping.py --run-remote  # HOT → WARM → HOT, fractiona
 
 **Fast iteration on the load path.** The slowest thing in this subsystem is loading a large model from disk. If you're iterating on `load_from_disk` / `from_cache` / `to_cache`, set `NDIF_DEPLOYMENTS=<small_model>` (e.g. `openai-community/gpt2`) before bringing up the stack — the smallest model takes ~2 seconds to load instead of ~2 minutes.
 
-**Debugging a hung or slow request.** The pipeline is heavily traced (§10.4). A single request's timeline in Jaeger looks like this:
+**Debugging a hung or slow request.** The pipeline is heavily traced (§10.4). A single request's timeline in Tempo looks like this:
 
 ```
 model_actor.call
@@ -1956,16 +1956,16 @@ Pre-configured dashboards (in `telemetry/grafana/dashboards/`) provide:
 - Queue depth and processing rates
 - Error rates by model
 
-### 10.4 Distributed Tracing (OpenTelemetry → Jaeger)
+### 10.4 Distributed Tracing (OpenTelemetry → Tempo)
 
-In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full request lifecycle across the API and Ray services. This is what lets you look at a single request in Jaeger and see every step: validation → queue push → dispatch → provisioning → actor load → `pre()` → `execute()` → `post()`.
+In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full request lifecycle across the API and Ray services. This is what lets you look at a single request in Tempo (via Grafana → Explore → Tempo) and see every step: validation → queue push → dispatch → provisioning → actor load → `pre()` → `execute()` → `post()`.
 
 **Key files:**
 - `src/ndif/common/tracing/` — shared setup, used by the Ray service and Dispatcher
 - `src/ndif/services/api/tracing/` — API-specific wiring (FastAPI instrumentation + request attributes)
 - Both directories expose `init_tracing(service_name)`, `trace_span(...)`, `set_request_attributes(span, request)`, and `TracingContext` for propagation
 
-**Setup.** Each service calls `init_tracing("ndif-<service>")` once at startup. This creates a `TracerProvider`, installs a `BatchSpanProcessor`, and — if `OTEL_EXPORTER_OTLP_ENDPOINT` is set — attaches an OTLP gRPC exporter pointing at Jaeger. If the env var is not set, tracing is a no-op (the spans are still created in memory but no exporter consumes them), so unit tests and ad-hoc runs work without Jaeger.
+**Setup.** Each service calls `init_tracing("ndif-<service>")` once at startup. This creates a `TracerProvider`, installs a `BatchSpanProcessor`, and — if `OTEL_EXPORTER_OTLP_ENDPOINT` is set — attaches an OTLP gRPC exporter pointing at Tempo. If the env var is not set, tracing is a no-op (the spans are still created in memory but no exporter consumes them), so unit tests and ad-hoc runs work without Tempo.
 
 **Propagation across service boundaries.** Because the Dispatcher runs in the API process and talks to Ray actors via the Ray client, a request's trace context has to be serialized across the wire. The convention is:
 
@@ -1973,7 +1973,7 @@ In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full r
 2. That dict (`trace_context`) is stored on `BackendRequestModel` and pickled into Redis.
 3. The Dispatcher → Processor → ModelActor chain each pull it back out via `TracingContext.extract(trace_context)` and use it as the parent context for their own spans.
 
-This gives Jaeger a single continuous trace even though the request crossed three processes. ModelActor initialization (`model_actor.init`, `model_actor.load`) and per-request spans (`model_actor.pre`, `model_actor.call`, `model_actor.post`, `model_actor.cleanup`) all hang off the same root.
+This gives Tempo a single continuous trace even though the request crossed three processes. ModelActor initialization (`model_actor.init`, `model_actor.load`) and per-request spans (`model_actor.pre`, `model_actor.call`, `model_actor.post`, `model_actor.cleanup`) all hang off the same root.
 
 **Named spans you can grep for** (useful when debugging a specific subsystem):
 
@@ -1989,10 +1989,10 @@ This gives Jaeger a single continuous trace even though the request crossed thre
 
 | Variable | Default | Description |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `http://jaeger:4317`). Unset = no-op. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `http://tempo:4317`). Unset = no-op. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | Exporter timeout in seconds |
 
-Docker compose ships a Jaeger service at `jaeger:4317` for OTLP gRPC and `jaeger:16686` for the UI.
+Docker compose ships a Tempo service at `tempo:4317` for OTLP gRPC and `tempo:4318` for OTLP HTTP. Tempo has no built-in UI — query traces from Grafana via the provisioned Tempo datasource (`telemetry/grafana/provisioning/datasources/tempo.yml`). Tempo writes blocks to a dedicated `tempo` bucket in MinIO (created at stack-boot by the `tempo-init` service).
 
 ---
 
@@ -2143,7 +2143,8 @@ The `docker-compose.yml` orchestrates the following services:
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |
 | `loki` | `grafana/loki` | Centralized log storage |
-| `jaeger` | `jaegertracing/jaeger` | Distributed tracing UI + OTLP collector |
+| `tempo` | `grafana/tempo` | OTLP trace collector + storage (MinIO-backed, queried via Grafana) |
+| `tempo-init` | `minio/mc` | One-shot bucket bootstrap for Tempo's S3 backend |
 
 **Build and run:**
 
@@ -2637,7 +2638,7 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `INFLUXDB_ORG` | — | — | `common/metrics/metric.py` | InfluxDB organization |
 | `INFLUXDB_BUCKET` | — | — | `common/metrics/metric.py` | InfluxDB bucket |
 | `LOKI_URL` | — | `http://<host>:<DEV_LOKI_PORT>/loki/api/v1/push` | `common/logging/logger.py` | Loki push URL (unset = local logs only) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<TEMPO_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
 ### 15.9 CLI-only
