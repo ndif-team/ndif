@@ -42,7 +42,7 @@ ndif/
     │   │                       ray (RayProvider + NDIFActorHandle — lean ClientActorHandle)
     │   ├── metrics/          ← InfluxDB metric classes
     │   ├── logging/          ← centralized logger setup
-    │   ├── tracing/          ← OpenTelemetry / Jaeger
+    │   ├── tracing/          ← OpenTelemetry / Tempo
     │   └── types.py          ← MODEL_KEY, API_KEY, etc.
     │
     └── services/
@@ -94,7 +94,7 @@ Three services, four infra dependencies:
 | Redis | Queue, pub/sub, Redis streams, Socket.IO backend |
 | MinIO | S3-compatible object store for results/responses |
 | PostgreSQL | API keys + tier assignments |
-| Prometheus/InfluxDB/Grafana/Loki/Jaeger | Metrics, logs, traces |
+| Prometheus/InfluxDB/Grafana/Loki/Tempo | Metrics, logs, traces |
 
 **Request path:** client → `POST /request` → validate (API key, nnsight version, python version, hotswap tier) → pickle to Redis `queue` list → Dispatcher `brpop` → per-`model_key` Processor → Controller deploys the model (may evict others) → ModelActor `pre()` deserializes under a deserialization whitelist → `execute()` runs `RemoteExecutionBackend` under the `Protector` sandbox in a worker thread → `post()` uploads result to MinIO, emits `COMPLETED` over Socket.IO.
 

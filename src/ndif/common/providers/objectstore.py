@@ -21,9 +21,7 @@ class ObjectStoreProvider(Provider):
     def from_env(cls):
         super().from_env()
         cls.object_store_service = os.environ.get("NDIF_OBJECT_STORE_SERVICE", "s3")
-        cls.object_store_url = os.environ.get(
-            "NDIF_OBJECT_STORE_URL", None
-        )
+        cls.object_store_url = os.environ.get("NDIF_OBJECT_STORE_URL") or None
         cls.object_store_bucket = os.environ.get(
             "NDIF_OBJECT_STORE_BUCKET", "ndif-results"
         )

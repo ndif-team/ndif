@@ -75,7 +75,7 @@ services:
       NDIF_RAY_DASHBOARD_GRPC_PORT: ${NDIF_RAY_DASHBOARD_GRPC_PORT}
       NDIF_RAY_TEMP_DIR: ${NDIF_RAY_TEMP_DIR}
       NDIF_CONTROLLER_IMPORT_PATH: ${NDIF_CONTROLLER_IMPORT_PATH}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
 
   api:
     image: ${NDIF_IMAGE:-ndif/ndif:latest}
@@ -114,7 +114,7 @@ services:
       NDIF_AUTOSCALING_INTERVAL_S: 1
       NDIF_AUTOSCALING_WAIT_THRESHOLD_S: 5
       NDIF_AUTOSCALING_BACKOFF_S: 10
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
 
   dashboard:
     image: ${NDIF_IMAGE:-ndif/ndif:latest}
@@ -194,6 +194,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+      - TEMPO_HTTP_PORT=${TEMPO_HTTP_PORT}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../telemetry/grafana/provisioning:/etc/grafana/provisioning
@@ -208,14 +209,35 @@ services:
     volumes:
       - loki-data:/loki
 
-  jaeger:
-    image: jaegertracing/jaeger:${JAEGER_VERSION}
+  # One-shot job that creates the Tempo bucket in MinIO before Tempo starts.
+  # Tempo's S3 backend assumes the bucket exists and will not create it.
+  tempo-init:
+    image: minio/mc:${MC_VERSION}
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${NDIF_OBJECT_STORE_ACCESS_KEY} ${NDIF_OBJECT_STORE_SECRET_KEY}; do sleep 1; done;
+      mc mb --ignore-existing local/${TEMPO_S3_BUCKET};
+      "
+
+  tempo:
+    image: grafana/tempo:${TEMPO_VERSION}
+    command: [ "-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true" ]
     ports:
-      - ${JAEGER_UI_PORT}:16686
-      - ${JAEGER_OTLP_GRPC_PORT}:4317
-      - ${JAEGER_OTLP_HTTP_PORT}:4318
+      - ${TEMPO_HTTP_PORT}:3200
+      - ${TEMPO_OTLP_GRPC_PORT}:4317
+      - ${TEMPO_OTLP_HTTP_PORT}:4318
     environment:
-      - COLLECTOR_OTLP_ENABLED=true
+      TEMPO_S3_ENDPOINT: minio:9000
+      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET}
+      TEMPO_S3_ACCESS_KEY: ${NDIF_OBJECT_STORE_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${NDIF_OBJECT_STORE_SECRET_KEY}
+    volumes:
+      - ../telemetry/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    depends_on:
+      - tempo-init
 
 volumes:
   grafana-storage:
@@ -226,3 +248,4 @@ volumes:
   influxdb2-data:
   influxdb2-config:
   postgres-data:
+  tempo-data:

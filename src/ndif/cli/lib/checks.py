@@ -106,9 +106,12 @@ def check_ray(ray_address: str, timeout: int = 2) -> bool:
         True if Ray port is listening, False otherwise
     """
     try:
-        # Parse the ray address to get host and port
-        # ray://localhost:10001 -> localhost, 10001
-        parsed = urlparse(ray_address)
+        # Accept both "ray://host:port" (client) and bare "host:port" (GCS
+        # — what Ray workers use). urlparse needs a scheme or // prefix to
+        # populate hostname/port, so synthesize one if the caller passed a
+        # bare host:port.
+        addr = ray_address if "://" in ray_address else f"//{ray_address}"
+        parsed = urlparse(addr)
         host = parsed.hostname or 'localhost'
         port = parsed.port or 10001
 
