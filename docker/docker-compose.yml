@@ -1,28 +1,55 @@
+# All three NDIF services (ray, api, dashboard) run from the same unified
+# ndif/ndif image — selected at runtime via NDIF_SERVICE. The Makefile sets
+# NDIF_IMAGE before invoking compose; falls back to `ndif/ndif:latest`.
+
 services:
   message_broker:
     image: redis:${REDIS_VERSION}
     ports:
-      - ${DEV_BROKER_PORT}:${BROKER_INTERNAL_PORT}
+      - ${NDIF_BROKER_PORT}:${NDIF_BROKER_PORT}
+    command: redis-server --port ${NDIF_BROKER_PORT}
 
   minio:
     image: minio/minio:${MINIO_VERSION}
-    command: server /data
-    profiles: ["dependencies"]
+    command: server /data --console-address ":9001"
     ports:
-      - ${DEV_MINIO_PORT}:${MINIO_INTERNAL_PORT}
+      - ${NDIF_OBJECT_STORE_PORT}:9000
+      - ${NDIF_OBJECT_STORE_CONSOLE_PORT}:9001
+    volumes:
+      - minio-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   ray:
-    image: ray:${RAY_VERSION}
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
+      # - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
       - ray-data:/tmp/ray/
-
     ports:
-      - ${DEV_RAY_HEAD_PORT}:${RAY_HEAD_INTERNAL_PORT}
-      - ${DEV_RAY_CLIENT_PORT}:${RAY_CLIENT_INTERNAL_PORT}
-      - ${DEV_RAY_DASHBOARD_PORT}:${RAY_DASHBOARD_INTERNAL_PORT}
-      - ${DEV_RAY_SERVE_PORT}:${RAY_SERVE_INTERNAL_PORT}
+      - ${NDIF_RAY_HEAD_PORT}:${NDIF_RAY_HEAD_PORT}
+      - ${NDIF_RAY_CLIENT_PORT}:${NDIF_RAY_CLIENT_PORT}
+      - ${NDIF_RAY_DASHBOARD_PORT}:${NDIF_RAY_DASHBOARD_PORT}
+      - ${NDIF_RAY_SERVE_PORT}:${NDIF_RAY_SERVE_PORT}
     deploy:
       replicas: 1
       resources:
@@ -32,44 +59,105 @@ services:
               count: ${N_DEVICES}
               capabilities: [ gpu ]
     environment:
-      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
-      - OBJECT_STORE_URL=http://${HOST_IP}:${DEV_MINIO_PORT}
-      - API_URL=http://${HOST_IP}:${DEV_API_PORT}
-      - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
-      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
-      - INFLUXDB_ORG=${INFLUXDB_ORG}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-      - RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
-
-      - SCHEDULING_GOOGLE_CALENDAR_ID=a7cbc58fdb0ddd93a260cd35f34492e8a38c360c44b72c8539e43aa99aeca436@group.calendar.google.com
-      - SCHEDULING_GOOGLE_CREDS_PATH=/src/ray/deployments/controller/gcal/creds.json
-
-    env_file:
-      - .env
+      NDIF_SERVICE: ray
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      NDIF_RAY_HEAD_PORT: ${NDIF_RAY_HEAD_PORT}
+      NDIF_RAY_CLIENT_PORT: ${NDIF_RAY_CLIENT_PORT}
+      NDIF_RAY_DASHBOARD_PORT: ${NDIF_RAY_DASHBOARD_PORT}
+      NDIF_RAY_SERVE_PORT: ${NDIF_RAY_SERVE_PORT}
+      NDIF_RAY_OBJECT_MANAGER_PORT: ${NDIF_RAY_OBJECT_MANAGER_PORT}
+      NDIF_RAY_DASHBOARD_GRPC_PORT: ${NDIF_RAY_DASHBOARD_GRPC_PORT}
+      NDIF_RAY_TEMP_DIR: ${NDIF_RAY_TEMP_DIR}
+      NDIF_CONTROLLER_IMPORT_PATH: ${NDIF_CONTROLLER_IMPORT_PATH}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
 
   api:
-    image: api:${API_VERSION}
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
     ports:
-      - ${DEV_API_PORT}:${API_INTERNAL_PORT}
+      - ${NDIF_API_PORT}:${NDIF_API_PORT}
     environment:
-      OBJECT_STORE_URL: http://${HOST_IP}:${DEV_MINIO_PORT}
-      BROKER_URL: ${BROKER_PROTOCOL}@${HOST_IP}:${DEV_BROKER_PORT}/
-      WORKERS: ${API_WORKERS}
-      RAY_ADDRESS: ray://${HOST_IP}:${DEV_RAY_CLIENT_PORT}
+      NDIF_SERVICE: api
+      NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
+      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+      NDIF_API_WORKERS: ${NDIF_API_WORKERS}
+      NDIF_API_PORT: ${NDIF_API_PORT}
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_DEV_MODE: ${NDIF_DEV_MODE}
       LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
       RAY_SERVE_QUEUE_LENGTH_RESPONSE_DEADLINE_S: 10
       INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
-      API_INTERNAL_PORT: ${API_INTERNAL_PORT}
-      API_URL: http://localhost:${API_INTERNAL_PORT}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_PORT: ${POSTGRES_PORT}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      DEV_MODE: true # If setting to false, make sure your postgres credentials are set correctly in the .env file
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: keys
+      NDIF_STATUS_CACHE_FREQ_S: 10
+      # Short autoscaling timers so the tests/report/test_autoscaling.py
+      # suite can exercise scale-up in seconds rather than minutes.
+      # Production stacks should use the QueueConfig defaults
+      # (interval=5s, threshold=30s, backoff=120s).
+      NDIF_AUTOSCALING_INTERVAL_S: 1
+      NDIF_AUTOSCALING_WAIT_THRESHOLD_S: 5
+      NDIF_AUTOSCALING_BACKOFF_S: 10
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
+
+  dashboard:
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
+    ports:
+      - "${NDIF_DASHBOARD_PORT:-8081}:${NDIF_DASHBOARD_PORT:-8081}"
+    env_file:
+      # ``format: raw`` disables shell-substitution on the env file — without
+      # it, a bcrypt ``$2b$12$…`` hash gets mangled by compose's ${} parser.
+      - path: ../.env.example
+        required: true
+        format: raw
+      - path: ../.env
+        required: false
+        format: raw
+    environment:
+      NDIF_SERVICE: dashboard
+      # Only the values that need compose-side interpolation live here.
+      # NDIF_DASHBOARD_USERNAME / PASSWORD_HASH / SESSION_SECRET / NDIF_API_KEY
+      # come straight from env_file above.
+      NDIF_DASHBOARD_DATA_DIR: /var/lib/dashboard
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      # Monitor cron probes the local api service from inside the bridge
+      # network — ``localhost`` would mean the dashboard container itself, so
+      # use the same host-IP route as NDIF_API_URL.
+      NDIF_DASHBOARD_MONITOR_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      NDIF_RAY_ADDRESS: ray://${HOST_IP}:${NDIF_RAY_CLIENT_PORT}
+      NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
+    volumes:
+      # HF cache + auth token — the deploy lib's get_model_key() resolves
+      # checkpoints via nnsight, which needs network access to HF and (for
+      # gated models like meta-llama/*) the user's HF token. Same mount the
+      # ray service uses.
+      #
+      # No /var/lib/dashboard mount: local docker stacks use the in-container
+      # path (gone on ``make ta``), so a fresh stack starts with empty logs /
+      # schedule / cache and never inherits stale config from a previous
+      # deployment. Production AWS overrides this with its own EBS-backed
+      # mount via ndif-aws's ServiceSchema.
+      - ~/.cache/huggingface/:/root/.cache/huggingface
+    depends_on:
+      - api
+      - ray
+      - message_broker
 
   prometheus:
     image: prom/prometheus:${PROMETHEUS_VERSION}
@@ -106,6 +194,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+      - TEMPO_HTTP_PORT=${TEMPO_HTTP_PORT}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../telemetry/grafana/provisioning:/etc/grafana/provisioning
@@ -120,10 +209,43 @@ services:
     volumes:
       - loki-data:/loki
 
+  # One-shot job that creates the Tempo bucket in MinIO before Tempo starts.
+  # Tempo's S3 backend assumes the bucket exists and will not create it.
+  tempo-init:
+    image: minio/mc:${MC_VERSION}
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${NDIF_OBJECT_STORE_ACCESS_KEY} ${NDIF_OBJECT_STORE_SECRET_KEY}; do sleep 1; done;
+      mc mb --ignore-existing local/${TEMPO_S3_BUCKET};
+      "
+
+  tempo:
+    image: grafana/tempo:${TEMPO_VERSION}
+    command: [ "-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true" ]
+    ports:
+      - ${TEMPO_HTTP_PORT}:3200
+      - ${TEMPO_OTLP_GRPC_PORT}:4317
+      - ${TEMPO_OTLP_HTTP_PORT}:4318
+    environment:
+      TEMPO_S3_ENDPOINT: minio:9000
+      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET}
+      TEMPO_S3_ACCESS_KEY: ${NDIF_OBJECT_STORE_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${NDIF_OBJECT_STORE_SECRET_KEY}
+    volumes:
+      - ../telemetry/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    depends_on:
+      - tempo-init
+
 volumes:
   grafana-storage:
   loki-data:
+  minio-data:
   prometheus-data:
   ray-data:
   influxdb2-data:
   influxdb2-config:
+  postgres-data:
+  tempo-data:

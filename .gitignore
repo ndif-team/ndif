@@ -3,3 +3,12 @@ __pycache__/
 creds.json
 *.nfs*
 ndif.egg-info
+*.egg-info/
+build/
+dist/
+.env
+
+# dashboard frontend
+node_modules/
+.vite/
+*.tsbuildinfo

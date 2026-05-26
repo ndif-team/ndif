@@ -7,44 +7,39 @@ name = "ndif"
 version = "0.0.1"
 description = "The NDIF server, which performs deep inference and serves nnsight requests remotely"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    # CLI
-    "click>=8.0.0",
-
-    # Core API dependencies
-    "fastapi==0.108.0", # Note: pinned version for Socket.IO compatibility
-    "fastapi-cache2",
-    "fastapi-socketio",
-    "python-socketio==5.13.0", # Note: pinned version for Socket.IO compatibility
-    "redis",
-    "psycopg2-binary",
-    "uvicorn[standard]==0.24.0",
-    "gunicorn",
-    "eventlet",
-
-    # Ray dependencies
-    "ray[serve]>=2.50.0",
-    "nnsight",
-
-    # Storage and utilities
-    "boto3",
-    "torch",
-    "python-slugify",
-    "requests",
-]
+requires-python = ">=3.12,<3.14"
+dynamic = ["dependencies"]
 
 [project.scripts]
-ndif = "cli.cli:cli"
+ndif = "ndif.cli.cli:cli"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["cli*", "src*"]
-exclude = ["docker*", "scripts*", "tests*"]
+where = ["src"]
+include = ["ndif*"]
+exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
 
 [tool.setuptools.package-data]
-"src.services.api" = ["start.sh"]
-"src.services.ray" = ["start.sh"]
+"ndif" = [".env.example"]
+"ndif.services.api" = ["start.sh"]
+"ndif.services.ray" = ["start.sh", "start-worker.sh"]
+"ndif.services.ray.nn.security" = ["whitelist.yaml"]
+"ndif.services.dashboard" = ["start.sh", "config.example.json"]
+# The built Vue SPA isn't packaged into site-packages — the docker
+# build copies it in at the source-tree path (editable install means
+# the dashboard config's default frontend_dist resolves there). For
+# non-Docker dev, ``make dashboard-frontend`` (npm run build) writes
+# to the source tree's dist/ and config.py auto-resolves it.
+"ndif.cli.config" = ["models.yaml"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = [
+    "src/ndif/services/api/requirements.in",
+    "src/ndif/services/ray/requirements.in",
+    "src/ndif/services/dashboard/requirements.in",
+] }
 
 [dependency-groups]
 dev = [

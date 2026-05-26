@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 env:
+  # main -> prod ECR repo, everything else -> dev ECR repo
   ECS_REPO: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
 jobs:
@@ -36,55 +37,29 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ---- API image ----
-      - name: Tag the API image
-        id: api
+      # One image for every NDIF service. The container chooses what to run
+      # via NDIF_SERVICE at runtime; the ECS task defs (in ndif-aws) set
+      # NDIF_SERVICE=api / NDIF_SERVICE=ray per service.
+      - name: Tag the ndif image
+        id: ndif
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/api
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ndif
           tags: |
             type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
-      - name: Build and push API service image
+      - name: Build and push ndif image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
           push: true
-          build-args: |
-            NAME=api
-          tags: ${{ steps.api.outputs.tags }}
+          tags: ${{ steps.ndif.outputs.tags }}
           cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
-
-      # ---- Ray image ----
-      - name: Tag the Ray image
-        id: ray
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ray
-          tags: |
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push Ray service image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          build-args: |
-            NAME=ray
-          tags: ${{ steps.ray.outputs.tags }}
-          cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ray:cache,mode=max
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache,mode=max
 
   deploy:
     runs-on: ubuntu-latest
@@ -101,8 +76,8 @@ jobs:
       - name: Deploy with AWS CLI
         run: |
           aws ecs update-service \
-            --cluster Prod \
-            --service API \
-            --deployment-configuration minimumHealthyPercent=0,maximumPercent=100 \
-            --force-new-deployment \
-            --no-cli-pager
+          --cluster NDIF-Prod \
+          --service API \
+          --deployment-configuration minimumHealthyPercent=0,maximumPercent=100 \
+          --force-new-deployment \
+          --no-cli-pager

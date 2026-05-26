@@ -1,0 +1,181 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Search NDIF traces by request id, api key, and/or model key. Dropdowns are populated from Tempo's span attributes; clicking a traceID loads that trace in the panel below.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Matching traces",
+      "type": "table",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "left", "displayMode": "auto" },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "traceID" },
+            "properties": [
+              { "id": "custom.hidden", "value": false },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show trace below",
+                    "url": "/d/${__dashboard.uid}?var-trace_id=${__value.raw}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "traceIdHidden" },
+            "properties": [
+              { "id": "custom.hidden", "value": false },
+              { "id": "displayName", "value": "traceID" },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Show trace below",
+                    "url": "/d/${__dashboard.uid}?var-trace_id=${__value.raw}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "traceService" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "traceName" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "spanID" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "name" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "startTime", "desc": true }]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "limit": 100,
+          "tableType": "spans",
+          "query": "{ span.ndif.request.id =~ \"${request_id:regex}\" && span.ndif.api.key =~ \"${api_key:regex}\" && span.ndif.model.key.slug =~ \"${model_key:regex}\" } | select(span.ndif.request.id, span.ndif.api.key, span.ndif.model.key.slug)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Trace ${trace_id}",
+      "type": "traces",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 12 },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceql",
+          "query": "${trace_id}"
+        }
+      ]
+    }
+  ],
+  "refresh": "",
+  "schemaVersion": 38,
+  "tags": ["tempo", "tracing", "search"],
+  "templating": {
+    "list": [
+      {
+        "name": "request_id",
+        "label": "request id",
+        "type": "query",
+        "datasource": { "type": "tempo", "uid": "tempo" },
+        "query": { "type": 1, "label": "ndif.request.id" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": { "text": "All", "value": "$__all", "selected": false }
+      },
+      {
+        "name": "api_key",
+        "label": "api key",
+        "type": "query",
+        "datasource": { "type": "tempo", "uid": "tempo" },
+        "query": { "type": 1, "label": "ndif.api.key" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": { "text": "All", "value": "$__all", "selected": false }
+      },
+      {
+        "name": "model_key",
+        "label": "model key",
+        "type": "query",
+        "datasource": { "type": "tempo", "uid": "tempo" },
+        "query": { "type": 1, "label": "ndif.model.key.slug" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false,
+        "current": { "text": "All", "value": "$__all", "selected": false }
+      },
+      {
+        "name": "trace_id",
+        "label": "trace id",
+        "type": "textbox",
+        "query": "00000000000000000000000000000000",
+        "current": {
+          "text": "00000000000000000000000000000000",
+          "value": "00000000000000000000000000000000",
+          "selected": false
+        },
+        "hide": 2
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "NDIF Trace Search",
+  "uid": "ndif-trace-search",
+  "version": 4,
+  "weekStart": ""
+}
