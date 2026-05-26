@@ -14,6 +14,6 @@ nnsight
 torchvision
 # The reconcile cron drives deploy/evict/restart through the cli lib, which
 # uses the Ray client. Pinned to match services/ray/requirements.in.
-ray[client]==2.50.0
+ray[client]==2.55.1
 # cli.lib.checks.check_redis + cli.lib.util.notify_reconcile need a redis client.
 redis

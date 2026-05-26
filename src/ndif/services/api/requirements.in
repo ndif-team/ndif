@@ -22,7 +22,7 @@ eventlet
 # Database
 boto3
 # Tasks
-ray[serve]==2.50.0
+ray[serve]==2.55.1
 requests
 torch
 python-slugify
