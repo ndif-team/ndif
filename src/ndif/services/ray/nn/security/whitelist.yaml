@@ -158,6 +158,8 @@ builtins:
   - memoryview
   - globals
   - eval
+  - compile
+  - exec
 
 # =============================================================================
 # MODULES
@@ -261,6 +263,15 @@ modules:
     strict: false
 
   - name: _functools
+    strict: false
+
+  - name: jinja2
+    strict: false
+
+  - name: encodings
+    strict: false
+
+  - name: peft
     strict: false
 
 # =============================================================================
