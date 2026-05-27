@@ -42,7 +42,7 @@ ndif/
     │   │                       ray (RayProvider + NDIFActorHandle — lean ClientActorHandle)
     │   ├── metrics/          ← InfluxDB metric classes
     │   ├── logging/          ← centralized logger setup
-    │   ├── tracing/          ← OpenTelemetry / Jaeger
+    │   ├── tracing/          ← OpenTelemetry / Tempo
     │   └── types.py          ← MODEL_KEY, API_KEY, etc.
     │
     └── services/
@@ -78,10 +78,6 @@ ndif/
         │   ├── jobs/         ← cron entrypoints — monitor.py + reconcile.py
         │   ├── frontend/     ← Vue 3 + Vite + TS SPA
         │   └── start.sh      ← canonical entrypoint (used by both Docker and standalone)
-        │
-        └── monitor/          ← LEGACY standalone uptime monitor
-                                being replaced by services/dashboard/; kept for the
-                                existing ~/ndif_monitor/ deployment
 ```
 
 ---
@@ -98,7 +94,7 @@ Three services, four infra dependencies:
 | Redis | Queue, pub/sub, Redis streams, Socket.IO backend |
 | MinIO | S3-compatible object store for results/responses |
 | PostgreSQL | API keys + tier assignments |
-| Prometheus/InfluxDB/Grafana/Loki/Jaeger | Metrics, logs, traces |
+| Prometheus/InfluxDB/Grafana/Loki/Tempo | Metrics, logs, traces |
 
 **Request path:** client → `POST /request` → validate (API key, nnsight version, python version, hotswap tier) → pickle to Redis `queue` list → Dispatcher `brpop` → per-`model_key` Processor → Controller deploys the model (may evict others) → ModelActor `pre()` deserializes under a deserialization whitelist → `execute()` runs `RemoteExecutionBackend` under the `Protector` sandbox in a worker thread → `post()` uploads result to MinIO, emits `COMPLETED` over Socket.IO.
 
@@ -158,12 +154,17 @@ Do not remove the mount — the expectation is that NDIF is developed alongside 
 ### Everyday commands
 
 ```bash
-make build          # build api:latest + ray:latest (docker/Dockerfile, NAME build-arg)
-                    # + dashboard:latest (docker/Dockerfile.dashboard, multi-stage node→python)
-make up             # bring up full stack (redis, minio, postgres, ray, api, dashboard,
-                    # prom, influx, grafana, loki, jaeger)
-make down           # tear down
-make ta             # down + build + up  ← use this after code edits
+make build              # builds the unified ndif/ndif image (one container
+                        # for every NDIF service; service selected at runtime
+                        # via NDIF_SERVICE). Depends on `dashboard-frontend`
+                        # (host-side `npm ci && npm run build` — node 20+).
+make push               # push ndif/ndif:latest + :VERSION to Docker Hub
+make run                # one-shot `docker run` of ndif/ndif:latest with the
+                        # standard port mappings + HF cache mount
+make up                 # bring up full stack via docker compose
+                        # (redis, minio, postgres, ray, api, dashboard, telemetry)
+make down               # tear down
+make ta                 # down + build + up  ← use this after code edits
 ```
 
 `Makefile` declares `.PHONY: check-nnsight build up down ta` — without that, a stale `build/` directory at the repo root would make `make build` a silent no-op. Don't remove the `.PHONY` line.
@@ -197,7 +198,7 @@ Everything is env-var driven. `.env.example` has defaults and is loaded by both 
 
 ### Native mode (`ndif` CLI)
 
-The Click CLI in `src/ndif/cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif export`). Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
+The Click CLI in `src/ndif/cli/` can run the stack natively (`ndif start`, `ndif stop`, `ndif deploy <model_key>`, `ndif status`, `ndif logs <service>`, `ndif queue`, `ndif kill <id>`, `ndif info`, `ndif env`, `ndif env example`, `ndif doctor`, `ndif export`). The group-level `--env-file PATH` flag (and CWD `./.env` auto-discovery) thread `.env` config through. Sessions live in `~/.ndif/`. **Prefer Docker for development** — native mode is useful for one-off debugging and for running Ray worker nodes (`ndif start --worker` on a second machine).
 
 The shared deploy/evict/restart/status logic lives under `src/ndif/cli/lib/{deploy,evict,restart,status}.py` — the dashboard backend imports the same helpers, so behavior stays consistent between the CLI and the web UI.
 
@@ -222,8 +223,7 @@ pytest tests/test_user_code.py    --run-remote      # after changes that affect 
 
 ## Services beyond API/Ray/CLI
 
-- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI), shipped as a docker-compose service. Owns three things: (1) the pinned-deployment schedule (`schedule.json`) and a 2-min reconcile cron that diffs the active set against the controller and pushes evict/deploy (`pinned=True`) as needed, (2) the uptime + per-HOT-model nnsight-trace monitor cron (10-min cadence, with Discord notifications), (3) the operational UI (login → cluster monitor / deployments / month-calendar schedule editor). Replaces both `services/monitor/` and the now-removed Ray-side gcal scheduler. Has its own `README.md`.
-- **`src/ndif/services/monitor/`** — LEGACY standalone uptime monitor. Not part of the docker stack; deployed separately via `run.sh` + cron into `~/ndif_monitor/`. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is kept for the existing `~/ndif_monitor/` deployment until the dashboard has been the primary monitor for a full release cycle. Don't put new work here.
+- **`src/ndif/services/dashboard/`** — admin web app (Vue 3 + FastAPI), shipped as a docker-compose service. Owns three things: (1) the pinned-deployment schedule (`schedule.json`) and a 2-min reconcile cron that diffs the active set against the controller and pushes evict/deploy (`pinned=True`) as needed, (2) the uptime + per-HOT-model nnsight-trace monitor cron (10-min cadence, with Discord notifications), (3) the operational UI (login → cluster monitor / deployments / month-calendar schedule editor). Has its own `README.md`.
 - **`docker/postgres/`** — Postgres init SQL. Provides the dev-mode auth/API-key store wired into compose.
 
 ---

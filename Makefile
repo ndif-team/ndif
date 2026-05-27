@@ -23,19 +23,77 @@ check-nnsight:
 # stale ``build/`` dir at repo root makes ``make build`` a no-op
 # (Make treats the target as "up to date" because a directory by that
 # name exists).
-.PHONY: check-nnsight build up down ta
+.PHONY: check-nnsight check-node build push run up down ta dashboard-frontend
 
-build:
-	docker buildx build --build-arg NAME=api -t api:latest -f docker/Dockerfile .
-	docker buildx build --build-arg NAME=ray -t ray:latest -f docker/Dockerfile .
-	docker buildx build -t dashboard:latest -f docker/Dockerfile.dashboard .
+# =============================================================================
+# Image config — one image, runtime-selected service via NDIF_SERVICE.
+# =============================================================================
+
+IMAGE   ?= ndif/ndif
+VERSION := $(shell python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+
+# =============================================================================
+# Dashboard frontend (built on the host, copied into the image).
+# Same dist will also bundle into the pip package down the line.
+# =============================================================================
+
+FRONTEND_DIR  := src/ndif/services/dashboard/frontend
+FRONTEND_DIST := $(FRONTEND_DIR)/dist/index.html
+FRONTEND_SRC  := $(FRONTEND_DIR)/package.json $(FRONTEND_DIR)/package-lock.json \
+                 $(FRONTEND_DIR)/index.html $(FRONTEND_DIR)/vite.config.ts \
+                 $(FRONTEND_DIR)/tsconfig.json \
+                 $(shell find $(FRONTEND_DIR)/src $(FRONTEND_DIR)/public 2>/dev/null)
+
+check-node:
+	@if ! command -v npm >/dev/null 2>&1; then \
+		echo "ERROR: npm not found on PATH (needed to build the dashboard frontend)."; \
+		echo "  Install Node 20+ from https://nodejs.org or via nvm."; \
+		exit 1; \
+	fi
+
+# File-target: rebuild dist/ only when frontend sources change. The `.PHONY`
+# alias below is what humans type; this is what Make uses to skip the rebuild.
+$(FRONTEND_DIST): $(FRONTEND_SRC) | check-node
+	cd $(FRONTEND_DIR) && npm ci && npm run build
+
+dashboard-frontend: $(FRONTEND_DIST)
+
+# =============================================================================
+# Build / push / run — one image (no per-service flavors).
+# =============================================================================
+
+build: dashboard-frontend
+	docker buildx build \
+		-t $(IMAGE):latest \
+		-t $(IMAGE):$(VERSION) \
+		-f docker/Dockerfile .
+
+push:
+	docker push $(IMAGE):latest
+	docker push $(IMAGE):$(VERSION)
+	@echo
+	@echo "Pushed $(IMAGE):latest and $(IMAGE):$(VERSION)"
+	@echo "Remember to paste docker/DOCKERHUB.md into the Docker Hub 'Overview' tab on first push / major edits."
+
+# Standalone all-in-one run. NDIF_SERVICE defaults to 'all' in the image, so
+# this spins up broker + object-store + ray + api in one container.
+run:
+	docker run --rm -it --gpus all \
+		-p 5001:5001 -p 8081:8081 -p 27018:27018 -p 8265:8265 \
+		-v $$HOME/.cache/huggingface:/root/.cache/huggingface \
+		$(IMAGE):latest
+
+# =============================================================================
+# docker-compose dev stack — uses the same $(IMAGE) for every service,
+# distinguishes via NDIF_SERVICE env var per compose service.
+# =============================================================================
 
 up: check-nnsight
-	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) && \
+	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) NDIF_IMAGE=$(IMAGE):latest && \
 	docker compose -p dev -f docker/docker-compose.yml up --detach; \
 
 down:
-	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) && \
+	export HOST_IP=$(IP_ADDR) N_DEVICES=$(N_DEVICES) NNSIGHT_PATH=$(NNSIGHT_PATH) NDIF_IMAGE=$(IMAGE):latest && \
 	docker compose -p dev -f docker/docker-compose.yml down
 
 ta: down build up

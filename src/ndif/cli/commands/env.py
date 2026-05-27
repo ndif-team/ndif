@@ -29,12 +29,13 @@ KEY_PACKAGES = [
 ]
 
 
-@click.command()
+@click.group(invoke_without_command=True)
 @click.option('--json-output', 'json_flag', is_flag=True, help='Output as JSON')
 @click.option('--all', 'show_all', is_flag=True, help='Show all installed packages (default: key packages only)')
 @click.option('--local', is_flag=True, help='Show local system info instead of cluster env')
 @click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
+@click.pass_context
+def env(ctx, json_flag: bool, show_all: bool, local: bool, broker_url: str):
     """Show Ray cluster environment information.
 
     Displays Python version and installed packages from the Ray cluster,
@@ -42,11 +43,16 @@ def env(json_flag: bool, show_all: bool, local: bool, broker_url: str):
 
     \b
     Examples:
-        ndif env           # Show key packages only
-        ndif env --all     # Show all installed packages
+        ndif env             # Show key packages only
+        ndif env --all       # Show all installed packages
         ndif env --json-output
-        ndif env --local   # Show local system info
+        ndif env --local     # Show local system info
+        ndif env example     # Print the bundled .env.example template
+                             # (use `ndif env example > .env` to bootstrap config)
     """
+    if ctx.invoked_subcommand is not None:
+        return
+
     if local:
         _show_local_env(json_flag)
         return
@@ -235,3 +241,17 @@ def _show_local_env(json_flag: bool):
             click.echo("Key Packages:")
             for name, version in data['key_packages'].items():
                 click.echo(f"  {name}=={version}")
+
+
+@env.command(name='example')
+def env_example():
+    """Print the bundled .env.example template.
+
+    Pipe to a file to bootstrap your config:
+
+        ndif env example > .env
+
+    Then edit, and `ndif start` will auto-load it from the CWD.
+    """
+    from importlib.resources import files
+    click.echo(files('ndif').joinpath('.env.example').read_text(), nl=False)

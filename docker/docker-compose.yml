@@ -1,3 +1,7 @@
+# All three NDIF services (ray, api, dashboard) run from the same unified
+# ndif/ndif image — selected at runtime via NDIF_SERVICE. The Makefile sets
+# NDIF_IMAGE before invoking compose; falls back to `ndif/ndif:latest`.
+
 services:
   message_broker:
     image: redis:${REDIS_VERSION}
@@ -30,13 +34,17 @@ services:
       retries: 5
 
   ray:
-    image: ray:${RAY_VERSION}
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
+    env_file:
+      - path: ../.env.example
+        required: true
+      - path: ../.env
+        required: false
     shm_size: '15gb'
     volumes:
       - ~/.cache/huggingface/:/root/.cache/huggingface
-      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
+      # - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight/
       - ray-data:/tmp/ray/
-
     ports:
       - ${NDIF_RAY_HEAD_PORT}:${NDIF_RAY_HEAD_PORT}
       - ${NDIF_RAY_CLIENT_PORT}:${NDIF_RAY_CLIENT_PORT}
@@ -51,39 +59,35 @@ services:
               count: ${N_DEVICES}
               capabilities: [ gpu ]
     environment:
-      - LOKI_URL=http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
-      - NDIF_OBJECT_STORE_URL=http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
-      - NDIF_API_URL=http://${HOST_IP}:${NDIF_API_PORT}
-      - INFLUXDB_ADDRESS=http://${HOST_IP}:${DEV_INFLUXDB_PORT}
-      - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
-      - INFLUXDB_ORG=${INFLUXDB_ORG}
-      - INFLUXDB_BUCKET=${INFLUXDB_BUCKET}
-      - NDIF_RAY_HEAD_PORT=${NDIF_RAY_HEAD_PORT}
-      - NDIF_RAY_CLIENT_PORT=${NDIF_RAY_CLIENT_PORT}
-      - NDIF_RAY_DASHBOARD_PORT=${NDIF_RAY_DASHBOARD_PORT}
-      - NDIF_RAY_SERVE_PORT=${NDIF_RAY_SERVE_PORT}
-      - NDIF_RAY_OBJECT_MANAGER_PORT=${NDIF_RAY_OBJECT_MANAGER_PORT}
-      - NDIF_RAY_DASHBOARD_GRPC_PORT=${NDIF_RAY_DASHBOARD_GRPC_PORT}
-      - NDIF_RAY_TEMP_DIR=${NDIF_RAY_TEMP_DIR}
-      - NDIF_CONTROLLER_IMPORT_PATH=${NDIF_CONTROLLER_IMPORT_PATH}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
-
-    env_file:
-      - path: ../.env.example
-        required: true
-      - path: ../.env
-        required: false
+      NDIF_SERVICE: ray
+      LOKI_URL: http://${HOST_IP}:${DEV_LOKI_PORT}/loki/api/v1/push
+      NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
+      NDIF_API_URL: http://${HOST_IP}:${NDIF_API_PORT}
+      INFLUXDB_ADDRESS: http://${HOST_IP}:${DEV_INFLUXDB_PORT}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      NDIF_RAY_HEAD_PORT: ${NDIF_RAY_HEAD_PORT}
+      NDIF_RAY_CLIENT_PORT: ${NDIF_RAY_CLIENT_PORT}
+      NDIF_RAY_DASHBOARD_PORT: ${NDIF_RAY_DASHBOARD_PORT}
+      NDIF_RAY_SERVE_PORT: ${NDIF_RAY_SERVE_PORT}
+      NDIF_RAY_OBJECT_MANAGER_PORT: ${NDIF_RAY_OBJECT_MANAGER_PORT}
+      NDIF_RAY_DASHBOARD_GRPC_PORT: ${NDIF_RAY_DASHBOARD_GRPC_PORT}
+      NDIF_RAY_TEMP_DIR: ${NDIF_RAY_TEMP_DIR}
+      NDIF_CONTROLLER_IMPORT_PATH: ${NDIF_CONTROLLER_IMPORT_PATH}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
 
   api:
-    image: api:${API_VERSION}
-    ports:
-      - ${NDIF_API_PORT}:${NDIF_API_PORT}
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
     env_file:
       - path: ../.env.example
         required: true
       - path: ../.env
         required: false
+    ports:
+      - ${NDIF_API_PORT}:${NDIF_API_PORT}
     environment:
+      NDIF_SERVICE: api
       NDIF_OBJECT_STORE_URL: http://${HOST_IP}:${NDIF_OBJECT_STORE_PORT}
       NDIF_BROKER_URL: redis://${HOST_IP}:${NDIF_BROKER_PORT}
       NDIF_API_WORKERS: ${NDIF_API_WORKERS}
@@ -102,13 +106,20 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: keys
-      COORDINATOR_STATUS_CACHE_FREQ_S: 10
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${JAEGER_OTLP_GRPC_PORT}
+      NDIF_STATUS_CACHE_FREQ_S: 10
+      # Short autoscaling timers so the tests/report/test_autoscaling.py
+      # suite can exercise scale-up in seconds rather than minutes.
+      # Production stacks should use the QueueConfig defaults
+      # (interval=5s, threshold=30s, backoff=120s).
+      NDIF_AUTOSCALING_INTERVAL_S: 1
+      NDIF_AUTOSCALING_WAIT_THRESHOLD_S: 5
+      NDIF_AUTOSCALING_BACKOFF_S: 10
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://${HOST_IP}:${TEMPO_OTLP_GRPC_PORT}
 
   dashboard:
-    image: dashboard:${NDIF_DASHBOARD_VERSION}
+    image: ${NDIF_IMAGE:-ndif/ndif:latest}
     ports:
-      - "${NDIF_DASHBOARD_PORT}:${NDIF_DASHBOARD_PORT}"
+      - "${NDIF_DASHBOARD_PORT:-8081}:${NDIF_DASHBOARD_PORT:-8081}"
     env_file:
       # ``format: raw`` disables shell-substitution on the env file — without
       # it, a bcrypt ``$2b$12$…`` hash gets mangled by compose's ${} parser.
@@ -119,6 +130,7 @@ services:
         required: false
         format: raw
     environment:
+      NDIF_SERVICE: dashboard
       # Only the values that need compose-side interpolation live here.
       # NDIF_DASHBOARD_USERNAME / PASSWORD_HASH / SESSION_SECRET / NDIF_API_KEY
       # come straight from env_file above.
@@ -182,6 +194,7 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - INFLUXDB_ADMIN_TOKEN=${SECRET_INFLUXDB_ADMIN_TOKEN}
+      - TEMPO_HTTP_PORT=${TEMPO_HTTP_PORT}
     volumes:
       - grafana-storage:/var/lib/grafana
       - ../telemetry/grafana/provisioning:/etc/grafana/provisioning
@@ -196,14 +209,35 @@ services:
     volumes:
       - loki-data:/loki
 
-  jaeger:
-    image: jaegertracing/jaeger:${JAEGER_VERSION}
+  # One-shot job that creates the Tempo bucket in MinIO before Tempo starts.
+  # Tempo's S3 backend assumes the bucket exists and will not create it.
+  tempo-init:
+    image: minio/mc:${MC_VERSION}
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${NDIF_OBJECT_STORE_ACCESS_KEY} ${NDIF_OBJECT_STORE_SECRET_KEY}; do sleep 1; done;
+      mc mb --ignore-existing local/${TEMPO_S3_BUCKET};
+      "
+
+  tempo:
+    image: grafana/tempo:${TEMPO_VERSION}
+    command: [ "-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true" ]
     ports:
-      - ${JAEGER_UI_PORT}:16686
-      - ${JAEGER_OTLP_GRPC_PORT}:4317
-      - ${JAEGER_OTLP_HTTP_PORT}:4318
+      - ${TEMPO_HTTP_PORT}:3200
+      - ${TEMPO_OTLP_GRPC_PORT}:4317
+      - ${TEMPO_OTLP_HTTP_PORT}:4318
     environment:
-      - COLLECTOR_OTLP_ENABLED=true
+      TEMPO_S3_ENDPOINT: minio:9000
+      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET}
+      TEMPO_S3_ACCESS_KEY: ${NDIF_OBJECT_STORE_ACCESS_KEY}
+      TEMPO_S3_SECRET_KEY: ${NDIF_OBJECT_STORE_SECRET_KEY}
+    volumes:
+      - ../telemetry/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    depends_on:
+      - tempo-init
 
 volumes:
   grafana-storage:
@@ -214,3 +248,4 @@ volumes:
   influxdb2-data:
   influxdb2-config:
   postgres-data:
+  tempo-data:

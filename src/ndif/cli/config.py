@@ -20,9 +20,16 @@ from dotenv import load_dotenv
 # is fine — load_dotenv is a no-op when the file is absent.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
-# Load .env.example for defaults, then .env for overrides
+# Layered load (later sources override earlier ones):
+#   1. <repo>/.env.example  — committed defaults (only present in editable installs)
+#   2. <repo>/.env          — user's repo-local overrides (editable installs only)
+#   3. ./.env               — CWD-relative .env, works in any install mode
+#                             (pip-installed users drop a .env in their project dir)
+# A `--env-file` flag on the CLI group can layer on top of these at command-run
+# time (see ``cli/cli.py``).
 load_dotenv(_PROJECT_ROOT / ".env.example")
 load_dotenv(_PROJECT_ROOT / ".env", override=True)
+load_dotenv(Path.cwd() / ".env", override=True)
 
 # =============================================================================
 # Session Management

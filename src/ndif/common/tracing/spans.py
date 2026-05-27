@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from typing import Any, Dict, Optional
 
 from opentelemetry import context, trace
+from slugify import slugify
 
 from .setup import get_tracer
 
@@ -12,7 +13,9 @@ def set_request_attributes(span: trace.Span, request) -> None:
         return
     span.set_attribute("ndif.request.id", str(request.id))
     if request.model_key:
-        span.set_attribute("ndif.model.key", str(request.model_key))
+        model_key = str(request.model_key)
+        span.set_attribute("ndif.model.key", model_key)
+        span.set_attribute("ndif.model.key.slug", slugify(model_key))
     if request.api_key:
         span.set_attribute("ndif.api.key", str(request.api_key))
     if request.session_id:

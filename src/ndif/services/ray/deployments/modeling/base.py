@@ -148,22 +148,20 @@ class BaseModelDeployment:
     def _build_max_memory(self) -> Optional[Dict[int, int]]:
         """Build a max_memory dict that restricts model placement to target GPUs.
 
-        Returns a dict mapping GPU index to max memory in bytes. Target GPUs
-        get their allocated budget (capped at total device memory). Non-target
-        GPUs get 0 bytes to prevent any allocation. Returns None if no target
-        GPUs are set, which lets accelerate use all available GPUs.
+        Returns a dict mapping GPU index to max memory in bytes. Only target
+        GPUs are included; non-target GPUs are omitted so accelerate's balanced
+        algorithm won't assign components to them (assigning to a 0-budget GPU
+        causes diffusers pipeline-level balanced to place those components on
+        ``"disk"``, which without ``offload_folder`` leaves params on meta).
+        Returns None if no target GPUs are set.
         """
         if not self.gpu_mem_bytes_by_id:
             return None
 
-        num_gpus = torch.cuda.device_count()
         max_memory = {}
-        for i in range(num_gpus):
-            if i in self.gpu_mem_bytes_by_id:
-                total = torch.cuda.get_device_properties(i).total_memory
-                max_memory[i] = min(self.gpu_mem_bytes_by_id[i], total)
-            else:
-                max_memory[i] = 0
+        for gpu_id, mem_bytes in self.gpu_mem_bytes_by_id.items():
+            total = torch.cuda.get_device_properties(gpu_id).total_memory
+            max_memory[gpu_id] = min(mem_bytes, total)
         return max_memory
 
     def _verify_device_placement(self, module: torch.nn.Module, source: str):
@@ -220,7 +218,7 @@ class BaseModelDeployment:
             model = load_with_cache_deletion_retry(
                 lambda: RemoteableMixin.from_model_key(
                     self.model_key,
-                    device_map="auto",
+                    device_map="balanced",
                     max_memory=max_memory,
                     dispatch=self.dispatch,
                     torch_dtype=self.dtype,
@@ -315,7 +313,9 @@ class BaseModelDeployment:
 
             max_memory = self._build_max_memory()
 
-            device_map = _get_device_map(self.model._module, "auto", max_memory, None)
+            device_map = _get_device_map(
+                self.model._module, "balanced", max_memory, None
+            )
 
             remove_accelerate_hooks(self.model._module)
 
@@ -645,7 +645,7 @@ class BaseModelDeploymentArgs(BaseModel):
     model_key: MODEL_KEY
 
     execution_timeout: float | None = None
-    device_map: str | None = "auto"
+    device_map: str | None = "balanced"
     dispatch: bool = True
     dtype: str | torch.dtype = torch.bfloat16
     gpu_mem_bytes_by_id: Dict[int, int] | None = None

@@ -215,6 +215,19 @@ def restricted_exec(
     if isinstance(code, str):
         code = restricted_compile(code, mode="exec")
 
+    # If Python's import machinery is calling exec() to run a module's body
+    # (e.g. einops/__init__.py while resolving an import), pass the module's
+    # __dict__ through unchanged. Otherwise module-level definitions land in
+    # a throwaway copy and only get synced back AFTER the exec completes —
+    # which breaks any module that references its own attributes during
+    # initialization (e.g. einops, whose submodules do `from . import
+    # EinopsError` from within the package init).
+    # `__spec__` is set on every module dict by the loader before exec_module
+    # runs, so it's a reliable signal that `globals` is a real module dict.
+    if isinstance(globals, dict) and "__spec__" in globals:
+        _original_exec(code, globals, locals)
+        return
+
     exec_globals = make_restricted_globals(globals)
     _original_exec(code, exec_globals, locals)
 

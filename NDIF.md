@@ -39,16 +39,22 @@ Redis ("queue")
 Dispatcher (lives in API process, Ray client)                    §4.1
   │  route by model_key to a per-model Processor
   ▼
-Processor (one per model, async worker)                          §4.2
-  │  PROVISIONING → DEPLOYING → READY ↔ BUSY
-  │  calls Controller.deploy({model_key: DeploymentConfig(...)})
+Processor (one per model_key)                                    §4.2
+  │  PROVISIONING → DEPLOYING → READY → CANCELLED
+  │  owns a pool of Replica workers (one per HOT actor)
+  │  asks Controller for the first replica; autoscaling adds more
+  ▼
+Replica (one per HOT actor; siblings share the model's queue)    §4.2
+  │  pulls from queue.get(), dispatches to its actor              
+  │  drift on "Failed to look up actor" sheds it from the pool
   ▼
 Controller (Ray head node actor)                                 §5.1
-  │  Cluster.deploy() → picks best node, may evict              §5.2
-  │  build() → DeploymentDelta                                   §5.6
+  │  Cluster.deploy() is additive: places config.replicas more   §5.2
+  │  build() → DeploymentDelta (keyed by node_id, mk, replica_id) §5.6
   │  apply(): delete → cache → from_cache → create   ⚠️ ordered
   ▼
-ModelActor (per model, per node)                                 §6
+ModelActor (one Ray actor per replica)                           §6
+  │  actor name = "{replica_id}:ModelActor:{model_key}"
   │  pre()    — deserialize under Protector(DESERIALIZATION)     §6.2
   │  execute()— run user code under Protector(EXECUTION) in     §6.3
   │             a thread (autocast, StdoutRedirect)
@@ -65,7 +71,8 @@ The "what file do I change for X" table.
 | I want to change… | Start here |
 |---|---|
 | An API endpoint or HTTP validation | `src/ndif/services/api/app.py`, `dependencies.py` — §3 |
-| Request routing / queue behavior | `src/ndif/services/api/queue/dispatcher.py`, `processor.py` — §4 |
+| Request routing / queue behavior | `src/ndif/services/api/queue/dispatcher.py`, `processor.py`, `replica.py` — §4 |
+| Replica pool / per-model concurrency / autoscaling | `src/ndif/services/api/queue/replica.py`, `processor.py::autoscaling_loop` — §4.2 |
 | What happens when a model gets scheduled | `src/ndif/services/ray/deployments/controller/cluster/{cluster,node,evaluator}.py` — §5.2–5.5 |
 | Model HOT/WARM/COLD transitions | `src/ndif/services/ray/deployments/controller/cluster/deployment.py`, `controller.py::apply()` — §5.6 |
 | Model execution, timeouts, cleanup | `src/ndif/services/ray/deployments/modeling/base.py` — §6 |
@@ -73,13 +80,12 @@ The "what file do I change for X" table.
 | What modules user code can import | `src/ndif/services/ray/nn/security/whitelist.yaml` — §7.11 (requires Ray image rebuild) |
 | Result/response serialization and storage | `src/ndif/common/schema/{request,response,result,mixins}.py`, `providers/objectstore.py` — §8 |
 | Pinned-deployment scheduling | `src/ndif/services/dashboard/` (schedule store + reconcile cron) — §5.7 |
-| Distributed tracing / Jaeger spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
+| Distributed tracing / Tempo spans | `src/ndif/common/tracing/`, `src/ndif/services/api/tracing/` — §10.4 |
 | API keys / dev-mode Postgres | `src/ndif/services/api/db.py`, `src/ndif/common/providers/postgres.py`, `docker/postgres/init.sql` — §9.4 |
 | A CLI command | `src/ndif/cli/commands/` — §11 |
 | Env-var default or new config knob | `.env.example` + the relevant service `config.py` — §15 appendix |
 | Docker build or compose wiring | `docker/Dockerfile`, `docker/docker-compose.yml`, `Makefile` — §12.1 |
 | Pinned-deployment scheduler / dashboard | `src/ndif/services/dashboard/` — §5.7, §13 |
-| The legacy uptime monitor | `src/ndif/services/monitor/` — §13 (being replaced by the dashboard) |
 
 ### File index
 
@@ -91,8 +97,9 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/services/api/dependencies.py` | `validate_request` — api-key / version / hotswap checks |
 | `src/ndif/services/api/db.py` | `AccountsDB` wrapper + `NDIF_DEV_MODE` bypass |
 | `src/ndif/services/api/config.py` | `AppConfig` — API env vars |
-| `src/ndif/services/api/queue/dispatcher.py` | `Dispatcher` — reads Redis queue, routes to Processors, manages Ray connection |
-| `src/ndif/services/api/queue/processor.py` | `Processor` — per-model state machine (`PROVISIONING → DEPLOYING → READY ↔ BUSY`) |
+| `src/ndif/services/api/queue/dispatcher.py` | `Dispatcher` — reads Redis queue, routes to Processors, manages Ray connection, consumes `dispatcher:events` (QUEUE_STATE_REQUEST / KILL_REQUEST / ENV / RECONCILE_MODEL) |
+| `src/ndif/services/api/queue/processor.py` | `Processor` — per-model_key state machine (`PROVISIONING → DEPLOYING → READY → CANCELLED`) + replica pool + `autoscaling_loop` |
+| `src/ndif/services/api/queue/replica.py` | `Replica` — wraps one ModelActor: actor handle, worker task, per-request dispatch, drift detection on "Failed to look up actor" |
 | `src/ndif/services/api/queue/util.py` | Ray client deadlock `patch()`, `controller_handle()`, `submit()` |
 | `src/ndif/services/ray/deployments/controller/controller.py` | `_ControllerActor`, `build()`, `apply()`, `deploy()`, `evict()`, `status()`, `env()` |
 | `src/ndif/services/ray/deployments/controller/cluster/cluster.py` | `Cluster` — multi-node state, deploy/evict orchestration |
@@ -112,7 +119,8 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/common/schema/response.py` | `BackendResponseModel` — `respond()` (Socket.IO / callback / save) |
 | `src/ndif/common/schema/result.py` | `BackendResultModel` + `TensorStoragePickler` |
 | `src/ndif/common/schema/mixins.py` | `ObjectStorageMixin`, `TelemetryMixin` |
-| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (pinned, timeouts) |
+| `src/ndif/common/schema/deployment_config.py` | `DeploymentConfig` (pinned, replicas, timeouts) |
+| `src/ndif/common/schema/controller.py` | Controller RPC schemas: `DeployResponse`/`ModelDeployResult`, `ReplicaState`/`ReplicaStates` |
 | `src/ndif/common/providers/redis.py` | `RedisProvider` — sync + async clients |
 | `src/ndif/common/providers/objectstore.py` | `ObjectStoreProvider` — MinIO/S3 via boto3 |
 | `src/ndif/common/providers/socketio.py` | `SioProvider` |
@@ -130,14 +138,12 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/checks.py` | Pre-flight checks for `ndif start` |
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
-| `docker/Dockerfile` | Multi-purpose — `ARG NAME=api` or `NAME=ray` |
-| `docker/Dockerfile.dashboard` | Multi-stage (node build → python runtime) for the `dashboard` image |
-| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, jaeger) |
+| `docker/Dockerfile` | Single unified image — every NDIF service runs from it, selected at runtime via `NDIF_SERVICE`. Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
+| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, tempo) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
-| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons (replaces `services/monitor/`) |
-| `src/ndif/services/monitor/` | Legacy standalone uptime monitor — being replaced by the dashboard |
+| `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
 | `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
@@ -223,7 +229,7 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Metrics](#101-metrics)
     - [Logging](#102-logging)
     - [Grafana Dashboards](#103-grafana-dashboards)
-    - [Distributed Tracing (OpenTelemetry → Jaeger)](#104-distributed-tracing-opentelemetry--jaeger)
+    - [Distributed Tracing (OpenTelemetry → Tempo)](#104-distributed-tracing-opentelemetry--tempo)
 11. [CLI](#11-cli)
     - [Overview](#overview-9)
     - [Session Management](#111-session-management)
@@ -240,7 +246,6 @@ A one-page map of the important files. Use this if you know the topic but not th
     - [Reconcile cron](#132-reconcile-cron)
     - [Schedule semantics](#133-schedule-semantics)
     - [Configuration](#134-configuration)
-    - [Legacy services/monitor/](#135-legacy-servicesmonitor)
 14. [Invariants](#14-invariants) — ⚠️ read before "simplifying" anything
     - [`num_gpus=0` on ModelActor](#141-modelactor-is-declared-with-num_gpus0)
     - [Two whitelists](#142-two-whitelists-not-one)
@@ -311,7 +316,7 @@ And several external dependencies:
 | **MinIO** | S3-compatible object storage for results and responses |
 | **PostgreSQL** | API key storage and tier management (dev-mode bypass available) |
 | **Prometheus / InfluxDB / Grafana / Loki** | Metrics, logs, and dashboards |
-| **Jaeger (OTLP)** | Distributed tracing across API ↔ Ray |
+| **Tempo (OTLP)** | Distributed tracing across API ↔ Ray (traces queryable from the Grafana Tempo datasource) |
 
 The project targets **Python 3.12+** and is packaged with [`uv`](https://github.com/astral-sh/uv) (see `pyproject.toml`). Any reference to Python 3.10 or conda-only setup in older docs is stale.
 
@@ -596,14 +601,16 @@ pytest tests/test_nnsight.py --run-remote
 
 ### Overview
 
-The queue system is responsible for routing requests from the API endpoint to the Ray cluster. It consists of two main classes:
+The queue system is responsible for routing requests from the API endpoint to the Ray cluster. It consists of three main classes:
 
 - **Dispatcher** — A singleton that reads from the Redis queue and routes requests to Processors
-- **Processor** — A per-model coordinator that manages deployment lifecycle and request execution
+- **Processor** — A per-`model_key` coordinator that manages deployment lifecycle, holds the model's queue, and owns its replica pool
+- **Replica** — Wraps one ModelActor; siblings share the Processor's queue (the load-balancing primitive)
 
 **Key files:**
 - `src/ndif/services/api/queue/dispatcher.py`
 - `src/ndif/services/api/queue/processor.py`
+- `src/ndif/services/api/queue/replica.py`
 - `src/ndif/services/api/queue/config.py`
 - `src/ndif/services/api/queue/util.py`
 
@@ -624,11 +631,8 @@ The Dispatcher is the central coordinator. It runs as a long-lived asyncio event
 │  status_worker (background)                             │
 │    │  Respond to cluster status queries                 │
 │    │                                                    │
-│  queue_state_worker (background)                        │
-│    │  Report per-model queue depth for monitoring       │
-│    │                                                    │
-│  deployment_events_worker (background)                  │
-│    │  Handle deploy/evict/kill/env events from Redis    │
+│  events_worker (background)                             │
+│    │  Handle queue/kill/env/reconcile events from Redis │
 │    │  stream "dispatcher:events"                        │
 │                                                          │
 │  processors: Dict[model_key, Processor]                 │
@@ -644,7 +648,7 @@ The batch-pop is an optimization: `brpop` blocks for up to 10 seconds waiting fo
 1. `Dispatcher.start()` creates an instance and calls `asyncio.run(dispatch_worker())`
 2. The constructor connects to Redis and Ray (with retry logic)
 3. Sets `ray:connected` in Redis to signal the API that Ray is available
-4. Spawns `status_worker`, `queue_state_worker`, and `deployment_events_worker` as background asyncio tasks
+4. Spawns `status_worker` and `events_worker` as background asyncio tasks
 5. Enters the main `dispatch_worker` loop
 
 **Request routing:**
@@ -665,83 +669,95 @@ def dispatch(self, request: BackendRequestModel):
 
 The Dispatcher handles two types of failures:
 
-1. **Connection errors** — If a Processor reports a Ray connection error (or Ray reports disconnected), the Dispatcher purges all Processors, notifies all queued users with an error, and reconnects to Ray.
+1. **Connection errors** — If a Replica reports a Ray connection error (via the shared `error_queue`), or Ray reports disconnected, the Dispatcher purges all Processors, notifies all queued users with an error, and reconnects to Ray.
 
-2. **Execution errors** — Non-connection errors are logged and the affected Processor is reset to `READY` status.
+2. **Execution errors** — Non-connection errors are logged and the affected Replica continues serving. Drift errors (`Failed to look up actor`) sit at the Replica level — the Replica sheds itself from the pool; if it was the last one, the Processor self-cancels via the `eviction_queue`.
 
 **Events:**
 
-External commands (from the CLI or other tools) are delivered via the Redis stream `dispatcher:events`. The `deployment_events_worker` handles:
+External commands (from the CLI / dashboard / other tools) are delivered via the Redis stream `dispatcher:events`. The `events_worker` handles:
 
 | Event | Action |
 |-------|--------|
 | `QUEUE_STATE_REQUEST` | Return current queue state for monitoring |
-| `DEPLOY` | Create a Processor for a newly deployed model |
-| `EVICT` | Remove a Processor for an evicted model |
 | `KILL_REQUEST` | Cancel a specific request by ID |
 | `ENV` | Get Python environment info from Controller |
+| `RECONCILE_MODEL` | Tell the matching Processor to re-sync its replica pool against `Controller.get_deployment(model_key)`. Published by `cli/lib/util.notify_reconcile` after a CLI / dashboard deploy or evict succeeds — gives the Processor immediate awareness of new or removed replicas instead of waiting for drift detection. No-op if no Processor exists for `model_key`. |
+
+Processor lifecycle is **request-driven** — there are no explicit DEPLOY / EVICT events. A Processor is created on the first request for a model_key and torn down when it sheds its last Replica.
 
 ### 4.2 The Processor
 
-Each Processor manages the lifecycle of a single model deployment. It has its own request queue and transitions through a well-defined state machine:
+Each Processor manages the lifecycle of a single `model_key`. It owns the model's request queue, a pool of `Replica` workers (one per HOT actor), and an autoscaling loop. The state machine is shorter than it used to be — there's no global `BUSY`, since "busy" is now a per-Replica concept:
 
 ```
-UNINITIALIZED → PROVISIONING → DEPLOYING → READY ↔ BUSY → CANCELLED
+UNINITIALIZED → PROVISIONING → DEPLOYING → READY → CANCELLED
 ```
 
 | State | Description |
 |-------|-------------|
 | `UNINITIALIZED` | Initial state before any operations |
-| `PROVISIONING` | Requesting the Controller to deploy the model |
-| `DEPLOYING` | Waiting for the ModelActor to finish loading |
-| `READY` | Model is loaded and ready for requests |
-| `BUSY` | Currently executing a request (or waiting for error recovery) |
-| `CANCELLED` | Terminal state — the Processor is dead |
+| `PROVISIONING` | Looking up existing replicas and/or asking the Controller to deploy one |
+| `DEPLOYING` | Waiting for at least one Replica to mark itself ready |
+| `READY` | At least one Replica is up; the autoscaling loop is running |
+| `CANCELLED` | Terminal state — the last Replica exited or the Dispatcher purged us |
 
 **The `processor_worker` lifecycle:**
 
 ```python
-async def processor_worker(self, provision: bool = True):
+async def processor_worker(self):
     self.status = ProcessorStatus.PROVISIONING
-    asyncio.create_task(self.reply_worker())
+    await self.reply()
 
-    if provision:
-        await self.provision()   # Ask Controller to deploy
+    await self.provision()
+    if self.status == ProcessorStatus.CANCELLED:
+        return
 
     self.status = ProcessorStatus.DEPLOYING
-    await self.initialize()       # Wait for ModelActor.__ray_ready__
+    await self.reply()
+    await self.ready_event.wait()   # set by the first Replica that comes up
+    if self.status == ProcessorStatus.CANCELLED:
+        return
 
     self.status = ProcessorStatus.READY
+    await self.reply()
 
-    while self.status != ProcessorStatus.CANCELLED:
-        if self.status == ProcessorStatus.BUSY:
-            await asyncio.sleep(1)
-            continue
-
-        request = await self.queue.get()
-        self.status = ProcessorStatus.BUSY
-        await self.execute(request)
+    await self.autoscaling_loop()   # runs until CANCELLED
 ```
+
+**Replica pool:**
+
+```python
+class Processor:
+    queue: asyncio.Queue[BackendRequestModel]
+    replicas: Dict[REPLICA_ID, Replica]   # one entry per HOT actor
+    pinned: Optional[bool]
+    ready_event: asyncio.Event
+```
+
+Each `Replica` (see `replica.py`) wraps a single `ModelActor`. Siblings of the same model_key share the Processor's queue — workers `await queue.get()` independently, which is the load-balancing primitive (no explicit scheduler picks "which replica gets this request"; whichever is idle pulls).
 
 **Provisioning:**
 
-The `provision()` method coordinates with the Controller to ensure the model is deployed:
+`provision()` calls `Controller.get_deployment(model_key)` first to discover the current truth:
 
-1. Check if the model is a **pinned** deployment (scheduled via the dashboard or CLI)
-2. If not pinned, filter out requests without hotswapping access
-3. Ask the Controller to deploy the model
-4. Handle evictions — the Controller may evict other models to free GPUs
+1. If replicas already exist, populate the pool from them. Pinned-ness is uniform across siblings, so `self.pinned` is taken from the first.
+2. If no replicas exist and any queued requests are hotswap-eligible, ask the Controller to deploy one (`Replica.deploy(model_key, replicas=1)`) and spawn a `Replica` for the returned replica_id.
+3. If not pinned and no hotswap-eligible requests, abort via the eviction queue.
+
+**Drift recovery:** the Dispatcher does *not* receive controller-side push notifications when replicas come or go. Instead, two mechanisms keep the pool in sync:
+
+- **Push-on-mutation.** After a successful CLI / dashboard deploy or evict, `cli.lib.util.notify_reconcile` publishes `RECONCILE_MODEL` on the dispatcher events stream; the Dispatcher forwards to `processor.reconcile()`, which diffs `Controller.get_deployment(model_key)` against `self.replicas` and spawns / cancels accordingly.
+- **Drift on error.** A Replica that dispatches to an actor the controller has since evicted gets `"Failed to look up actor"` from Ray. That trips `self.dropped = True` inside the Replica, its worker exits, and the `on_replica_exit` callback drops it from `self.replicas`. If it was the last live Replica, the Processor `abort()`s via the eviction queue and the Dispatcher tears it down.
+
+**Autoscaling.** Once the Processor is `READY`, `autoscaling_loop` watches the head of the queue. If the oldest queued request has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` (default 30 s), it calls `Replica.deploy(model_key, replicas=1)` to add one more replica, then sleeps `NDIF_AUTOSCALING_BACKOFF_S` (default 120 s) before re-checking — the backoff gives the new replica time to come up and drain queue depth before another scale-up fires. Otherwise it sleeps `NDIF_AUTOSCALING_INTERVAL_S` (default 5 s) and re-checks. `BackendRequestModel.enqueued_at` carries the timestamp set by `Processor.enqueue`.
 
 **Pinned vs. Hotswapping:**
 
 NDIF has two deployment modes:
 
-- **Pinned:** Models specified at startup or via the schedule. Available to all users.
-- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-pinned models.
-
-**Status updates:**
-
-During provisioning and deployment, a `reply_worker` sends periodic status updates to all queued users (every `processor_reply_freq_s` seconds). This keeps clients informed while they wait.
+- **Pinned:** Models specified at startup or via the schedule. Available to all users. Pinned-ness is enforced controller-side (`Deployment.pinned`); the Processor surfaces it via `self.pinned`.
+- **Hotswapping:** On-demand deployment triggered by a user request. Requires the hotswapping tier on the API key. May evict other non-pinned models. The Processor's `provision()` rejects non-hotswap requests when not pinned, and aborts entirely if every queued request was rejected.
 
 ### 4.3 Request Lifecycle
 
@@ -757,8 +773,8 @@ RECEIVED → QUEUED → DISPATCHED → RUNNING → COMPLETED
 | Status | Where Set | Description |
 |--------|-----------|-------------|
 | `RECEIVED` | API endpoint | Request validated, pushed to Redis queue |
-| `QUEUED` | Processor.enqueue() | Moved into per-model queue with position |
-| `DISPATCHED` | Processor.execute() | Sent to ModelActor |
+| `QUEUED` | Processor.enqueue() | Moved into per-model queue with position; `enqueued_at` stamped for autoscaling |
+| `DISPATCHED` | Replica.dispatch() | Sent to the picking Replica's ModelActor |
 | `RUNNING` | ModelActor.pre() | Execution started |
 | `LOG` | ModelActor.log() | Print statement captured |
 | `STREAM` | ModelActor.stream_send() | Streaming intermediate data |
@@ -769,13 +785,14 @@ RECEIVED → QUEUED → DISPATCHED → RUNNING → COMPLETED
 
 The system handles errors at multiple levels:
 
-**Processor level:** If `execute()` fails:
-- Actor lookup failure ("Failed to look up actor") → Processor is cancelled, model was evicted
-- Other errors → Reported to Dispatcher via `error_queue`, Processor stays `BUSY` until Dispatcher clears it
+**Replica level:** If `Replica.dispatch()` fails:
+- `"Failed to look up actor"` → that one replica is gone, the Replica flips `self.dropped = True` and exits. The user sees an ERROR. The Processor's other Replicas (if any) keep serving. If this was the last live Replica, the `on_replica_exit` hook fires the Processor's eviction queue and the Dispatcher purges it.
+- `asyncio.CancelledError` (e.g. reconcile detected the replica is gone and called `replica.cancel()`) → the dispatch sends an explicit ERROR ("Replica was evicted while processing your request") and re-raises so the worker exits cleanly. Without this branch the user would be stuck at `DISPATCHED`.
+- Other errors → reported via `error_queue` so the Dispatcher can detect Ray-disconnect; the Replica keeps serving.
 
 **Dispatcher level:** After every queue poll:
 - Drain `eviction_queue` → Remove affected Processors, notify users
-- Drain `error_queue` → If connection error detected, purge all Processors and reconnect to Ray
+- Drain `error_queue` → If a connection error is detected, purge all Processors and reconnect to Ray
 
 **ModelActor level:** If execution fails:
 - CUDA device-side assertion → Actor restarts itself (`ray.kill(no_restart=False)`)
@@ -798,13 +815,14 @@ pytest tests/test_nnsight.py --run-remote           # basic request path
 
 **Inspecting live state without shipping a request.** The Dispatcher exposes two side channels:
 
-- The `dispatcher:events` Redis stream accepts commands (`DEPLOY`, `EVICT`, `KILL_REQUEST`, `ENV`, `QUEUE_STATE_REQUEST`). `src/ndif/cli/commands/queue.py` uses this to read per-model queue depth. You can write a quick script that pushes `QUEUE_STATE_REQUEST` and reads the response.
-- `ndif status` goes through the same pub/sub path and shows the full cluster state, including Processor status per model.
+- The `dispatcher:events` Redis stream accepts commands (`QUEUE_STATE_REQUEST`, `KILL_REQUEST`, `ENV`, `RECONCILE_MODEL`). `src/ndif/cli/commands/queue.py` uses this to read per-model queue depth. You can write a quick script that pushes `QUEUE_STATE_REQUEST` and reads the response.
+- `ndif status` goes through the controller and shows the full cluster state, including replica counts per model.
 
 **Common failure modes when you're changing this code:**
-- Processor stuck in `BUSY` → check the `error_queue`. A Processor that hit an error and wasn't cleared will stop consuming requests for that model.
+- Request stuck at `DISPATCHED` → the worker was cancelled mid-`__call__` and the dispatch swallowed `CancelledError` without notifying the user. ⚠️ See §14.12 — dispatch has to catch `CancelledError` distinctly from `Exception`.
+- New replicas added externally aren't used → the Processor missed the `RECONCILE_MODEL` event (or no event was published). Drift detection only catches *removals* via `Failed to look up actor`; *additions* rely on the push. Check `cli/lib/util.notify_reconcile` actually ran after the deploy.
 - `/request` hangs at `RECEIVED` → the Dispatcher isn't consuming from Redis. Check the Ray client connection (`ray:connected` Redis key).
-- Eviction recovery loops → a Processor keeps re-provisioning. Usually means the Controller can't fit the model and the Processor treats it as a transient error. Check Controller logs for `CANT_ACCOMMODATE`.
+- Autoscaling fires repeatedly without effect → `Replica.deploy` is succeeding but the new replicas aren't coming up. Check Controller `CANT_ACCOMMODATE` rate and the actor's `_monitor_deployment` task.
 
 ---
 
@@ -851,9 +869,11 @@ Node discovery is polled on its own interval:
 
 **Key responsibilities:**
 
-1. **Cluster state** — Track nodes, GPUs, and memory via periodic `update_nodes()` calls (driven by `check_nodes()` async loop)
-2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher. `deploy()` accepts a `Dict[MODEL_KEY, DeploymentConfig]` (not a bare list), where `DeploymentConfig` carries `pinned`, `execution_timeout_seconds`, and similar per-model overrides.
-3. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and also reports COLD (downloaded-but-not-deployed) models via `get_downloaded_models()`. `get_deployment(model_key)` returns a single deployment's state.
+1. **Cluster state** — Track nodes, GPUs, and memory via periodic `update_nodes()` calls (driven by `check_nodes()` async loop). Per-replica state is keyed `(node_id, model_key, replica_id)` in `self.state`.
+2. **Deployment management** — Handle `deploy()` and `evict()` requests from the Dispatcher / CLI / dashboard.
+   - `deploy(deployments) -> DeployResponse` accepts a `Dict[MODEL_KEY, DeploymentConfig]`. `DeploymentConfig` carries `pinned`, `replicas` (default 1), `execution_timeout_seconds`, and similar per-model overrides. **Deploy is additive**: each call places `config.replicas` *more* replicas regardless of what's already running; the response carries the new replica_ids per model.
+   - `evict(model_key, replica_id=None) -> ReplicaStates`. With `replica_id` it targets one replica (HOT may demote to WARM, which the user can promote back). Without, it drains every HOT + WARM replica of `model_key`.
+3. **Status reporting** — `status()` cross-references Ray's `list_actors()` with the Cluster's view and reports one entry per *replica*; COLD (downloaded-but-not-deployed) models are still surfaced via `get_downloaded_models()`. `get_deployment(model_key, replica_id=None) -> ReplicaStates` lists the HOT replicas matching the query (empty list if none) — always returns the wrapper so callers don't special-case zero/one.
 4. **Environment info** — `env()` reports Python version and installed packages. Used by `ndif env` and `/env` to diagnose client/server version mismatches.
 5. **Internal state** — `get_state()` returns the full Controller + Cluster state for debugging.
 
@@ -893,15 +913,16 @@ class Resources:
 
 **Deployment algorithm:**
 
-When `deploy()` is called with a list of model keys:
+`Cluster.deploy(configs)` is additive — `config.replicas` says "add N more". The loop:
 
 1. **Evaluate** each model's size via `ModelEvaluator` (loads model on meta device, sums parameter sizes, adds 15% padding)
 2. **Sort** models by size descending (deploy largest first)
-3. For each model, **evaluate every node** as a candidate:
+3. For each model, loop `config.replicas` times. On each iteration, evaluate every node as a candidate:
 
 ```python
 class CandidateLevel(IntEnum):
-    DEPLOYED = 0           # Already running on this node
+    DEPLOYED = 0           # (vestigial — Cluster.deploy no longer short-circuits on this;
+                           #  evaluate() never returns it now)
     CACHED_AND_FREE = 1    # Cached in CPU + GPUs available
     FREE = 2               # GPUs available, no cache
     CACHED_AND_FULL = 3    # Cached but need to evict other GPU models
@@ -910,7 +931,11 @@ class CandidateLevel(IntEnum):
 ```
 
 4. **Select the best node** — pick the candidate with the lowest `CandidateLevel`. If multiple nodes tie, choose randomly.
-5. **Execute evictions** if needed — models are evicted by fewest GPUs first, respecting the minimum deployment time and pinned status.
+5. **Execute evictions** if needed — each *replica* on the GPU is an independent evictable occupant (two replicas of the same model on one GPU evict separately), sorted by fewest bytes first, respecting the minimum deployment time and pinned status.
+6. **Generate a replica_id** (5-char `uuid4().hex`) and create a `Deployment` keyed by it. WARM→HOT promotion (`from_cache`) reuses the cached replica's id so the actor name stays stable across the transition.
+7. **First CANT_ACCOMMODATE breaks** the inner loop — once a model can't fit, subsequent attempts on the same call would fail the same way.
+
+The result is a `DeployResponse` whose `results[model_key]` has either `replicas: [rid, ...]` (success) or `error: str` (size-eval failure or CANT_ACCOMMODATE). `evictions` is the set of `(model_key, replica_id)` pairs the controller evicted to make room.
 
 **GPU assignment:**
 
@@ -976,51 +1001,51 @@ HOT → deleted (delete: kill actor, free all resources)
 WARM → deleted (delete: kill actor, free CPU memory)
 ```
 
-The `Deployment` class represents a model in any of these states:
+The `Deployment` class represents one *replica* of a model in any of these states:
 
 ```python
 class Deployment:
     model_key: MODEL_KEY
+    replica_id: REPLICA_ID               # 5-char uuid hex; unique cluster-wide
     deployment_level: DeploymentLevel    # HOT, WARM, or COLD
-    gpus: list[int]                      # GPU indices (empty for WARM/COLD)
+    gpus: dict[int, int]                 # GPU index → bytes (empty for WARM/COLD)
     size_bytes: int                      # Model size for resource accounting
     pinned: bool                         # Protected from eviction?
     node_id: str                         # Which node
     deployed: float                      # Timestamp (for minimum deployment time)
 ```
 
-### 5.5 Deployment Scheduling
+A `model_key` can have **N HOT replicas** (each its own actor) on one or more nodes; `Node.deployments` and `Node.cache` are both `Dict[MODEL_KEY, Dict[REPLICA_ID, Deployment]]`. The Ray actor name embeds the replica_id:
 
-The Controller enforces a **minimum deployment time** to prevent thrashing. Non-pinned models cannot be evicted until `minimum_deployment_time_seconds` has elapsed since deployment.
-
-The eviction algorithm in `Node.evictions()`:
-
-```python
-def evictions(self, gpus_required: int, pinned: bool = False) -> List[MODEL_KEY]:
-    deployments = sorted(self.deployments.values(), key=lambda x: len(x.gpus))
-    gpus_needed = gpus_required - len(self.resources.available_gpus)
-    evictions = []
-
-    for deployment in deployments:
-        if deployment.pinned:
-            continue  # Never evict pinned models
-        if not pinned and deployment hasn't reached minimum time:
-            continue  # Respect minimum deployment time
-        evictions.append(deployment.model_key)
-        gpus_needed -= len(deployment.gpus)
-        if gpus_needed <= 0:
-            return evictions
-
-    return []  # Can't free enough GPUs
+```
+f"{replica_id}:ModelActor:{model_key}"
 ```
 
-Models with fewer GPUs are evicted first (to minimize disruption). Pinned models are never evicted. The minimum deployment time is only waived when deploying another pinned model.
+so `get_model_actor_handle(model_key, replica_id)` produces a handle to one specific replica. The replica_id is stable across HOT↔WARM transitions, so the cache name stays bound to the same identity.
+
+### 5.5 Deployment Scheduling
+
+The Controller enforces a **minimum deployment time** to prevent thrashing. Non-pinned replicas cannot be evicted until `minimum_deployment_time_seconds` has elapsed since their deployment.
+
+The eviction algorithm in `Node.find_evictions()` operates on `(model_key, replica_id)` pairs — each replica is an independent occupant of the GPUs it lives on:
+
+```python
+def find_evictions(
+    self, gpus_needed: int, per_gpu_bytes: int, pinned: bool = False, exclude=None
+) -> tuple[List[Tuple[MODEL_KEY, REPLICA_ID]], Dict[int, int]]:
+    # 1. Per-GPU occupants list — each replica is its own entry.
+    # 2. Per-GPU eviction plan: greedy, smallest replicas first, until per_gpu_bytes free.
+    # 3. Pick the gpus_needed cheapest plans (fewest evictions).
+    # 4. Return the union of evictions and the allocation dict.
+```
+
+Pinned replicas are never evicted. The minimum deployment time is waived only when placing another pinned replica. Two replicas of the same model_key on one GPU are *independent* evictables — picking the second one for eviction doesn't pull the first.
 
 ### 5.6 The Build/Apply Cycle
 
-When the cluster state changes (deploy or evict), the Controller calls `build()` then `apply()`.
+When the cluster state changes (deploy or evict), the Controller calls `build()` then `apply()`. Both work *per replica*: `Controller.state` is keyed by `(node_id, model_key, replica_id)`, so build/apply fires create/delete/cache/from_cache per replica without confusing siblings.
 
-**`build()`** compares the desired state (from `Cluster.nodes`) against the current state (from `Controller.state`) and produces a `DeploymentDelta`:
+**`build()`** compares the desired state (from `Cluster.nodes`'s nested dicts) against the current state (from `Controller.state`) and produces a `DeploymentDelta`:
 
 ```python
 @dataclass
@@ -1106,7 +1131,7 @@ ndif queue                         # per-model queue depth
 
 Ray's own dashboard (default `http://localhost:8265`) is useful for seeing actor state, log streams, and task graphs — especially when investigating `build()/apply()` bugs or `_monitor_deployment()` failures.
 
-**Tracing.** Every significant Controller action emits an OpenTelemetry span (`controller.deploy`, `controller.build`, `controller.apply`, `controller.monitor_deployment`). If you bring up the Jaeger service (it's in docker compose), you can watch a `deploy()` call and see exactly which delta items were created, which futures were awaited, and which actors became ready. See §10.4.
+**Tracing.** Every significant Controller action emits an OpenTelemetry span (`controller.deploy`, `controller.build`, `controller.apply`, `controller.monitor_deployment`). With the Tempo service running (it's in docker compose), open Grafana → Explore → Tempo and you can watch a `deploy()` call and see exactly which delta items were created, which futures were awaited, and which actors became ready. See §10.4.
 
 **Common failure modes when you're changing this code:**
 - A new deployment stays `DEPLOYING` forever → the `_monitor_deployment` task hit an exception. Check `ray_dashboard → logs` for the actor and for the Controller.
@@ -1133,6 +1158,8 @@ The `ModelActor` is a Ray actor that holds a loaded model and executes user inte
 class ModelActor(BaseModelDeployment):
     pass
 ```
+
+One `ModelActor` per replica; the Ray-side name is `f"{replica_id}:ModelActor:{model_key}"`, looked up by `get_model_actor_handle(model_key, replica_id)` (`common/providers/ray.py`).
 
 **Why `num_gpus=0`?** ⚠️ This is deliberate (see §14 Invariants). Ray's GPU scheduler allocates whole GPUs by count, which would prevent NDIF from doing three things it needs:
 - Placing a model on *specific* GPU indices rather than letting Ray pick.
@@ -1326,7 +1353,7 @@ pytest tests/test_hotswapping.py --run-remote  # HOT → WARM → HOT, fractiona
 
 **Fast iteration on the load path.** The slowest thing in this subsystem is loading a large model from disk. If you're iterating on `load_from_disk` / `from_cache` / `to_cache`, set `NDIF_DEPLOYMENTS=<small_model>` (e.g. `openai-community/gpt2`) before bringing up the stack — the smallest model takes ~2 seconds to load instead of ~2 minutes.
 
-**Debugging a hung or slow request.** The pipeline is heavily traced (§10.4). A single request's timeline in Jaeger looks like this:
+**Debugging a hung or slow request.** The pipeline is heavily traced (§10.4). A single request's timeline in Tempo looks like this:
 
 ```
 model_actor.call
@@ -1703,6 +1730,8 @@ class BackendRequestModel(ObjectStorageMixin):
     content_length: Optional[int]                            # Request body size
     ip_address: Optional[str]                                # Client IP
     user_agent: Optional[str]                                # Client user agent
+    enqueued_at: Optional[float] = None                      # Unix ts stamped by Processor.enqueue;
+                                                             # read by Processor.autoscaling_loop
 ```
 
 **The `model_key` format:**
@@ -1927,16 +1956,16 @@ Pre-configured dashboards (in `telemetry/grafana/dashboards/`) provide:
 - Queue depth and processing rates
 - Error rates by model
 
-### 10.4 Distributed Tracing (OpenTelemetry → Jaeger)
+### 10.4 Distributed Tracing (OpenTelemetry → Tempo)
 
-In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full request lifecycle across the API and Ray services. This is what lets you look at a single request in Jaeger and see every step: validation → queue push → dispatch → provisioning → actor load → `pre()` → `execute()` → `post()`.
+In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full request lifecycle across the API and Ray services. This is what lets you look at a single request in Tempo (via Grafana → Explore → Tempo) and see every step: validation → queue push → dispatch → provisioning → actor load → `pre()` → `execute()` → `post()`.
 
 **Key files:**
 - `src/ndif/common/tracing/` — shared setup, used by the Ray service and Dispatcher
 - `src/ndif/services/api/tracing/` — API-specific wiring (FastAPI instrumentation + request attributes)
 - Both directories expose `init_tracing(service_name)`, `trace_span(...)`, `set_request_attributes(span, request)`, and `TracingContext` for propagation
 
-**Setup.** Each service calls `init_tracing("ndif-<service>")` once at startup. This creates a `TracerProvider`, installs a `BatchSpanProcessor`, and — if `OTEL_EXPORTER_OTLP_ENDPOINT` is set — attaches an OTLP gRPC exporter pointing at Jaeger. If the env var is not set, tracing is a no-op (the spans are still created in memory but no exporter consumes them), so unit tests and ad-hoc runs work without Jaeger.
+**Setup.** Each service calls `init_tracing("ndif-<service>")` once at startup. This creates a `TracerProvider`, installs a `BatchSpanProcessor`, and — if `OTEL_EXPORTER_OTLP_ENDPOINT` is set — attaches an OTLP gRPC exporter pointing at Tempo. If the env var is not set, tracing is a no-op (the spans are still created in memory but no exporter consumes them), so unit tests and ad-hoc runs work without Tempo.
 
 **Propagation across service boundaries.** Because the Dispatcher runs in the API process and talks to Ray actors via the Ray client, a request's trace context has to be serialized across the wire. The convention is:
 
@@ -1944,7 +1973,7 @@ In addition to metrics, NDIF emits **OpenTelemetry traces** that span the full r
 2. That dict (`trace_context`) is stored on `BackendRequestModel` and pickled into Redis.
 3. The Dispatcher → Processor → ModelActor chain each pull it back out via `TracingContext.extract(trace_context)` and use it as the parent context for their own spans.
 
-This gives Jaeger a single continuous trace even though the request crossed three processes. ModelActor initialization (`model_actor.init`, `model_actor.load`) and per-request spans (`model_actor.pre`, `model_actor.call`, `model_actor.post`, `model_actor.cleanup`) all hang off the same root.
+This gives Tempo a single continuous trace even though the request crossed three processes. ModelActor initialization (`model_actor.init`, `model_actor.load`) and per-request spans (`model_actor.pre`, `model_actor.call`, `model_actor.post`, `model_actor.cleanup`) all hang off the same root.
 
 **Named spans you can grep for** (useful when debugging a specific subsystem):
 
@@ -1960,10 +1989,10 @@ This gives Jaeger a single continuous trace even though the request crossed thre
 
 | Variable | Default | Description |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `http://jaeger:4317`). Unset = no-op. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | OTLP gRPC endpoint (e.g. `http://tempo:4317`). Unset = no-op. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | Exporter timeout in seconds |
 
-Docker compose ships a Jaeger service at `jaeger:4317` for OTLP gRPC and `jaeger:16686` for the UI.
+Docker compose ships a Tempo service at `tempo:4317` for OTLP gRPC and `tempo:4318` for OTLP HTTP. Tempo has no built-in UI — query traces from Grafana via the provisioned Tempo datasource (`telemetry/grafana/provisioning/datasources/tempo.yml`). Tempo writes blocks to a dedicated `tempo` bucket in MinIO (created at stack-boot by the `tempo-init` service).
 
 ---
 
@@ -2023,9 +2052,10 @@ All configuration values are loaded from environment variables at session creati
 | `ndif start --worker` | Start as a Ray worker node |
 | `ndif stop` | Stop all running services |
 | `ndif restart [service]` | Restart services |
-| `ndif status` | Show cluster status (models, resources) |
-| `ndif deploy <model_key>` | Deploy a model to the cluster |
-| `ndif evict <model_key>` | Evict a model from the cluster |
+| `ndif status` | Show cluster status (models, resources) — entries are per-replica |
+| `ndif deploy <checkpoint> [--replicas N] [--pinned]` | Deploy N more replicas (additive; default 1). With `-f models.yaml --sync` reconciles cluster to match the file (trims excess replicas, evicts non-config models) |
+| `ndif evict <checkpoint> [--replica <rid>]` | Without `--replica`, evicts every HOT+WARM replica of the model. With `--replica`, single-targets one (HOT may demote to WARM and the user can promote it back). `--all` fans out across every HOT model. |
+| `ndif restart <checkpoint> [--replica <rid>]` | Without `--replica`, restarts every HOT replica of the model. With it, just the one. |
 | `ndif logs <service>` | View service logs |
 | `ndif queue` | Show queue state (pending requests per model) |
 | `ndif kill <request_id>` | Cancel a specific request |
@@ -2088,11 +2118,16 @@ RUN uv pip install --system -r src/ndif/services/${NAME}/requirements.in && \
 CMD ndif start "${NAME}"
 ```
 
-This builds two images from the same Dockerfile:
-- `api:latest` — The API service
-- `ray:latest` — The Ray head node
+This builds **one** image — `ndif/ndif:latest` (also tagged with the pyproject version). Every NDIF service runs from it; the consumer chooses which by setting `NDIF_SERVICE`:
 
-`make build` additionally builds a third image, `dashboard:latest`, from `docker/Dockerfile.dashboard` (a multi-stage node-build → python-runtime image that bakes in the Vue SPA and the FastAPI backend; see `services/dashboard/README.md`).
+| `NDIF_SERVICE=` | What runs |
+|---|---|
+| `all` (default) | broker + object-store + ray + api (+ dashboard if `NDIF_DASHBOARD_PORT` set). The Docker Hub demo experience. |
+| `api` / `ray` / `dashboard` | Just that service. Used by docker-compose, which sets the env var per service. |
+
+`make build` depends on `dashboard-frontend`, which runs `npm ci && npm run build` on the host (node 20+ required) and writes the Vue SPA to `src/ndif/services/dashboard/frontend/dist/`. The Dockerfile COPYs the pre-built dist in.
+
+`make push` pushes both `ndif/ndif:latest` and `ndif/ndif:VERSION` to Docker Hub. `make run` is a one-shot `docker run` with the standard port mappings + HF cache mount.
 
 The `docker-compose.yml` orchestrates the following services:
 
@@ -2101,19 +2136,20 @@ The `docker-compose.yml` orchestrates the following services:
 | `message_broker` | `redis` | Request queue, pub/sub, Socket.IO backend |
 | `minio` | `minio/minio` | Object storage for results |
 | `postgres` | `postgres:16-alpine` | API key store (dev-mode bypass available) |
-| `ray` | `ray:latest` | Ray head + Controller + ModelActors |
-| `api` | `api:latest` | FastAPI + Dispatcher |
-| `dashboard` | `dashboard:latest` | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
+| `ray` | `ndif/ndif:latest` (NDIF_SERVICE=ray) | Ray head + Controller + ModelActors |
+| `api` | `ndif/ndif:latest` (NDIF_SERVICE=api) | FastAPI + Dispatcher |
+| `dashboard` | `ndif/ndif:latest` (NDIF_SERVICE=dashboard) | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
 | `prometheus` | `prom/prometheus` | Metrics collection |
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |
 | `loki` | `grafana/loki` | Centralized log storage |
-| `jaeger` | `jaegertracing/jaeger` | Distributed tracing UI + OTLP collector |
+| `tempo` | `grafana/tempo` | OTLP trace collector + storage (MinIO-backed, queried via Grafana) |
+| `tempo-init` | `minio/mc` | One-shot bucket bootstrap for Tempo's S3 backend |
 
 **Build and run:**
 
 ```bash
-make build   # Build api and ray images
+make build   # Build the unified ndif/ndif image
 make up      # Start all containers
 make down    # Stop all containers
 make ta      # Full rebuild: down + build + up
@@ -2173,8 +2209,7 @@ All configuration is via environment variables. The defaults shown below are wha
 
 | Variable | Code Default | Description |
 |----------|---------|-------------|
-| `COORDINATOR_STATUS_CACHE_FREQ_S` | `120` | How long to cache cluster status in Redis |
-| `COORDINATOR_PROCESSOR_REPLY_FREQ_S` | `3` | Status update frequency for queued users |
+| `NDIF_STATUS_CACHE_FREQ_S` | `120` | How long to cache cluster status in Redis |
 
 **Database (dev-mode bypassed when `NDIF_DEV_MODE=true`):**
 
@@ -2196,11 +2231,13 @@ All configuration is via environment variables. The defaults shown below are wha
 
 `src/ndif/services/dashboard/` is the admin web app. It owns three things:
 
-1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions. Replaces the standalone `services/monitor/`.
+1. **Monitoring** — uptime + per-model nnsight-trace probes, with Discord notifications on state transitions.
 2. **Pinned-deployment scheduling** — a JSON-backed schedule store + diff-based reconcile cron that pushes the active set to the controller (§5.7).
-3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (deploy / evict / restart, with WARM cards offering Deploy and HOT cards offering evict / restart), and a month calendar for editing the schedule.
+3. **Operational UI** — login-gated Vue SPA over the FastAPI backend: cluster monitor view, deployments view (one card per `model_key` with a row of per-replica dots — green = HOT+RUNNING, flashing amber↔green = HOT+DEPLOYING, red = HOT+UNHEALTHY, amber = WARM; hover a dot for Restart / Evict / Deploy on that one replica; the card kebab has "Restart All" / "Add Replica" / "Evict All"), and a month calendar for editing the schedule.
 
-It ships as a docker-compose service alongside `api` and `ray`. The image is built from `docker/Dockerfile.dashboard` (multi-stage: node build of the Vue SPA → python runtime serving the SPA + the FastAPI backend) and runs a `cron` daemon for the monitor and reconcile jobs. Default port is `NDIF_DASHBOARD_PORT=8081`.
+The backend's `/api/status` endpoint aggregates the controller's per-replica entries into one card per `model_key` with a `replicas: [...]` array. Card-level `deployment_level`, `application_state`, and `pinned` are the "best across siblings" (HOT > WARM > COLD; RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY; pinned-if-any).
+
+It ships as a docker-compose service alongside `api` and `ray` (same `ndif/ndif` image, started with `NDIF_SERVICE=dashboard`). The Vue SPA is pre-built on the host via `make dashboard-frontend` and copied into the image. A `cron` daemon runs alongside uvicorn for the monitor and reconcile jobs. Default port is `8081` (set `NDIF_DASHBOARD_PORT` to override; setting it also makes `ndif start all` include the dashboard).
 
 The full operator-facing reference lives in `src/ndif/services/dashboard/README.md`. This section is the design-doc summary.
 
@@ -2210,7 +2247,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 - `src/ndif/services/dashboard/backend/schedule_store.py` — JSON-backed schedule CRUD, fcntl-locked
 - `src/ndif/services/dashboard/backend/ndif_client.py` — thin wrappers around `cli/lib/{deploy,evict,restart,status}.py` (the dashboard reuses the CLI's helpers rather than poking the controller directly)
 - `src/ndif/services/dashboard/backend/routers/{auth,monitor,schedule,deployments,deploy}.py`
-- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron (the body that used to live under `services/monitor/jobs/monitor.py`)
+- `src/ndif/services/dashboard/jobs/monitor.py` — uptime + model-trace cron
 - `src/ndif/services/dashboard/jobs/reconcile.py` — diff-based push: `evict = prev − new`, `deploy = new − HOT`. flock-serialized; schedule writes also trigger an immediate background reconcile.
 - `src/ndif/services/dashboard/start.sh` — canonical entrypoint, used by both Docker and standalone runs
 - `src/ndif/services/dashboard/frontend/` — Vue 3 + Vite + TS SPA
@@ -2223,7 +2260,7 @@ The full operator-facing reference lives in `src/ndif/services/dashboard/README.
 2. **Every 2 hours** (or every run while recovering from downtime), fetches `/status`, enumerates HOT models, and runs a real nnsight trace against each one. Catches "API up, inference broken" cases. The `models_failed` Discord message is capped under 2000 chars to fit Discord's limit.
 3. **Sends Discord notifications** on state transitions (down / still-down / back-up). "Still down" is rate-limited.
 
-NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation) — same format the previous `services/monitor/` produced, so the existing dashboard data carries over via the bind mount.
+NDIF is considered **up** only after a full clean run passes. Logs are written to `<NDIF_DASHBOARD_DATA_DIR>/logs/{connected,models,cluster}_YYYYMMDD.log` (JSONL, 30-day rotation).
 
 ### 13.2 Reconcile cron
 
@@ -2259,17 +2296,13 @@ Env-var driven; full table in `services/dashboard/README.md`. Highlights:
 | `NDIF_DASHBOARD_PASSWORD_HASH` | (empty — login disabled) | Bcrypt hash; generate via `python -m ndif.services.dashboard.backend.auth hash <password>` |
 | `NDIF_DASHBOARD_SESSION_SECRET` | unsafe placeholder | ≥32-byte random; rotates invalidate sessions |
 | `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Logs, `schedule.json`, `.reconcile.state.json`, `config.json` |
-| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) — defaults to the legacy monitor's data dir for continuity |
+| `NDIF_DASHBOARD_HOST_DATA_DIR` | `~/ndif_monitor` | Host dir bind-mounted to `/var/lib/dashboard` (compose only) |
 | `NDIF_DASHBOARD_MONITOR_URL` | `https://api.ndif.us` | Where the monitor cron probes |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Monitor schedule |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile schedule |
 | `NDIF_API_KEY` | (from `.env`) | Used by the monitor cron's nnsight model traces |
 
 Compose-side note: the dashboard service uses `env_file` with `format: raw` so the bcrypt `$2b$12$…` hash isn't mangled by compose's `${...}` interpolation.
-
-### 13.5 Legacy `services/monitor/`
-
-`src/ndif/services/monitor/` is the previous standalone uptime monitor — a `run.sh`-deployed conda env + cron job + Flask dashboard, separate from the docker stack. Its body has been pulled into `services/dashboard/jobs/monitor.py`; the directory is still in the tree for now to support the existing `~/ndif_monitor/` deployment, but new work should go in the dashboard. Plan to remove it once the dashboard has been the primary monitor for one full release cycle.
 
 ---
 
@@ -2432,15 +2465,35 @@ Deferring the error until *use* has the right semantics: whitelisted libraries t
 
 **Do not:** edit `whitelist.yaml` and expect existing containers to pick it up. Always `make ta` (or `make build` + `make up`) after whitelist changes, and always re-run `pytest tests/test_security_guards.py --run-remote` afterward.
 
-### 14.12 The Processor detects eviction via the `"Failed to look up actor"` string
+### 14.12 The Replica detects eviction via the `"Failed to look up actor"` string
 
-*Location:* `src/ndif/services/ray/deployments/modeling/base.py::__call__` raises `LookupError("Failed to look up actor")` when `self.cached`. Matched by `src/ndif/services/api/queue/processor.py::execute`. See §4.4.
+*Location:* `src/ndif/services/ray/deployments/modeling/base.py::__call__` raises `LookupError("Failed to look up actor")` when `self.cached`; matched by `src/ndif/services/api/queue/replica.py::Replica.dispatch` (also matched by `Replica.await_ready` during setup so the worker keeps polling instead of giving up). See §4.4.
 
-When a `ModelActor` is cached to CPU (HOT → WARM), subsequent request dispatches to that actor raise `LookupError("Failed to look up actor")`. The Processor string-matches on this message to distinguish "my model got evicted" (recoverable, re-provision) from "Ray died" (unrecoverable, purge all Processors and reconnect).
+When a `ModelActor` is cached to CPU (HOT → WARM) or fully evicted, subsequent request dispatches to that actor raise `LookupError("Failed to look up actor")`. The Replica string-matches this to disambiguate "my replica is gone" (recoverable: flip `self.dropped`, let the worker exit, the Processor drops us from its pool, and if we were the last live replica the Processor `abort`s) from "Ray died" (unrecoverable: surface to `error_queue`, the Dispatcher purges all Processors and reconnects).
 
-**Why string matching on an error message?** Because the error crosses process + network boundaries as a Ray exception, and the type information is lossy by the time it reaches the Dispatcher. Matching on a distinctive string is the cheapest way to disambiguate two failure modes that otherwise look identical.
+**Why string matching on an error message?** The error crosses process + network boundaries as a Ray exception, and the type information is lossy by the time it reaches the API process. Matching on a distinctive string is the cheapest way to disambiguate two failure modes that otherwise look identical.
 
-**Do not:** change the error message without also updating the Processor's match. If you rename this string, integration tests will still pass but evicted-model recovery will silently break — the Processor will treat eviction as a connection failure and purge everything.
+**Do not:** change the error message without also updating the Replica's matches (there are *two* — `dispatch` and `await_ready`). If you rename this string, integration tests will still pass but evicted-replica recovery will silently break.
+
+### 14.15 Per-replica dispatch must catch `CancelledError` distinctly from `Exception`
+
+*Location:* `src/ndif/services/api/queue/replica.py::Replica.dispatch`. See §4.4.
+
+`Replica.cancel()` calls `task.cancel()`, which raises `asyncio.CancelledError` in any pending `await` — including `await handle.__call__.remote(request)` if a request is in flight. `CancelledError` inherits from `BaseException` in Python 3.8+, so `except Exception:` does *not* catch it. Without an explicit `except CancelledError` branch in dispatch, the user would never get an ERROR response and the request would sit at `DISPATCHED` forever.
+
+The explicit branch sends an ERROR and re-raises, so the worker still exits cleanly via `replica_worker`'s outer `except CancelledError`. This matters most when `Processor.reconcile` (fired by a CLI / dashboard evict's `RECONCILE_MODEL` event) cancels a replica that was mid-dispatch.
+
+**Do not:** collapse the two `except` branches into one. The ordering and the explicit `raise` are both load-bearing.
+
+### 14.16 Reconcile is push from CLI / dashboard, never from controller
+
+*Location:* `src/ndif/cli/lib/util.py::notify_reconcile` + `src/ndif/services/api/queue/dispatcher.py::_handle_reconcile_model`. See §4.1.
+
+NDIF deliberately does **not** push state from the controller to the dispatcher. The reasoning: every controller-side state mutation (apply()'s create/cache/from_cache/delete, autoscaling, drift recovery, etc.) would otherwise need to remember to publish, and getting that wrong silently desyncs the Processor pool.
+
+Instead, only the user-initiated mutation paths (`cli/lib/deploy.py`, `cli/lib/evict.py`, and through them the dashboard) call `notify_reconcile(broker_url, model_keys)` after the controller call succeeds. The Dispatcher receives `RECONCILE_MODEL`, forwards to `Processor.reconcile()`, which pulls fresh truth from the controller. For everything else (controller-internal transitions, missed events), the Replica's drift detection (§14.12) is the safety net.
+
+**Do not:** add controller-side publishing. The robustness model is "Dispatcher is allowed to be stale, drift detection corrects it; CLI / dashboard provides best-effort low-latency hints."
 
 ### 14.13 Garbage collection runs every 5 requests, not every request
 
@@ -2543,8 +2596,10 @@ Pinned deployments are driven by the dashboard's schedule store and reconcile cr
 
 | Variable | Code default | `.env.example` | Read in | Description |
 |---|---|---|---|---|
-| `COORDINATOR_STATUS_CACHE_FREQ_S` | `120` | — | `services/api/queue/config.py` | How long `/status` responses are cached in Redis |
-| `COORDINATOR_PROCESSOR_REPLY_FREQ_S` | `3` | — | `services/api/queue/config.py` | How often a Processor sends status updates to queued users |
+| `NDIF_STATUS_CACHE_FREQ_S` | `120` | — | `services/api/queue/config.py` | How long `/status` responses are cached in Redis |
+| `NDIF_AUTOSCALING_INTERVAL_S` | `5` | `5` | `services/api/queue/config.py` | How often each Processor checks queue-head wait time |
+| `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | `30` | `services/api/queue/config.py` | Processor scales up when the oldest queued request has been waiting longer than this |
+| `NDIF_AUTOSCALING_BACKOFF_S` | `120` | `120` | `services/api/queue/config.py` | After scaling up, sleep this long before re-checking — lets the new replica come up |
 | `STATUS_REQUEST_TIMEOUT_S` | `60` | — | `services/api/config.py` | Max wait for Controller status response |
 | `SOCKETIO_MAX_HTTP_BUFFER_SIZE` | `100000000` | — | `services/api/config.py` | Max Socket.IO message size (100 MB) |
 | `SOCKETIO_PING_TIMEOUT` | `60` | — | `services/api/config.py` | Socket.IO ping timeout |
@@ -2583,20 +2638,10 @@ Skipped when `NDIF_DEV_MODE=true`.
 | `INFLUXDB_ORG` | — | — | `common/metrics/metric.py` | InfluxDB organization |
 | `INFLUXDB_BUCKET` | — | — | `common/metrics/metric.py` | InfluxDB bucket |
 | `LOKI_URL` | — | `http://<host>:<DEV_LOKI_PORT>/loki/api/v1/push` | `common/logging/logger.py` | Loki push URL (unset = local logs only) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<JAEGER_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | `http://<host>:<TEMPO_OTLP_GRPC_PORT>` | `common/tracing/setup.py` | OTLP gRPC endpoint for traces (unset = tracing no-op) |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `5` | — | `common/tracing/setup.py` | OTLP exporter timeout in seconds |
 
-### 15.9 Legacy monitor service (§13.5)
-
-Read only by the legacy standalone `src/ndif/services/monitor/jobs/monitor.py`. These do **not** affect the main NDIF stack and are scheduled for removal once the dashboard has fully replaced this service.
-
-| Variable | Default | Description |
-|---|---|---|
-| `INSTALL_DIR` | `~/ndif_monitor` | Where monitor source, config, and logs live |
-| `NDIF_API_KEY` | — | API key used for nnsight remote traces from the monitor |
-| `MONITOR_CRON` | `*/10 * * * *` | Cron schedule for the monitor job |
-
-### 15.10 CLI-only
+### 15.9 CLI-only
 
 Read by the `ndif` CLI when bringing up native-mode dependencies.
 
@@ -2621,8 +2666,8 @@ ndif/
 ├── README.md                           # Project overview
 │
 ├── docker/
-│   ├── Dockerfile                      # Multi-purpose (ARG NAME=api or NAME=ray)
-│   ├── Dockerfile.dashboard            # Multi-stage (node build → python runtime)
+│   ├── Dockerfile                      # Single unified image — every service
+│   │                                     runs from it (NDIF_SERVICE selects)
 │   ├── docker-compose.yml              # Full stack orchestration
 │   └── postgres/
 │       └── init.sql                    # Dev-mode keys DB schema + test key
@@ -2679,7 +2724,8 @@ ndif/
     │       ├── request.py              # BackendRequestModel
     │       ├── response.py             # BackendResponseModel
     │       ├── result.py               # BackendResultModel + TensorStoragePickler
-    │       ├── deployment_config.py    # DeploymentConfig (pinned, timeouts, actor_class, …)
+    │       ├── deployment_config.py    # DeploymentConfig (pinned, replicas, timeouts, actor_class, …)
+    │       ├── controller.py            # DeployResponse, ReplicaState/ReplicaStates RPC schemas
     │       └── mixins.py               # ObjectStorageMixin, TelemetryMixin
     │
     └── services/
@@ -2688,7 +2734,7 @@ ndif/
         │   ├── config.py / dependencies.py / db.py / gunicorn.conf.py
         │   ├── tracing/                # API-specific tracing
         │   ├── queue/
-        │   │   ├── dispatcher.py / processor.py / config.py / util.py
+        │   │   ├── dispatcher.py / processor.py / replica.py / config.py / util.py
         │   ├── tests/
         │   ├── start.sh
         │   └── requirements.in
@@ -2725,7 +2771,4 @@ ndif/
         │   │   ├── reconcile.py        # Diff-based push of schedule.json → controller
         │   │   └── util.py
         │   └── frontend/               # Vue 3 + Vite + TS SPA
-        │
-        └── monitor/                    # Legacy standalone uptime monitor (§13.5)
-            └── (run.sh, jobs/, dashboard/, README.md — being replaced by services/dashboard/)
 ```

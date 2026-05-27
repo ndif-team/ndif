@@ -40,8 +40,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-import requests
-
 from ..backend.config import get_settings
 from ..backend.schedule_store import ScheduleEvent, ScheduleStore, filter_active
 from .util import get_mention, load_config, send_discord
@@ -82,19 +80,26 @@ def _save_state(state_path: Path, state: dict) -> None:
     state_path.write_text(json.dumps(state, indent=2))
 
 
-def _fetch_hot_model_keys(api_url: str) -> Optional[set[str]]:
-    """Return the set of model_keys currently HOT according to NDIF API's
-    HTTP /status. ``None`` on transport error → callers should treat that as
-    "unknown" and lean toward re-deploying.
+def _fetch_hot_model_keys() -> Optional[set[str]]:
+    """Return the set of model_keys currently HOT according to the controller.
+
+    Reads live from the controller via Ray rather than the API service's
+    Redis-cached ``/status`` (TTL ``NDIF_STATUS_CACHE_FREQ_S``). The cached
+    path was racey: during a brief actor restart or before the cache
+    refreshed, a pinned model would falsely look like it had drifted out
+    of HOT, and the additive deploy below would stack another pinned
+    replica on top of the one already serving. ``None`` on Ray-side error
+    → callers treat as "unknown" and lean toward re-deploying.
     """
+    from ..backend import ndif_client
+
     try:
-        r = requests.get(f"{api_url.rstrip('/')}/status", timeout=10)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        logger.warning("Cannot read /status to verify controller: %s", e)
+        data = ndif_client.status()
+    except Exception as e:
+        logger.warning("Cannot read controller status: %s", e)
         return None
 
-    deps = r.json().get("deployments") or {}
+    deps = data.get("deployments") or {}
     return {
         v["model_key"]
         for v in deps.values()
@@ -195,18 +200,33 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
     to_evict = sorted(prev_keys - set(new_keys))
 
     # to_deploy: newly added OR drifted out of the controller's HOT set.
-    hot_keys = _fetch_hot_model_keys(settings.ndif_api_url)
+    hot_keys = _fetch_hot_model_keys()
+    new_keys_list = list(new_keys.keys())
+    active_count = len(active)
+    active_names = [e.checkpoint for e in active]
+
+    # If we couldn't read controller state, skip this tick and let the next
+    # cron run retry. Acting blind would stack pinned replicas: every active
+    # scheduled model would look like it had drifted out of HOT and get an
+    # additive pinned deploy on top of the one already serving. ``force``
+    # still bypasses since it's a deliberate operator override.
+    if hot_keys is None and not force:
+        logger.warning(
+            "Skipping reconcile: controller status unavailable; will retry next tick"
+        )
+        return {
+            "changed": False, "active": active_names,
+            "evicted": [], "deployed": [],
+            "skipped": "controller_status_unavailable",
+        }
+
     if force:
         to_deploy_events = list(new_keys.values())
     else:
         to_deploy_events = [
             ev for mk, ev in new_keys.items()
-            if mk not in prev_keys or hot_keys is None or mk not in hot_keys
+            if mk not in prev_keys or mk not in hot_keys
         ]
-
-    new_keys_list = list(new_keys.keys())
-    active_count = len(active)
-    active_names = [e.checkpoint for e in active]
 
     if not to_evict and not to_deploy_events:
         logger.info("No change (%d active event(s)); controller in sync", active_count)

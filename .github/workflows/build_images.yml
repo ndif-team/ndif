@@ -1,10 +1,8 @@
 name: Build Images
+
 on:
   push:
-    branches:
-      - dev
-      - main
-      - ci-*
+    branches: [dev, main]
 
 concurrency:
   group: build-images-${{ github.ref }}
@@ -12,6 +10,7 @@ concurrency:
 
 permissions:
   id-token: write
+  contents: read
 
 env:
   # main -> prod ECR repo, everything else -> dev ECR repo
@@ -23,8 +22,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5.0.0
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5.1.0
         with:
@@ -36,34 +37,34 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Tag the API image
-        id: api
+      # One image for every NDIF service. The container chooses what to run
+      # via NDIF_SERVICE at runtime; the ECS task defs (in ndif-aws) set
+      # NDIF_SERVICE=api / NDIF_SERVICE=ray per service.
+      - name: Tag the ndif image
+        id: ndif
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/api
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECS_REPO }}/ndif
           tags: |
             type=sha
             type=raw,value=latest
 
-      - name: Build and push API service image
+      - name: Build and push ndif image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile
           push: true
-          build-args: |
-            NAME=api
-          tags: ${{ steps.api.outputs.tags }}
+          tags: ${{ steps.ndif.outputs.tags }}
           cache-from: |
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif_base:cache
-            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache
-          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/api:cache,mode=max
+            type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache,mode=max
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref_name == github.event.repository.default_branch
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     steps:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v5.1.0
@@ -71,6 +72,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           aws-region: us-east-1
           output-credentials: true
+
       - name: Deploy with AWS CLI
         run: |
           aws ecs update-service \

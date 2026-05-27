@@ -2,11 +2,15 @@
 
 Imported by the Click wrapper in ``cli/commands/deploy.py`` and by the
 dashboard backend so admin actions exercise exactly the same code path.
+
+Deploy is **additive**: every call asks the controller to place ``replicas``
+new replicas of each model, regardless of what is already running. Use
+``sync=True`` (with a config file) to instead reconcile the cluster to match
+the config exactly — that path adds, removes, and trims replicas as needed.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from ...common.providers.ray import get_controller_actor_handle
@@ -23,8 +27,8 @@ from .session import get_env
 from .util import (
     get_current_deployments,
     get_model_key,
-    notify_dispatcher,
-    wait_for_model_ready,
+    notify_reconcile,
+    wait_for_replica_ready,
 )
 
 
@@ -40,14 +44,17 @@ def deploy(
 
     Args:
         specs: List of model spec dicts. Required key: ``checkpoint``.
-            Optional keys: ``revision``, ``pinned``, ``actor_class``,
-            ``envoy_class``, ``padding_factor``, ``execution_timeout_seconds``.
+            Optional keys: ``revision``, ``pinned``, ``replicas`` (default 1),
+            ``actor_class``, ``envoy_class``, ``padding_factor``,
+            ``execution_timeout_seconds``.
             ``envoy_class`` is the dotted import path of the nnsight wrapper
             (default: ``nnsight.modeling.language.LanguageModel``); it
             selects which class is used to compute the model_key and which
             class the server reconstructs.
-        sync: If True, evict any current HOT models that are not in ``specs``
-            before deploying. Mirrors ``ndif deploy --sync``.
+        sync: If True, reconcile the cluster to match ``specs`` exactly —
+            models not in ``specs`` have all their replicas evicted, and
+            models in ``specs`` are deployed/trimmed to match the requested
+            replica count. Without ``sync``, each call is purely additive.
         ray_address: Ray address (defaults to ``NDIF_RAY_ADDRESS``).
         broker_url: Broker URL (defaults to ``NDIF_BROKER_URL``).
         on_message: Optional progress callback. Receives one human-readable
@@ -55,9 +62,11 @@ def deploy(
             ``click.echo`` and the dashboard can stream progress.
 
     Returns:
-        ``{"deployments": [<entry>...], "evictions": [model_key, ...]}``
+        ``{"deployments": [<entry>...], "evictions": [...]}``
         where each ``<entry>`` is
-        ``{"checkpoint", "model_key", "status", "error"}``.
+        ``{"checkpoint", "model_key", "replicas": [...], "status", "error"}``
+        and each entry in ``evictions`` is
+        ``{"model_key", "replica_id"}``.
 
     Raises:
         NDIFConnectivityError: If broker or Ray is unreachable.
@@ -71,14 +80,14 @@ def deploy(
     broker_url = broker_url or get_env("NDIF_BROKER_URL")
     check_prereqs(broker_url, ray_address)
 
-    # Generate model keys
+    # Generate model keys for every spec up front so we can dedupe and pass
+    # the canonical form into both sync reconciliation and the deploy call.
     model_keys_map: dict[str, dict] = {}
     for spec in specs:
         rev_str = f" (revision: {spec['revision']})" if spec["revision"] else ""
         # Callers that already hold the canonical model_key (e.g. the
         # dashboard's WARM redeploy path, which reads it off the existing
-        # deployment card) can short-circuit get_model_key entirely. Falls
-        # back to canonicalize for the normal "user-typed-a-checkpoint" flow.
+        # deployment card) can short-circuit get_model_key entirely.
         if spec.get("model_key"):
             model_key = spec["model_key"]
             emit(on_message, f"Using provided model key for {spec['checkpoint']}{rev_str}: {model_key}")
@@ -96,14 +105,23 @@ def deploy(
     controller = get_controller_actor_handle()
 
     deployments_result: list[dict] = []
-    all_evictions: list[str] = []
+    all_evictions: list[dict] = []
 
+    # Sync mode: bring the cluster to *exactly* the config. Evict models not
+    # in the desired set, and per-model trim/grow to the requested count.
     if sync:
-        all_evictions.extend(
-            _sync_evict_extra_models(controller, model_keys_map, broker_url, on_message)
+        evicted, additive_specs = _sync_reconcile(
+            controller, model_keys_map, on_message
         )
+        all_evictions.extend(evicted)
+        # Only place the remaining shortfall — anything already satisfied
+        # was filtered out by _sync_reconcile.
+        model_keys_map = additive_specs
 
-    # Order matches the existing CLI: non-pinned batch, then pinned batch.
+    # Group by pinned-ness so we can call _deploy in two batches (non-pinned
+    # first, then pinned) — matches the historic CLI ordering. The configs
+    # themselves carry the replica count so the controller knows how many
+    # NEW replicas to add per model on this call.
     for is_pinned in (False, True):
         batch_keys = [
             mk for mk, sp in model_keys_map.items()
@@ -118,105 +136,183 @@ def deploy(
         configs = {
             mk: DeploymentConfig(
                 pinned=is_pinned,
+                replicas=int(model_keys_map[mk].get("replicas") or 1),
                 actor_class=model_keys_map[mk]["actor_class"],
                 padding_factor=model_keys_map[mk]["padding_factor"],
                 execution_timeout_seconds=model_keys_map[mk]["execution_timeout_seconds"],
             )
             for mk in batch_keys
         }
-        results = ray.get(controller._deploy.remote(deployments=configs))
-        all_evictions.extend(results.get("evictions", []))
+        response = ray.get(controller._deploy.remote(deployments=configs))
 
-        result_status_map = results.get("result", {})
-        models_to_init: list[str] = []
+        # Surface evictions the controller took to make room.
+        for mk, rid in response.evictions:
+            all_evictions.append({"model_key": mk, "replica_id": rid})
 
         for model_key in batch_keys:
             spec = model_keys_map[model_key]
-            status = result_status_map.get(model_key, "UNKNOWN")
-            entry = {
+            result = response.results.get(model_key)
+            replicas = list(result.replicas) if result else []
+            entry: dict = {
                 "checkpoint": spec["checkpoint"],
                 "model_key": model_key,
-                "status": status,
-                "error": None,
+                "replicas": replicas,
+                "status": "PENDING",
+                "error": result.error if result else None,
             }
 
-            if status == "CANT_ACCOMMODATE":
-                entry["error"] = "cannot be deployed on any node"
+            if entry["error"]:
+                entry["status"] = "ERROR"
                 emit(on_message, f"  ✗ {model_key}: {entry['error']}")
-            elif status == "DEPLOYED":
-                emit(on_message, f"  ✓ {model_key}: already deployed")
-            elif status in ("FREE", "CACHED_AND_FREE"):
-                emit(on_message, f"  ⋯ {model_key}: provisioned, initializing...")
-                models_to_init.append(model_key)
-            elif status in ("FULL", "CACHED_AND_FULL"):
-                entry["error"] = "no capacity available"
-                emit(on_message, f"  ✗ {model_key}: {entry['error']}")
+            elif not replicas:
+                entry["status"] = "ERROR"
+                entry["error"] = "no replicas placed"
+                emit(on_message, f"  ✗ {model_key}: no replicas placed")
             else:
-                entry["error"] = f"unknown status ({status})"
-                emit(on_message, f"  ? {model_key}: {entry['error']}")
+                emit(
+                    on_message,
+                    f"  ⋯ {model_key}: provisioned {len(replicas)} replica(s), initializing...",
+                )
+                for rid in replicas:
+                    emit(on_message, f"      - [{rid}] waiting for ready")
 
             deployments_result.append(entry)
 
-        for model_key in models_to_init:
-            entry = next(d for d in deployments_result if d["model_key"] == model_key)
-            try:
-                if wait_for_model_ready(model_key):
-                    entry["status"] = "READY"
-                    emit(on_message, f"  ✓ {model_key}: ready")
-                    asyncio.run(notify_dispatcher(broker_url, "deploy", model_key))
-                else:
-                    entry["status"] = "TIMEOUT"
-                    entry["error"] = "initialization timed out"
-                    emit(on_message, f"  ✗ {model_key}: initialization timed out")
-            except Exception as e:
+        # Block until each newly-placed replica is __ray_ready__. Per-replica
+        # so the user sees progress for each one rather than one combined
+        # "ready" line.
+        for entry in deployments_result:
+            if entry["model_key"] not in batch_keys:
+                continue
+            if entry["error"] is not None or not entry["replicas"]:
+                continue
+
+            ready, failed = [], []
+            for rid in entry["replicas"]:
+                try:
+                    if wait_for_replica_ready(entry["model_key"], rid):
+                        emit(on_message, f"  ✓ {entry['model_key']} [{rid}]: ready")
+                        ready.append(rid)
+                    else:
+                        emit(
+                            on_message,
+                            f"  ✗ {entry['model_key']} [{rid}]: initialization timed out",
+                        )
+                        failed.append((rid, "initialization timed out"))
+                except Exception as e:
+                    emit(
+                        on_message,
+                        f"  ✗ {entry['model_key']} [{rid}]: initialization failed - {e}",
+                    )
+                    failed.append((rid, str(e)))
+
+            if failed and not ready:
                 entry["status"] = "ERROR"
-                entry["error"] = str(e)
-                emit(on_message, f"  ✗ {model_key}: initialization failed - {e}")
+                entry["error"] = "; ".join(f"[{rid}] {err}" for rid, err in failed)
+            elif failed:
+                entry["status"] = "PARTIAL"
+                entry["error"] = "; ".join(f"[{rid}] {err}" for rid, err in failed)
+            else:
+                entry["status"] = "READY"
 
     if all_evictions:
         emit(on_message, "\nEvictions:")
         for eviction in all_evictions:
-            emit(on_message, f"  - {eviction}")
-            try:
-                asyncio.run(notify_dispatcher(broker_url, "evict", eviction))
-            except Exception:
-                pass
+            emit(
+                on_message,
+                f"  - {eviction['model_key']} [{eviction['replica_id']}]",
+            )
+
+    # Tell the dispatcher to refresh its replica pool for both the models
+    # we deployed (new replicas to pick up) and any models whose replicas
+    # the controller evicted to make room (their pools are now stale).
+    touched: set[str] = set()
+    for entry in deployments_result:
+        if entry.get("model_key"):
+            touched.add(entry["model_key"])
+    for eviction in all_evictions:
+        if eviction.get("model_key"):
+            touched.add(eviction["model_key"])
+    notify_reconcile(broker_url, touched)
 
     return {"deployments": deployments_result, "evictions": all_evictions}
 
 
-def _sync_evict_extra_models(
+def _sync_reconcile(
     controller,
-    desired_keys: dict,
-    broker_url: Optional[str],
+    desired_map: dict[str, dict],
     on_message: OnMessage,
-) -> list[str]:
-    """Evict HOT models that are not in the desired set."""
+) -> tuple[list[dict], dict[str, dict]]:
+    """Make the cluster match ``desired_map`` exactly.
+
+    Steps:
+        1. Evict every HOT model_key not in ``desired_map``.
+        2. For each model in ``desired_map``, trim excess replicas if the
+           cluster has more than the spec asks for. Reduce the spec's
+           ``replicas`` count by however many already match so the caller
+           only adds the shortfall.
+
+    Returns ``(evictions, remaining_specs)`` where ``evictions`` is the list
+    of ``{"model_key", "replica_id"}`` records evicted and
+    ``remaining_specs`` is ``desired_map`` filtered to entries that still
+    need replicas placed (with ``spec["replicas"]`` adjusted down to the
+    shortfall).
+    """
     import ray
 
-    current_deployments = get_current_deployments(level="HOT")
-    current_keys = {dep["model_key"] for dep in current_deployments}
-    to_evict = current_keys - set(desired_keys.keys())
-    if not to_evict:
-        return []
+    evictions: list[dict] = []
+    remaining: dict[str, dict] = {}
 
-    emit(on_message, f"\nSync mode: evicting {len(to_evict)} model(s) not in desired set...")
+    current_hot = get_current_deployments(level="HOT")
+    # Build {model_key -> [replica_id, ...]} so we know the current count.
+    current_by_mk: dict[str, list[str]] = {}
+    for dep in current_hot:
+        mk = dep.get("model_key")
+        rid = dep.get("replica_id")
+        if mk and rid:
+            current_by_mk.setdefault(mk, []).append(rid)
 
-    results = ray.get(controller.evict.remote(model_keys=list(to_evict)))
-    evicted: list[str] = []
+    desired_keys = set(desired_map.keys())
+    extras = [mk for mk in current_by_mk if mk not in desired_keys]
 
-    for model_key, result in results.items():
-        if result["status"] == "not_found":
-            emit(on_message, f"  - {model_key}: not found")
-        else:
-            emit(on_message, f"  ✓ {model_key}: evicted")
-            evicted.append(model_key)
-            try:
-                asyncio.run(notify_dispatcher(broker_url, "evict", model_key))
-            except Exception:
-                pass
+    if extras:
+        emit(
+            on_message,
+            f"\nSync mode: evicting {len(extras)} model(s) not in desired set...",
+        )
+        for mk in extras:
+            response = ray.get(controller.evict.remote(mk, None))
+            for r in response.replicas:
+                emit(on_message, f"  ✓ {mk} [{r.replica_id}]: evicted")
+                evictions.append({"model_key": mk, "replica_id": r.replica_id})
 
-    return evicted
+    for mk, spec in desired_map.items():
+        wanted = int(spec.get("replicas") or 1)
+        have = len(current_by_mk.get(mk, []))
+
+        if have >= wanted:
+            # Trim excess (evict the surplus). Excess > 0 only when have>wanted.
+            surplus = current_by_mk.get(mk, [])[wanted:]
+            if surplus:
+                emit(
+                    on_message,
+                    f"\nSync mode: trimming {len(surplus)} extra "
+                    f"replica(s) of {mk}...",
+                )
+            for rid in surplus:
+                response = ray.get(controller.evict.remote(mk, rid))
+                for r in response.replicas:
+                    emit(on_message, f"  ✓ {mk} [{r.replica_id}]: evicted")
+                    evictions.append({"model_key": mk, "replica_id": r.replica_id})
+            # Nothing to add — count already met.
+            continue
+
+        # Shortfall: add (wanted - have) replicas.
+        adjusted = dict(spec)
+        adjusted["replicas"] = wanted - have
+        remaining[mk] = adjusted
+
+    return evictions, remaining
 
 
 # Re-export the connectivity error so callers can `from ...lib.deploy import

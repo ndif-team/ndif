@@ -10,14 +10,14 @@
 #   models:
 #     - gpt2                              # Simple form
 #     - checkpoint: meta-llama/Llama-3.1-8b  # Full form
-#       revision: main
+#       revision: null
 #       pinned: true
 
 models:
-  # Simple form - just the checkpoint (revision=main, pinned=false)
+  # Simple form - just the checkpoint (revision unset/null, pinned=false)
   - gpt2
 
   # Full form - with explicit options
   #- checkpoint: meta-llama/Llama-3.1-8B
-  #  revision: main
+  #  revision: null
   #  pinned: true

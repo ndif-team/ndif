@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 from . import Metric
 
 if TYPE_CHECKING:
@@ -14,6 +14,7 @@ class NetworkStatusMetric(Metric):
     def update(
         cls,
         request: BackendRequestModel,
+        trace_id: Optional[str] = None,
     ) -> None:
         super().update(
             request.content_length,
@@ -22,4 +23,5 @@ class NetworkStatusMetric(Metric):
             api_key=request.api_key,
             ip_address=request.ip_address,
             user_agent=request.user_agent,
+            trace_id=trace_id or "",
         )
