@@ -262,7 +262,19 @@ modules:
   - name: transformers.modeling_utils
     strict: false
 
-  - name: _functools
+  - name: tqdm
+    strict: false
+
+  - name: heapq
+    strict: false
+
+  - name: json
+    strict: false
+
+  - name: warnings
+    strict: false
+
+  - name: functools
     strict: false
 
   - name: jinja2

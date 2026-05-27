@@ -4,10 +4,12 @@ nnsight
 # silently bind to a Placeholder and the controller can't trace VLMs.
 torchvision
 diffusers
-ray[serve]==2.50.0
+ray[serve]==2.55.1
 python-slugify
 redis
 peft
+pandas
+einops
 # Telemetry
 prometheus_client
 loki-logger-handler
@@ -24,4 +26,3 @@ google
 # Security
 RestrictedPython>=7.0
 zstandard
-pandas
