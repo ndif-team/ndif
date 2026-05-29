@@ -10,4 +10,5 @@ from .deployment import (
     DeploymentStateMetric,
     DeploymentGPUMetric,
     NodeGPUMetric,
+    NodeCPUMetric,
 )

@@ -119,6 +119,51 @@ class DeploymentGPUMetric(Metric):
         super().update(point)
 
 
+class NodeCPUMetric(Metric):
+    """One point per node — the controller's CPU model-cache accounting.
+
+    The CPU cache is where HOT deployments are demoted to (WARM) rather than
+    evicted outright, so this tracks how full that cache is and how many
+    replicas it holds. ``total_memory_bytes`` is the cache *budget* (available
+    CPU RAM at Ray start x NDIF_MODEL_CACHE_PERCENTAGE), ``allocated_bytes`` is
+    the summed footprint of cached (WARM) replicas, and ``num_cached`` is how
+    many there are. Node-level (not per-GPU), so it isn't duplicated across
+    GPUs the way it would be if folded into node_gpu.
+    """
+
+    name: str = "node_cpu"
+
+    @classmethod
+    def update(
+        cls,
+        *,
+        node_id: str,
+        node_name: str,
+        node_ip: Optional[str],
+        total_memory_bytes: int,
+        allocated_bytes: int,
+        available_memory_bytes: int,
+        num_cached: int,
+    ) -> None:
+        if cls.client is None and os.getenv("INFLUXDB_ADDRESS") is None:
+            return
+
+        from influxdb_client import Point
+
+        point = (
+            Point(cls.name)
+            .tag("node_id", node_id)
+            .tag("node_name", node_name)
+            .tag("node_ip", node_ip or "")
+            .field("total_memory_bytes", int(total_memory_bytes))
+            .field("allocated_bytes", int(allocated_bytes))
+            .field("available_memory_bytes", int(available_memory_bytes))
+            .field("num_cached", int(num_cached))
+        )
+
+        super().update(point)
+
+
 class NodeGPUMetric(Metric):
     """One point per (node, GPU) — the controller's GPU resource accounting.
 

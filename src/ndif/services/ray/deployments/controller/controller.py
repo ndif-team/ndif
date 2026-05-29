@@ -17,6 +17,7 @@ from .....common.logging.logger import set_logger
 from .....common.metrics import (
     DeploymentGPUMetric,
     DeploymentStateMetric,
+    NodeCPUMetric,
     NodeGPUMetric,
 )
 from .....common.providers.mailgun import MailgunProvider
@@ -188,6 +189,18 @@ class _ControllerActor:
                         available_memory_bytes=gpu["available_memory_bytes"],
                         num_replicas=replicas_per_gpu[gpu["index"]],
                     )
+
+                cpu_total = resources["cpu_memory_bytes"]
+                cpu_available = resources["available_cpu_memory_bytes"]
+                NodeCPUMetric.update(
+                    node_id=node_id,
+                    node_name=node_name,
+                    node_ip=node_ip,
+                    total_memory_bytes=cpu_total,
+                    allocated_bytes=cpu_total - cpu_available,
+                    available_memory_bytes=cpu_available,
+                    num_cached=len(node["cache"]),
+                )
         except Exception:
             self.logger.exception("Error emitting deployment metrics")
 
