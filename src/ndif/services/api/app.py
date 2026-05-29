@@ -38,14 +38,6 @@ init_tracing("ndif-api")
 app = FastAPI()
 
 try:
-    from prometheus_fastapi_instrumentator import Instrumentator
-
-    # Prometheus instrumentation (for metrics)
-    Instrumentator().instrument(app).expose(app)
-except ImportError as e:
-    pass
-
-try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     FastAPIInstrumentor.instrument_app(app)
