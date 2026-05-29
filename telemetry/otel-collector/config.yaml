@@ -51,6 +51,28 @@ processors:
             label: GpuIndex
             new_label: gpu_index
 
+  # Strip the OTel/transport resource attributes the prometheus receiver tacks
+  # onto every series — they'd become InfluxDB tags and bloat cardinality.
+  # service.instance.id in particular is a UUID that changes on every collector
+  # restart (unbounded series growth). The Ray-meaningful labels (node_ip,
+  # gpu_index, GpuDeviceName, RayNodeType, IsHeadNode, SessionName) are
+  # datapoint attributes and pass through untouched.
+  #
+  # A few constant tags injected by the telegraf-prometheus-v1 schema from the
+  # instrumentation scope/SDK still come through (otel.library.*, service_name,
+  # telemetry_sdk_*) — they're fixed-value, so harmless for cardinality, and not
+  # reachable by the resource processor.
+  resource/clean:
+    attributes:
+      - { key: service.instance.id, action: delete }
+      - { key: service.name, action: delete }
+      - { key: server.address, action: delete }
+      - { key: server.port, action: delete }
+      - { key: url.scheme, action: delete }
+      - { key: telemetry.sdk.name, action: delete }
+      - { key: telemetry.sdk.language, action: delete }
+      - { key: telemetry.sdk.version, action: delete }
+
   batch: {}
 
 exporters:
@@ -68,5 +90,5 @@ service:
   pipelines:
     metrics:
       receivers: [prometheus]
-      processors: [filter/profiles, metrics_transform/align, batch]
+      processors: [filter/profiles, metrics_transform/align, resource/clean, batch]
       exporters: [influxdb]
