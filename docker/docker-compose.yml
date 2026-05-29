@@ -173,6 +173,27 @@ services:
       - api
       - ray
 
+  # Scrapes Ray's Prometheus-format node metrics (via the same SD file the
+  # Prometheus server used) and writes the CPU/GPU/mem profiles into InfluxDB.
+  # Host networking so it can reach each node's metrics endpoint by IP, exactly
+  # like the Prometheus service it replaces.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}
+    network_mode: "host"
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      HOST_IP: ${HOST_IP}
+      DEV_INFLUXDB_PORT: ${DEV_INFLUXDB_PORT}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
+    volumes:
+      - ../telemetry/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ray-data:/tmp/ray
+    depends_on:
+      - ray
+      - influxdb
+
   influxdb:
     image: influxdb:${INFLUXDB_VERSION}
     network_mode: "host"
