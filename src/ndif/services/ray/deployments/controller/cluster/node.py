@@ -120,9 +120,13 @@ class Node:
         gpu_resources: GPUResources,
         cpu_resources: CPUResources,
         minimum_deployment_time_seconds: float = None,
+        ip: Optional[str] = None,
     ):
         self.id = id
         self.name = name
+        # Ray node IP — matches the `ip` label on Ray's Prometheus node/GPU
+        # metrics, so deployment metrics can be joined against those profiles.
+        self.ip = ip
         self.gpu_resources = gpu_resources
         self.cpu_resources = cpu_resources
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
@@ -148,6 +152,7 @@ class Node:
         return {
             "id": self.id,
             "name": self.name,
+            "ip": self.ip,
             "resources": {
                 "gpu_type": self.gpu_resources.gpu_type,
                 "total_gpus": self.gpu_resources.total,

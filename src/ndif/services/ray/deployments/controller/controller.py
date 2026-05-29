@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from importlib.metadata import distributions, packages_distributions
@@ -13,6 +14,7 @@ from ray.util.state import list_actors
 from opentelemetry import trace
 
 from .....common.logging.logger import set_logger
+from .....common.metrics import DeploymentGPUMetric, DeploymentStateMetric
 from .....common.providers.mailgun import MailgunProvider
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.socketio import SioProvider
@@ -78,6 +80,7 @@ class _ControllerActor:
             self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
 
         asyncio.create_task(self.check_nodes())
+        asyncio.create_task(self.emit_deployment_metrics_loop())
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
         """Get the state of the controller."""
@@ -106,6 +109,84 @@ class _ControllerActor:
             self.cluster.update_nodes()
             await asyncio.sleep(
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
+            )
+
+    async def emit_deployment_metrics_loop(self):
+        """Heartbeat the current deployment state to InfluxDB.
+
+        Runs alongside the on-change emission in ``apply()`` so that long-lived
+        deployments still produce a regular series (the join against periodic
+        GPU/node profiles relies on having a recent point near any timestamp).
+        """
+        interval = int(
+            os.environ.get("NDIF_DEPLOYMENT_METRIC_INTERVAL_S", "30")
+        )
+        while True:
+            self._emit_deployment_metrics()
+            await asyncio.sleep(interval)
+
+    def _emit_deployment_metrics(self):
+        """Emit one snapshot of the cluster's deployment state to InfluxDB.
+
+        For every live replica (HOT + WARM) emits a ``deployment_state`` point
+        (what/where/sizing); for every GPU a HOT replica occupies, emits a
+        ``deployment_gpu`` point keyed by node_ip + gpu_index so it can be
+        joined against Ray's per-GPU profiles. Best-effort: a metrics failure
+        must never disrupt the controller, so the whole thing is guarded.
+        """
+        try:
+            now = time.time()
+            for node in self.cluster.nodes.values():
+                gpu_by_index = {
+                    gpu.index: gpu for gpu in node.gpu_resources.gpus
+                }
+                for _, _, deployment in node.iter_deployments():
+                    self._emit_deployment(deployment, node, gpu_by_index, now)
+                for _, _, deployment in node.iter_cache():
+                    self._emit_deployment(deployment, node, gpu_by_index, now)
+        except Exception:
+            self.logger.exception("Error emitting deployment metrics")
+
+    def _emit_deployment(self, deployment, node, gpu_by_index, now):
+        # Reuse Deployment.get_state() so the actor_class / level normalization
+        # stays in one place.
+        state = deployment.get_state()
+
+        entry = self.cluster.evaluator.cache.get(deployment.model_key)
+        base_size_bytes = entry.base_size_in_bytes if entry else 0
+        n_params = entry.n_params if entry else 0
+
+        DeploymentStateMetric.update(
+            model_key=state["model_key"],
+            replica_id=state["replica_id"],
+            node_id=node.id,
+            node_name=node.name,
+            node_ip=node.ip,
+            deployment_level=state["deployment_level"],
+            pinned=state["pinned"],
+            actor_class=state["actor_class"],
+            base_size_bytes=base_size_bytes,
+            padded_size_bytes=state["size_bytes"],
+            n_params=n_params,
+            gpus=state["gpus"],
+            age_seconds=now - state["deployed"],
+        )
+
+        for gpu_index, allocated_bytes in state["gpus"].items():
+            gpu = gpu_by_index.get(gpu_index)
+            DeploymentGPUMetric.update(
+                model_key=state["model_key"],
+                replica_id=state["replica_id"],
+                node_id=node.id,
+                node_name=node.name,
+                node_ip=node.ip,
+                deployment_level=state["deployment_level"],
+                gpu_index=gpu_index,
+                allocated_bytes=allocated_bytes,
+                gpu_total_memory_bytes=gpu.memory_bytes if gpu else 0,
+                gpu_available_memory_bytes=(
+                    gpu.available_memory_bytes if gpu else 0
+                ),
             )
 
     def _deploy(
@@ -371,6 +452,12 @@ class _ControllerActor:
                     )
                     deployment.delete()
                     self._remove_deployment_from_state(deployment)
+
+            # Snapshot the post-apply deployment state so transitions are
+            # captured immediately, not just at the next heartbeat. Note:
+            # from_cache/create complete asynchronously, so this reflects the
+            # intended state — the heartbeat reconciles the steady state.
+            self._emit_deployment_metrics()
 
     async def _monitor_deployment(
         self,

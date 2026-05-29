@@ -6,3 +6,4 @@ from .request_status_time import RequestStatusTimeMetric
 from .request_execution_time import ExecutionTimeMetric
 from .request_response_size import RequestResponseSizeMetric
 from .model_load_time import ModelLoadTimeMetric
+from .deployment import DeploymentStateMetric, DeploymentGPUMetric
