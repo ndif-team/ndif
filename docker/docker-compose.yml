@@ -159,24 +159,10 @@ services:
       - ray
       - message_broker
 
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
-    network_mode: "host"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--web.enable-remote-write-receiver'
-    volumes:
-      - prometheus-data:/prometheus
-      - ../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ray-data:/tmp/ray
-    depends_on:
-      - api
-      - ray
-
-  # Scrapes Ray's Prometheus-format node metrics (via the same SD file the
-  # Prometheus server used) and writes the CPU/GPU/mem profiles into InfluxDB.
-  # Host networking so it can reach each node's metrics endpoint by IP, exactly
-  # like the Prometheus service it replaces.
+  # Scrapes Ray's Prometheus-format node metrics (via the SD file Ray maintains)
+  # and writes the CPU/GPU/mem profiles into InfluxDB. Host networking so it can
+  # reach each node's metrics endpoint by IP. Replaced the standalone Prometheus
+  # server that previously scraped these targets.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}
     network_mode: "host"
@@ -221,7 +207,7 @@ services:
       - ../telemetry/grafana/provisioning:/etc/grafana/provisioning
       - ../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
-      - prometheus
+      - otel-collector
       - influxdb
 
   loki:
@@ -264,7 +250,6 @@ volumes:
   grafana-storage:
   loki-data:
   minio-data:
-  prometheus-data:
   ray-data:
   influxdb2-data:
   influxdb2-config:

@@ -25,7 +25,7 @@ ndif/
 │
 ├── docker/                   ← Dockerfile + docker-compose.yml (primary dev mode)
 ├── scripts/                  ← one-shot smoke scripts (`test.py`, `redeploy.py`)
-├── telemetry/                ← grafana dashboards + prometheus config
+├── telemetry/                ← grafana dashboards + otel-collector / tempo config
 ├── tests/                    ← pytest suite (most tests need --run-remote)
 │
 └── src/ndif/                 ← the `ndif` package (src-layout; installed as `ndif`)
@@ -94,7 +94,7 @@ Three services, four infra dependencies:
 | Redis | Queue, pub/sub, Redis streams, Socket.IO backend |
 | MinIO | S3-compatible object store for results/responses |
 | PostgreSQL | API keys + tier assignments |
-| Prometheus/InfluxDB/Grafana/Loki/Tempo | Metrics, logs, traces |
+| OTel Collector/InfluxDB/Grafana/Loki/Tempo | Metrics, logs, traces |
 
 **Request path:** client → `POST /request` → validate (API key, nnsight version, python version, hotswap tier) → pickle to Redis `queue` list → Dispatcher `brpop` → per-`model_key` Processor → Controller deploys the model (may evict others) → ModelActor `pre()` deserializes under a deserialization whitelist → `execute()` runs `RemoteExecutionBackend` under the `Protector` sandbox in a worker thread → `post()` uploads result to MinIO, emits `COMPLETED` over Socket.IO.
 

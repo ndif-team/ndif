@@ -139,13 +139,13 @@ A one-page map of the important files. Use this if you know the topic but not th
 | `src/ndif/cli/lib/deps.py` | Redis/MinIO micromamba bootstrap |
 | `src/ndif/cli/lib/{deploy,evict,restart,status,util}.py` | Shared deploy/evict/restart/status helpers (used by the CLI commands and the dashboard backend) |
 | `docker/Dockerfile` | Single unified image — every NDIF service runs from it, selected at runtime via `NDIF_SERVICE`. Dashboard frontend pre-built on host (`make dashboard-frontend`) and copied in. |
-| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, prometheus, influx, grafana, loki, tempo) |
+| `docker/docker-compose.yml` | Full stack orchestration (api, ray, dashboard, redis, minio, postgres, otel-collector, influx, grafana, loki, tempo) |
 | `docker/postgres/init.sql` | Dev-mode keys DB + test key |
 | `Makefile` | `build`, `up`, `down`, `ta`; resolves `NNSIGHT_PATH` for the compose bind mount |
 | `.env.example` | Default env vars (loaded by Makefile + compose) |
 | `src/ndif/services/dashboard/` | Admin web app + reconcile/monitor crons |
 | `telemetry/grafana/dashboards/` | Pre-built Grafana dashboards |
-| `telemetry/prometheus/prometheus.yml` | Prometheus scrape config |
+| `telemetry/otel-collector/config.yaml` | OTel Collector config (scrapes Ray's metrics → CPU/GPU profiles into InfluxDB) |
 | `tests/conftest.py` | Remote-test skip logic (`--run-remote` gate) |
 | `tests/test_nnsight.py`, `test_security_guards.py`, `test_user_code.py`, `test_hotswapping.py` | End-to-end test suites |
 
@@ -315,7 +315,7 @@ And several external dependencies:
 | **Redis** | Request queue, pub/sub, Redis streams, Socket.IO backend |
 | **MinIO** | S3-compatible object storage for results and responses |
 | **PostgreSQL** | API key storage and tier management (dev-mode bypass available) |
-| **Prometheus / InfluxDB / Grafana / Loki** | Metrics, logs, and dashboards |
+| **OTel Collector / InfluxDB / Grafana / Loki** | Metrics, logs, and dashboards |
 | **Tempo (OTLP)** | Distributed tracing across API ↔ Ray (traces queryable from the Grafana Tempo datasource) |
 
 The project targets **Python 3.12+** and is packaged with [`uv`](https://github.com/astral-sh/uv) (see `pyproject.toml`). Any reference to Python 3.10 or conda-only setup in older docs is stale.
@@ -1922,7 +1922,7 @@ It inserts a single **hotswapping** tier and a known test key (`12345678-1234-56
 
 ### Overview
 
-NDIF collects metrics at multiple points in the request lifecycle. These are exported to InfluxDB (via custom metrics) and Prometheus (via FastAPI instrumentation) and visualized in Grafana.
+NDIF collects metrics at multiple points in the request lifecycle. Application metrics are written to InfluxDB (via the custom metric classes); Ray's node CPU/GPU profiles are scraped by an OpenTelemetry Collector and written into the same InfluxDB bucket (joinable on `node_ip` + `gpu_index`). Everything is visualized in Grafana. (Prometheus has been removed — the API no longer exposes a `/metrics` endpoint.)
 
 ### 10.1 Metrics
 
@@ -2139,7 +2139,7 @@ The `docker-compose.yml` orchestrates the following services:
 | `ray` | `ndif/ndif:latest` (NDIF_SERVICE=ray) | Ray head + Controller + ModelActors |
 | `api` | `ndif/ndif:latest` (NDIF_SERVICE=api) | FastAPI + Dispatcher |
 | `dashboard` | `ndif/ndif:latest` (NDIF_SERVICE=dashboard) | Admin web app + reconcile/monitor crons (port `NDIF_DASHBOARD_PORT`, default `8081`) |
-| `prometheus` | `prom/prometheus` | Metrics collection |
+| `otel-collector` | `otel/opentelemetry-collector-contrib` | Scrapes Ray's metrics → CPU/GPU profiles into InfluxDB |
 | `influxdb` | `influxdb` | Time-series metrics storage |
 | `grafana` | `grafana/grafana` | Monitoring dashboards |
 | `loki` | `grafana/loki` | Centralized log storage |
@@ -2674,7 +2674,7 @@ ndif/
 │
 ├── telemetry/
 │   ├── grafana/                        # Provisioning + pre-built dashboards
-│   └── prometheus/prometheus.yml       # Scrape config
+│   └── otel-collector/config.yaml      # Scrapes Ray metrics → InfluxDB
 │
 ├── tests/                              # Most need --run-remote against a live stack
 │   ├── conftest.py
