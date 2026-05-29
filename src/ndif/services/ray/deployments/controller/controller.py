@@ -14,7 +14,11 @@ from ray.util.state import list_actors
 from opentelemetry import trace
 
 from .....common.logging.logger import set_logger
-from .....common.metrics import DeploymentGPUMetric, DeploymentStateMetric
+from .....common.metrics import (
+    DeploymentGPUMetric,
+    DeploymentStateMetric,
+    NodeGPUMetric,
+)
 from .....common.providers.mailgun import MailgunProvider
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.socketio import SioProvider
@@ -128,65 +132,102 @@ class _ControllerActor:
     def _emit_deployment_metrics(self):
         """Emit one snapshot of the cluster's deployment state to InfluxDB.
 
-        For every live replica (HOT + WARM) emits a ``deployment_state`` point
-        (what/where/sizing); for every GPU a HOT replica occupies, emits a
-        ``deployment_gpu`` point keyed by node_ip + gpu_index so it can be
-        joined against Ray's per-GPU profiles. Best-effort: a metrics failure
-        must never disrupt the controller, so the whole thing is guarded.
+        A pure projection of a single ``cluster.get_state()`` call (no second
+        traversal of cluster internals): per live replica a ``deployment_state``
+        point (what/where/sizing) + a ``deployment_gpu`` point per GPU it
+        occupies (model-attributed allocation), and per (node, GPU) a
+        ``node_gpu`` point (GPU resource accounting). All keyed by
+        node_ip + gpu_index for joining against Ray's per-GPU profiles.
+
+        Liveness is implicit in emission recency — the controller has already
+        dropped dead/evicted/failed deployments from its state, so they stop
+        appearing here. Best-effort: a metrics failure must never disrupt the
+        controller, so the whole thing is guarded.
         """
         try:
             now = time.time()
-            for node in self.cluster.nodes.values():
-                gpu_by_index = {
-                    gpu.index: gpu for gpu in node.gpu_resources.gpus
-                }
-                for _, _, deployment in node.iter_deployments():
-                    self._emit_deployment(deployment, node, gpu_by_index, now)
-                for _, _, deployment in node.iter_cache():
-                    self._emit_deployment(deployment, node, gpu_by_index, now)
+            state = self.cluster.get_state()
+            eval_cache = state["evaluator"]["cache"]
+
+            for node in state["nodes"]:
+                node_id = node["id"]
+                node_name = node["name"]
+                node_ip = node["ip"]
+                resources = node["resources"]
+                gpu_details = resources["gpu_details"]
+
+                # HOT replicas only carry GPU allocations; count how many touch
+                # each GPU so node_gpu reports co-location without per-replica
+                # double-counting.
+                replicas_per_gpu = {gpu["index"]: 0 for gpu in gpu_details}
+                for deployment in node["deployments"]:
+                    for gpu_index in deployment["gpus"]:
+                        if gpu_index in replicas_per_gpu:
+                            replicas_per_gpu[gpu_index] += 1
+
+                for deployment in node["deployments"]:
+                    self._emit_deployment(
+                        deployment, node_id, node_name, node_ip, eval_cache, now
+                    )
+                for deployment in node["cache"]:
+                    self._emit_deployment(
+                        deployment, node_id, node_name, node_ip, eval_cache, now
+                    )
+
+                for gpu in gpu_details:
+                    NodeGPUMetric.update(
+                        node_id=node_id,
+                        node_name=node_name,
+                        node_ip=node_ip,
+                        gpu_type=resources["gpu_type"],
+                        gpu_index=gpu["index"],
+                        total_memory_bytes=gpu["memory_bytes"],
+                        allocated_bytes=(
+                            gpu["memory_bytes"] - gpu["available_memory_bytes"]
+                        ),
+                        available_memory_bytes=gpu["available_memory_bytes"],
+                        num_replicas=replicas_per_gpu[gpu["index"]],
+                    )
         except Exception:
             self.logger.exception("Error emitting deployment metrics")
 
-    def _emit_deployment(self, deployment, node, gpu_by_index, now):
-        # Reuse Deployment.get_state() so the actor_class / level normalization
-        # stays in one place.
-        state = deployment.get_state()
+    def _emit_deployment(
+        self, deployment, node_id, node_name, node_ip, eval_cache, now
+    ):
+        """Project one deployment.get_state() dict onto the metrics."""
+        model_key = deployment["model_key"]
+        replica_id = deployment["replica_id"]
+        level = deployment["deployment_level"]
+        gpus = deployment["gpus"]
 
-        entry = self.cluster.evaluator.cache.get(deployment.model_key)
-        base_size_bytes = entry.base_size_in_bytes if entry else 0
-        n_params = entry.n_params if entry else 0
+        entry = eval_cache.get(model_key, {})
 
         DeploymentStateMetric.update(
-            model_key=state["model_key"],
-            replica_id=state["replica_id"],
-            node_id=node.id,
-            node_name=node.name,
-            node_ip=node.ip,
-            deployment_level=state["deployment_level"],
-            pinned=state["pinned"],
-            actor_class=state["actor_class"],
-            base_size_bytes=base_size_bytes,
-            padded_size_bytes=state["size_bytes"],
-            n_params=n_params,
-            gpus=state["gpus"],
-            age_seconds=now - state["deployed"],
+            model_key=model_key,
+            replica_id=replica_id,
+            node_id=node_id,
+            node_name=node_name,
+            node_ip=node_ip,
+            deployment_level=level,
+            pinned=deployment["pinned"],
+            actor_class=deployment["actor_class"],
+            base_size_bytes=entry.get("base_size_in_bytes", 0),
+            padded_size_bytes=deployment["size_bytes"],
+            n_params=entry.get("n_params", 0),
+            gpus=gpus,
+            age_seconds=now - deployment["deployed"],
         )
 
-        for gpu_index, allocated_bytes in state["gpus"].items():
-            gpu = gpu_by_index.get(gpu_index)
+        for gpu_index, allocated_bytes in gpus.items():
             DeploymentGPUMetric.update(
-                model_key=state["model_key"],
-                replica_id=state["replica_id"],
-                node_id=node.id,
-                node_name=node.name,
-                node_ip=node.ip,
-                deployment_level=state["deployment_level"],
+                model_key=model_key,
+                replica_id=replica_id,
+                node_id=node_id,
+                node_name=node_name,
+                node_ip=node_ip,
+                deployment_level=level,
                 gpu_index=gpu_index,
                 allocated_bytes=allocated_bytes,
-                gpu_total_memory_bytes=gpu.memory_bytes if gpu else 0,
-                gpu_available_memory_bytes=(
-                    gpu.available_memory_bytes if gpu else 0
-                ),
             )
 
     def _deploy(

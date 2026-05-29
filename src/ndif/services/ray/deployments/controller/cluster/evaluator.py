@@ -39,6 +39,7 @@ class ModelEvaluator:
             "cache": {
                 key: {
                     "base_size_in_bytes": value.base_size_in_bytes,
+                    "n_params": value.n_params,
                     "config": value.config,
                 }
                 for key, value in self.cache.items()
