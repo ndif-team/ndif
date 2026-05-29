@@ -34,6 +34,7 @@ from .....common.tracing import (
     trace_span,
 )
 from .....common.providers.objectstore import ObjectStoreProvider
+from .....common.providers.ray import CachedActorError
 from .....common.providers.socketio import SioProvider
 from .....common.schema.request import BackendRequestModel
 from .....common.schema.response import BackendResponseModel
@@ -349,7 +350,9 @@ class BaseModelDeployment:
         """
 
         if self.cached:
-            raise LookupError("Failed to look up actor")
+            raise CachedActorError(
+                f"Model actor {self.model_key} is cached (WARM)."
+            )
 
         parent_ctx = TracingContext.extract(request.trace_context)
 

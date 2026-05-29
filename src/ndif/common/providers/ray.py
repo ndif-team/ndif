@@ -11,6 +11,19 @@ from .util import verify_connection
 logger = logging.getLogger("ndif")
 
 
+class CachedActorError(Exception):
+    """Raised by a ModelActor when it has been moved to CPU cache (WARM).
+
+    The actor process is still alive, but it is no longer serving on GPU, so
+    a dispatch must be treated the same as hitting an evicted/dead replica.
+    When raised inside the actor it propagates to the caller wrapped in a
+    ``ray.exceptions.RayTaskError`` whose dynamic subclass still satisfies
+    ``isinstance(e, CachedActorError)``.
+    """
+
+    pass
+
+
 class RayProvider(Provider):
     ray_url: str
 
