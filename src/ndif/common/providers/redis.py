@@ -58,10 +58,28 @@ class RedisProvider(Provider):
 
     @classmethod
     def connect(cls) -> None:
-        """Establish both sync and async Redis connections."""
+        """Establish both sync and async Redis connections.
+
+        ``socket_timeout=None`` is passed explicitly on purpose. redis-py 8.0+
+        ships a "maintenance notifications" feature (``MaintNotificationsConfig``,
+        ``enabled="auto"``) that, when the server advertises support (Redis 8
+        OSS does), silently sets ``socket_timeout=5`` on the connection during
+        the handshake. That socket-level read timeout is shorter than the
+        server-side block of our blocking commands (e.g.
+        ``brpop("queue", timeout=10)`` in the dispatcher, ``xread`` in the
+        status/event workers, and the pub/sub status stream), so the socket
+        read aborts before the command can return — surfacing as spurious
+        ``redis.exceptions.TimeoutError: Timeout reading from ...`` every time a
+        blocking call out-waits 5s. Setting ``socket_timeout`` explicitly stops
+        the maintenance handler from overriding it and restores the pre-8.0
+        behavior (no read timeout on blocking ops). On redis-py < 8.0 this is a
+        no-op since ``None`` was already the default.
+        """
         logger.info(f"Connecting to Redis at {cls.broker_url}...")
-        cls.sync_client = redis.Redis.from_url(cls.broker_url)
-        cls.async_client = redis.asyncio.Redis.from_url(cls.broker_url)
+        cls.sync_client = redis.Redis.from_url(cls.broker_url, socket_timeout=None)
+        cls.async_client = redis.asyncio.Redis.from_url(
+            cls.broker_url, socket_timeout=None
+        )
         logger.info("Connected to Redis")
 
     @classmethod

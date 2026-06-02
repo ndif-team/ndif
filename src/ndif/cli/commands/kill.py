@@ -64,7 +64,11 @@ def kill(request_id: str, broker_url: str):
 async def _kill_request(broker_url: str, request_id: str) -> dict:
     """Send kill request to dispatcher and wait for response."""
     import redis.asyncio as redis
-    redis_client = redis.Redis.from_url(broker_url)
+    # socket_timeout=None: redis-py 8.0+ auto-enables "maintenance notifications"
+    # which silently sets socket_timeout=5 on Redis 8 servers, aborting the
+    # blocking brpop(timeout=5) below before it can return. See
+    # ndif.common.providers.redis.RedisProvider.connect for the full rationale.
+    redis_client = redis.Redis.from_url(broker_url, socket_timeout=None)
 
     try:
         # Use PID and timestamp as unique response key
