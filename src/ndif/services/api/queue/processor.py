@@ -338,7 +338,7 @@ class Processor:
                 logger.info(
                     f"Reconcile {self.model_key}: cancelling stale replica {rid}"
                 )
-                self.replicas[rid].cancel()
+                await self.replicas[rid].cancel()
 
             # pinned-ness can change (e.g. schedule entry added or removed)
             if response.replicas:
@@ -499,7 +499,7 @@ class Processor:
         )
 
         for replica in list(self.replicas.values()):
-            replica.cancel()
+            await replica.cancel(message)
 
     def get_state(self) -> dict:
         """Snapshot of processor + per-replica state.

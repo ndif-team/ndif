@@ -44,7 +44,7 @@ from ....common.tracing import (
     set_request_attributes,
     trace_span,
 )
-from ....common.providers.ray import controller_handle, patch
+from ....common.providers.ray import controller_handle
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 
@@ -119,8 +119,6 @@ class Dispatcher:
         self.logger = set_logger("coordinator")
 
         init_tracing("ndif-queue")
-
-        patch()
 
         self.connect()
 

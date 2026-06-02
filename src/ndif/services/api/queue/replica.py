@@ -128,13 +128,30 @@ class Replica:
             self.replica_worker(queue, error_queue, ready_event, on_exit)
         )
 
-    def cancel(self) -> None:
+    async def cancel(self, message: Optional[str] = None) -> None:
         """Cancel the worker task.
 
         Idempotent. ``on_exit`` fires from the worker's ``finally`` block
         regardless of how it exits, so the Processor will see the removal.
+
+        If a request is in flight, error it here too. A purge/critical-error
+        teardown only notifies *queued* requests via ``Processor.reply``; the
+        running request would otherwise be left hanging until (or unless) the
+        cancellation propagates through ``dispatch``. We grab it before
+        cancelling the task and send the ERROR response directly.
         """
         self.dropped = True
+
+        request = self.current_request
+        if request is not None:
+            await request.create_response(
+                BackendResponseModel.JobStatus.ERROR,
+                logger,
+                message
+                or "Replica was evicted while processing your request. "
+                "Sorry for the inconvenience. Please try again later.",
+            ).arespond()
+
         if self.task is not None and not self.task.done():
             self.task.cancel()
 

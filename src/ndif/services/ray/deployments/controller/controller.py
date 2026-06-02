@@ -396,10 +396,12 @@ class _ControllerActor:
         ) as span:
             try:
                 span.add_event("waiting_for_ray_actor")
-                # Use asyncio to wait for the ray future without blocking
-                await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: ray.get(future)
-                )
+                # Await the ObjectRef directly — valid in an async actor and
+                # non-blocking, without parking a thread-pool thread for the
+                # whole (potentially minutes-long) deploy/from_cache. If the
+                # underlying op failed, the await re-raises and the cleanup
+                # below returns resources and prunes our internal state.
+                await future
                 span.add_event("ray_actor_ready")
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))

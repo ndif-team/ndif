@@ -226,31 +226,3 @@ def get_model_actor_handle(
 # api/queue used a no-arg ``controller_handle()`` form — keep an alias so
 # those imports don't have to change shape.
 controller_handle = get_controller_actor_handle
-
-
-# ===========================================================================
-# Ray client deadlock patch.
-# ===========================================================================
-
-
-def patch():
-    """Work around a Ray client deadlock between async-send and ref-deletion.
-
-    If a separate thread dereferences a ``ClientObjectRef`` during an async
-    send, both contend for the same lock. Disable ref deletion for the
-    duration of the send. Should probably *delay* the deletion until the
-    send completes, not block it entirely.
-    """
-    from ray.util.client import dataclient, common
-
-    original_async_send = dataclient.DataClient._async_send
-
-    def _async_send(_self, req, callback=None):
-        original_ref_deletion = common.ClientObjectRef.__del__
-        common.ClientObjectRef.__del__ = lambda self: None
-        try:
-            original_async_send(_self, req, callback)
-        finally:
-            common.ClientObjectRef.__del__ = original_ref_deletion
-
-    dataclient.DataClient._async_send = _async_send
