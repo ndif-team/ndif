@@ -115,6 +115,7 @@ class Processor:
         model_key: MODEL_KEY,
         eviction_queue: asyncio.Queue,
         error_queue: asyncio.Queue,
+        metrics_event: Optional[asyncio.Event] = None,
     ) -> None:
         """Initialize a new Processor for a specific model.
 
@@ -129,6 +130,9 @@ class Processor:
         self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
         self.eviction_queue = eviction_queue
         self.error_queue = error_queue
+        # Shared with the dispatcher's emit_queue_metrics_loop; set on any
+        # state change so the loop emits a fresh snapshot promptly.
+        self.metrics_event = metrics_event
         self._status = ProcessorStatus.UNINITIALIZED
         self.status_changed_at: float = 0
 
@@ -141,6 +145,11 @@ class Processor:
         # processor_worker).
         self.ready_event: asyncio.Event = asyncio.Event()
 
+    def _notify_metrics(self) -> None:
+        """Wake the dispatcher's queue-metrics loop, if one is listening."""
+        if self.metrics_event is not None:
+            self.metrics_event.set()
+
     @property
     def status(self) -> ProcessorStatus:
         return self._status
@@ -149,6 +158,7 @@ class Processor:
     def status(self, value: ProcessorStatus) -> None:
         self._status = value
         self.status_changed_at = time.time()
+        self._notify_metrics()
 
     @property
     def busy(self) -> bool:
@@ -187,6 +197,7 @@ class Processor:
         # oldest queued request and decide whether to scale up.
         request.enqueued_at = time.time()
         self.queue.put_nowait(request)
+        self._notify_metrics()
 
         await self.reply(
             request=request,
@@ -288,7 +299,7 @@ class Processor:
         return hotswap_present
 
     def spawn_replica(self, replica_id: REPLICA_ID) -> None:
-        replica = Replica(self.model_key, replica_id)
+        replica = Replica(self.model_key, replica_id, self.metrics_event)
         self.replicas[replica_id] = replica
         replica.start(
             queue=self.queue,

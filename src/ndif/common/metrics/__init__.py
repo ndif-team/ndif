@@ -12,3 +12,7 @@ from .deployment import (
     NodeGPUMetric,
     NodeCPUMetric,
 )
+from .queue import (
+    QueueStateMetric,
+    QueueJobMetric,
+)
