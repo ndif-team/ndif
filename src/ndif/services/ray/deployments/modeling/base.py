@@ -350,9 +350,7 @@ class BaseModelDeployment:
         """
 
         if self.cached:
-            raise CachedActorError(
-                f"Model actor {self.model_key} is cached (WARM)."
-            )
+            raise CachedActorError(f"Model actor {self.model_key} is cached (WARM).")
 
         parent_ctx = TracingContext.extract(request.trace_context)
 
@@ -522,13 +520,13 @@ class BaseModelDeployment:
             self.restart()
 
     def restart(self):
-        """Restarts the Ray serve deployment in response to critical errors.
+        """Restarts the Ray actor in response to critical errors.
 
         This is typically called when encountering CUDA device-side assertion errors
         or other critical failures that require a fresh replica state.
         """
         ray.kill(
-            ray.get_actor(f"ModelActor:{self.model_key}", namespace="NDIF"),
+            self.runtime_context.current_actor,
             no_restart=False,
         )
 
