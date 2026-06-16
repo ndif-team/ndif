@@ -152,7 +152,7 @@ def probe_health(base_url: str) -> tuple[bool, str, dict | None]:
 
 # ---- Model traces ----
 
-def _run_trace(model_key: str, api_key: str) -> dict:
+def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dict:
     """Trace a remote ``"Hello"`` against the given model.
 
     Reconstructs the nnsight wrapper from the full ``model_key`` via
@@ -164,6 +164,10 @@ def _run_trace(model_key: str, api_key: str) -> dict:
     from nnsight.modeling.mixins import RemoteableMixin
 
     CONFIG.API.APIKEY = api_key
+    # Point traces at this deployment's API; otherwise nnsight defaults to
+    # https://api.ndif.us (prod) and the probe silently checks the wrong stack.
+    if api_host:
+        CONFIG.API.HOST = api_host
     result = {"model": model_key}
 
     try:
@@ -187,9 +191,9 @@ def _run_trace(model_key: str, api_key: str) -> dict:
     return result
 
 
-def check_model(model_key: str, api_key: str, model_timeout: int) -> dict:
+def check_model(model_key: str, api_key: str, model_timeout: int, api_host: str | None = None) -> dict:
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_run_trace, model_key, api_key)
+    future = executor.submit(_run_trace, model_key, api_key, api_host)
     try:
         return future.result(timeout=model_timeout)
     except concurrent.futures.TimeoutError:
@@ -198,7 +202,7 @@ def check_model(model_key: str, api_key: str, model_timeout: int) -> dict:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def run_model_traces(hot_models: list[dict], api_key: str, timeout_s: int) -> list[dict]:
+def run_model_traces(hot_models: list[dict], api_key: str, timeout_s: int, api_host: str | None = None) -> list[dict]:
     results = []
     for m in hot_models:
         repo_id = m.get("repo_id", "unknown")
@@ -207,7 +211,7 @@ def run_model_traces(hot_models: list[dict], api_key: str, timeout_s: int) -> li
             print(f"Skipping {repo_id}: no model_key in /status", flush=True)
             continue
         print(f"Checking {repo_id}...", flush=True)
-        result = check_model(model_key, api_key, timeout_s)
+        result = check_model(model_key, api_key, timeout_s, api_host)
         # Surface the human-readable repo_id in logs/notifications.
         result["model"] = repo_id
         results.append(result)
@@ -364,6 +368,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-days", type=int, default=DEFAULT_MAX_DAYS)
     p.add_argument("--config", default=str(DEFAULT_CONFIG))
     p.add_argument("--api-key", default=None)
+    p.add_argument("--api-host", default=None)
     p.add_argument("--model-timeout", type=int, default=DEFAULT_MODEL_TIMEOUT)
     p.add_argument("--model-interval", type=int, default=DEFAULT_MODEL_INTERVAL)
     return p.parse_args()
@@ -398,6 +403,11 @@ def main():
     args = parse_args()
     config = load_config(Path(args.config))
     api_key = resolve_api_key(args, config)
+    # --url (NDIF_DASHBOARD_MONITOR_URL) is the single source of truth: the ping
+    # and the model traces hit the same deployment. Without this, nnsight
+    # defaults to https://api.ndif.us and the traces silently probe prod.
+    # --api-host overrides only if you deliberately want to split the two.
+    api_host = args.api_host or args.url
 
     log_dir = Path(args.log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -415,7 +425,7 @@ def main():
         state["last_model_check"] = timestamp
         if api_key:
             results = run_model_traces(
-                extract_hot_models(status_data), api_key, args.model_timeout,
+                extract_hot_models(status_data), api_key, args.model_timeout, api_host,
             )
             write_models_log(log_dir, today, timestamp, results)
             notify_if_failures_changed(config, state, results)

@@ -13,10 +13,11 @@ Discovery is **lazy**: replicas are learned at provision time via
 ``Controller.deploy`` call when we deploy ourselves). The dispatcher does
 not receive explicit replica events from the controller — instead, the
 system is robust to staleness: if a Replica dispatches to an actor that has
-since been evicted, the resulting "Failed to look up actor" error trips
-drift detection inside the Replica, which signals its exit, and the
-Processor drops it from its pool. When the last Replica exits the Processor
-asks the dispatcher to remove it.
+since been evicted, the resulting error (a lookup failure, a dead actor, or
+a cached-actor signal — see ``replica.EVICTED_ERRORS``) trips drift
+detection inside the Replica, which signals its exit, and the Processor
+drops it from its pool. When the last Replica exits the Processor asks the
+dispatcher to remove it.
 
 Typical usage:
     The Processor is created and managed by the Dispatcher when a new model
@@ -337,7 +338,7 @@ class Processor:
                 logger.info(
                     f"Reconcile {self.model_key}: cancelling stale replica {rid}"
                 )
-                self.replicas[rid].cancel()
+                await self.replicas[rid].cancel()
 
             # pinned-ness can change (e.g. schedule entry added or removed)
             if response.replicas:
@@ -498,7 +499,7 @@ class Processor:
         )
 
         for replica in list(self.replicas.values()):
-            replica.cancel()
+            await replica.cancel(message)
 
     def get_state(self) -> dict:
         """Snapshot of processor + per-replica state.

@@ -260,10 +260,11 @@ def wait_for_replica_ready(model_key: str, replica_id: str, timeout: int = 300) 
     indicating the replica is fully loaded and ready for inference.
 
     Tolerated transient states (keep polling):
-    - ``"Failed to look up actor"`` — actor not yet registered (fresh deploy
-      mid-creation).
+    - ``ValueError`` — ``ray.get_actor`` couldn't find the actor; it isn't
+      registered yet (fresh deploy mid-creation).
     - ``RayActorError`` — actor died and is in the process of being respawned
-      (the path ``restart()`` triggers via ``ray.kill(no_restart=False)``).
+      (the path ``restart()`` triggers via ``ray.kill(no_restart=False)``;
+      ``max_restarts=-1`` means Ray brings it back, so this is recoverable).
 
     Args:
         model_key: The model key.
@@ -288,12 +289,12 @@ def wait_for_replica_ready(model_key: str, replica_id: str, timeout: int = 300) 
             ray.get(handle.__ray_ready__.remote())
             return True
         except ray.exceptions.RayActorError:
+            # Actor died and is being respawned (max_restarts=-1) — keep polling.
             time.sleep(2)
             continue
-        except Exception as e:
-            if "Failed to look up actor" in str(e):
-                time.sleep(2)
-                continue
-            raise
+        except ValueError:
+            # ray.get_actor couldn't find the actor yet — keep polling.
+            time.sleep(2)
+            continue
 
     return False
