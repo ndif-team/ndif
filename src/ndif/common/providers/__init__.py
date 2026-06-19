@@ -1,4 +1,3 @@
-import asyncio
 import os
 import logging
 import threading
@@ -102,37 +101,5 @@ def retry(fn: Callable) -> Callable:
             raise exception
 
     return inner
-
-
-def async_retry(fn: Callable) -> Callable:
-    """Async counterpart of :func:`retry`.
-
-    Mirrors the sync decorator exactly, but uses the provider's ``async_*``
-    lifecycle methods and ``await``\\ s the sleep so it doesn't block the event
-    loop. Apply it to coroutine methods (``async_connect``/``async_call``/
-    ``async_emit``); the ``async_connect`` name is special-cased the same way
-    ``connect`` is, to avoid recursing while (re)connecting.
-    """
-
-    @wraps(fn)
-    async def inner(cls: Type[Provider], *args, **kwargs):
-        exception = None
-
-        for attempt in range(cls.max_retries):
-            try:
-                if not cls.async_connected() and fn.__name__ != "async_connect":
-                    await cls.async_reset()
-                    await cls.async_connect()
-                return await fn(cls, *args, **kwargs)
-            except Exception as e:
-                exception = e
-                logger.debug(
-                    f"{cls.__name__}.{fn.__name__}() attempt "
-                    f"{attempt + 1}/{cls.max_retries} failed: {e}"
-                )
-                await asyncio.sleep(cls.retry_interval)
-
-        if exception is not None:
-            raise exception
 
     return inner
