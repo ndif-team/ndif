@@ -121,7 +121,9 @@ def async_retry(fn: Callable) -> Callable:
         for attempt in range(cls.max_retries):
             try:
                 if not cls.async_connected() and fn.__name__ != "async_connect":
-                    await cls.async_reset()
+                    # async_connect() owns the connection lifecycle (reset +
+                    # rebuild + connect) under its lock, so concurrent callers
+                    # serialize on it and share a single client.
                     await cls.async_connect()
                 return await fn(cls, *args, **kwargs)
             except Exception as e:

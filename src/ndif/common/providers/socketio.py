@@ -124,9 +124,14 @@ class SioProvider(Provider):
             if cls.async_connected():
                 return
 
-            if cls._async_sio is None:
-                logger.debug("Creating new async socketio client")
-                cls._async_sio = socketio.AsyncSimpleClient(reconnection_attempts=10)
+            # Own the full connection lifecycle here, under the lock: drop any
+            # existing client, build a fresh one, and connect. Keeping reset and
+            # connect together under the lock means one task rebuilds the
+            # connection while concurrent callers wait and then reuse it.
+            await cls.async_reset()
+
+            logger.debug("Creating new async socketio client")
+            cls._async_sio = socketio.AsyncSimpleClient(reconnection_attempts=10)
 
             await cls._async_sio.connect(
                 cls.api_url,
