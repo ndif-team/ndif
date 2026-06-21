@@ -19,6 +19,7 @@ if [ -z "$RAY_ADDRESS" ]; then
     ray start --head \
         --resources="$resources" \
         --port=${NDIF_RAY_HEAD_PORT} \
+        --ray-client-server-port=${NDIF_RAY_CLIENT_PORT} \
         --object-manager-port=${NDIF_RAY_OBJECT_MANAGER_PORT} \
         --include-dashboard=true \
         --dashboard-host=0.0.0.0 \
