@@ -16,9 +16,14 @@ class CachedActorError(Exception):
 
     The actor process is still alive, but it is no longer serving on GPU, so
     a dispatch must be treated the same as hitting an evicted/dead replica.
+
     When raised inside the actor it propagates to the caller wrapped in a
-    ``ray.exceptions.RayTaskError`` whose dynamic subclass still satisfies
-    ``isinstance(e, CachedActorError)``.
+    ``ray.exceptions.RayTaskError``. Ray only rebuilds the dual-class
+    ``RayTaskError(CachedActorError)`` (so ``isinstance(e, CachedActorError)``
+    holds) on the synchronous ``ray.get`` path; over the Ray-client ``await``
+    path the caller gets a *bare* ``RayTaskError`` and the original error is
+    only on ``.cause``. Match eviction via ``replica._is_eviction`` rather than
+    a plain ``isinstance`` so both paths are handled.
     """
 
     pass

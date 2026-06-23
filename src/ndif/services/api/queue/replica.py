@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable, Optional
 
 from opentelemetry import trace
-from ray.exceptions import ActorDiedError
+from ray.exceptions import ActorDiedError, RayTaskError
 
 from ....common.providers.ray import (
     CachedActorError,
@@ -45,9 +45,23 @@ logger = logging.getLogger("ndif")
 #   - ValueError       : ``ray.get_actor`` could not find the actor (the
 #                        controller evicted it, or hasn't created it yet).
 #   - ActorDiedError   : the actor process died / was killed.
-#   - CachedActorError : the actor is alive but moved to CPU cache (WARM);
-#                        arrives wrapped in RayTaskError but isinstance holds.
+#   - CachedActorError : the actor is alive but moved to CPU cache (WARM).
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
+
+
+def _is_eviction(exc: BaseException) -> bool:
+    """True if ``exc`` (or its RayTaskError ``.cause``) is an eviction signal.
+
+    A remote actor exception raised over the Ray *client* ``await`` path (what
+    ``dispatch`` uses) arrives as a *bare* ``RayTaskError``: Ray only builds the
+    dual-class ``RayTaskError(<Cause>)`` — so ``isinstance(e, <Cause>)`` holds —
+    on the synchronous ``ray.get`` path, not the async one. The real exception
+    is always preserved on ``.cause``, so we check both. See the note in
+    ``common/providers/ray.py``.
+    """
+    if isinstance(exc, EVICTED_ERRORS):
+        return True
+    return isinstance(getattr(exc, "cause", None), EVICTED_ERRORS)
 
 
 class Replica:
@@ -338,40 +352,42 @@ class Replica:
                 ).arespond()
                 raise
 
-            except EVICTED_ERRORS as e:
-                # The replica is gone: the controller evicted it (lookup
-                # ValueError), the actor died/was killed (ActorDiedError), or
-                # it was moved to CPU cache (CachedActorError). All mean the
-                # same thing for us — drop from the pool so the worker loop
-                # exits and let the request be retried elsewhere.
-                span.set_status(trace.StatusCode.ERROR, str(e))
-                span.record_exception(e)
-
-                await request.create_response(
-                    BackendResponseModel.JobStatus.ERROR,
-                    logger,
-                    "Replica was evicted. Sorry for the inconvenience. "
-                    "Please try again later.",
-                ).arespond()
-
-                logger.warning(
-                    f"Replica {self.model_key}[{self.replica_id}] evicted "
-                    f"({type(e).__name__}) — dropping from pool."
-                )
-                self.dropped = True
-
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
 
-                await request.create_response(
-                    BackendResponseModel.JobStatus.ERROR,
-                    logger,
-                    "Error submitting request to model deployment. "
-                    "Please try again later. Sorry for the inconvenience.",
-                ).arespond()
+                if _is_eviction(e):
+                    # The replica is gone: the controller evicted it (lookup
+                    # ValueError), the actor died/was killed (ActorDiedError),
+                    # or it was moved to CPU cache (CachedActorError). All mean
+                    # the same thing for us — drop from the pool so the worker
+                    # loop exits and let the request be retried elsewhere. Over
+                    # the async dispatch path the signal arrives as a bare
+                    # RayTaskError wrapping the real cause, so we match on
+                    # ``.cause`` too (see ``_is_eviction``).
+                    await request.create_response(
+                        BackendResponseModel.JobStatus.ERROR,
+                        logger,
+                        "Replica was evicted. Sorry for the inconvenience. "
+                        "Please try again later.",
+                    ).arespond()
 
-                error_queue.put_nowait((self.model_key, e))
+                    cause = getattr(e, "cause", None) or e
+                    logger.warning(
+                        f"Replica {self.model_key}[{self.replica_id}] evicted "
+                        f"({type(cause).__name__}) — dropping from pool."
+                    )
+                    self.dropped = True
+
+                else:
+                    await request.create_response(
+                        BackendResponseModel.JobStatus.ERROR,
+                        logger,
+                        "Error submitting request to model deployment. "
+                        "Please try again later. Sorry for the inconvenience.",
+                    ).arespond()
+
+                    error_queue.put_nowait((self.model_key, e))
 
             finally:
                 self.current_request = None
