@@ -7,7 +7,8 @@ itsdangerous>=2.1.0
 bcrypt>=4.0.0
 python-multipart>=0.0.6
 requests
-nnsight
+nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
+peft
 # Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
 # Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
 # fail at get_model_key time inside the dashboard / reconcile path.
