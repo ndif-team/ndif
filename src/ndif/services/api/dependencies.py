@@ -169,6 +169,20 @@ async def get_email(api_key: API_KEY) -> str | None:
     return await asyncio.to_thread(api_key_store.get_email_from_key, api_key)
 
 
+async def get_tiers(api_key: API_KEY) -> list[str]:
+    """Look up the tiers assigned to an API key.
+
+    Args:
+        api_key: The API key to resolve.
+
+    Returns:
+        The list of tier names, or an empty list if none / unconfigured.
+    """
+    if AppConfig.dev_mode or api_key_store is None:
+        return []
+    return await asyncio.to_thread(api_key_store.get_tiers_from_key, api_key)
+
+
 async def require_ray_connection() -> None:
     """FastAPI dependency to ensure Ray is connected before processing.
 

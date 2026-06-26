@@ -24,7 +24,7 @@ from ...common.types import REQUEST_ID, SESSION_ID
 logger = set_logger("API")
 
 from .config import AppConfig
-from .dependencies import validate_request, require_ray_connection, get_email
+from .dependencies import validate_request, require_ray_connection, get_email, get_tiers
 from ...common.metrics import NetworkStatusMetric
 from ...common.providers.objectstore import ObjectStoreProvider
 from ...common.providers.redis import RedisProvider
@@ -253,21 +253,22 @@ async def ping():
 
 
 @app.get("/whoami", status_code=200)
-async def whoami(raw_request: Request) -> Dict[str, Optional[str]]:
-    """Resolve the email associated with an API key.
+async def whoami(raw_request: Request) -> Dict[str, Any]:
+    """Resolve the email and tiers associated with an API key.
 
     The API key is read from the `ndif-api-key` header. Returns the email if
-    the key is known, otherwise `None`.
+    the key is known (otherwise `None`), along with the list of assigned tiers.
 
     Args:
         raw_request: The raw FastAPI Request object.
 
     Returns:
-        A dict of the form `{"email": <email-or-None>}`.
+        A dict of the form `{"email": <email-or-None>, "tiers": [<tier>, ...]}`.
     """
     api_key = raw_request.headers.get("ndif-api-key", "")
     email = await get_email(api_key)
-    return {"email": email}
+    tiers = await get_tiers(api_key)
+    return {"email": email, "tiers": tiers}
 
 
 @app.api_route(

@@ -53,6 +53,20 @@ class AccountsDB:
             logger.error(f"Error getting email from key: {e}")
             return None
 
+    def get_tiers_from_key(self, key_id: API_KEY) -> list[str]:
+        """Return the list of tier names assigned to a key (empty if none)."""
+        try:
+            results = PostgresProvider.execute(
+                "SELECT t.name FROM key_tier_assignments kta "
+                "JOIN tiers t ON kta.tier_id = t.tier_id "
+                "WHERE kta.key_id = %s",
+                (key_id,),
+            )
+            return [row[0] for row in results] if results else []
+        except Exception as e:
+            logger.error(f"Error getting tiers from key: {e}")
+            return []
+
     def key_has_tier(self, key_id: API_KEY, tier: TIER) -> bool:
         """Check if a key has been assigned a given tier."""
         try:
