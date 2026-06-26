@@ -39,3 +39,6 @@ class TIER(Enum):
 
     TIER_405B = "405b"
     TIER_HOTSWAP = "hotswapping"
+    # Competition tier: keys must hold this tier to use NDIF at all, and it
+    # also grants hotswapping. There is no standalone hotswap tier on this branch.
+    TIER_1 = "tier_1"

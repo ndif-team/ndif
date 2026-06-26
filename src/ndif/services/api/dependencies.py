@@ -6,11 +6,12 @@ from opentelemetry import trace
 from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_401_UNAUTHORIZED,
+    HTTP_403_FORBIDDEN,
     HTTP_503_SERVICE_UNAVAILABLE,
 )
 
 from .config import AppConfig
-from ...common.types import API_KEY
+from ...common.types import API_KEY, TIER
 from .db import api_key_store
 from ...common.schema.request import BackendRequestModel
 from ...common.providers.redis import RedisProvider
@@ -54,6 +55,18 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
             status_code=HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key. Please visit https://login.ndif.us/ to create a new one.",
         )
+
+    # Competition access control: only keys holding the `tier_1` tier may use
+    # NDIF. A valid-but-untiered key is rejected outright.
+    if not await asyncio.to_thread(
+        api_key_store.key_has_tier, api_key, TIER.TIER_1
+    ):
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="Your API key is not authorized to use NDIF for this competition. "
+            "A `tier_1` tier is required.",
+        )
+
     return api_key
 
 
@@ -140,6 +153,20 @@ async def check_hotswapping_access(api_key: API_KEY) -> bool:
     if api_key_store is None:
         return False
     return await asyncio.to_thread(api_key_store.key_has_hotswapping_access, api_key)
+
+
+async def get_email(api_key: API_KEY) -> str | None:
+    """Look up the email associated with an API key.
+
+    Args:
+        api_key: The API key to resolve.
+
+    Returns:
+        The associated email, or None if the key is unknown / unconfigured.
+    """
+    if AppConfig.dev_mode or api_key_store is None:
+        return None
+    return await asyncio.to_thread(api_key_store.get_email_from_key, api_key)
 
 
 async def require_ray_connection() -> None:

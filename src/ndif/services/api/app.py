@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
 
@@ -24,7 +24,7 @@ from ...common.types import REQUEST_ID, SESSION_ID
 logger = set_logger("API")
 
 from .config import AppConfig
-from .dependencies import validate_request, require_ray_connection
+from .dependencies import validate_request, require_ray_connection, get_email
 from ...common.metrics import NetworkStatusMetric
 from ...common.providers.objectstore import ObjectStoreProvider
 from ...common.providers.redis import RedisProvider
@@ -250,6 +250,24 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
 async def ping():
     """Endpoint to check if the server is online."""
     return "pong"
+
+
+@app.get("/whoami", status_code=200)
+async def whoami(raw_request: Request) -> Dict[str, Optional[str]]:
+    """Resolve the email associated with an API key.
+
+    The API key is read from the `ndif-api-key` header. Returns the email if
+    the key is known, otherwise `None`.
+
+    Args:
+        raw_request: The raw FastAPI Request object.
+
+    Returns:
+        A dict of the form `{"email": <email-or-None>}`.
+    """
+    api_key = raw_request.headers.get("ndif-api-key", "")
+    email = await get_email(api_key)
+    return {"email": email}
 
 
 @app.api_route(
