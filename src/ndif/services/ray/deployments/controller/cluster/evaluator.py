@@ -57,7 +57,7 @@ class ModelEvaluator:
                     model_key,
                     dispatch=False,
                     torch_dtype=torch.bfloat16,
-                    trust_remote_code=True,
+                    trust_remote_code=False,
                 )
 
             except Exception as exception:

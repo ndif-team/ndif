@@ -171,7 +171,7 @@ def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dic
     result = {"model": model_key}
 
     try:
-        model = RemoteableMixin.from_model_key(model_key, trust_remote_code=True)
+        model = RemoteableMixin.from_model_key(model_key, trust_remote_code=False)
     except Exception as e:
         result["status"] = "load_error"
         result["error"] = str(e)

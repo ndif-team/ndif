@@ -224,7 +224,7 @@ class BaseModelDeployment:
                     dispatch=self.dispatch,
                     torch_dtype=self.dtype,
                     attn_implementation="eager",
-                    trust_remote_code=True,
+                    trust_remote_code=False,
                     **self.extra_kwargs,
                 )
             )
