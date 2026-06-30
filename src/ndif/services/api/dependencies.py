@@ -18,6 +18,21 @@ from ...common.providers.redis import RedisProvider
 from ...common.tracing import trace_span
 
 
+# Model-key allowlist. A request's model_key must contain at least ONE of
+# these substrings, otherwise the request is rejected. This is enforced in all
+# modes, including dev mode. An empty set disables the check entirely.
+#
+# EDIT THIS to the model families this deployment should serve. A request's
+# model_key must contain one of these as a substring (case-sensitive).
+ALLOWED_MODEL_KEY_SUBSTRINGS: set[str] = {
+    "google/gemma-3-27b-it",
+    "Qwen/Qwen3.5-27B",
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+    "Qwen/Qwen3.5-9B",
+    "trohrbaugh/Qwen3.5-9B-heretic-v2",
+}
+
+
 async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
     """Authenticate API key.
 
@@ -139,6 +154,45 @@ async def validate_nnsight_version(nnsight_version: str) -> str:
     return nnsight_version
 
 
+def validate_model_key(model_key: str | None) -> str | None:
+    """Reject requests whose model_key is not in the allowlist.
+
+    The model_key must contain at least one substring from
+    ``ALLOWED_MODEL_KEY_SUBSTRINGS``. Enforced in all modes, including dev
+    mode. If the allowlist is empty the check is skipped.
+
+    Args:
+        model_key: The model key from the request.
+
+    Returns:
+        The validated model_key.
+
+    Raises:
+        HTTPException: 400 if no model_key was provided, 403 if it does not
+            match any allowed substring.
+    """
+    if not ALLOWED_MODEL_KEY_SUBSTRINGS:
+        return model_key
+
+    if not model_key:
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="No model_key was provided with the request.",
+        )
+
+    if not any(allowed in model_key for allowed in ALLOWED_MODEL_KEY_SUBSTRINGS):
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail=(
+                f"Model '{model_key}' is not available on this NDIF deployment. "
+                f"Supported models must contain one of: "
+                f"{sorted(ALLOWED_MODEL_KEY_SUBSTRINGS)}."
+            ),
+        )
+
+    return model_key
+
+
 async def check_hotswapping_access(api_key: API_KEY) -> bool:
     """Check if the API key has hotswapping access.
 
@@ -237,6 +291,10 @@ async def validate_request(raw_request: Request) -> BackendRequestModel:
 
             # Create BackendRequestModel
             backend_request = BackendRequestModel.from_request(raw_request)
+
+            # Reject model keys that aren't in the allowlist (enforced in all
+            # modes, including dev mode).
+            validate_model_key(backend_request.model_key)
 
             # Populate hotswapping access
             backend_request.hotswapping = await check_hotswapping_access(api_key)
