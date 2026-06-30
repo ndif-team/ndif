@@ -11,7 +11,12 @@ from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 
 from torch.amp import autocast
-from torch.cuda import max_memory_allocated, memory_allocated, reset_peak_memory_stats
+from torch.cuda import (
+    max_memory_allocated,
+    memory_allocated,
+    memory_reserved,
+    reset_peak_memory_stats,
+)
 from transformers.modeling_utils import _get_device_map
 
 from nnsight.modeling.mixins import RemoteableMixin
@@ -120,6 +125,11 @@ class BaseModelDeployment:
                     total = torch.cuda.get_device_properties(gpu_id).total_memory
                     fraction = min(mem_bytes / total, 1.0)
                     torch.cuda.set_per_process_memory_fraction(fraction, gpu_id)
+                    self.logger.info(
+                        f"[gpu-mem:fraction] {self.model_key} cuda:{gpu_id} | "
+                        f"cap={mem_bytes / 1024 ** 3:.2f}GiB of "
+                        f"{total / 1024 ** 3:.2f}GiB (fraction={fraction:.3f})"
+                    )
 
             span.add_event("loading_model")
             self.model = self.load_from_disk()
@@ -137,6 +147,8 @@ class BaseModelDeployment:
                 self.model._module.requires_grad_(False)
 
             torch.cuda.empty_cache()
+
+            self._log_gpu_memory("init_post_load")
 
             self.request: BackendRequestModel
 
@@ -195,6 +207,81 @@ class BaseModelDeployment:
                 self.logger.warning(
                     f"Device placement mismatch! Expected GPUs {list(self.gpu_mem_bytes_by_id.keys())}, "
                     f"but model is on {actual_cuda}"
+                )
+
+    def _log_gpu_memory(self, stage: str) -> None:
+        """Log per-GPU memory usage for the GPUs this actor touches.
+
+        For each target GPU (plus any GPU we unexpectedly hold params on,
+        which surfaces placement mismatches), logs: bytes of model
+        params/buffers resident on it, this process's allocated/reserved
+        bytes, the per-process budget we were assigned, and the device-wide
+        free/total. ``stage`` labels the call site (init/from_cache/
+        to_cache/cleanup/execute) so the lifecycle is greppable.
+        """
+        if not torch.cuda.is_available():
+            return
+
+        GiB = 1024 ** 3
+
+        # Tally resident model param/buffer bytes per CUDA device.
+        param_bytes_by_device: Dict[int, int] = {}
+        try:
+            module = self.model._module
+            for tensor in (*module.parameters(), *module.buffers()):
+                if tensor.device.type == "cuda":
+                    idx = tensor.device.index
+                    param_bytes_by_device[idx] = (
+                        param_bytes_by_device.get(idx, 0)
+                        + tensor.nelement() * tensor.element_size()
+                    )
+        except Exception:
+            self.logger.exception("Failed to tally model param bytes per device")
+
+        gpu_ids = sorted(
+            set(self.gpu_mem_bytes_by_id) | set(param_bytes_by_device)
+        )
+
+        span = trace.get_current_span()
+
+        for gpu_id in gpu_ids:
+            try:
+                free, total = torch.cuda.mem_get_info(gpu_id)
+                allocated = memory_allocated(gpu_id)
+                reserved = memory_reserved(gpu_id)
+                params = param_bytes_by_device.get(gpu_id, 0)
+                budget = self.gpu_mem_bytes_by_id.get(gpu_id)
+
+                budget_str = (
+                    f"{budget / GiB:.2f}GiB" if budget is not None else "n/a"
+                )
+
+                self.logger.info(
+                    f"[gpu-mem:{stage}] {self.model_key} cuda:{gpu_id} | "
+                    f"params={params / GiB:.2f}GiB "
+                    f"proc_alloc={allocated / GiB:.2f}GiB "
+                    f"proc_reserved={reserved / GiB:.2f}GiB | "
+                    f"budget={budget_str} | "
+                    f"device_free={free / GiB:.2f}GiB "
+                    f"device_total={total / GiB:.2f}GiB "
+                    f"({100 * (total - free) / total:.1f}% device used)"
+                )
+
+                span.add_event(
+                    f"gpu_memory.{stage}",
+                    {
+                        "gpu_id": gpu_id,
+                        "params_bytes": params,
+                        "proc_allocated_bytes": allocated,
+                        "proc_reserved_bytes": reserved,
+                        "budget_bytes": budget or 0,
+                        "device_free_bytes": free,
+                        "device_total_bytes": total,
+                    },
+                )
+            except Exception:
+                self.logger.exception(
+                    f"Failed to log GPU memory for cuda:{gpu_id} at stage {stage}"
                 )
 
     def load_from_disk(self):
@@ -265,6 +352,8 @@ class BaseModelDeployment:
             gc.collect()
             torch.cuda.empty_cache()
 
+            self._log_gpu_memory("to_cache")
+
             self.cached = True
 
     def from_cache(
@@ -303,6 +392,11 @@ class BaseModelDeployment:
                     total = torch.cuda.get_device_properties(gpu_id).total_memory
                     fraction = min(mem_bytes / total, 1.0)
                     torch.cuda.set_per_process_memory_fraction(fraction, gpu_id)
+                    self.logger.info(
+                        f"[gpu-mem:fraction] {self.model_key} cuda:{gpu_id} | "
+                        f"cap={mem_bytes / 1024 ** 3:.2f}GiB of "
+                        f"{total / 1024 ** 3:.2f}GiB (fraction={fraction:.3f})"
+                    )
 
             torch.cuda.synchronize()
             start = time.time()
@@ -329,6 +423,7 @@ class BaseModelDeployment:
             load_time = time.time() - start
 
             self._verify_device_placement(self.model._module, "cache")
+            self._log_gpu_memory("from_cache")
 
             span.set_attribute("ndif.model.load_time_s", load_time)
             ModelLoadTimeMetric.update(load_time, self.model_key, "cache")
@@ -460,7 +555,16 @@ class BaseModelDeployment:
 
             # Compute GPU memory usage
             if torch.cuda.is_available():
-                gpu_mem = max_memory_allocated() - model_memory
+                peak = max_memory_allocated()
+                gpu_mem = peak - model_memory
+                GiB = 1024 ** 3
+                self.logger.info(
+                    f"[gpu-mem:execute] {self.model_key} cuda:{torch.cuda.current_device()} | "
+                    f"baseline={model_memory / GiB:.2f}GiB "
+                    f"peak={peak / GiB:.2f}GiB "
+                    f"activation_delta={gpu_mem / GiB:.2f}GiB "
+                    f"in {execution_time:.2f}s"
+                )
             else:
                 gpu_mem = 0
 
@@ -562,9 +666,17 @@ class BaseModelDeployment:
             self.model.interleaver.cancel()
 
             self._request_count += 1
-            if self._request_count % 5 == 0:
-                span.add_event("gc_collect")
-                gc.collect()
+
+            # Collect and release CUDA cache every request. User intervention
+            # code can leave large transient tensors referenced until the next
+            # GC pass; deferring this to every 5th request let that headroom
+            # accumulate on the GPU between requests.
+            span.add_event("gc_collect")
+            gc.collect()
+            span.add_event("empty_cache")
+            torch.cuda.empty_cache()
+
+            self._log_gpu_memory("cleanup")
 
     def log(self, *data):
         """Logs data during model execution.
