@@ -23,7 +23,7 @@ from ...common.tracing import trace_span
 # modes, including dev mode. An empty set disables the check entirely.
 #
 # EDIT THIS to the model families this deployment should serve. A request's
-# model_key must contain one of these as a substring (case-sensitive).
+# model_key must contain one of these as a substring (case-insensitive).
 ALLOWED_MODEL_KEY_SUBSTRINGS: set[str] = {
     "google/gemma-3-27b-it",
     "Qwen/Qwen3.5-27B",
@@ -180,7 +180,11 @@ def validate_model_key(model_key: str | None) -> str | None:
             detail="No model_key was provided with the request.",
         )
 
-    if not any(allowed in model_key for allowed in ALLOWED_MODEL_KEY_SUBSTRINGS):
+    model_key_lower = model_key.lower()
+    if not any(
+        allowed.lower() in model_key_lower
+        for allowed in ALLOWED_MODEL_KEY_SUBSTRINGS
+    ):
         raise HTTPException(
             status_code=HTTP_403_FORBIDDEN,
             detail=(
