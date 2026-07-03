@@ -7,10 +7,14 @@ A push-based cron job that owns the schedule diff itself:
     2. Filter to events whose ``[start, end)`` window contains "now". An
        event with ``end is None`` is open-ended ("active forever after start").
     3. Diff against (a) the previously-pushed model_keys persisted in
-       ``.reconcile.state.json`` and (b) what the controller has HOT now.
-       - to_evict   = previously-active − new-active
-       - to_deploy  = new-active − currently-HOT (covers both "newly added"
-         and "drifted out — controller no longer has it")
+       ``.reconcile.state.json`` and (b) what the controller has HOT now,
+       including whether each HOT replica is actually pinned.
+       - to_evict   = (previously-active − new-active) + pinned-drift
+       - to_deploy  = new-active − currently-HOT-and-pinned (covers "newly
+         added", "drifted out — controller no longer has it", and "HOT but
+         unpinned" — a scheduled model whose pinned replica died and was
+         re-created unpinned by a hotswap request, which then rejects
+         non-hotswap keys)
     4. Issue explicit evict / deploy CLI-lib calls. The controller no longer
        has any "sync mode" of its own; pinned just means "do not evict".
     5. Persist the new active set + per-event status back. Discord-notify
@@ -80,8 +84,10 @@ def _save_state(state_path: Path, state: dict) -> None:
     state_path.write_text(json.dumps(state, indent=2))
 
 
-def _fetch_hot_model_keys() -> Optional[set[str]]:
-    """Return the set of model_keys currently HOT according to the controller.
+def _fetch_hot_deployments() -> Optional[dict[str, bool]]:
+    """Return ``{model_key: fully_pinned}`` for every model_key with a HOT
+    replica, where ``fully_pinned`` is True only if *every* HOT replica of
+    that model_key is pinned.
 
     Reads live from the controller via Ray rather than the API service's
     Redis-cached ``/status`` (TTL ``NDIF_STATUS_CACHE_FREQ_S``). The cached
@@ -90,6 +96,12 @@ def _fetch_hot_model_keys() -> Optional[set[str]]:
     of HOT, and the additive deploy below would stack another pinned
     replica on top of the one already serving. ``None`` on Ray-side error
     → callers treat as "unknown" and lean toward re-deploying.
+
+    Tracking pinned-ness (not just HOT-ness) is what lets reconcile catch a
+    *scheduled* model that came back HOT but unpinned — e.g. its pinned
+    replica died and a hotswap request re-created it unpinned. That model
+    passes a bare "is it HOT?" test yet still rejects non-hotswap keys, so
+    it must be re-pinned.
     """
     from ..backend import ndif_client
 
@@ -100,11 +112,16 @@ def _fetch_hot_model_keys() -> Optional[set[str]]:
         return None
 
     deps = data.get("deployments") or {}
-    return {
-        v["model_key"]
-        for v in deps.values()
-        if v.get("deployment_level") == "HOT" and v.get("model_key")
-    }
+    hot: dict[str, bool] = {}
+    for v in deps.values():
+        if v.get("deployment_level") != "HOT":
+            continue
+        mk = v.get("model_key")
+        if not mk:
+            continue
+        # Fully pinned only if no HOT replica of this model_key is unpinned.
+        hot[mk] = hot.get(mk, True) and bool(v.get("pinned"))
+    return hot
 
 
 def _notify_failures(failed: list[dict]) -> None:
@@ -196,11 +213,8 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
     state = _load_state(settings.reconcile_state_path)
     prev_keys: set[str] = set(state.get("prev_model_keys") or [])
 
-    # to_evict: was-pinned, not-anymore
-    to_evict = sorted(prev_keys - set(new_keys))
-
-    # to_deploy: newly added OR drifted out of the controller's HOT set.
-    hot_keys = _fetch_hot_model_keys()
+    # Live controller view: {model_key: every HOT replica pinned?} (or None).
+    hot = _fetch_hot_deployments()
     new_keys_list = list(new_keys.keys())
     active_count = len(active)
     active_names = [e.checkpoint for e in active]
@@ -210,7 +224,7 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
     # scheduled model would look like it had drifted out of HOT and get an
     # additive pinned deploy on top of the one already serving. ``force``
     # still bypasses since it's a deliberate operator override.
-    if hot_keys is None and not force:
+    if hot is None and not force:
         logger.warning(
             "Skipping reconcile: controller status unavailable; will retry next tick"
         )
@@ -220,12 +234,32 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
             "skipped": "controller_status_unavailable",
         }
 
+    # Pinned-drift: a scheduled model that is HOT but has an unpinned replica
+    # (its pinned replica died and a hotswap request re-created it unpinned —
+    # it serves hotswap keys but rejects normal ones). An additive deploy
+    # can't flip an existing replica's pinned flag, and the API gate reads
+    # replicas[0].pinned, so we must evict every replica and redeploy clean
+    # with pinned=True. These join both the evict set and the redeploy set.
+    drifted_unpinned = (
+        {mk for mk in new_keys if hot.get(mk) is False}
+        if hot is not None else set()
+    )
+    if drifted_unpinned:
+        logger.warning(
+            "Pinned-drift detected (scheduled but HOT-unpinned); re-pinning: %s",
+            sorted(drifted_unpinned),
+        )
+
+    # to_evict: removed-from-schedule, plus pinned-drift models we must rebuild.
+    to_evict = sorted((prev_keys - set(new_keys)) | drifted_unpinned)
+
+    # to_deploy: newly added OR drifted out of HOT OR HOT-but-unpinned.
     if force:
         to_deploy_events = list(new_keys.values())
     else:
         to_deploy_events = [
             ev for mk, ev in new_keys.items()
-            if mk not in prev_keys or mk not in hot_keys
+            if mk not in prev_keys or mk not in hot or mk in drifted_unpinned
         ]
 
     if not to_evict and not to_deploy_events:
@@ -319,7 +353,10 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
         )
 
     deployed = [e.model_key for e in to_deploy_events]
-    return {"changed": True, "active": active_names, "evicted": evicted, "deployed": deployed}
+    return {
+        "changed": True, "active": active_names, "evicted": evicted,
+        "deployed": deployed, "repinned": sorted(drifted_unpinned),
+    }
 
 
 def main() -> None:
