@@ -1,7 +1,9 @@
-nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
+nnsight @ git+https://github.com/ndif-team/nnsight.git@e4f37fa3e7c6bb936b4a37e2b5402dca2330610c
 # Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
 # Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
 # silently bind to a Placeholder and the controller can't trace VLMs.
+#
+transformers @ git+https://github.com/huggingface/transformers.git
 torchvision
 diffusers
 datasets
@@ -25,7 +27,9 @@ influxdb-client
 # Google Cal Scheduling
 google-api-python-client
 google
+peft==0.18
 
 # Security
 RestrictedPython>=7.0
 zstandard
+pandas
