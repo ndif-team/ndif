@@ -310,7 +310,6 @@ class BaseModelDeployment:
                     max_memory=max_memory,
                     dispatch=self.dispatch,
                     torch_dtype=self.dtype,
-                    attn_implementation="eager",
                     trust_remote_code=False,
                     **self.extra_kwargs,
                 )
