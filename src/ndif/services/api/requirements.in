@@ -27,5 +27,4 @@ requests
 torch
 python-slugify
 influxdb-client
-nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
-peft
+nnsight
