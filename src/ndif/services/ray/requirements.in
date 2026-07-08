@@ -1,12 +1,9 @@
-nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
+nnsight
 # Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
 # Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
 # silently bind to a Placeholder and the controller can't trace VLMs.
 torchvision
 diffusers
-datasets
-tokenizers
-scipy
 ray[serve]==2.55.1
 python-slugify
 redis
