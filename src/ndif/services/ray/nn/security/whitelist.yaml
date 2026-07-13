@@ -160,6 +160,7 @@ builtins:
   - eval
   - compile
   - exec
+  - open
 
 # =============================================================================
 # MODULES
@@ -293,6 +294,15 @@ modules:
     strict: false
 
   - name: argparse
+    strict: false
+
+  - name: huggingface_hub
+    strict: false
+
+  - name: httpcore
+    strict: false
+
+  - name: pydantic_core
     strict: false
 
 # =============================================================================

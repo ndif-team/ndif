@@ -26,3 +26,6 @@ google
 # Security
 RestrictedPython>=7.0
 zstandard
+nnterp
+torch==2.12.1
+hf_xet
