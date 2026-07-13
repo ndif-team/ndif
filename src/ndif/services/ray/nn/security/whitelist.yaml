@@ -299,6 +299,9 @@ modules:
   - name: huggingface_hub
     strict: false
 
+  - name: hf_xet
+    strict: false
+
   - name: httpcore
     strict: false
 
