@@ -145,7 +145,7 @@ def get_model_key(
     from nnsight.util import from_import_path
 
     cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
-    model = cls(checkpoint, revision=revision, dispatch=False, trust_remote_code=True)
+    model = cls(checkpoint, revision=revision, dispatch=False, trust_remote_code=False)
     return model.to_model_key()
 
 

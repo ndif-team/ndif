@@ -177,6 +177,11 @@ modules:
   - name: re
     strict: false
 
+  # triton: mamba/nemotron-h kernels JIT-compile via triton during the forward
+  # pass, which lazily imports triton.compiler.* — allow the whole triton tree.
+  - name: triton
+    strict: false
+
   - name: dataclasses
     strict: false
 

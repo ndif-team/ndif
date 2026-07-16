@@ -27,6 +27,13 @@ from .whitelist import WhitelistedModule, SAFE_BUILTINS, is_module_allowed
 if TYPE_CHECKING:
     from .protector import Protector
 
+# OPEN SANDBOX (branch): stdlib modules are returned UNWRAPPED (not ProtectedModule)
+# so triton/CUDA JIT compilation can use them freely (subprocess.Popen, os.path,
+# importlib, ...). ProtectedModule would both lack a whitelist entry for stdlib and
+# block cross-module attribute access (e.g. subprocess.Popen). Operation-level
+# guarding still happens in the audit hook (guards.py).
+_STDLIB_TOPLEVEL = set(sys.stdlib_module_names)
+
 
 # ── SafeBuiltins ──────────────────────────────────────────────────────────────
 # Returned when user code does ``import builtins``.  Attribute access is
@@ -249,12 +256,16 @@ class Importer:
         if level > 0:
             result = self._do_import(name, globals, locals, fromlist, level)
             if is_module_allowed(result.__name__, self.whitelisted_modules):
+                if result.__name__.partition(".")[0] in _STDLIB_TOPLEVEL:
+                    return result
                 entry = self._find_entry(result.__name__)
                 return ProtectedModule(entry, result)
             return UnauthorizedModule(result.__name__)
 
         # ── Absolute imports ──────────────────────────────────────────────
         if is_module_allowed(name, self.whitelisted_modules):
+            if name.partition(".")[0] in _STDLIB_TOPLEVEL:
+                return self._do_import(name, globals, locals, fromlist, level)
             entry = self._find_entry(name)
             result = self._do_import(name, globals, locals, fromlist, level)
             return ProtectedModule(entry, result)

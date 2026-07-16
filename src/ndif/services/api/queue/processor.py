@@ -316,8 +316,8 @@ class Processor:
             attributes={"ndif.model.key": self.model_key},
         ) as span:
             try:
-                response: ReplicaStates = await controller_handle().get_deployment.remote(
-                    self.model_key
+                response: ReplicaStates = (
+                    await controller_handle().get_deployment.remote(self.model_key)
                 )
             except Exception as e:
                 span.set_status(trace.StatusCode.ERROR, str(e))
@@ -329,9 +329,7 @@ class Processor:
             have = set(self.replicas.keys())
 
             for rid in desired - have:
-                logger.info(
-                    f"Reconcile {self.model_key}: spawning new replica {rid}"
-                )
+                logger.info(f"Reconcile {self.model_key}: spawning new replica {rid}")
                 self.spawn_replica(rid)
 
             for rid in have - desired:
@@ -405,16 +403,6 @@ class Processor:
         are running.
         """
         while self.status != ProcessorStatus.CANCELLED:
-            head = self.queue._queue[0] if self.queue._queue else None
-            if head is not None and head.enqueued_at is not None:
-                wait = time.time() - head.enqueued_at
-                if (
-                    wait > QueueConfig.autoscaling_wait_threshold_s
-                    and len(self.replicas) < QueueConfig.autoscaling_max_replicas
-                ):
-                    await self.scale_up(wait)
-                    await asyncio.sleep(QueueConfig.autoscaling_backoff_s)
-                    continue
 
             await asyncio.sleep(QueueConfig.autoscaling_interval_s)
 

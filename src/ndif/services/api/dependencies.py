@@ -73,9 +73,7 @@ async def authenticate_api_key(api_key: API_KEY) -> API_KEY:
 
     # Competition access control: only keys holding the `tier_1` tier may use
     # NDIF. A valid-but-untiered key is rejected outright.
-    if not await asyncio.to_thread(
-        api_key_store.key_has_tier, api_key, TIER.TIER_1
-    ):
+    if not await asyncio.to_thread(api_key_store.key_has_tier, api_key, TIER.TIER_1):
         raise HTTPException(
             status_code=HTTP_403_FORBIDDEN,
             detail="Your API key is not authorized to use NDIF for this competition. "
@@ -182,8 +180,7 @@ def validate_model_key(model_key: str | None) -> str | None:
 
     model_key_lower = model_key.lower()
     if not any(
-        allowed.lower() in model_key_lower
-        for allowed in ALLOWED_MODEL_KEY_SUBSTRINGS
+        allowed.lower() in model_key_lower for allowed in ALLOWED_MODEL_KEY_SUBSTRINGS
     ):
         raise HTTPException(
             status_code=HTTP_403_FORBIDDEN,
@@ -206,11 +203,9 @@ async def check_hotswapping_access(api_key: API_KEY) -> bool:
     Returns:
         True if hotswapping is enabled for this API key, False otherwise.
     """
-    if AppConfig.dev_mode:
-        return True
-    if api_key_store is None:
-        return False
-    return await asyncio.to_thread(api_key_store.key_has_hotswapping_access, api_key)
+    # Hotswapping (on-demand deploy/evict of non-pinned models) is disabled on
+    # this deployment — only pinned/scheduled models are served.
+    return False
 
 
 async def get_email(api_key: API_KEY) -> str | None:

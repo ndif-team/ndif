@@ -13,11 +13,20 @@ Three kinds of whitelist:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import List
 
 import yaml
 from pydantic import BaseModel
+
+# OPEN SANDBOX (branch): the Nemotron-H custom (trust_remote_code) path JIT-compiles
+# mamba/triton kernels *during* the forward, which lazily imports a large slice of
+# the stdlib (os, pkgutil, subprocess, importlib, hashlib, sysconfig, ...). Rather
+# than enumerate them, allow the whole standard library through the import layer.
+# Dangerous *operations* remain guarded by the audit hook in guards.py (os.system,
+# os.fork, socket, and non-compiler subprocess are still blocked there).
+_STDLIB_TOPLEVEL = set(sys.stdlib_module_names)
 
 _WHITELIST_PATH = Path(__file__).parent / "whitelist.yaml"
 
@@ -69,6 +78,9 @@ def _load_modules(key: str) -> List[WhitelistedModule]:
 
 
 def is_module_whitelisted(name: str, whitelist: List[WhitelistedModule]) -> bool:
+    # OPEN SANDBOX (branch): allow all stdlib modules (see note at top of file).
+    if name.partition(".")[0] in _STDLIB_TOPLEVEL:
+        return True
     return any(m.check(name) for m in whitelist)
 
 

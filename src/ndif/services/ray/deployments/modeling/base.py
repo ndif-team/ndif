@@ -222,7 +222,7 @@ class BaseModelDeployment:
         if not torch.cuda.is_available():
             return
 
-        GiB = 1024 ** 3
+        GiB = 1024**3
 
         # Tally resident model param/buffer bytes per CUDA device.
         param_bytes_by_device: Dict[int, int] = {}
@@ -238,9 +238,7 @@ class BaseModelDeployment:
         except Exception:
             self.logger.exception("Failed to tally model param bytes per device")
 
-        gpu_ids = sorted(
-            set(self.gpu_mem_bytes_by_id) | set(param_bytes_by_device)
-        )
+        gpu_ids = sorted(set(self.gpu_mem_bytes_by_id) | set(param_bytes_by_device))
 
         span = trace.get_current_span()
 
@@ -252,9 +250,7 @@ class BaseModelDeployment:
                 params = param_bytes_by_device.get(gpu_id, 0)
                 budget = self.gpu_mem_bytes_by_id.get(gpu_id)
 
-                budget_str = (
-                    f"{budget / GiB:.2f}GiB" if budget is not None else "n/a"
-                )
+                budget_str = f"{budget / GiB:.2f}GiB" if budget is not None else "n/a"
 
                 self.logger.info(
                     f"[gpu-mem:{stage}] {self.model_key} cuda:{gpu_id} | "
@@ -556,7 +552,7 @@ class BaseModelDeployment:
             if torch.cuda.is_available():
                 peak = max_memory_allocated()
                 gpu_mem = peak - model_memory
-                GiB = 1024 ** 3
+                GiB = 1024**3
                 self.logger.info(
                     f"[gpu-mem:execute] {self.model_key} cuda:{torch.cuda.current_device()} | "
                     f"baseline={model_memory / GiB:.2f}GiB "

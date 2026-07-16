@@ -14,17 +14,25 @@ RUN apt-get update -y \
 
 WORKDIR /ndif
 
-RUN uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cu124
+RUN uv pip install --system torch==2.10.0 torchvision==0.25.0
 
 # mamba-ssm + causal-conv1d as prebuilt CUDA-extension wheels matched to the
-# torch install above (torch 2.6 / cu12 / cp312 / pre-cxx11 ABI). Pinned by URL
-# so the image needs no CUDA toolchain to compile them. If the torch line above
-# changes version/cuda/python, swap these for the corresponding release wheels
-# (https://github.com/Dao-AILab/causal-conv1d/releases and
+# torch install above (torch 2.10 / cu12 / cp312 / cxx11 ABI=TRUE). Pinned by URL
+# so the image needs no CUDA toolchain to compile them. Needed for the Nemotron-H
+# custom (trust_remote_code=True) triton mamba path; torch 2.10 also gives native
+# F.grouped_mm on sm_80 (A100) so the native MoE path has no fp32/bf16 fallback bug.
+#
+# ABI is load-bearing: PyTorch's Linux pip wheels are new C++11 ABI
+# (_GLIBCXX_USE_CXX11_ABI=1) from torch 2.7 on, so these kernels MUST be the
+# cxx11abiTRUE variants and the torchX.Y tag MUST match the torch version above.
+# A mismatch yields:
+#   ImportError: causal_conv1d_cuda...so: undefined symbol: _ZN3c106detail14torchCheckFail...
+# If the torch line changes version/cuda/python, swap these for the corresponding
+# release wheels (https://github.com/Dao-AILab/causal-conv1d/releases and
 # https://github.com/state-spaces/mamba/releases).
 RUN uv pip install --system --no-deps \
-        https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.2.post1/causal_conv1d-1.6.2.post1%2Bcu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl \
-        https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1%2Bcu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+        https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.2.post1/causal_conv1d-1.6.2.post1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl \
+        https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1%2Bcu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 
 
 COPY src/ndif/services/api/requirements.in       /ndif/src/ndif/services/api/requirements.in

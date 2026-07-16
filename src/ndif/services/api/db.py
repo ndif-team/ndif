@@ -86,7 +86,7 @@ class AccountsDB:
         On the competition branch the ``tier_1`` tier gates both system access
         and hotswapping; there is no standalone hotswap tier.
         """
-        return self.key_has_tier(key_id, TIER.TIER_1)
+        return False
 
 
 api_key_store = None
