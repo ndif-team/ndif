@@ -77,9 +77,18 @@ class Replica:
             or ``None``.
     """
 
-    def __init__(self, model_key: MODEL_KEY, replica_id: REPLICA_ID) -> None:
+    def __init__(
+        self,
+        model_key: MODEL_KEY,
+        replica_id: REPLICA_ID,
+        metrics_event: Optional[asyncio.Event] = None,
+    ) -> None:
         self.model_key = model_key
         self.replica_id = replica_id
+        # Shared with the dispatcher's queue-metrics loop; set on job start/end
+        # so num_busy_replicas / queue_job update the instant a job's state
+        # flips, even for jobs shorter than the metrics heartbeat.
+        self.metrics_event = metrics_event
         self.handle: Optional[Any] = None
         self.current_request: Optional[BackendRequestModel] = None
         self.current_started_at: Optional[float] = None
@@ -87,6 +96,11 @@ class Replica:
         # Flipped to True by ``cancel`` or by drift detection in dispatch.
         # Causes the worker loop to exit on the next iteration.
         self.dropped: bool = False
+
+    def _notify_metrics(self) -> None:
+        """Wake the dispatcher's queue-metrics loop, if one is listening."""
+        if self.metrics_event is not None:
+            self.metrics_event.set()
 
     @property
     def ready(self) -> bool:
@@ -310,6 +324,7 @@ class Replica:
 
             self.current_request = request
             self.current_started_at = time.time()
+            self._notify_metrics()  # job started — now busy
 
             try:
                 handle = self.handle
@@ -392,3 +407,4 @@ class Replica:
             finally:
                 self.current_request = None
                 self.current_started_at = None
+                self._notify_metrics()  # job finished — no longer busy

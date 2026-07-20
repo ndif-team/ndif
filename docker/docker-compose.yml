@@ -101,6 +101,8 @@ services:
       INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
       INFLUXDB_ORG: ${INFLUXDB_ORG}
       INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      NDIF_QUEUE_METRIC_INTERVAL_S: ${NDIF_QUEUE_METRIC_INTERVAL_S}
+      NDIF_QUEUE_METRIC_DEBOUNCE_S: ${NDIF_QUEUE_METRIC_DEBOUNCE_S}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: postgres
@@ -159,19 +161,26 @@ services:
       - ray
       - message_broker
 
-  prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
+  # Scrapes Ray's Prometheus-format node metrics (via the SD file Ray maintains)
+  # and writes the CPU/GPU/mem profiles into InfluxDB. Host networking so it can
+  # reach each node's metrics endpoint by IP. Replaced the standalone Prometheus
+  # server that previously scraped these targets.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}
     network_mode: "host"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--web.enable-remote-write-receiver'
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      HOST_IP: ${HOST_IP}
+      DEV_INFLUXDB_PORT: ${DEV_INFLUXDB_PORT}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+      INFLUXDB_ADMIN_TOKEN: ${SECRET_INFLUXDB_ADMIN_TOKEN}
     volumes:
-      - prometheus-data:/prometheus
-      - ../telemetry/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../telemetry/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
       - ray-data:/tmp/ray
     depends_on:
-      - api
       - ray
+      - influxdb
 
   influxdb:
     image: influxdb:${INFLUXDB_VERSION}
@@ -200,7 +209,7 @@ services:
       - ../telemetry/grafana/provisioning:/etc/grafana/provisioning
       - ../telemetry/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on:
-      - prometheus
+      - otel-collector
       - influxdb
 
   loki:
@@ -226,7 +235,6 @@ volumes:
   grafana-storage:
   loki-data:
   minio-data:
-  prometheus-data:
   ray-data:
   influxdb2-data:
   influxdb2-config:

@@ -86,6 +86,7 @@ class Cluster:
 
             id = node.node_id
             name = node.node_name
+            ip = getattr(node, "node_ip", None)
 
             current_nodes.add(id)
 
@@ -121,6 +122,7 @@ class Cluster:
                     gpu_resources=gpu_resources,
                     cpu_resources=cpu_resources,
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
+                    ip=ip,
                 )
 
             logger.info(

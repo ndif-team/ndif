@@ -45,6 +45,7 @@ from ....common.tracing import (
     trace_span,
 )
 from ....common.providers.ray import controller_handle
+from ....common.metrics import QueueStateMetric, QueueJobMetric
 from .config import QueueConfig
 from .processor import Processor, ProcessorStatus
 
@@ -113,6 +114,11 @@ class Dispatcher:
 
         self.error_queue: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
         self.eviction_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+
+        # Set by Processors/Replicas on any queue change (enqueue, status
+        # transition, job start/end) to wake emit_queue_metrics_loop for an
+        # immediate snapshot. Shared the same way as the queues above.
+        self.metrics_event: asyncio.Event = asyncio.Event()
 
         self.status_cache_freq_s = QueueConfig.status_cache_freq_s
 
@@ -220,7 +226,10 @@ class Dispatcher:
             try:
                 if request.model_key not in self.processors:
                     processor = Processor(
-                        request.model_key, self.eviction_queue, self.error_queue
+                        request.model_key,
+                        self.eviction_queue,
+                        self.error_queue,
+                        self.metrics_event,
                     )
 
                     self.processors[request.model_key] = processor
@@ -258,6 +267,10 @@ class Dispatcher:
         processor = self.processors.pop(model_key)
         processor.status = ProcessorStatus.CANCELLED
         await processor.purge(message)
+
+        # The processor is gone from the registry; wake the metrics loop so the
+        # next snapshot (which omits it) reflects the removal promptly.
+        self.metrics_event.set()
 
     async def purge(self, message: str) -> None:
         """Remove all Processors and notify all queued users.
@@ -371,6 +384,77 @@ class Dispatcher:
             "processors": processors_state,
         }
 
+    async def emit_queue_metrics_loop(self) -> None:
+        """Emit queue-state metrics on a heartbeat and on every queue change.
+
+        Waits on ``metrics_event`` (set by Processors/Replicas on enqueue,
+        status transitions, and job start/end) with a heartbeat timeout, so a
+        long-running job still gets its ``running_seconds`` sampled even when
+        nothing transitions. A short debounce coalesces bursts (e.g. draining
+        many queued requests at once) into a single emission.
+        """
+        interval = int(os.environ.get("NDIF_QUEUE_METRIC_INTERVAL_S", "10"))
+        debounce = float(os.environ.get("NDIF_QUEUE_METRIC_DEBOUNCE_S", "0.25"))
+
+        while True:
+            try:
+                await asyncio.wait_for(self.metrics_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass  # heartbeat tick — emit a snapshot anyway
+
+            self.metrics_event.clear()
+            self._emit_queue_metrics()
+
+            if debounce > 0:
+                await asyncio.sleep(debounce)
+
+    def _emit_queue_metrics(self) -> None:
+        """Emit one snapshot of every Processor's queue state to InfluxDB.
+
+        A pure projection of a single ``get_state()`` call: per Processor a
+        ``queue_state`` point (queue depth + lifecycle state + replica counts),
+        and per *busy* replica a ``queue_job`` point (the in-flight request's
+        running age). Liveness is implicit in emission recency — a Processor
+        the dispatcher has dropped simply stops appearing. Best-effort: a
+        metrics failure must never disrupt the dispatch loop, so it's guarded.
+        """
+        try:
+            now = time.time()
+            state = self.get_state()
+
+            for model_key, p in state["processors"].items():
+                replicas = p["replicas"]
+                running = [
+                    now - r["current_request_started_at"]
+                    for r in replicas
+                    if r["busy"] and r["current_request_started_at"] is not None
+                ]
+
+                QueueStateMetric.update(
+                    model_key=model_key,
+                    status=p["status"],
+                    pinned=bool(p["pinned"]),
+                    queue_length=len(p["request_ids"]),
+                    num_replicas=p["num_replicas"],
+                    num_busy_replicas=len(running),
+                    busy=p["busy"],
+                    status_age_seconds=(
+                        now - p["status_changed_at"] if p["status_changed_at"] else 0.0
+                    ),
+                    longest_running_seconds=max(running) if running else 0.0,
+                )
+
+                for r in replicas:
+                    if r["busy"] and r["current_request_started_at"] is not None:
+                        QueueJobMetric.update(
+                            model_key=model_key,
+                            replica_id=r["replica_id"],
+                            current_request_id=r["current_request_id"] or "",
+                            running_seconds=now - r["current_request_started_at"],
+                        )
+        except Exception:
+            self.logger.exception("Error emitting queue metrics")
+
     async def dispatch_worker(self) -> None:
         """Main asyncio task for the dispatch loop.
 
@@ -386,6 +470,7 @@ class Dispatcher:
         """
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.events_worker())
+        asyncio.create_task(self.emit_queue_metrics_loop())
 
         while True:
 
