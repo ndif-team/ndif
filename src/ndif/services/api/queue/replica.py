@@ -20,8 +20,13 @@ import time
 from typing import Any, Callable, Optional
 
 from opentelemetry import trace
+from ray.exceptions import ActorDiedError, RayTaskError
 
-from ....common.providers.ray import controller_handle, get_model_actor_handle
+from ....common.providers.ray import (
+    CachedActorError,
+    controller_handle,
+    get_model_actor_handle,
+)
 from ....common.schema.controller import DeployResponse, ModelDeployResult
 from ....common.schema.deployment_config import DeploymentConfig
 from ....common.schema.request import BackendRequestModel
@@ -34,6 +39,29 @@ from ....common.tracing import (
 from ....common.types import MODEL_KEY, REPLICA_ID
 
 logger = logging.getLogger("ndif")
+
+# Exceptions that all mean "this replica is no longer serving and should be
+# treated as evicted", detected by type rather than by message string:
+#   - ValueError       : ``ray.get_actor`` could not find the actor (the
+#                        controller evicted it, or hasn't created it yet).
+#   - ActorDiedError   : the actor process died / was killed.
+#   - CachedActorError : the actor is alive but moved to CPU cache (WARM).
+EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
+
+
+def _is_eviction(exc: BaseException) -> bool:
+    """True if ``exc`` (or its RayTaskError ``.cause``) is an eviction signal.
+
+    A remote actor exception raised over the Ray *client* ``await`` path (what
+    ``dispatch`` uses) arrives as a *bare* ``RayTaskError``: Ray only builds the
+    dual-class ``RayTaskError(<Cause>)`` — so ``isinstance(e, <Cause>)`` holds —
+    on the synchronous ``ray.get`` path, not the async one. The real exception
+    is always preserved on ``.cause``, so we check both. See the note in
+    ``common/providers/ray.py``.
+    """
+    if isinstance(exc, EVICTED_ERRORS):
+        return True
+    return isinstance(getattr(exc, "cause", None), EVICTED_ERRORS)
 
 
 class Replica:
@@ -128,13 +156,30 @@ class Replica:
             self.replica_worker(queue, error_queue, ready_event, on_exit)
         )
 
-    def cancel(self) -> None:
+    async def cancel(self, message: Optional[str] = None) -> None:
         """Cancel the worker task.
 
         Idempotent. ``on_exit`` fires from the worker's ``finally`` block
         regardless of how it exits, so the Processor will see the removal.
+
+        If a request is in flight, error it here too. A purge/critical-error
+        teardown only notifies *queued* requests via ``Processor.reply``; the
+        running request would otherwise be left hanging until (or unless) the
+        cancellation propagates through ``dispatch``. We grab it before
+        cancelling the task and send the ERROR response directly.
         """
         self.dropped = True
+
+        request = self.current_request
+        if request is not None:
+            await request.create_response(
+                BackendResponseModel.JobStatus.ERROR,
+                logger,
+                message
+                or "Replica was evicted while processing your request. "
+                "Sorry for the inconvenience. Please try again later.",
+            ).arespond()
+
         if self.task is not None and not self.task.done():
             self.task.cancel()
 
@@ -221,11 +266,11 @@ class Replica:
         Returns the ActorHandle on success, or ``None`` if setup failed
         unrecoverably (or the replica was cancelled mid-poll).
 
-        Non-drift exceptions (i.e. anything other than "Failed to look up
-        actor") are surfaced via ``error_queue`` so the dispatcher can
-        observe them — most importantly so a Ray connection error during
-        setup triggers the dispatcher's reconnect path instead of being
-        silently swallowed.
+        Non-drift exceptions (i.e. anything other than a ``ValueError`` from
+        ``ray.get_actor`` failing to find the actor) are surfaced via
+        ``error_queue`` so the dispatcher can observe them — most importantly
+        so a Ray connection error during setup triggers the dispatcher's
+        reconnect path instead of being silently swallowed.
         """
         with trace_span(
             "replica.await_ready",
@@ -239,12 +284,13 @@ class Replica:
                     handle = get_model_actor_handle(self.model_key, self.replica_id)
                     await handle.__ray_ready__.remote()
                     return handle
+                except ValueError:
+                    # ``ray.get_actor`` raises ValueError when the actor isn't
+                    # found. Controller.apply() creates the actor asynchronously
+                    # after deploy() returns — keep waiting.
+                    await asyncio.sleep(1)
+                    continue
                 except Exception as e:
-                    if str(e).startswith("Failed to look up actor"):
-                        # Controller.apply() creates the actor asynchronously
-                        # after deploy() returns — keep waiting.
-                        await asyncio.sleep(1)
-                        continue
                     span.set_status(trace.StatusCode.ERROR, str(e))
                     span.record_exception(e)
                     logger.error(
@@ -262,11 +308,13 @@ class Replica:
     ) -> None:
         """Send one request to the actor and surface any failures.
 
-        ``Failed to look up actor`` flips ``self.dropped`` so the worker
-        loop exits — that's the drift-recovery path that handles "the
-        controller evicted/cached this replica and we didn't know". Other
-        exceptions are reported via ``error_queue`` (which the dispatcher
-        uses for connection-error detection) and the worker keeps serving.
+        Any of ``EVICTED_ERRORS`` (lookup ValueError, ActorDiedError, or
+        CachedActorError) flips ``self.dropped`` so the worker loop exits —
+        that's the drift-recovery path that handles "the controller
+        evicted/cached this replica, or the actor died, and we didn't know".
+        Other exceptions are reported via ``error_queue`` (which the
+        dispatcher uses for connection-error detection) and the worker keeps
+        serving.
         """
         parent_ctx = TracingContext.extract(request.trace_context)
 
@@ -323,20 +371,37 @@ class Replica:
                 span.set_status(trace.StatusCode.ERROR, str(e))
                 span.record_exception(e)
 
-                await request.create_response(
-                    BackendResponseModel.JobStatus.ERROR,
-                    logger,
-                    "Error submitting request to model deployment. "
-                    "Please try again later. Sorry for the inconvenience.",
-                ).arespond()
+                if _is_eviction(e):
+                    # The replica is gone: the controller evicted it (lookup
+                    # ValueError), the actor died/was killed (ActorDiedError),
+                    # or it was moved to CPU cache (CachedActorError). All mean
+                    # the same thing for us — drop from the pool so the worker
+                    # loop exits and let the request be retried elsewhere. Over
+                    # the async dispatch path the signal arrives as a bare
+                    # RayTaskError wrapping the real cause, so we match on
+                    # ``.cause`` too (see ``_is_eviction``).
+                    await request.create_response(
+                        BackendResponseModel.JobStatus.ERROR,
+                        logger,
+                        "Replica was evicted. Sorry for the inconvenience. "
+                        "Please try again later.",
+                    ).arespond()
 
-                if str(e).startswith("Failed to look up actor"):
+                    cause = getattr(e, "cause", None) or e
                     logger.warning(
-                        f"Replica {self.model_key}[{self.replica_id}] not "
-                        f"found — dropping from pool."
+                        f"Replica {self.model_key}[{self.replica_id}] evicted "
+                        f"({type(cause).__name__}) — dropping from pool."
                     )
                     self.dropped = True
+
                 else:
+                    await request.create_response(
+                        BackendResponseModel.JobStatus.ERROR,
+                        logger,
+                        "Error submitting request to model deployment. "
+                        "Please try again later. Sorry for the inconvenience.",
+                    ).arespond()
+
                     error_queue.put_nowait((self.model_key, e))
 
             finally:

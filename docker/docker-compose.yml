@@ -218,35 +218,18 @@ services:
     volumes:
       - loki-data:/loki
 
-  # One-shot job that creates the Tempo bucket in MinIO before Tempo starts.
-  # Tempo's S3 backend assumes the bucket exists and will not create it.
-  tempo-init:
-    image: minio/mc:${MC_VERSION}
-    depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      until mc alias set local http://minio:9000 ${NDIF_OBJECT_STORE_ACCESS_KEY} ${NDIF_OBJECT_STORE_SECRET_KEY}; do sleep 1; done;
-      mc mb --ignore-existing local/${TEMPO_S3_BUCKET};
-      "
-
+  # Traces are stored on the local `tempo-data` volume (see telemetry/tempo/tempo.yaml),
+  # so Tempo is self-contained — no object store and no bucket bootstrap needed.
   tempo:
     image: grafana/tempo:${TEMPO_VERSION}
-    command: [ "-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true" ]
+    command: [ "-config.file=/etc/tempo/tempo.yaml" ]
     ports:
       - ${TEMPO_HTTP_PORT}:3200
       - ${TEMPO_OTLP_GRPC_PORT}:4317
       - ${TEMPO_OTLP_HTTP_PORT}:4318
-    environment:
-      TEMPO_S3_ENDPOINT: minio:9000
-      TEMPO_S3_BUCKET: ${TEMPO_S3_BUCKET}
-      TEMPO_S3_ACCESS_KEY: ${NDIF_OBJECT_STORE_ACCESS_KEY}
-      TEMPO_S3_SECRET_KEY: ${NDIF_OBJECT_STORE_SECRET_KEY}
     volumes:
       - ../telemetry/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
-    depends_on:
-      - tempo-init
 
 volumes:
   grafana-storage:

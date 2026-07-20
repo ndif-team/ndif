@@ -144,19 +144,33 @@ class Protector(Patcher):
         return result
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        # Each restoration is isolated so a failure in one can't skip the
+        # others. Most critically, super().__exit__() (which reverses the
+        # __import__/compile/exec/subimport patches) must always run — leaving
+        # those patched globally would corrupt the whole process, not just this
+        # sandbox.
+
         # Layer 6 — disable the audit hook for this thread.
-        sandbox_active.enabled = False
+        try:
+            sandbox_active.enabled = False
+        except Exception:
+            pass
 
         # Layer 3c — remove find_class override.
-        if "find_class" in CustomCloudUnpickler.__dict__:
-            delattr(CustomCloudUnpickler, "find_class")
+        try:
+            if "find_class" in CustomCloudUnpickler.__dict__:
+                delattr(CustomCloudUnpickler, "find_class")
+        except Exception:
+            pass
 
         # Layer 2 — remove the SandboxFinder from sys.meta_path.
         try:
             sys.meta_path.remove(self._finder)
-        except ValueError:
+        except Exception:
             pass
 
+        # Patcher patch reversal (import/compile/exec/subimport) — must always
+        # run, so it's last and every step above is guarded.
         return super().__exit__(exc_type, exc_val, exc_tb)
 
     def escape(self, fn: Callable):

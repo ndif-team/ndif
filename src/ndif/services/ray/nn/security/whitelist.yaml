@@ -160,6 +160,7 @@ builtins:
   - eval
   - compile
   - exec
+  - open
 
 # =============================================================================
 # MODULES
@@ -259,7 +260,7 @@ modules:
   - name: diffusers
     strict: false
 
-  - name: transformers.modeling_utils
+  - name: transformers
     strict: false
 
   - name: tqdm
@@ -277,6 +278,9 @@ modules:
   - name: functools
     strict: false
 
+  - name: _functools
+    strict: false
+
   - name: jinja2
     strict: false
 
@@ -284,6 +288,24 @@ modules:
     strict: false
 
   - name: peft
+    strict: false
+
+  - name: pydantic
+    strict: false
+
+  - name: argparse
+    strict: false
+
+  - name: huggingface_hub
+    strict: false
+
+  - name: hf_xet
+    strict: false
+
+  - name: httpcore
+    strict: false
+
+  - name: pydantic_core
     strict: false
 
 # =============================================================================

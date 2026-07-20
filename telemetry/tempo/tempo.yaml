@@ -1,9 +1,8 @@
 # Grafana Tempo — monolithic mode for the local dev stack.
 #
-# Trace storage lives in MinIO over the S3-compatible API. The `tempo` bucket
-# is created at stack boot by the `tempo-init` compose service. Tempo is
-# launched with `-config.expand-env=true` so the dollar-brace placeholders
-# below resolve from the container environment.
+# Trace storage is the local filesystem (the `tempo-data` compose volume mounted
+# at /var/tempo). This is Tempo's recommended backend for single-binary/dev use
+# and keeps the stack self-contained — no object store and no bucket bootstrap.
 
 server:
   http_listen_port: 3200
@@ -19,14 +18,7 @@ distributor:
 
 storage:
   trace:
-    backend: s3
-    s3:
-      bucket: ${TEMPO_S3_BUCKET}
-      endpoint: ${TEMPO_S3_ENDPOINT}
-      access_key: ${TEMPO_S3_ACCESS_KEY}
-      secret_key: ${TEMPO_S3_SECRET_KEY}
-      insecure: true
-      forcepathstyle: true
+    backend: local
     wal:
       path: /var/tempo/wal
     local:

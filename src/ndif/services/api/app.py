@@ -54,8 +54,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async manager for communication between socketio servers
-socketio_manager = socketio.AsyncRedisManager(url=AppConfig.broker_url)
+# Init async manager for communication between socketio servers.
+# socket_timeout=None mirrors RedisProvider.connect: redis-py 8.0+ otherwise
+# auto-sets socket_timeout=5 (maintenance notifications), which aborts this
+# manager's blocking pub/sub listen every 5s ("Cannot receive from redis...
+# retrying"). redis_options is forwarded verbatim to Redis.from_url().
+socketio_manager = socketio.AsyncRedisManager(
+    url=AppConfig.broker_url, redis_options={"socket_timeout": None}
+)
 # Init socketio manager app
 sm = SocketManager(
     app=app,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import TYPE_CHECKING, ClassVar, Optional
 
@@ -18,6 +19,11 @@ from .mixins import ObjectStorageMixin, TelemetryMixin
 
 if TYPE_CHECKING:
     from . import BackendRequestModel
+
+
+BLOCKING_RESPONSE_ACK_TIMEOUT_S = float(
+    os.environ.get("NDIF_BLOCKING_RESPONSE_ACK_TIMEOUT_S", 10)
+)
 
 
 def is_email(s):
@@ -38,19 +44,31 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
         return self.session_id is not None
 
     def respond(self) -> ResponseModel:
-        with trace_span("response.deliver", attributes={
-            "ndif.request.id": str(self.id),
-            "ndif.response.status": self.status.name,
-            "ndif.response.blocking": self.blocking,
-        }) as span:
+        with trace_span(
+            "response.deliver",
+            attributes={
+                "ndif.request.id": str(self.id),
+                "ndif.response.status": self.status.name,
+                "ndif.response.blocking": self.blocking,
+            },
+        ) as span:
             if self.blocking:
                 # Emit to socket manager - it will forward to the client (i.e. the user)
                 span.set_attribute("ndif.response.delivery", "socketio")
 
-                if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
-                    SioProvider.call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+                if (
+                    self.status == ResponseModel.JobStatus.COMPLETED
+                    or self.status == ResponseModel.JobStatus.ERROR
+                ):
+                    SioProvider.call(
+                        "blocking_response",
+                        data=(self.session_id, self.pickle()),
+                        timeout=BLOCKING_RESPONSE_ACK_TIMEOUT_S,
+                    )
                 else:
-                    SioProvider.emit("blocking_response", data=(self.session_id, self.pickle()))
+                    SioProvider.emit(
+                        "blocking_response", data=(self.session_id, self.pickle())
+                    )
             else:
                 if self.callback != "":
                     if is_email(self.callback):
@@ -82,18 +100,30 @@ class BackendResponseModel(ResponseModel, ObjectStorageMixin, TelemetryMixin):
 
     async def arespond(self) -> ResponseModel:
         """Async version of respond() for use in the Dispatcher's event loop."""
-        with trace_span("response.deliver", attributes={
-            "ndif.request.id": str(self.id),
-            "ndif.response.status": self.status.name,
-            "ndif.response.blocking": self.blocking,
-        }) as span:
+        with trace_span(
+            "response.deliver",
+            attributes={
+                "ndif.request.id": str(self.id),
+                "ndif.response.status": self.status.name,
+                "ndif.response.blocking": self.blocking,
+            },
+        ) as span:
             if self.blocking:
                 span.set_attribute("ndif.response.delivery", "socketio")
 
-                if self.status == ResponseModel.JobStatus.COMPLETED or self.status == ResponseModel.JobStatus.ERROR:
-                    await SioProvider.async_call("blocking_response", data=(self.session_id, self.pickle()), timeout=1)
+                if (
+                    self.status == ResponseModel.JobStatus.COMPLETED
+                    or self.status == ResponseModel.JobStatus.ERROR
+                ):
+                    await SioProvider.async_call(
+                        "blocking_response",
+                        data=(self.session_id, self.pickle()),
+                        timeout=BLOCKING_RESPONSE_ACK_TIMEOUT_S,
+                    )
                 else:
-                    await SioProvider.async_emit("blocking_response", data=(self.session_id, self.pickle()))
+                    await SioProvider.async_emit(
+                        "blocking_response", data=(self.session_id, self.pickle())
+                    )
             else:
                 if self.callback != "":
                     if is_email(self.callback):
