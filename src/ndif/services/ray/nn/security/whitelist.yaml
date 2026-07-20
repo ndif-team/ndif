@@ -296,6 +296,12 @@ modules:
   - name: argparse
     strict: false
 
+  - name: datasets
+    strict: false
+
+  - name: tokenizers
+    strict: false
+
   - name: huggingface_hub
     strict: false
 
@@ -306,6 +312,27 @@ modules:
     strict: false
 
   - name: pydantic_core
+    strict: false
+
+  - name: fsspec
+    strict: false
+
+  - name: scipy
+    strict: false
+
+  - name: regex
+    strict: false
+
+  - name: concurrent
+    strict: false
+
+  - name: io
+    strict: false
+
+  - name: _frozen_importlib_external
+    strict: false
+
+  - name: _frozen_importlib
     strict: false
 
 # =============================================================================
