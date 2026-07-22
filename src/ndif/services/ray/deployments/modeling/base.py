@@ -155,6 +155,7 @@ class BaseModelDeployment:
             self.kill_switch = asyncio.Event()
             self.execution_ident = None
             self._request_count = 0
+            self._needs_restart = False
 
             StreamTracer.register(self.stream_send, self.stream_receive)
 
@@ -512,7 +513,7 @@ class BaseModelDeployment:
             )
 
             span.add_event("applying_env")
-            self.model._remoteable_set_env(self.request.env)
+            self.apply_env()
             self.persistent_objects = self.model._remoteable_persistent_objects()
 
             span.add_event("deserializing_request")
@@ -520,6 +521,47 @@ class BaseModelDeployment:
                 request = self.request.deserialize(self.persistent_objects)
 
             return request
+
+    def apply_env(self) -> None:
+        """Apply the request's env to the model, keeping the actor recoverable.
+
+        ``_remoteable_set_env`` mutates the live module tree — swapping a PEFT
+        adapter, for instance. A failure part-way through (an adapter repo id
+        that doesn't resolve, an OOM mid-load) can leave the model wrapper's
+        bookkeeping and the module tree disagreeing about what is loaded.
+
+        Because the actor is long-lived and shared across requests, that
+        desync outlives the request that caused it. The dangerous case isn't
+        the loud one: a model left thinking adapter X is applied when it isn't
+        will short-circuit the next request for X as a no-op and serve *base*
+        weights while reporting success.
+
+        So reset the model to its base (empty-env) state on failure. If even
+        that doesn't work the actor can't be trusted, so flag it for restart
+        once the request has finished unwinding — ``cleanup()`` runs after
+        ``exception()`` has reported the error, so the client still gets a real
+        message instead of a dead-actor error. The original exception is always
+        re-raised.
+        """
+
+        try:
+            self.model._remoteable_set_env(self.request.env)
+        except Exception:
+            self.logger.exception(
+                f"Failed to apply env {self.request.env} for {self.model_key}; "
+                f"resetting the model to its base state"
+            )
+
+            try:
+                self.model._remoteable_set_env({})
+            except Exception:
+                self.logger.exception(
+                    f"Could not reset {self.model_key} to its base state after a "
+                    f"failed env application; flagging the actor for restart"
+                )
+                self._needs_restart = True
+
+            raise
 
     def execute(self, request: RequestModel) -> Any:
         """Execute request.
@@ -641,6 +683,7 @@ class BaseModelDeployment:
         2. Clears nnsight globals and protected object state
         3. Runs full garbage collection every 5 requests
         4. Clears CUDA cache
+        5. Restarts the replica if the request left it in an untrusted state
 
         This cleanup is important for preventing memory leaks and ensuring
         the replica is ready for the next request.
@@ -672,6 +715,17 @@ class BaseModelDeployment:
             torch.cuda.empty_cache()
 
             self._log_gpu_memory("cleanup")
+
+            # Last step: the model couldn't be returned to a known-good state
+            # (see apply_env), so serving further requests from this replica
+            # would risk silently wrong results. The error response has already
+            # gone out by now, so it's safe to hand the actor back to Ray.
+            if self._needs_restart:
+                span.add_event("restarting_untrusted_actor")
+                self.logger.error(
+                    f"Model actor {self.model_key} is in an untrusted state; restarting"
+                )
+                self.restart()
 
     def log(self, *data):
         """Logs data during model execution.

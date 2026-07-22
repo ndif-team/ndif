@@ -27,6 +27,6 @@ requests
 torch
 python-slugify
 influxdb-client
-nnsight @ git+https://github.com/ndif-team/nnsight.git@e4f37fa3e7c6bb936b4a37e2b5402dca2330610c
+nnsight @ git+https://github.com/ndif-team/nnsight.git@d901da3ed772c815d0d146136de6f7e35f913221
 peft==0.18
 transformers @ git+https://github.com/huggingface/transformers.git
