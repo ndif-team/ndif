@@ -1,82 +1,67 @@
-"""Pytest configuration for NDIF tests."""
+"""Shared fixtures for the remote nnsight tests.
+
+These run the *local* (vendored, ``./nnsight``) client against a local NDIF
+server at ``http://localhost:8001``, exercising the ``remote=True`` path end to
+end: the client serializes the traced block, the server deploys the model and
+runs it, and saved values come back over the wire.
+
+The host is set on ``nnsight.CONFIG`` at import (before any trace builds a remote
+backend). The whole suite skips if no server is reachable, so it's safe to
+collect without one. ``openai-community/gpt2`` is used because the dev server
+provisions it (a tiny random model failed to provision).
+"""
+
+import importlib.util
+import urllib.request
 
 import pytest
-import os
+
+import nnsight
+
+HOST = "http://localhost:8001"
+
+# Point the client at the local server before anything builds a RemoteBackend
+# (which reads CONFIG.API.HOST). Quiet the status spinner so pytest output stays
+# readable.
+nnsight.CONFIG.API.HOST = HOST
+nnsight.CONFIG.APP.REMOTE_LOGGING = False
+
+# gpt2 dimensions, for shape assertions.
+REPO = "openai-community/gpt2"
+PROMPT = "The quick brown fox jumps over"
+HIDDEN = 768
+VOCAB = 50257
+
+# A small, hub-hosted LoRA adapter over gpt2 (the server downloads it by id; a
+# local adapter path wouldn't be visible inside the model container).
+PEFT_ADAPTER = "peft-internal-testing/gpt2-lora-random"
+
+# The client needs peft to graft the adapter's architecture onto its meta model
+# (matching the paths the server's adapted model exposes).
+peft_installed = importlib.util.find_spec("peft") is not None
 
 
-def pytest_addoption(parser):
-    """Add custom command line options."""
-    parser.addoption(
-        "--ndif-host",
-        action="store",
-        default="http://localhost:5001",
-        help="NDIF API host URL",
-    )
-    parser.addoption(
-        "--run-remote",
-        action="store_true",
-        default=False,
-        help="Run tests that require a remote NDIF server",
-    )
+def _server_up() -> bool:
+    try:
+        with urllib.request.urlopen(f"{HOST}/ping", timeout=3) as response:
+            return response.status == 200
+    except Exception:
+        return False
 
 
-@pytest.fixture(scope="session")
-def ndif_host(request):
-    """Get the NDIF host from command line or environment."""
-    return request.config.getoption("--ndif-host") or os.environ.get(
-        "NDIF_HOST", "http://localhost:5001"
-    )
+SERVER_UP = _server_up()
+
+# Every test in this suite needs the live server; skip the lot if it's down.
+requires_server = pytest.mark.skipif(
+    not SERVER_UP, reason=f"no NDIF server reachable at {HOST}"
+)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def configure_nnsight(ndif_host):
-    """Configure nnsight for testing."""
-    from nnsight import CONFIG
+@pytest.fixture(scope="module")
+def model():
+    """An undispatched gpt2 — the server loads and runs the real weights; the
+    client only needs the architecture to build the request. Module-scoped: the
+    remote model stays deployed across tests, so only the first pays deploy time."""
+    from nnsight.modeling.transformers import TransformersModel
 
-    CONFIG.API.HOST = ndif_host
-    # Disable verbose logging during tests
-    CONFIG.APP.REMOTE_LOGGING = False
-
-
-def pytest_collection_modifyitems(config, items):
-    """Skip remote tests unless --run-remote is specified."""
-    run_remote = config.getoption("--run-remote")
-
-    skip_remote = pytest.mark.skip(reason="Need --run-remote option to run")
-
-    # Test classes that require remote NDIF server
-    remote_test_classes = {
-        # Security tests
-        "TestAllowedOperations",
-        "TestBlockedOperations",
-        # NNsight remote feature tests
-        "TestBasicTracing",
-        "TestGeneration",
-        "TestActivationModification",
-        "TestGradients",
-        "TestSessions",
-        "TestCaching",
-        "TestInvokers",
-        "TestIteration",
-        "TestAdhocModules",
-        "TestEdgeCases",
-        "TestPrintAndDebug",
-        # User code serialization tests
-        "TestUserFunctions",
-        "TestUserModules",
-        "TestUserClasses",
-        "TestHelperTraces",
-        "TestComplexPatterns",
-        # Fractional GPU / hotswapping tests
-        "TestFractionalSingleGPU",
-        "TestMultiGPUDeployment",
-        "TestEvictionTransitions",
-        "TestHotswapping",
-        "TestGPUResourceAccounting",
-    }
-
-    for item in items:
-        # Skip tests in classes that need remote execution
-        if item.cls and item.cls.__name__ in remote_test_classes:
-            if not run_remote:
-                item.add_marker(skip_remote)
+    return TransformersModel(REPO, task="text-generation")

@@ -8,43 +8,118 @@ version = "0.0.1"
 description = "The NDIF server, which performs deep inference and serves nnsight requests remotely"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
-dynamic = ["dependencies"]
+license = { file = "LICENCE" }
+authors = [{ name = "Jaden Fiotto-Kaufman", email = "JadenFK@outlook.com" }]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
 
-[project.scripts]
-ndif = "ndif.cli.cli:cli"
+# nnsight is the client library the server runs traced blocks for; it lives in
+# its own repo and installs from PyPI like any other dependency. For client-side
+# development install it editable (`pip install -e /path/to/nnsight`) and `just
+# up` bind-mounts it over the image's copy. torch, transformers, etc. are pulled
+# in transitively by nnsight and the ray extra.
+dependencies = [
+    "nnsight",
+    "pydantic",
+    "redis",
+    "click",
+    # The CLI layers ./.env (and an explicit --env-file) over the environment.
+    "python-dotenv",
+    # The CLI reads/writes models.yaml deployment configs (deploy -f / export).
+    "pyyaml",
+    # Result blobs are staged in an S3-compatible object store via boto3, which
+    # speaks S3 to both MinIO (dev) and AWS S3 (prod). The server uploads and
+    # presigns, so the client (with the returned url) needs nothing extra here.
+    "boto3",
+]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["ndif*"]
-exclude = ["ndif.services.*.tests*", "ndif.cli.tests*"]
-
-[tool.setuptools.package-data]
-"ndif" = [".env.example"]
-"ndif.services.api" = ["start.sh"]
-"ndif.services.ray" = ["start.sh", "start-worker.sh"]
-"ndif.services.ray.nn.security" = ["whitelist.yaml"]
-"ndif.services.dashboard" = ["start.sh", "config.example.json"]
-# The built Vue SPA isn't packaged into site-packages — the docker
-# build copies it in at the source-tree path (editable install means
-# the dashboard config's default frontend_dist resolves there). For
-# non-Docker dev, ``make dashboard-frontend`` (npm run build) writes
-# to the source tree's dist/ and config.py auto-resolves it.
-"ndif.cli.config" = ["models.yaml"]
-
-[tool.setuptools.dynamic]
-dependencies = { file = [
-    "src/ndif/services/api/requirements.in",
-    "src/ndif/services/ray/requirements.in",
-    "src/ndif/services/dashboard/requirements.in",
-] }
-
-[dependency-groups]
+[project.optional-dependencies]
+api = [
+    "fastapi",
+    "uvicorn[standard]",
+    "gunicorn",
+    "python-multipart",
+]
+ray = [
+    "ray[default]",
+    "transformers",
+    "accelerate",
+    "numpy",
+    # The model actor decompresses incoming request payloads (nnsight compresses
+    # them by default); nnsight only pulls zstandard in via its `remote` extra,
+    # which the server install doesn't take, so declare it here.
+    "zstandard",
+    # The model actor applies PEFT adapters requested per-request via the model's
+    # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
+    # dependency the server install must provide.
+    "peft",
+]
+# Telemetry sinks — optional. Both providers fail open when their package is
+# absent (or their server is unreachable): without this extra, InfluxDB metrics
+# and Loki log-shipping are disabled and the services run console-only. Enable
+# with `pip install ".[metrics]"` and point NDIF_INFLUX_URL / NDIF_LOKI_URL at
+# the servers.
+metrics = [
+    # InfluxDB 2.x batching write client (ndif.common.providers.influx).
+    "influxdb-client",
+    # Grafana Loki log handler (ndif.common.providers.loki).
+    "python-logging-loki",
+]
+# API-key auth against the Postgres user/keys DB — optional. Without this extra
+# (or without NDIF_POSTGRES_URL set) the API runs unauthenticated, as before.
+# Enable with `pip install ".[postgres]"` and set NDIF_POSTGRES_URL.
+postgres = [
+    # Async Postgres driver (ndif.common.providers.postgres).
+    "asyncpg",
+]
+# The admin dashboard (services/dashboard): a FastAPI backend + built Vue UI
+# that drives deploy/evict/status through the cli lib. Enable with
+# `pip install ".[dashboard]"`; run with `ndif start dashboard`. The reconcile
+# cron additionally needs the `ray` extra (it uses the Ray client), and the
+# monitor cron's remote-trace probe of PEFT/VLM checkpoints needs `peft` /
+# `torchvision`.
+dashboard = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "itsdangerous",
+    "bcrypt",
+    "python-multipart",
+    "requests",
+]
 dev = [
     "ruff>=0.14.5",
     "httpx>=0.28.1",
     "pytest>=8.4.0",
     "pytest-asyncio>=1.3.0",
+]
+
+[project.scripts]
+ndif = "ndif.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/ndif-team/ndif"
+Repository = "https://github.com/ndif-team/ndif"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ndif*"]
+
+# The services launch via their start.sh, which isn't a .py file — ship those
+# scripts (and the dashboard's built frontend + example config) inside the
+# installed package so `ndif start` can find them after a plain `pip install`.
+# Scoped per-package so only these files are swept in.
+[tool.setuptools.package-data]
+"ndif.services.api" = ["start.sh"]
+"ndif.services.ray" = ["start.sh"]
+"ndif.services.dashboard" = [
+    "start.sh",
+    "config.example.json",
+    "frontend/dist/*",
+    "frontend/dist/**/*",
 ]

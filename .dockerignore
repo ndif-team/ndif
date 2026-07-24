@@ -1,6 +1,16 @@
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.env
-.git
+# Keep the Docker build context small. The VM artifacts alone are ~9.5GB.
+**/__pycache__/
+**/*.pyc
+*.egg-info/
+**/*.egg-info/
+# setuptools build trees: stale copied modules here get reused by pip install,
+# baking older-than-source code into the image.
+**/build/
+.pytest_cache/
+
+.git/
+.claude/
+
+# Test suites and scratch.
+nnn.py
+request.py

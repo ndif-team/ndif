@@ -1,134 +1,75 @@
+"""``ndif queue`` — view queue and processor status."""
+
 import json
-import os
-import pickle
 import time
 from datetime import timedelta
-import click
-import asyncio
 
-from ..lib.checks import check_prerequisites
-from ..lib.session import get_env
-from ..lib.util import extract_repo_id_from_model_key
+import click
+
+from ..lib.events import fetch_queue_state
+from ..lib.models import extract_repo_id_from_model_key
 
 
 @click.command()
-@click.option('--json-output', 'json_flag', is_flag=True, help='Output raw JSON')
-@click.option('--watch', is_flag=True, help='Watch mode (refresh every 2s)')
-@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def queue(json_flag: bool, watch: bool, broker_url: str):
+@click.option("--json-output", "json_flag", is_flag=True, help="Output raw JSON.")
+@click.option("--watch", is_flag=True, help="Watch mode (refresh every 2s).")
+@click.option("--redis-url", default=None, help="Redis URL (default: NDIF_REDIS_URL).")
+def queue(json_flag, watch, redis_url):
     """View queue and processor status.
 
-    Shows current queue state including active processors,
-    queued requests, and executing requests.
+    Shows each active per-model processor: its status, replica pool, queue
+    depth, and which requests are queued or executing.
 
     \b
     Examples:
-        ndif queue               # Quick overview
-        ndif queue --json-output # Raw JSON output
-        ndif queue --watch       # Real-time monitoring
+        ndif queue
+        ndif queue --json-output
+        ndif queue --watch
     """
-    # Use session default if not provided
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
-        # Check prerequisites silently
-        check_prerequisites(broker_url=broker_url)
-
         if watch:
-            # Watch mode - loop forever
             try:
                 while True:
-                    # Fetch data BEFORE clearing screen to reduce flicker
-                    data = asyncio.run(_fetch_queue_state(broker_url))
-
-                    # Now clear and display atomically
+                    data = fetch_queue_state(redis_url)
                     click.clear()
-                    _render_queue_state(data, json_flag)
+                    _render(data, json_flag)
                     click.echo("\n(Press Ctrl+C to exit watch mode)")
                     time.sleep(2)
             except KeyboardInterrupt:
                 click.echo("\nExiting watch mode...")
                 return
         else:
-            # Single shot
-            data = asyncio.run(_fetch_queue_state(broker_url))
-            _render_queue_state(data, json_flag)
-
+            _render(fetch_queue_state(redis_url), json_flag)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
 
 
-async def _fetch_queue_state(broker_url: str) -> dict:
-    """Fetch queue state from the dispatcher via Redis streams."""
-    import redis.asyncio as redis
-    # socket_timeout=None: redis-py 8.0+ auto-enables "maintenance notifications"
-    # which silently sets socket_timeout=5 on Redis 8 servers, aborting the
-    # blocking brpop(timeout=5) below before it can return. See
-    # ndif.common.providers.redis.RedisProvider.connect for the full rationale.
-    redis_client = redis.Redis.from_url(broker_url, socket_timeout=None)
-
-    try:
-        # Use PID and timestamp as unique response key
-        response_key = f"queue_state_response:{os.getpid()}:{int(time.time() * 1000)}"
-
-        # Send QUEUE_STATE_REQUEST event to dispatcher events stream
-        await redis_client.xadd(
-            "dispatcher:events",
-            {
-                "event_type": "queue_state_request",
-                "response_key": response_key,
-                "timestamp": str(time.time()),
-            }
-        )
-
-        # Wait for response on the response key
-        result = await redis_client.brpop(response_key, timeout=5)
-
-        if result is None:
-            raise Exception("Timeout waiting for queue state response")
-
-        # Unpickle the response
-        return pickle.loads(result[1])
-
-    finally:
-        await redis_client.aclose()
-
-
-def _render_queue_state(data: dict, json_flag: bool):
-    """Render queue state data with appropriate formatting."""
+def _render(data: dict, json_flag: bool) -> None:
     if json_flag:
         click.echo(json.dumps(data, indent=2, default=str))
-    else:
-        format_queue_state_simple(data)
+        return
 
-
-def format_queue_state_simple(queue_data: dict):
-    """Pretty-print queue state overview."""
+    processors = data.get("processors", {})
+    total_queued = sum(p.get("queue_size", 0) for p in processors.values())
+    executing = sum(
+        1 for p in processors.values() for r in p.get("replicas", []) if r.get("busy")
+    )
 
     click.echo("NDIF Queue Status")
     click.echo("=" * 60)
     click.echo()
-
-    # Compute aggregates from processor data
-    processors = queue_data.get('processors', {})
-    num_processors = len(processors)
-    total_queue_depth = sum(len(p.get('request_ids', [])) for p in processors.values())
-    executing_requests = sum(1 for p in processors.values() if p.get('current_request_id') is not None)
-
-    click.echo("Queue Overview:")
-    click.echo(f"  Active Processors: {num_processors}")
-    click.echo(f"  Total Queued Requests: {total_queue_depth}")
-    click.echo(f"  Currently Executing: {executing_requests}")
+    click.echo("Overview:")
+    click.echo(f"  Active processors: {len(processors)}")
+    click.echo(f"  Queued requests: {total_queued}")
+    click.echo(f"  Executing: {executing}")
     click.echo()
 
     if not processors:
         click.echo("No active processors.")
         return
 
-    click.echo("Processors:")
-    click.echo()
-
-    for model_key, processor in processors.items():
+    for processor in processors.values():
         _print_processor(processor)
         click.echo()
 
@@ -136,55 +77,29 @@ def format_queue_state_simple(queue_data: dict):
     click.echo("Use 'ndif queue --json-output' for raw data")
 
 
-def _print_processor(processor: dict):
-    """Print a single processor's state."""
-    status = processor.get('status', 'unknown')
-    current_request = processor.get('current_request_id')
-    pinned = processor.get('pinned')
-    request_ids = processor.get('request_ids', [])
-    status_changed_at = processor.get('status_changed_at')
-    current_request_started_at = processor.get('current_request_started_at')
+def _print_processor(p: dict) -> None:
+    repo_id = extract_repo_id_from_model_key(p.get("model_key", "unknown"))
+    click.echo(f"  {repo_id}")
 
-    # Extract repo_id from model_key for display
-    repo_id = extract_repo_id_from_model_key(processor.get('model_key', 'unknown'))
+    status_line = p.get("status", "unknown").upper()
+    changed = p.get("status_changed_at")
+    if changed:
+        status_line += f" (for {timedelta(seconds=int(time.time() - changed))})"
+    click.echo(f"    Status: {status_line}")
 
-    # Status emoji
-    status_emoji = {
-        'ready': '✓',
-        'busy': '⚙️',
-        'provisioning': '🔧',
-        'deploying': '📦',
-        'uninitialized': '❓',
-        'cancelled': '✗',
-    }.get(status, '•')
+    replicas = p.get("replicas", [])
+    click.echo(f"    Replicas: {len(replicas)}")
+    click.echo(f"    Queue depth: {p.get('queue_size', 0)}")
 
-    click.echo(f"  {status_emoji} {repo_id}")
+    for r in replicas:
+        if r.get("busy") and r.get("current_request_id"):
+            dur = ""
+            if r.get("current_started_at"):
+                dur = f" (for {timedelta(seconds=int(time.time() - r['current_started_at']))})"
+            click.echo(f"    ⚙ [{r['replica_id']}] executing {r['current_request_id']}{dur}")
 
-    # Show status with duration
-    status_display = status.upper()
-    if status_changed_at:
-        duration = str(timedelta(seconds=int(time.time() - status_changed_at)))
-        status_display = f"{status_display} (for {duration})"
-    click.echo(f"    Status: {status_display}")
-
-    if pinned is not None:
-        click.echo(f"    Pinned: {'Yes' if pinned else 'No'}")
-
-    click.echo(f"    Queue Depth: {len(request_ids)}")
-
-    if current_request:
-        exec_display = current_request
-        if current_request_started_at:
-            exec_duration = str(timedelta(seconds=int(time.time() - current_request_started_at)))
-            exec_display = f"{exec_display} (executing for {exec_duration})"
-        click.echo(f"    Currently Executing: {exec_display}")
-
+    request_ids = p.get("request_ids", [])
     if request_ids:
-        # Show first few request IDs
-        if len(request_ids) <= 3:
-            click.echo(f"    Queued Requests: {', '.join(request_ids)}")
-        else:
-            shown = ', '.join(request_ids[:3])
-            click.echo(f"    Queued Requests: {shown}, ... (+{len(request_ids) - 3} more)")
-
-
+        shown = ", ".join(request_ids[:3])
+        more = f", ... (+{len(request_ids) - 3} more)" if len(request_ids) > 3 else ""
+        click.echo(f"    Queued: {shown}{more}")

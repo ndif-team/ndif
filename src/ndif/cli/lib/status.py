@@ -1,29 +1,27 @@
-"""Programmatic implementation of cluster status fetch (read-only).
+"""Programmatic cluster-status fetch (read-only).
 
-Note: there is no ``ndif status`` Click command that uses this — the CLI's
-``status`` command exists separately under ``cli/commands/status.py`` and
-hits the API's HTTP ``/status`` endpoint. This lib function is what the
-dashboard backend's ``ndif_client.py`` calls when it needs the controller
-payload directly through Ray.
+Returns the controller's status payload directly through Ray. The ``ndif
+status`` command renders its own fetch inline; this lib function exists for
+non-CLI callers (the dashboard backend) that want the raw dict.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from ...common.providers.ray import get_controller_actor_handle
+from .. import config
 from ._common import NDIFConnectivityError, ensure_ray_connected
-from .session import get_env
 
 
 def status(*, ray_address: Optional[str] = None) -> dict:
     """Return the controller's full status dict."""
     import ray
 
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    from ...common.providers.ray import get_controller_actor_handle
+
+    ray_address = ray_address or config.get("NDIF_RAY_ADDRESS")
     ensure_ray_connected(ray_address)
-    controller = get_controller_actor_handle()
-    return ray.get(controller.status.remote())
+    return ray.get(get_controller_actor_handle().status.remote())
 
 
 __all__ = ["status", "NDIFConnectivityError"]

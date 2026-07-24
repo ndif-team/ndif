@@ -1,98 +1,38 @@
-"""Kill command for NDIF - cancel a specific request"""
+"""``ndif kill`` — cancel a request by id."""
 
-import os
-import pickle
-import time
 import click
-import asyncio
 
-from ..lib.checks import check_prerequisites
-from ..lib.session import get_env
+from ..lib.events import kill_request
 
 
 @click.command()
-@click.argument('request_id')
-@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-def kill(request_id: str, broker_url: str):
-    """Cancel a specific request by ID.
+@click.argument("request_id")
+@click.option("--redis-url", default=None, help="Redis URL (default: NDIF_REDIS_URL).")
+def kill(request_id, redis_url):
+    """Cancel a request by ID.
 
-    REQUEST_ID: The ID of the request to cancel
-
-    This command will remove the request from the queue if waiting,
-    or cancel it if currently executing.
+    Removes it from the queue if still waiting, or cancels it if it's already
+    executing.
 
     \b
     Examples:
         ndif kill abc123
     """
-    # Use session default if not provided
-    broker_url = broker_url or get_env("NDIF_BROKER_URL")
     try:
-        # Check prerequisites silently
-        check_prerequisites(broker_url=broker_url)
-
-        result = asyncio.run(_kill_request(broker_url, request_id))
-
-        # Display result based on status
-        status = result.get("status")
-        message = result.get("message", "")
-
-        if status == "removed_from_queue":
-            click.echo(f"✓ {message}")
-
-        elif status == "cancelled_execution":
-            click.echo(f"✓ {message}")
-
-        elif status == "not_found":
-            click.echo(f"✗ Request {request_id} not found", err=True)
-            click.echo(f"   Hint: Use 'ndif queue' to see active requests", err=True)
-            raise click.Abort()
-
-        elif status == "error":
-            click.echo(f"✗ Error: {message}", err=True)
-            raise click.Abort()
-
-        else:
-            click.echo(f"✗ Unknown status: {status}", err=True)
-            raise click.Abort()
-
+        result = kill_request(request_id, redis_url)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()
 
+    status = result.get("status")
+    message = result.get("message", "")
 
-async def _kill_request(broker_url: str, request_id: str) -> dict:
-    """Send kill request to dispatcher and wait for response."""
-    import redis.asyncio as redis
-    # socket_timeout=None: redis-py 8.0+ auto-enables "maintenance notifications"
-    # which silently sets socket_timeout=5 on Redis 8 servers, aborting the
-    # blocking brpop(timeout=5) below before it can return. See
-    # ndif.common.providers.redis.RedisProvider.connect for the full rationale.
-    redis_client = redis.Redis.from_url(broker_url, socket_timeout=None)
-
-    try:
-        # Use PID and timestamp as unique response key
-        response_key = f"kill_response:{os.getpid()}:{int(time.time() * 1000)}"
-
-        # Send KILL_REQUEST event to dispatcher events stream
-        await redis_client.xadd(
-            "dispatcher:events",
-            {
-                "event_type": "kill_request",
-                "request_id": request_id,
-                "response_key": response_key,
-                "timestamp": str(time.time()),
-            }
-        )
-
-        # Wait for response on the response key
-        result = await redis_client.brpop(response_key, timeout=5)
-
-        if result is None:
-            raise Exception("Timeout waiting for kill response")
-
-        # Unpickle the response
-        return pickle.loads(result[1])
-
-    finally:
-        await redis_client.aclose()
+    if status in ("removed_from_queue", "cancelled_execution"):
+        click.echo(f"✓ {message}")
+    elif status == "not_found":
+        click.echo(f"✗ {message}", err=True)
+        click.echo("   Hint: use 'ndif queue' to see active requests", err=True)
+        raise click.Abort()
+    else:
+        click.echo(f"✗ {message or status}", err=True)
+        raise click.Abort()

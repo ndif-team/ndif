@@ -1,0 +1,22 @@
+# Provisions the Postgres (accounts) datasource so dashboards can resolve an
+# api_key -> user email and show per-user usage. Loaded at startup from
+# /etc/grafana/provisioning (mounted in docker-compose.yml).
+#
+# Points at the compose `postgres` service (database `ndif`), using the same
+# read-only `ndifapi` account the API authenticates with. In another environment
+# override url / database / credentials to match your accounts DB.
+apiVersion: 1
+
+datasources:
+  - name: Postgres
+    type: postgres
+    uid: postgres
+    access: proxy
+    url: postgres:5432
+    user: ndifapi
+    jsonData:
+      database: ndif
+      sslmode: disable
+      postgresVersion: 1600
+    secureJsonData:
+      password: admin

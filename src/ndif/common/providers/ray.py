@@ -1,56 +1,56 @@
+"""Ray control-plane provider for the queue.
+
+The queue touches Ray only through this module: the connection lifecycle
+(RayProvider) and lookups for the controller actor and per-replica model
+actors. Actor names mirror the controller's: the controller is ``Controller``
+and a replica is ``{replica_id}:ModelActor:{model_key}``, both in the ``NDIF``
+namespace.
+"""
+
 import logging
-import os
 
 import ray
 from ray.util.client import ray as client_ray
 from ray.util.client.common import ClientActorHandle, return_refs
 
-from . import Provider
+from ..types import MODEL_KEY, REPLICA_ID
+from .base import Provider
 from .util import verify_connection
 
 logger = logging.getLogger("ndif")
 
+NAMESPACE = "NDIF"
+
 
 class CachedActorError(Exception):
-    """Raised by a ModelActor when it has been moved to CPU cache (WARM).
+    """A ModelActor that has been moved to CPU cache (WARM).
 
-    The actor process is still alive, but it is no longer serving on GPU, so
-    a dispatch must be treated the same as hitting an evicted/dead replica.
-
-    When raised inside the actor it propagates to the caller wrapped in a
-    ``ray.exceptions.RayTaskError``. Ray only rebuilds the dual-class
-    ``RayTaskError(CachedActorError)`` (so ``isinstance(e, CachedActorError)``
-    holds) on the synchronous ``ray.get`` path; over the Ray-client ``await``
-    path the caller gets a *bare* ``RayTaskError`` and the original error is
-    only on ``.cause``. Match eviction via ``replica._is_eviction`` rather than
-    a plain ``isinstance`` so both paths are handled.
+    The actor process is still alive, but it is no longer serving on GPU, so a
+    dispatch must be treated the same as hitting an evicted/dead replica. When
+    raised inside the actor it propagates to the caller wrapped in a
+    ``ray.exceptions.RayTaskError`` whose dynamic subclass still satisfies
+    ``isinstance(e, CachedActorError)``.
     """
 
     pass
 
 
 class RayProvider(Provider):
+    """Manages the process's Ray connection.
+
+    ``connected()`` is true only once the cluster is reachable *and* the
+    Controller actor exists, so the dispatcher's connect loop won't proceed
+    until the control plane is actually serving.
+    """
+
+    CONFIG = {"ray_url": ("NDIF_RAY_ADDRESS", "ray://localhost:10001", str)}
+
     ray_url: str
 
     @classmethod
-    def from_env(cls) -> None:
-        super().from_env()
-        cls.ray_url = os.environ.get("NDIF_RAY_ADDRESS", "ray://localhost:10001")
-
-    @classmethod
-    def to_env(cls) -> dict:
-        return {
-            **super().to_env(),
-            "NDIF_RAY_ADDRESS": cls.ray_url,
-        }
-
-    @classmethod
     def get_host_port(cls):
-        """
-        Returns a tuple (host, port) parsed from the ray_url.
-        If port is not specified, defaults to 6379.
-        """
-        if not hasattr(cls, "ray_url") or not cls.ray_url:
+        """Parse ``(host, port)`` from ``ray_url`` (defaulting the port to 6379)."""
+        if not getattr(cls, "ray_url", None):
             raise ValueError("ray_url is not set on RayProvider")
         if "://" in cls.ray_url:
             _, addr = cls.ray_url.split("://", 1)
@@ -63,15 +63,16 @@ class RayProvider(Provider):
             port = int(port)
         else:
             logger.warning(
-                f"NDIF_RAY_ADDRESS ({cls.ray_url}) does not specify a port, using default port 6379"
+                f"NDIF_RAY_ADDRESS ({cls.ray_url}) does not specify a port, "
+                f"using default port 6379"
             )
             host = addr
-            port = 6379  # Default Ray port if not specified
+            port = 6379
         return host, port
 
     @classmethod
     def is_listening(cls) -> bool:
-        """Check if the Ray address is listening."""
+        """Whether the Ray address is accepting connections."""
         try:
             host, port = cls.get_host_port()
             return verify_connection(host, port)
@@ -83,7 +84,7 @@ class RayProvider(Provider):
         host, port = cls.get_host_port()
         if not verify_connection(host, port):
             raise ConnectionError(f"Ray is not listening on {host}:{port}")
-        ray.init(logging_level="error", address=cls.ray_url)
+        ray.init(logging_level="error", address=cls.ray_url, namespace=NAMESPACE)
 
     @classmethod
     def connected(cls) -> bool:
@@ -91,8 +92,8 @@ class RayProvider(Provider):
 
         if connected:
             try:
-                ray.get_actor("Controller", namespace="NDIF")
-            except:
+                ray.get_actor("Controller", namespace=NAMESPACE)
+            except Exception:
                 return False
             else:
                 return True
@@ -103,7 +104,7 @@ class RayProvider(Provider):
     def reset(cls):
         ray.shutdown()
 
-    # Error patterns that indicate a broken Ray connection
+    # Error patterns that indicate a broken Ray connection.
     CONNECTION_ERROR_PATTERNS = (
         "Ray client has already been disconnected",
         "Unrecoverable error in data channel",
@@ -117,16 +118,10 @@ class RayProvider(Provider):
 
     @classmethod
     def is_connection_error(cls, error: Exception) -> bool:
-        """Check if an exception indicates a broken Ray connection.
+        """Whether ``error`` indicates the Ray connection itself is broken.
 
-        This is used reactively - when an error occurs, we check if it's
-        a connection error and force reconnection if so.
-
-        Args:
-            error: The exception to check.
-
-        Returns:
-            True if this error indicates the Ray connection is broken.
+        Used reactively: when an error occurs, the dispatcher checks this and
+        forces a reconnect if it matches.
         """
         error_str = str(error)
         return any(pattern in error_str for pattern in cls.CONNECTION_ERROR_PATTERNS)
@@ -139,19 +134,17 @@ RayProvider.from_env()
 # Lean Ray client actor handle.
 # ===========================================================================
 #
-# Stock ``ClientActorHandle.__getattr__`` does an RPC on first attribute
-# access to fetch every method's signature, then unpickles them client-side
-# for arg-binding validation. The annotations are live class refs, so the
-# unpickle resolves ``BackendRequestModel`` → ``common/schema/mixins.py`` →
-# ``botocore`` (and ``opentelemetry``, etc.) on this side. Fine on api+ray
-# which install the full dep set; broken on the dashboard image (slim
-# ``--no-deps`` install of ndif).
+# Stock ``ClientActorHandle.__getattr__`` does an RPC on first attribute access
+# to fetch every method's signature, then unpickles them client-side for
+# arg-binding validation. The annotations are live class refs, so the unpickle
+# resolves ``BackendRequestModel`` and its transitive deps on this side. Fine on
+# api+ray which install the full dep set; broken on a slim ``--no-deps`` install.
 #
-# We don't use the client-side signatures — callers pass hardcoded method
-# names with known-shape args. Override ``__getattr__`` to return our own
-# remote-method stub that constructs the wire task directly, skipping both
-# the descriptor RPC and ``signature.bind``. The standard
-# ``handle.method.remote(...)`` syntax keeps working unchanged.
+# We don't use the client-side signatures — callers pass hardcoded method names
+# with known-shape args. Override ``__getattr__`` to return our own remote-method
+# stub that builds the wire task directly, skipping both the descriptor RPC and
+# ``signature.bind``. The standard ``handle.method.remote(...)`` syntax keeps
+# working unchanged.
 
 
 class NDIFClientRemoteMethod:
@@ -203,12 +196,12 @@ class NDIFActorHandle(ClientActorHandle):
         return NDIFClientRemoteMethod(self, key)
 
 
-def get_named_actor(name: str, namespace: str = "NDIF") -> NDIFActorHandle:
+def get_named_actor(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
     """Like ``ray.get_actor`` but returns an :class:`NDIFActorHandle`.
 
     No-ops the class swap when not in Ray-client mode (native
-    ``ray.actor.ActorHandle`` doesn't have the descriptor-prefetch behavior,
-    so the standard ``remote()`` syntax already just works).
+    ``ray.actor.ActorHandle`` has no descriptor-prefetch behavior, so the
+    standard ``remote()`` syntax already just works).
     """
     handle = ray.get_actor(name, namespace=namespace)
     if isinstance(handle, ClientActorHandle):
@@ -216,18 +209,20 @@ def get_named_actor(name: str, namespace: str = "NDIF") -> NDIFActorHandle:
     return handle
 
 
-def get_controller_actor_handle(namespace: str = "NDIF") -> NDIFActorHandle:
+def get_controller_actor_handle(namespace: str = NAMESPACE) -> NDIFActorHandle:
+    """Handle to the singleton Controller actor."""
     return get_named_actor("Controller", namespace=namespace)
 
 
 def get_model_actor_handle(
-    model_key: str, replica_id: str, namespace: str = "NDIF"
+    model_key: MODEL_KEY, replica_id: REPLICA_ID, namespace: str = NAMESPACE
 ) -> NDIFActorHandle:
+    """Handle to one replica's model actor."""
     return get_named_actor(
         f"{replica_id}:ModelActor:{model_key}", namespace=namespace
     )
 
 
-# api/queue used a no-arg ``controller_handle()`` form — keep an alias so
-# those imports don't have to change shape.
+# The queue uses a no-arg ``controller_handle()`` form — keep an alias so those
+# imports don't have to change shape.
 controller_handle = get_controller_actor_handle

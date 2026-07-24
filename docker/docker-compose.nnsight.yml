@@ -1,0 +1,20 @@
+# Local-dev override: bind-mount your working nnsight checkout over the nnsight
+# installed in the image, so client-side changes are picked up without a rebuild.
+#
+# `just up` / `just ta` include this file automatically when they can resolve an
+# installed nnsight (they set NNSIGHT_PATH from
+# `python -c "import nnsight, os; print(os.path.dirname(nnsight.__file__))"`).
+# Install nnsight editable — `pip install -e /path/to/nnsight` — so NNSIGHT_PATH
+# points at your source tree rather than at site-packages. If nnsight can't be
+# resolved this file is simply not applied; the image already ships nnsight from
+# requirements.txt, so the stack still runs.
+services:
+  api:
+    volumes:
+      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight
+  ray:
+    volumes:
+      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight
+  dashboard:
+    volumes:
+      - ${NNSIGHT_PATH}:/usr/local/lib/python3.12/site-packages/nnsight

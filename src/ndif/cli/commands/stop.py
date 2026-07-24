@@ -1,156 +1,23 @@
-"""Stop command for NDIF services"""
-
-import os
-import signal
-import subprocess
-import time
+"""``ndif stop`` — tear NDIF services down."""
 
 import click
 
-from ..lib.session import (
-    get_current_session,
-    end_session,
-    get_pids_on_port,
-    get_service_port,
-    kill_processes_on_port,
-    is_port_in_use,
-)
+from ..service import SERVICES, resolve_targets
+from ..state import State
+from ..util import terminate_pid
 
 
 @click.command()
-@click.argument('service', type=click.Choice(
-    ['api', 'ray', 'broker', 'object-store', 'dashboard', 'all'],
-    case_sensitive=False
-), default='all')
-@click.option('--force', is_flag=True, help='Force kill processes (SIGKILL)')
-def stop(service: str, force: bool):
-    """Stop NDIF services.
-
-    SERVICE: Which service to stop (api, ray, broker, object-store, or all). Default: all
-
-    Finds running services by checking ports and kills the associated processes.
-    Uses the current session to determine which ports to check.
-
-    \b
-    Examples:
-        ndif stop              # Stop all services
-        ndif stop api          # Stop only API
-        ndif stop ray          # Stop only Ray
-        ndif stop --force      # Force kill (SIGKILL instead of SIGTERM)
-    """
-    session = get_current_session()
-
-    if session is None:
-        click.echo("No active session found.")
-        click.echo("If services are running, you may need to stop them manually.")
-        return
-
-    # Handle worker node differently
-    if getattr(session.config, 'node_type', 'head') == "worker":
-        click.echo(f"Session: {session.config.session_id} (worker node)")
-        click.echo()
-        click.echo("Stopping Ray worker...")
-        try:
-            result = subprocess.run(
-                ['ray', 'stop'],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                click.echo("✓ Ray worker stopped")
-            else:
-                click.echo(f"Ray stop output: {result.stderr}")
-        except FileNotFoundError:
-            click.echo("Error: 'ray' command not found", err=True)
-
-        session.mark_service_running('ray-worker', False)
-        end_session(session)
-        click.echo("✓ Session ended")
-        return
-
-    click.echo(f"Session: {session.config.session_id}")
-    click.echo()
-
-    services_to_stop = []
-    if service == 'all':
-        # Stop in reverse start order: dashboard, api, ray, then dependencies.
-        # Dashboard depends on api/ray; api on broker/object-store/ray.
-        services_to_stop = ['dashboard', 'api', 'ray', 'broker', 'object-store']
-    else:
-        services_to_stop = [service]
-
-    stopped_any = False
-    sig = signal.SIGKILL if force else signal.SIGTERM
-
-    for svc in services_to_stop:
-        port = get_service_port(session, svc)
-        if port is None:
+@click.argument("services", nargs=-1)
+def stop(services):
+    """Stop running services (default: all, in reverse dependency order)."""
+    targets = resolve_targets(services, default=list(reversed(SERVICES)))
+    state = State.from_env()
+    for svc in targets:
+        pid = state.running_pid(svc.name)
+        if pid is None:
+            click.echo(f"  ○ {svc.name}: not running")
             continue
-
-        if not is_port_in_use(port):
-            if session.is_service_running(svc):
-                click.echo(f"{svc}: marked as running but port {port} is not in use")
-                session.mark_service_running(svc, False)
-            else:
-                click.echo(f"{svc}: not running")
-            continue
-
-        click.echo(f"Stopping {svc} (port {port})...")
-
-        pids = get_pids_on_port(port)
-        if not pids:
-            click.echo(f"  Warning: port in use but couldn't find process")
-            continue
-
-        # Kill processes
-        killed = kill_processes_on_port(port, sig)
-        if killed:
-            click.echo(f"  Sent signal to PIDs: {killed}")
-            stopped_any = True
-
-        # Wait for graceful shutdown
-        if not force:
-            time.sleep(2)
-
-            # Check if still running
-            if is_port_in_use(port):
-                click.echo(f"  Still running, sending SIGKILL...")
-                kill_processes_on_port(port, signal.SIGKILL)
-                time.sleep(0.5)
-
-        if not is_port_in_use(port):
-            click.echo(f"  ✓ {svc} stopped")
-            session.mark_service_running(svc, False)
-        else:
-            click.echo(f"  ✗ Failed to stop {svc}", err=True)
-
-    # If Ray was stopped, also call `ray stop` to clean up the cluster
-    if 'ray' in services_to_stop:
-        click.echo("\nStopping Ray cluster...")
-        try:
-            result = subprocess.run(
-                ['ray', 'stop'],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                click.echo("✓ Ray cluster stopped")
-            else:
-                if "No cluster" not in result.stderr:
-                    click.echo(f"Ray stop output: {result.stderr}")
-        except FileNotFoundError:
-            click.echo("Warning: 'ray' command not found, skipping Ray cluster cleanup")
-
-    # End session if no services are running
-    if not session.has_any_running_services():
-        end_session(session)
-        click.echo("\n✓ Session ended")
-    elif stopped_any:
-        click.echo("\n✓ Services stopped")
-        remaining = session.get_running_services()
-        if remaining:
-            click.echo(f"Still running: {', '.join(remaining)}")
-    else:
-        click.echo("\nNo services were running")
+        terminate_pid(pid)
+        state.clear_pid(svc.name)
+        click.echo(f"  ✗ {svc.name}: stopped (was pid {pid})")

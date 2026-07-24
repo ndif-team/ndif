@@ -1,111 +1,89 @@
 """Replica abstraction for the per-model Processor pool.
 
-A ``Replica`` wraps a single ModelActor instance: it owns the actor handle
-(once ready), the worker asyncio.Task pulling requests from a shared queue,
-the in-flight request tracking, and the per-request dispatch + drift
-detection. The Processor holds a ``Dict[REPLICA_ID, Replica]`` and is
-otherwise hands-off — the Replica drives its own lifecycle and signals the
-Processor through callbacks set up at ``start`` time.
+A ``Replica`` wraps a single model actor: it owns the worker asyncio.Task that
+pulls from the shared per-model queue and dispatches each request to the actor.
+It holds a back-reference to its ``Processor`` and drives its own membership —
+when the worker task ends it removes itself from the Processor's pool and asks
+the Processor to re-provision if work remains.
 
-Replicas are tightly scoped: they don't decide whether the Processor should
-be torn down when they exit (the Processor does that, based on the
-``on_exit`` callback firing for the *last* live Replica). They also don't
-own the request queue itself — multiple Replicas of the same model share
-one queue, which is the load-balancing mechanism.
+A Replica is "dropped" once its worker task is done (or never started); there is
+no separate flag to keep in sync. The two ways a worker ends are:
+
+  - an eviction (the actor was reclaimed / moved to CPU cache out from under us),
+    in which case the in-flight request is handed back to the *front* of the
+    Processor's queue rather than errored, so a sibling replica (or a freshly
+    re-provisioned one) can pick it up; and
+  - a deliberate ``cancel`` (operator kill, reconcile, or a connection-error
+    purge), which errors the in-flight request.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Optional
 
-from opentelemetry import trace
-from ray.exceptions import ActorDiedError, RayTaskError
+from ray.exceptions import ActorDiedError
 
 from ....common.providers.ray import (
     CachedActorError,
     controller_handle,
     get_model_actor_handle,
 )
-from ....common.schema.controller import DeployResponse, ModelDeployResult
-from ....common.schema.deployment_config import DeploymentConfig
+from ....common.schema import Status
+from ....common.schema.controller import DeployResponse, DeploymentConfig
 from ....common.schema.request import BackendRequestModel
-from ....common.schema.response import BackendResponseModel
-from ....common.tracing import (
-    TracingContext,
-    set_request_attributes,
-    trace_span,
-)
+from ....common.telemetry import elapsed_ms, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 
-logger = logging.getLogger("ndif")
+if TYPE_CHECKING:
+    from .processor import Processor
 
-# Exceptions that all mean "this replica is no longer serving and should be
-# treated as evicted", detected by type rather than by message string:
-#   - ValueError       : ``ray.get_actor`` could not find the actor (the
-#                        controller evicted it, or hasn't created it yet).
+logger = logging.getLogger("ndif.queue.replica")
+
+
+# Exceptions that all mean "this replica is no longer serving; treat as
+# evicted", detected by type rather than message string:
+#   - ValueError       : actor lookup failed (controller evicted it, or hasn't
+#                        created it yet).
 #   - ActorDiedError   : the actor process died / was killed.
-#   - CachedActorError : the actor is alive but moved to CPU cache (WARM).
+#   - CachedActorError : actor alive but moved to CPU cache (WARM).
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
 
 
-def _is_eviction(exc: BaseException) -> bool:
-    """True if ``exc`` (or its RayTaskError ``.cause``) is an eviction signal.
-
-    A remote actor exception raised over the Ray *client* ``await`` path (what
-    ``dispatch`` uses) arrives as a *bare* ``RayTaskError``: Ray only builds the
-    dual-class ``RayTaskError(<Cause>)`` — so ``isinstance(e, <Cause>)`` holds —
-    on the synchronous ``ray.get`` path, not the async one. The real exception
-    is always preserved on ``.cause``, so we check both. See the note in
-    ``common/providers/ray.py``.
-    """
-    if isinstance(exc, EVICTED_ERRORS):
-        return True
-    return isinstance(getattr(exc, "cause", None), EVICTED_ERRORS)
-
-
 class Replica:
-    """A single ModelActor replica serving requests for one ``model_key``.
-
-    Attributes:
-        model_key: The model this replica serves.
-        replica_id: 5-char identifier, unique across the cluster.
-        handle: Ray ActorHandle once ``__ray_ready__`` has resolved; ``None``
-            before setup completes and after the worker exits.
-        current_request: The request currently in flight, or ``None``.
-        current_started_at: Unix timestamp when ``current_request`` started,
-            or ``None``.
-    """
+    """A single model-actor replica serving requests for one ``model_key``."""
 
     def __init__(
         self,
         model_key: MODEL_KEY,
         replica_id: REPLICA_ID,
-        metrics_event: Optional[asyncio.Event] = None,
+        processor: "Processor",
     ) -> None:
+        """Initialize a Replica.
+
+        Args:
+            model_key: The model this Replica serves.
+            replica_id: The controller-assigned id of the backing actor.
+            processor: The owning Processor; the Replica reads its shared queue /
+                error queue and drives its own pool membership through it.
+        """
         self.model_key = model_key
         self.replica_id = replica_id
-        # Shared with the dispatcher's queue-metrics loop; set on job start/end
-        # so num_busy_replicas / queue_job update the instant a job's state
-        # flips, even for jobs shorter than the metrics heartbeat.
-        self.metrics_event = metrics_event
-        self.handle: Optional[Any] = None
+        self.processor = processor
+        self.queue = processor.queue
+        self.error_queue = processor.error_queue
+
+        self.task: Optional[asyncio.Task] = None
+
         self.current_request: Optional[BackendRequestModel] = None
         self.current_started_at: Optional[float] = None
-        self.task: Optional[asyncio.Task] = None
-        # Flipped to True by ``cancel`` or by drift detection in dispatch.
-        # Causes the worker loop to exit on the next iteration.
-        self.dropped: bool = False
-
-    def _notify_metrics(self) -> None:
-        """Wake the dispatcher's queue-metrics loop, if one is listening."""
-        if self.metrics_event is not None:
-            self.metrics_event.set()
 
     @property
-    def ready(self) -> bool:
-        """Whether this replica can accept a request right now."""
-        return self.handle is not None and not self.dropped
+    def dropped(self) -> bool:
+        """Whether this replica is no longer serving (worker done / unstarted)."""
+        return self.task is None or self.task.done()
 
     @property
     def busy(self) -> bool:
@@ -113,298 +91,207 @@ class Replica:
         return self.current_request is not None
 
     @classmethod
-    async def deploy(cls, model_key: MODEL_KEY, replicas: int = 1) -> ModelDeployResult:
-        """Ask the controller to deploy ``replicas`` new replicas of ``model_key``.
+    async def provision(cls, model_key: MODEL_KEY, processor: "Processor") -> "Replica":
+        """Ask the controller to deploy one replica and wrap it.
 
-        ``config.replicas`` is additive on the controller side, so this is
-        purely "add N more"; existing replicas are not counted toward the
-        request. The controller guarantees the returned ``ModelDeployResult``
-        has either ``replicas`` populated or ``error`` set — callers only
-        need to check ``result.error``.
+        ``DeploymentConfig.replicas`` is additive controller-side, so this adds
+        one more replica for ``model_key`` and returns a Replica bound to its
+        id. Raises if the controller reports a deploy error; the actor itself
+        may not exist yet (``wait`` polls for it).
         """
-        deploy_response: DeployResponse = await controller_handle().deploy.remote(
-            {model_key: DeploymentConfig(replicas=replicas)},
-            trace_context=TracingContext.inject(),
+        response: DeployResponse = await controller_handle().deploy.remote(
+            {model_key: DeploymentConfig(replicas=1, trusted=processor.trusted)}
         )
 
-        return deploy_response.results[model_key]
+        result = response.results[model_key]
+        if result.error:
+            raise Exception(result.error)
 
-    def start(
-        self,
-        queue: asyncio.Queue,
-        error_queue: asyncio.Queue,
-        ready_event: asyncio.Event,
-        on_exit: Callable[["Replica"], None],
-    ) -> None:
-        """Spawn the worker task.
+        return cls(model_key, result.replicas[0], processor)
 
-        Args:
-            queue: Shared per-model request queue. The worker pulls from
-                this once setup completes.
-            error_queue: Shared error sink (for non-drift errors, e.g.
-                connection failures that the dispatcher must observe).
-            ready_event: Set by this Replica when ``__ray_ready__`` resolves.
-                Lets the Processor block on "at least one replica ready"
-                without polling. Also set in ``finally`` so a stuck Processor
-                doesn't deadlock if every replica fails setup.
-            on_exit: Fired synchronously from the worker's ``finally`` block
-                once the Replica is fully torn down. The Processor uses this
-                to drop the Replica from its pool and check for last-replica
-                exit.
+    @classmethod
+    async def deploy(cls, model_key: MODEL_KEY, processor: "Processor") -> "Replica":
+        """Provision a fresh replica, register it, wait for ready, and start it.
+
+        Registers with the Processor *before* the worker starts so it counts
+        against the pool (autoscaling / dedupe) while coming up; on a setup
+        failure it de-registers before propagating.
         """
-        self.task = asyncio.create_task(
-            self.replica_worker(queue, error_queue, ready_event, on_exit)
-        )
+        replica = await cls.provision(model_key, processor)
+        processor.replicas[replica.replica_id] = replica
+        try:
+            await replica.wait()
+        except Exception:
+            processor.replicas.pop(replica.replica_id, None)
+            raise
+        replica.start()
+        return replica
+
+    async def wait(self) -> None:
+        """Block until the backing actor exists and is ready to serve.
+
+        The controller creates the actor asynchronously after ``deploy``
+        returns, so a lookup ``ValueError`` just means "not yet" — poll until it
+        appears. Any other exception (most importantly a connection error)
+        propagates to the caller, which reports it.
+        """
+        while True:
+            try:
+                handle = get_model_actor_handle(self.model_key, self.replica_id)
+                await handle.__ray_ready__.remote()
+                return
+            except ValueError:
+                await asyncio.sleep(1)
+                continue
+
+    def start(self) -> None:
+        """Spawn the worker task pulling from the shared queue."""
+        self.task = asyncio.create_task(self.worker())
+
+    async def worker(self) -> None:
+        """Pull requests and dispatch them until dropped.
+
+        On an eviction ``dispatch`` sets ``self.task = None`` (having handed the
+        in-flight request back to the front of the queue), so the loop condition
+        flips and the worker falls out. However it exits, the ``finally`` drops
+        this replica from the pool and asks the Processor to re-provision if
+        requests are still waiting.
+        """
+        try:
+            while not self.dropped:
+                request = await self.queue.get()
+                await self.dispatch(request)
+        finally:
+            self.processor.replicas.pop(self.replica_id, None)
+            if not self.processor.queue.empty():
+                event(
+                    logger,
+                    f"Replica {self.model_key}[{self.replica_id}] exited with "
+                    f"{self.processor.queue.qsize()} request(s) queued; "
+                    f"ensuring a replica.",
+                    level=logging.WARNING,
+                    model_key=self.model_key,
+                    replica_id=self.replica_id,
+                    queue_size=self.processor.queue.qsize(),
+                    event_type="reprovision",
+                )
+                self.processor.ensure_started()
+            else:
+                self.processor.mark_idle()
+
+    async def dispatch(self, request: BackendRequestModel) -> None:
+        """Send one request to the actor and surface any failures.
+
+        On an eviction the in-flight request is handed back to the *front* of
+        the Processor's queue (``enqueue(prepend=True)``) and this replica is
+        dropped (``self.task = None``) so the worker loop exits. A
+        ``CancelledError`` (deliberate cancel) errors the request and re-raises.
+        Other exceptions error the request and are reported via ``error_queue``
+        for connection-error detection, and the worker keeps serving.
+        """
+        self.current_request = request
+        self.current_started_at = time.time()
+
+        try:
+            handle = get_model_actor_handle(self.model_key, self.replica_id)
+
+            await request.arespond(
+                Status.DISPATCHED,
+                "Your job has been sent to the model deployment.",
+            )
+
+            await handle.run.remote(request)
+
+        except asyncio.CancelledError:
+            # The worker task was cancelled mid-dispatch (operator kill,
+            # reconcile, or a connection-error purge). CancelledError inherits
+            # BaseException, so the ``except Exception`` below would NOT catch
+            # it — without this branch the user is stuck on DISPATCHED forever.
+            # Surface an error, then re-raise to exit.
+            await request.arespond(
+                Status.ERROR,
+                "Replica was evicted while processing your request. Sorry for "
+                "the inconvenience. Please try again later.",
+            )
+            event(
+                logger,
+                "request errored: cancelled mid-dispatch",
+                level=logging.WARNING,
+                model_key=self.model_key,
+                replica_id=self.replica_id,
+                request_id=request.id,
+                api_key=request.api_key,
+                email=request.email,
+                stage="running",
+                error_type="cancelled",
+                exec_ms=elapsed_ms(self.current_started_at),
+            )
+            raise
+
+        except EVICTED_ERRORS as e:
+            # The replica is gone (lookup failure or moved to CPU cache). Drop
+            # this replica (task -> None ends the worker loop) and hand the
+            # in-flight request back to the front of the queue for a sibling or
+            # a freshly re-provisioned replica.
+            self.task = None
+            await self.processor.enqueue(request, prepend=True)
+            event(
+                logger,
+                f"Replica {self.model_key}[{self.replica_id}] evicted "
+                f"({type(e).__name__}) — re-queueing request, dropping from pool.",
+                level=logging.WARNING,
+                model_key=self.model_key,
+                replica_id=self.replica_id,
+                request_id=request.id,
+                api_key=request.api_key,
+                email=request.email,
+                stage="running",
+                error_type=f"evicted:{type(e).__name__}",
+                exec_ms=elapsed_ms(self.current_started_at),
+            )
+
+        except Exception as e:
+            await request.arespond(
+                Status.ERROR,
+                "Error submitting request to model deployment. "
+                "Please try again later. Sorry for the inconvenience.",
+            )
+            event(
+                logger,
+                "request errored during execution",
+                level=logging.ERROR,
+                exc_info=True,
+                model_key=self.model_key,
+                replica_id=self.replica_id,
+                request_id=request.id,
+                api_key=request.api_key,
+                email=request.email,
+                stage="running",
+                error_type=type(e).__name__,
+                exec_ms=elapsed_ms(self.current_started_at),
+            )
+            self.error_queue.put_nowait((self.model_key, e))
+
+        finally:
+            self.current_request = None
+            self.current_started_at = None
 
     async def cancel(self, message: Optional[str] = None) -> None:
-        """Cancel the worker task.
+        """Cancel the worker task, erroring any in-flight request.
 
-        Idempotent. ``on_exit`` fires from the worker's ``finally`` block
-        regardless of how it exits, so the Processor will see the removal.
-
-        If a request is in flight, error it here too. A purge/critical-error
-        teardown only notifies *queued* requests via ``Processor.reply``; the
-        running request would otherwise be left hanging until (or unless) the
-        cancellation propagates through ``dispatch``. We grab it before
-        cancelling the task and send the ERROR response directly.
+        Idempotent. The worker's ``finally`` runs even under cancellation, so
+        the Processor still sees this replica drop itself. If a request is in
+        flight, error it here — a teardown only notifies *queued* requests via
+        ``Processor.reply``; the running one would otherwise hang.
         """
-        self.dropped = True
-
         request = self.current_request
         if request is not None:
-            await request.create_response(
-                BackendResponseModel.JobStatus.ERROR,
-                logger,
+            await request.arespond(
+                Status.ERROR,
                 message
                 or "Replica was evicted while processing your request. "
                 "Sorry for the inconvenience. Please try again later.",
-            ).arespond()
+            )
 
         if self.task is not None and not self.task.done():
             self.task.cancel()
-
-    async def cancel_current_request(self) -> bool:
-        """Tell the actor to cancel its in-flight request.
-
-        Returns True if a cancel was issued, False if the replica isn't
-        ready or wasn't running anything. Exceptions from the actor are
-        logged and counted as a failed cancel.
-        """
-        if self.handle is None or self.current_request is None:
-            return False
-        try:
-            await self.handle.cancel.remote()
-            return True
-        except Exception:
-            logger.exception(
-                f"Error cancelling current request on "
-                f"{self.model_key}[{self.replica_id}]"
-            )
-            return False
-
-    def get_state(self) -> dict:
-        return {
-            "replica_id": self.replica_id,
-            "ready": self.ready,
-            "busy": self.busy,
-            "current_request_id": (
-                self.current_request.id if self.current_request else None
-            ),
-            "current_request_started_at": self.current_started_at,
-        }
-
-    async def replica_worker(
-        self,
-        queue: asyncio.Queue,
-        error_queue: asyncio.Queue,
-        ready_event: asyncio.Event,
-        on_exit: Callable[["Replica"], None],
-    ) -> None:
-        """Main per-replica task: setup → loop → cleanup.
-
-        Setup waits for the actor to come up (polling through
-        ``await_ready``). Once ready, the loop pulls requests from the
-        shared queue and dispatches them. Drift detection inside
-        ``dispatch`` flips ``self.dropped``, exiting the loop. On any exit
-        path the ``finally`` block clears local state, wakes the
-        ``ready_event`` (so a Processor still in DEPLOYING doesn't hang),
-        and fires ``on_exit`` so the Processor can drop us from its pool.
-        """
-        try:
-            handle = await self.await_ready(error_queue)
-            if handle is None:
-                return
-
-            self.handle = handle
-            ready_event.set()
-
-            while self.ready:
-                request = await queue.get()
-                if not self.ready:
-                    # We were dropped while waiting; hand the request back
-                    # so another replica can pick it up.
-                    queue.put_nowait(request)
-                    return
-                await self.dispatch(request, error_queue)
-
-        except asyncio.CancelledError:
-            return
-
-        finally:
-            self.handle = None
-            self.current_request = None
-            self.current_started_at = None
-            # Wake any Processor still waiting on the ready_event so it can
-            # observe cancellation rather than hanging when every replica
-            # bombs out at setup.
-            ready_event.set()
-            on_exit(self)
-
-    async def await_ready(self, error_queue: asyncio.Queue) -> Optional[Any]:
-        """Poll until the actor exists, then await ``__ray_ready__``.
-
-        Returns the ActorHandle on success, or ``None`` if setup failed
-        unrecoverably (or the replica was cancelled mid-poll).
-
-        Non-drift exceptions (i.e. anything other than a ``ValueError`` from
-        ``ray.get_actor`` failing to find the actor) are surfaced via
-        ``error_queue`` so the dispatcher can observe them — most importantly
-        so a Ray connection error during setup triggers the dispatcher's
-        reconnect path instead of being silently swallowed.
-        """
-        with trace_span(
-            "replica.await_ready",
-            attributes={
-                "ndif.model.key": self.model_key,
-                "ndif.replica.id": self.replica_id,
-            },
-        ) as span:
-            while not self.dropped:
-                try:
-                    handle = get_model_actor_handle(self.model_key, self.replica_id)
-                    await handle.__ray_ready__.remote()
-                    return handle
-                except ValueError:
-                    # ``ray.get_actor`` raises ValueError when the actor isn't
-                    # found. Controller.apply() creates the actor asynchronously
-                    # after deploy() returns — keep waiting.
-                    await asyncio.sleep(1)
-                    continue
-                except Exception as e:
-                    span.set_status(trace.StatusCode.ERROR, str(e))
-                    span.record_exception(e)
-                    logger.error(
-                        f"Replica {self.model_key}[{self.replica_id}] "
-                        f"failed to come up: {e}"
-                    )
-                    error_queue.put_nowait((self.model_key, e))
-                    return None
-            return None
-
-    async def dispatch(
-        self,
-        request: BackendRequestModel,
-        error_queue: asyncio.Queue,
-    ) -> None:
-        """Send one request to the actor and surface any failures.
-
-        Any of ``EVICTED_ERRORS`` (lookup ValueError, ActorDiedError, or
-        CachedActorError) flips ``self.dropped`` so the worker loop exits —
-        that's the drift-recovery path that handles "the controller
-        evicted/cached this replica, or the actor died, and we didn't know".
-        Other exceptions are reported via ``error_queue`` (which the
-        dispatcher uses for connection-error detection) and the worker keeps
-        serving.
-        """
-        parent_ctx = TracingContext.extract(request.trace_context)
-
-        with trace_span("replica.dispatch", parent_context=parent_ctx) as span:
-            set_request_attributes(span, request)
-            span.set_attribute("ndif.replica.id", self.replica_id)
-
-            self.current_request = request
-            self.current_started_at = time.time()
-            self._notify_metrics()  # job started — now busy
-
-            try:
-                handle = self.handle
-                if handle is None:
-                    await request.create_response(
-                        BackendResponseModel.JobStatus.ERROR,
-                        logger,
-                        "Replica evicted before dispatch. Sorry for the inconvenience. Please try again later.",
-                    ).arespond()
-                    return
-
-                await request.create_response(
-                    BackendResponseModel.JobStatus.DISPATCHED,
-                    logger,
-                    "Your job has been sent to the model deployment.",
-                ).arespond()
-
-                span.add_event("dispatched_to_model_actor")
-
-                # Re-inject so the Ray actor sees the current span as parent.
-                request.trace_context = TracingContext.inject()
-
-                await handle.__call__.remote(request)
-
-            except asyncio.CancelledError:
-                # The worker task was cancelled mid-dispatch (almost always
-                # because Processor.reconcile saw our replica disappear from
-                # the controller and called replica.cancel(), e.g. after a
-                # user-initiated evict). CancelledError inherits from
-                # BaseException so the broader ``except Exception`` below
-                # would NOT have caught it — without this branch the user
-                # is left stuck on the DISPATCHED status forever. Surface
-                # an explicit error to the user, then re-raise so the
-                # worker still exits cleanly.
-                span.set_status(trace.StatusCode.ERROR, "cancelled")
-                await request.create_response(
-                    BackendResponseModel.JobStatus.ERROR,
-                    logger,
-                    "Replica was evicted while processing your request. Sorry for the inconvenience. Please try again later.",
-                ).arespond()
-                raise
-
-            except Exception as e:
-                span.set_status(trace.StatusCode.ERROR, str(e))
-                span.record_exception(e)
-
-                if _is_eviction(e):
-                    # The replica is gone: the controller evicted it (lookup
-                    # ValueError), the actor died/was killed (ActorDiedError),
-                    # or it was moved to CPU cache (CachedActorError). All mean
-                    # the same thing for us — drop from the pool so the worker
-                    # loop exits and let the request be retried elsewhere. Over
-                    # the async dispatch path the signal arrives as a bare
-                    # RayTaskError wrapping the real cause, so we match on
-                    # ``.cause`` too (see ``_is_eviction``).
-                    await request.create_response(
-                        BackendResponseModel.JobStatus.ERROR,
-                        logger,
-                        "Replica was evicted. Sorry for the inconvenience. "
-                        "Please try again later.",
-                    ).arespond()
-
-                    cause = getattr(e, "cause", None) or e
-                    logger.warning(
-                        f"Replica {self.model_key}[{self.replica_id}] evicted "
-                        f"({type(cause).__name__}) — dropping from pool."
-                    )
-                    self.dropped = True
-
-                else:
-                    await request.create_response(
-                        BackendResponseModel.JobStatus.ERROR,
-                        logger,
-                        "Error submitting request to model deployment. "
-                        "Please try again later. Sorry for the inconvenience.",
-                    ).arespond()
-
-                    error_queue.put_nowait((self.model_key, e))
-
-            finally:
-                self.current_request = None
-                self.current_started_at = None
-                self._notify_metrics()  # job finished — no longer busy
