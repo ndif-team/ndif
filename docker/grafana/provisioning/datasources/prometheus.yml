@@ -1,0 +1,14 @@
+# Provisions the Prometheus datasource so the Ray dashboard (and Explore) can
+# query Ray's Prometheus-format metrics. Loaded at startup from
+# /etc/grafana/provisioning (mounted in docker-compose.yml).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    jsonData:
+      httpMethod: POST
+      timeInterval: 10s

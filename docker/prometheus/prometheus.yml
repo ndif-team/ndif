@@ -1,0 +1,23 @@
+# Prometheus scrape config for the NDIF dev stack.
+#
+# Ray exports Prometheus-format metrics from each node's metrics agent on the
+# --metrics-export-port (8080, set in services/ray/start.sh). In this dev compose
+# the `ray` container is the single head node, so one static target is enough and
+# Prometheus reaches it by service name on the compose network (no host publish).
+#
+# For a real multi-node cluster, replace static_configs with file_sd_configs
+# pointing at Ray's <temp_dir>/prom_metrics_service_discovery.json (which Ray
+# rewrites as nodes join/leave); share that file into this container via a volume.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: ray
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["ray:8080"]
+        labels:
+          service: ray
+          environment: dev

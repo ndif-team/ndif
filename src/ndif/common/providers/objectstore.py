@@ -1,76 +1,172 @@
-import os
-import logging
-import boto3
+"""Object-store provider: an S3-compatible bucket for result blobs.
 
-from . import Provider
+Uses **boto3**, so the same code talks to MinIO in dev and AWS S3 in prod.
+
+Results are too big to ride the redis pub/sub response channel, so the model
+actor uploads them here and publishes a presigned GET url on the COMPLETED
+response; the client downloads them directly.
+
+Two endpoints, because upload and download happen from different networks:
+    ``url``         reached by the server (e.g. ``minio:9000`` on the compose
+                    network) — used to upload and ensure the bucket. Leave empty
+                    for real AWS S3 (boto3 derives the endpoint from ``region``).
+    ``public_url``  reached by the client (e.g. ``localhost:9000`` on the host)
+                    — used to *sign* GET urls. A presigned url is a local HMAC
+                    over the request (host included), so it must be signed with
+                    the host the downloader will actually hit. Defaults to
+                    ``url`` when unset.
+"""
+
+import logging
+from datetime import timedelta
+from typing import Optional
+
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
+
+from .base import Provider
 
 logger = logging.getLogger("ndif")
 
 
+def _boolish(value: str) -> bool:
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 class ObjectStoreProvider(Provider):
-    object_store_service: str
-    object_store_url: str
-    object_store_bucket: str
-    object_store_access_key: str
-    object_store_secret_key: str
-    object_store_region: str
-    object_store_verify: bool
-    object_store: boto3.client
+    CONFIG = {
+        # Server-side endpoint. Empty -> boto3 derives the real AWS S3 endpoint
+        # from `region` (prod); set to e.g. http://minio:9000 for dev.
+        "url": ("NDIF_OBJECT_STORE_URL", "http://localhost:9000", str),
+        # Client-facing endpoint used only for presigning. Empty -> use `url`.
+        "public_url": ("NDIF_OBJECT_STORE_PUBLIC_URL", "", str),
+        "access_key": ("NDIF_OBJECT_STORE_ACCESS_KEY", "minioadmin", str),
+        "secret_key": ("NDIF_OBJECT_STORE_SECRET_KEY", "minioadmin", str),
+        "bucket": ("NDIF_OBJECT_STORE_BUCKET", "ndif-results", str),
+        # Set explicitly so presigning never round-trips to discover the region
+        # (the public endpoint isn't reachable from the server's network).
+        "region": ("NDIF_OBJECT_STORE_REGION", "us-east-1", str),
+        # TLS cert verification; set false for self-signed MinIO over https.
+        "verify": ("NDIF_OBJECT_STORE_VERIFY", True, _boolish),
+    }
+
+    url: str
+    public_url: str
+    access_key: str
+    secret_key: str
+    bucket: str
+    region: str
+    verify: bool
+
+    client: "boto3.client"  # server-side: upload + bucket ops
+    public_client: "boto3.client"  # client-facing: presign GET urls
+    _bucket_ready: bool = False
 
     @classmethod
-    def from_env(cls):
-        super().from_env()
-        cls.object_store_service = os.environ.get("NDIF_OBJECT_STORE_SERVICE", "s3")
-        cls.object_store_url = os.environ.get("NDIF_OBJECT_STORE_URL") or None
-        cls.object_store_bucket = os.environ.get(
-            "NDIF_OBJECT_STORE_BUCKET", "ndif-results"
-        )
-        cls.object_store_access_key = os.environ.get(
-            "NDIF_OBJECT_STORE_ACCESS_KEY", "minioadmin"
-        )
-        cls.object_store_secret_key = os.environ.get(
-            "NDIF_OBJECT_STORE_SECRET_KEY", "minioadmin"
-        )
-        cls.object_store_region = os.environ.get(
-            "NDIF_OBJECT_STORE_REGION", "us-east-1"
-        )
-        cls.object_store_verify = (
-            os.environ.get("NDIF_OBJECT_STORE_VERIFY", "false").lower() == "true"
+    def _make_client(cls, endpoint: str):
+        """Build an S3 client for ``endpoint`` (empty -> real AWS from region).
+
+        A custom endpoint (MinIO or any non-AWS host) needs **path-style**
+        addressing — the bucket goes in the path, not as a subdomain of the
+        host, which wouldn't resolve for ``minio:9000`` / an IP. Real AWS uses
+        the default virtual-hosted style. SigV4 everywhere for presigned-url
+        compatibility.
+        """
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint or None,
+            aws_access_key_id=cls.access_key,
+            aws_secret_access_key=cls.secret_key,
+            region_name=cls.region,
+            verify=cls.verify,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path" if endpoint else "auto"},
+            ),
         )
 
     @classmethod
-    def to_env(cls):
-        return {
-            **super().to_env(),
-            "NDIF_OBJECT_STORE_SERVICE": cls.object_store_service,
-            "NDIF_OBJECT_STORE_URL": cls.object_store_url,
-            "NDIF_OBJECT_STORE_BUCKET": cls.object_store_bucket,
-            "NDIF_OBJECT_STORE_ACCESS_KEY": cls.object_store_access_key,
-            "NDIF_OBJECT_STORE_SECRET_KEY": cls.object_store_secret_key,
-            "NDIF_OBJECT_STORE_REGION": cls.object_store_region,
-            "NDIF_OBJECT_STORE_VERIFY": str(cls.object_store_verify).lower(),
-        }
+    def connect(cls) -> None:
+        """Construct the client singletons (lazy: no socket until first call)."""
+        cls.client = cls._make_client(cls.url)
+        cls.public_client = cls._make_client(cls.public_url or cls.url)
+        cls._bucket_ready = False
 
     @classmethod
-    def connect(cls):
-        logger.info(f"Connecting to object store at {cls.object_store_url}...")
-        cls.object_store = boto3.client(
-            cls.object_store_service,
-            endpoint_url=cls.object_store_url,
-            aws_access_key_id=cls.object_store_access_key,
-            aws_secret_access_key=cls.object_store_secret_key,
-            region_name=cls.object_store_region,
-            verify=cls.object_store_verify,
-        )
-        cls._ensure_bucket()
-        logger.info("Connected to object store")
-
-    @classmethod
-    def _ensure_bucket(cls):
+    def _ensure_bucket(cls) -> None:
+        """Create the results bucket if it doesn't exist (once per process)."""
+        if cls._bucket_ready:
+            return
         try:
-            cls.object_store.head_bucket(Bucket=cls.object_store_bucket)
-        except cls.object_store.exceptions.ClientError:
-            cls.object_store.create_bucket(Bucket=cls.object_store_bucket)
+            cls.client.head_bucket(Bucket=cls.bucket)
+        except ClientError:
+            # us-east-1 must omit LocationConstraint; other regions require it.
+            if cls.region and cls.region != "us-east-1":
+                cls.client.create_bucket(
+                    Bucket=cls.bucket,
+                    CreateBucketConfiguration={"LocationConstraint": cls.region},
+                )
+            else:
+                cls.client.create_bucket(Bucket=cls.bucket)
+        cls._bucket_ready = True
+
+    @classmethod
+    def connected(cls) -> bool:
+        # list_buckets is a plain reachability check (independent of whether the
+        # results bucket exists yet).
+        try:
+            cls.client.list_buckets()
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def put(
+        cls, key: str, data: bytes, content_type: str = "application/octet-stream"
+    ) -> None:
+        """Upload ``data`` under ``key`` (creating the bucket on first use)."""
+        cls._ensure_bucket()
+        cls.client.put_object(
+            Bucket=cls.bucket,
+            Key=key,
+            Body=data,
+            ContentType=content_type,
+        )
+
+    @classmethod
+    def get(cls, key: str) -> Optional[bytes]:
+        """Read the object at ``key``, or ``None`` if it doesn't exist.
+
+        Used to read back small JSON blobs the server stores directly (e.g. a
+        non-blocking request's latest status response), as opposed to the large
+        result blobs the client downloads via a presigned url.
+
+        Does not ensure the bucket (that's a write-path concern, and doing so here
+        races): a missing key or bucket just means "nothing yet" -> None.
+        """
+        try:
+            return cls.client.get_object(Bucket=cls.bucket, Key=key)["Body"].read()
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in (
+                "NoSuchKey",
+                "NoSuchBucket",
+                "404",
+            ):
+                return None
+            raise
+
+    @classmethod
+    def presigned_get(
+        cls, key: str, expires: timedelta = timedelta(hours=1)
+    ) -> str:
+        """A presigned GET url for ``key`` the client can download directly."""
+        return cls.public_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": cls.bucket, "Key": key},
+            ExpiresIn=int(expires.total_seconds()),
+        )
 
 
 ObjectStoreProvider.from_env()
+ObjectStoreProvider.connect()

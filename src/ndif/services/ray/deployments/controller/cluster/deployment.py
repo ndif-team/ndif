@@ -6,16 +6,38 @@ from enum import Enum
 from typing import Any, Dict, Optional, Union
 
 import ray
-from opentelemetry import trace
 
-from ......common.providers.mailgun import MailgunProvider
-from ......common.providers.objectstore import ObjectStoreProvider
-from ......common.providers.socketio import SioProvider
-from ......common.tracing import TracingContext, trace_span
 from ......common.types import MODEL_KEY, REPLICA_ID
 from ...modeling.base import BaseModelDeployment, BaseModelDeploymentArgs
 
-logger = logging.getLogger("ndif")
+logger = logging.getLogger("ndif.controller")
+
+
+def _provider_runtime_env() -> Dict[str, str]:
+    """Env vars the model actor needs to reach the shared services.
+
+    The actor runs in its own Ray worker process and re-establishes its own
+    provider connections at import: Redis (to publish responses back to the
+    client's websocket channel via ``request.respond``), the object store (to
+    upload results), and Loki/Influx (telemetry). Ray workers only inherit the
+    node's ambient env, so propagate *this* controller process's provider config
+    into the actor's ``runtime_env`` — the same wiring the original injected at
+    actor creation — so the actor connects to the exact same services.
+
+    Imported lazily so merely importing this module doesn't open provider
+    connections in the controller process; ``from_env()`` re-reads the current
+    environment before exporting.
+    """
+    from ......common.providers.influx import InfluxProvider
+    from ......common.providers.loki import LokiProvider
+    from ......common.providers.objectstore import ObjectStoreProvider
+    from ......common.providers.redis import RedisProvider
+
+    env: Dict[str, str] = {}
+    for provider in (RedisProvider, ObjectStoreProvider, LokiProvider, InfluxProvider):
+        provider.from_env()
+        env.update(provider.to_env())
+    return env
 
 
 class DeploymentLevel(Enum):
@@ -25,6 +47,9 @@ class DeploymentLevel(Enum):
 
 
 class Deployment:
+    """One replica of a model: its placement bookkeeping plus the Ray actor ops
+    (create / delete / cache / from_cache) the controller drives it through."""
+
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -36,6 +61,8 @@ class Deployment:
         node_id: str = None,
         execution_timeout_seconds: float | None = None,
         actor_class: Optional[Union[str, type]] = None,
+        dtype: Optional[str] = None,
+        trusted: bool = False,
     ):
         self.model_key = model_key
         self.replica_id = replica_id
@@ -46,20 +73,23 @@ class Deployment:
         self.node_id = node_id
         self.execution_timeout_seconds = execution_timeout_seconds
         self.actor_class = actor_class
+        self.dtype = dtype
+        # Whether the model loads with HF trust_remote_code (from the deploying
+        # request's trusted flag); the controller passes it into the actor args.
+        self.trusted = trusted
         self.deployed = time.time()
 
     def _resolve_actor_class(self) -> type[BaseModelDeployment]:
         """Resolve ``self.actor_class`` to a concrete Ray actor class.
 
-        Strings are imported as dotted paths; class objects are returned
-        as-is. The controller is expected to have already substituted its
-        configured default for any ``None`` at construction time, so a
-        ``None`` here is a programming error.
+        Strings are imported as dotted paths; class objects are returned as-is.
+        The controller substitutes its configured default for any ``None`` at
+        construction time, so ``None`` here is a programming error.
         """
         if self.actor_class is None:
             raise ValueError(
                 "actor_class was not set on Deployment — the controller should "
-                "have populated it from its default_model_actor_class before create()."
+                "have populated it from default_model_actor_class before create()."
             )
         if isinstance(self.actor_class, str):
             module_path, _, class_name = self.actor_class.rpartition(".")
@@ -80,8 +110,7 @@ class Deployment:
         return ray.get_actor(self.name, namespace="NDIF")
 
     def get_state(self) -> Dict[str, Any]:
-        """Get the state of the deployment."""
-
+        """Snapshot used to build ReplicaState and report status."""
         if self.actor_class is None:
             actor_class_repr = None
         elif isinstance(self.actor_class, str):
@@ -104,103 +133,69 @@ class Deployment:
             "deployed": self.deployed,
         }
 
-    def end_time(self, minimim_deployment_time_seconds: int) -> datetime:
+    def end_time(self, minimum_deployment_time_seconds: int) -> datetime:
         return datetime.fromtimestamp(
-            self.deployed + minimim_deployment_time_seconds, tz=timezone.utc
+            self.deployed + minimum_deployment_time_seconds, tz=timezone.utc
         )
 
     def delete(self):
-        with trace_span(
-            "deployment.delete", attributes={"ndif.model.key": self.model_key}
-        ) as span:
-            try:
-                actor = self.actor
-                ray.kill(actor, no_restart=True)
-            except Exception:
-                span.set_status(trace.StatusCode.ERROR)
-                logger.exception(f"Error deleting actor {self.model_key}.")
-                pass
+        try:
+            ray.kill(self.actor, no_restart=True)
+        except Exception:
+            logger.exception(f"Error deleting actor {self.model_key}.")
 
     def restart(self):
-        with trace_span(
-            "deployment.restart", attributes={"ndif.model.key": self.model_key}
-        ) as span:
-            try:
-                actor = self.actor
-                ray.kill(actor, no_restart=False)
-            except Exception:
-                span.set_status(trace.StatusCode.ERROR)
-                logger.exception(f"Error restarting actor {self.model_key}.")
-                pass
+        try:
+            ray.kill(self.actor, no_restart=False)
+        except Exception:
+            logger.exception(f"Error restarting actor {self.model_key}.")
 
     def cache(self):
-        with trace_span(
-            "deployment.cache", attributes={"ndif.model.key": self.model_key}
-        ) as span:
-            try:
-                actor = self.actor
-                return actor.to_cache.remote(TracingContext.inject())
-            except Exception:
-                span.set_status(trace.StatusCode.ERROR)
-                logger.exception(f"Error adding actor {self.model_key} to cache.")
-                return None
+        """Tell the actor to offload weights GPU->CPU; return the Ray future."""
+        try:
+            return self.actor.to_cache.remote()
+        except Exception:
+            logger.exception(f"Error adding actor {self.model_key} to cache.")
+            return None
 
     def from_cache(self):
-        with trace_span(
-            "deployment.from_cache",
-            attributes={
-                "ndif.model.key": self.model_key,
-                "ndif.deploy.gpus": str(self.gpus),
-            },
-        ) as span:
-            try:
-                actor = self.actor
-                return actor.from_cache.remote(self.gpus, TracingContext.inject())
-            except Exception:
-                span.set_status(trace.StatusCode.ERROR)
-                logger.exception(f"Error removing actor {self.model_key} from cache.")
-                return None
+        """Tell the actor to restore weights CPU->GPU; return the Ray future."""
+        try:
+            return self.actor.from_cache.remote(self.gpus)
+        except Exception:
+            logger.exception(f"Error removing actor {self.model_key} from cache.")
+            return None
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
-        with trace_span(
-            "deployment.create",
-            attributes={
-                "ndif.model.key": self.model_key,
-                "ndif.deploy.node": node_name,
-                "ndif.deploy.gpus": str(self.gpus),
-            },
-        ) as span:
-            try:
-                # Inject the assigned GPU memory allocation so the actor knows which GPUs to target
-                deployment_args.gpu_mem_bytes_by_id = self.gpus
-                deployment_args.trace_context = TracingContext.inject()
+        try:
+            # Inject the assigned GPU allocation so the actor targets those GPUs.
+            deployment_args.gpu_mem_bytes_by_id = self.gpus
 
-                env_vars = {
-                    # Prevent Ray from setting CUDA_VISIBLE_DEVICES, so the actor
-                    # inherits full GPU visibility from the worker node. GPU targeting
-                    # is handled by max_memory in the actor's load_from_disk/from_cache.
-                    "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
-                    # Use expandable segments to reduce CUDA memory fragmentation
-                    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
-                    **SioProvider.to_env(),
-                    **ObjectStoreProvider.to_env(),
-                    **MailgunProvider.to_env(),
-                }
+            env_vars = {
+                # Keep Ray from setting CUDA_VISIBLE_DEVICES, so the actor sees
+                # all GPUs; targeting is handled by max_memory in the actor.
+                "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
+                # Reduce CUDA memory fragmentation.
+                "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+                # Redis / object store / Loki / Influx config so the actor's
+                # providers connect to the same services this controller does.
+                **_provider_runtime_env(),
+                # Label this actor's telemetry as the model service. The
+                # provider env above carries the *controller's* NDIF_SERVICE;
+                # override it so a model actor's logs/metrics attribute to
+                # "model", not the controller.
+                "NDIF_SERVICE": "model",
+            }
 
-                env_vars = {k: v for k, v in env_vars.items() if v is not None}
+            actor_class = self._resolve_actor_class()
 
-                actor_class = self._resolve_actor_class()
+            actor_class.options(
+                name=self.name,
+                resources={f"node:{node_name}": 0.01},
+                namespace="NDIF",
+                lifetime="detached",
+                runtime_env={"env_vars": env_vars},
+            ).remote(**deployment_args.model_dump())
 
-                actor = actor_class.options(
-                    name=self.name,
-                    resources={f"node:{node_name}": 0.01},
-                    namespace="NDIF",
-                    lifetime="detached",
-                    runtime_env={
-                        "env_vars": env_vars,
-                    },
-                ).remote(**deployment_args.model_dump())
-
-            except Exception:
-                span.set_status(trace.StatusCode.ERROR)
-                logger.exception(f"Error creating actor {self.model_key}.")
+        except Exception:
+            logger.exception(f"Error creating actor {self.model_key}.")

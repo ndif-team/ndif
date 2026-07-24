@@ -1,63 +1,28 @@
-"""Model configuration file utilities.
+"""Load and save model deployment configs in YAML (for ``deploy -f`` / ``export``).
 
-Supports loading and saving model deployment configurations in YAML format.
+File format::
 
-File format:
     models:
-      - gpt2                                    # Simple: just checkpoint
-      - checkpoint: meta-llama/Llama-3.1-8b     # Full: with options
+      - gpt2                                 # simple: just the checkpoint
+      - checkpoint: meta-llama/Llama-3.1-8B  # full: with options
+        revision: null
         pinned: true
-    revision: null
-        actor_class: ray.deployments.modeling.base.ModelActor  # optional
+        replicas: 2
+        trusted: false
+        dtype: bfloat16
+        padding_factor: 0.15
+        execution_timeout_seconds: 3600
+        envoy_class: ndif.services.ray.deployments.modeling.base.ModelActor
+        actor_class: ndif.services.ray.deployments.modeling.base.ModelActor
+        model_key: null
 """
+
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
 
 import yaml
-
-
-DEFAULT_CONFIG_PATH = Path.home() / ".ndif" / "models.yaml"
-
-# Template content for models.yaml with comments
-MODELS_YAML_TEMPLATE = """\
-# NDIF Model Configuration
-#
-# This file specifies which models to auto-deploy when starting NDIF.
-# Models listed here are deployed automatically after `ndif start`.
-#
-# Format:
-#   models:
-#     - gpt2                              # Simple: just the checkpoint name (1 replica)
-#     - checkpoint: meta-llama/Llama-3.1-8b
-#       revision: null                    # Optional: leave null for NDIF default resolution
-#       pinned: true                      # Optional: won't be evicted (default: false)
-#       replicas: 2                       # Optional: how many replicas (default: 1)
-#       actor_class: ray.deployments.modeling.base.ModelActor  # Optional: custom Ray actor class
-#
-# Commands:
-#   ndif deploy -f models.yaml            # Additive deploy from file
-#   ndif deploy -f models.yaml --sync     # Match cluster state to file exactly
-#   ndif export -f models.yaml            # Export current deployments to file
-#   ndif export --stdout                  # Print current deployments to stdout
-#
-models: []
-"""
-
-
-def get_default_config_path() -> Path:
-    """Get the default model config path (~/.ndif/models.yaml)."""
-    return DEFAULT_CONFIG_PATH
-
-
-def create_config_template(file_path: Path):
-    """Create a models.yaml template file with comments.
-
-    Args:
-        file_path: Path to write the template file
-    """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(MODELS_YAML_TEMPLATE)
 
 
 def load_model_config(
@@ -66,51 +31,52 @@ def load_model_config(
     default_pinned: bool = False,
     default_replicas: int = 1,
     default_model_actor_class: Optional[str] = None,
+    default_trusted: bool = False,
+    default_dtype: Optional[str] = None,
+    default_padding_factor: Optional[float] = None,
+    default_execution_timeout_seconds: Optional[float] = None,
+    default_envoy_class: Optional[str] = None,
 ) -> list[dict]:
-    """Load model specifications from a YAML config file.
+    """Load model specs from a YAML config file.
 
-    Args:
-        file_path: Path to the YAML config file
-        default_revision: Default revision to use when not specified in file
-        default_pinned: Default pinned flag to use when not specified in file
-        default_replicas: Default replica count to use when not specified in file
-        default_model_actor_class: Default Ray actor class (dotted import path) to use
-            when not specified in file
+    Every field the deploy path understands is passed through: ``checkpoint``,
+    ``revision``, ``pinned``, ``replicas``, ``actor_class``, ``trusted``,
+    ``dtype``, ``padding_factor``, ``execution_timeout_seconds``,
+    ``envoy_class``, ``model_key``. A per-model value in the file overrides the
+    corresponding ``default_*`` (which the CLI flags feed).
 
-    Returns:
-        List of model spec dicts with checkpoint, revision, pinned, replicas,
-        actor_class keys.
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        ValueError: If file format is invalid
+    Raises FileNotFoundError if the file is missing, ValueError on bad format.
     """
     if not file_path.exists():
         raise FileNotFoundError(f"Config file not found: {file_path}")
 
     with open(file_path) as f:
-        config = yaml.safe_load(f)
+        data = yaml.safe_load(f)
 
-    if not config or "models" not in config:
+    if not data or "models" not in data:
         raise ValueError(f"Config file must contain a 'models' key: {file_path}")
 
-    models = config["models"]
+    models = data["models"]
     if not isinstance(models, list):
         raise ValueError(f"'models' must be a list in {file_path}")
 
-    specs = []
+    specs: list[dict] = []
     for item in models:
         if isinstance(item, str):
-            # Simple form: just the checkpoint string
             specs.append({
                 "checkpoint": item,
                 "revision": default_revision,
                 "pinned": default_pinned,
                 "replicas": default_replicas,
                 "actor_class": default_model_actor_class,
+                "trusted": default_trusted,
+                "dtype": default_dtype,
+                "padding_factor": default_padding_factor,
+                "execution_timeout_seconds": default_execution_timeout_seconds,
+                "envoy_class": default_envoy_class,
+                "model_key": None,
             })
         elif isinstance(item, dict):
-            # Full form: dict with checkpoint and optional revision/pinned/replicas/actor_class
             if "checkpoint" not in item:
                 raise ValueError(f"Model entry missing 'checkpoint': {item}")
             specs.append({
@@ -119,6 +85,14 @@ def load_model_config(
                 "pinned": item.get("pinned", default_pinned),
                 "replicas": int(item.get("replicas", default_replicas)),
                 "actor_class": item.get("actor_class", default_model_actor_class),
+                "trusted": item.get("trusted", default_trusted),
+                "dtype": item.get("dtype", default_dtype),
+                "padding_factor": item.get("padding_factor", default_padding_factor),
+                "execution_timeout_seconds": item.get(
+                    "execution_timeout_seconds", default_execution_timeout_seconds
+                ),
+                "envoy_class": item.get("envoy_class", default_envoy_class),
+                "model_key": item.get("model_key"),
             })
         else:
             raise ValueError(f"Invalid model entry (must be string or dict): {item}")
@@ -126,27 +100,33 @@ def load_model_config(
     return specs
 
 
-def save_model_config(file_path: Path, deployments: list[dict]):
-    """Save model deployments to a YAML config file.
+def build_models_list(deployments: list[dict]) -> list:
+    """Build the ``models:`` list for a config file (simple form when possible).
 
-    Args:
-        file_path: Path to write the YAML config file
-        deployments: List of deployment dicts with repo_id, revision, pinned keys
+    The single serializer behind both config outputs — ``save_model_config``
+    writes it to a file, ``ndif export --stdout`` prints it — so the two emit the
+    same shape for the same deployments.
     """
-    # Ensure parent directory exists
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Build models list - use simple form when possible
-    models = []
+    models: list = []
     for dep in deployments:
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
         pinned = dep.get("pinned", False)
         replicas = int(dep.get("replicas", 1) or 1)
         actor_class = dep.get("actor_class")
+        trusted = bool(dep.get("trusted", False))
+        dtype = dep.get("dtype")
+        padding_factor = dep.get("padding_factor")
+        execution_timeout_seconds = dep.get("execution_timeout_seconds")
+        envoy_class = dep.get("envoy_class")
+        model_key = dep.get("model_key")
 
-        # Use simple form if no special options.
-        if not revision and not pinned and replicas == 1 and not actor_class:
+        extras = (
+            revision or pinned or replicas != 1 or actor_class or trusted or dtype
+            or padding_factor is not None or execution_timeout_seconds is not None
+            or envoy_class or model_key
+        )
+        if not extras:
             models.append(repo_id)
         else:
             entry = {"checkpoint": repo_id}
@@ -156,32 +136,33 @@ def save_model_config(file_path: Path, deployments: list[dict]):
                 entry["pinned"] = pinned
             if replicas != 1:
                 entry["replicas"] = replicas
+            if trusted:
+                entry["trusted"] = trusted
+            if dtype:
+                entry["dtype"] = dtype
+            if padding_factor is not None:
+                entry["padding_factor"] = padding_factor
+            if execution_timeout_seconds is not None:
+                entry["execution_timeout_seconds"] = execution_timeout_seconds
+            if envoy_class:
+                entry["envoy_class"] = envoy_class
             if actor_class:
                 entry["actor_class"] = actor_class
+            if model_key:
+                entry["model_key"] = model_key
             models.append(entry)
 
-    config = {"models": models}
+    return models
+
+
+def save_model_config(file_path: Path, deployments: list[dict]) -> None:
+    """Write model deployments to a YAML config file (simple form when possible)."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(file_path, "w") as f:
-        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-
-
-def config_exists(file_path: Optional[Path] = None) -> bool:
-    """Check if a model config file exists.
-
-    Args:
-        file_path: Path to check, or None for default path
-
-    Returns:
-        True if the config file exists and has content
-    """
-    path = file_path or DEFAULT_CONFIG_PATH
-    if not path.exists():
-        return False
-
-    # Check if it has actual model content
-    try:
-        specs = load_model_config(path)
-        return len(specs) > 0
-    except (ValueError, FileNotFoundError):
-        return False
+        yaml.dump(
+            {"models": build_models_list(deployments)},
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+        )

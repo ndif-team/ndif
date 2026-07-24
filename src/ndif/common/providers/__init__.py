@@ -1,105 +1,11 @@
-import os
-import logging
-import threading
-import time
-from functools import wraps
-from typing import Callable, Type
+"""External-service providers.
 
-logger = logging.getLogger("ndif")
+Import a concrete provider from its module (e.g. ``from ndif.common.providers.redis
+import RedisProvider``) — importing a module establishes that provider's
+singleton, so the package keeps only the base class to avoid connecting to
+services nobody asked for.
+"""
 
+from .base import Provider
 
-class Provider:
-    max_retries: int
-    retry_interval: float
-
-    watchdog = None
-
-    @classmethod
-    def from_env(cls) -> None:
-        cls.max_retries = int(os.environ.get("PROVIDER_MAX_RETRIES", 3))
-        cls.retry_interval = float(os.environ.get("PROVIDER_RETRY_INTERVAL_S", 5))
-
-    @classmethod
-    def to_env(cls) -> dict:
-        return {
-            "PROVIDER_MAX_RETRIES": str(cls.max_retries),
-            "PROVIDER_RETRY_INTERVAL_S": str(cls.retry_interval),
-        }
-
-    @classmethod
-    def connect(cls) -> None:
-        pass
-
-    @classmethod
-    def disconnect(cls) -> None:
-        pass
-
-    @classmethod
-    def connected(cls) -> bool:
-        return True
-
-    @classmethod
-    def reset(cls) -> None:
-        pass
-
-    @classmethod
-    def watch(cls) -> None:
-        if cls.watchdog is None:
-            cls.watchdog = threading.Thread(target=cls.watchdog_loop)
-            cls.watchdog.start()
-
-    @classmethod
-    def stop_watchdog(cls) -> None:
-        cls.watchdog = None
-
-    @classmethod
-    def watchdog_loop(cls) -> None:
-        while cls.watchdog is not None:
-            try:
-                if not cls.connected():
-                    logger.warning(
-                        f"Provider {cls.__name__} is not connected, attempting to reconnect..."
-                    )
-                    cls.reset()
-                    cls.connect()
-            except Exception as e:
-                logger.exception(
-                    f"Error in watchdog loop for provider {cls.__name__}: {e}"
-                )
-
-            time.sleep(cls.retry_interval)
-
-    def __enter__(self):
-        if not self.connected():
-            self.connect()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
-
-
-def retry(fn: Callable) -> Callable:
-    @wraps(fn)
-    def inner(cls: Type[Provider], *args, **kwargs):
-        exception = None
-
-        for attempt in range(cls.max_retries):
-            try:
-                if not cls.connected() and fn.__name__ != "connect":
-                    cls.reset()
-                    cls.connect()
-                return fn(cls, *args, **kwargs)
-            except Exception as e:
-                exception = e
-                logger.debug(
-                    f"{cls.__name__}.{fn.__name__}() attempt "
-                    f"{attempt + 1}/{cls.max_retries} failed: {e}"
-                )
-                time.sleep(cls.retry_interval)
-
-        if exception is not None:
-            raise exception
-
-    return inner
-
-    return inner
+__all__ = ["Provider"]

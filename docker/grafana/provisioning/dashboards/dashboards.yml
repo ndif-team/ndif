@@ -1,0 +1,18 @@
+# Provisions the NDIF dashboards. Grafana loads this provider config at startup
+# (from /etc/grafana/provisioning/dashboards) and then scans options.path for
+# dashboard JSON files. The JSONs live in the ./json subfolder so they aren't
+# mistaken for provider configs.
+apiVersion: 1
+
+providers:
+  - name: NDIF
+    orgId: 1
+    folder: NDIF
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

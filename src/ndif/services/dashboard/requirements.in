@@ -1,20 +1,23 @@
-# Pinned to match the parent ndif package (ndif/pyproject.toml) so the two
-# installs don't fight over fastapi/uvicorn versions.
-fastapi==0.108.0
-uvicorn[standard]==0.24.0
+# Dashboard runtime deps — mirror the `dashboard` extra in the repo-root
+# pyproject.toml (`pip install ".[dashboard]"`); listed here for a standalone
+# dashboard install.
+fastapi
+uvicorn[standard]
 pydantic-settings>=2.1.0
 itsdangerous>=2.1.0
 bcrypt>=4.0.0
 python-multipart>=0.0.6
 requests
-nnsight @ git+https://github.com/ndif-team/nnsight.git@hackathon/peft
+
+# nnsight is vendored in this repo at ./nnsight (`pip install -e ./nnsight`).
+# The monitor cron's remote-trace probe reconstructs models via
+# nnsight.modeling.mixins.remotable.Remotable.from_model_key. peft / torchvision
+# are only needed to probe PEFT / VLM checkpoints (e.g. VLM image processors).
 peft
-# Required by transformers' VLM image processors (e.g. Gemma3ImageProcessor).
-# Without it, AutoImageProcessor lookups for VisionLanguageModel checkpoints
-# fail at get_model_key time inside the dashboard / reconcile path.
 torchvision
-# The reconcile cron drives deploy/evict/restart through the cli lib, which
-# uses the Ray client. Pinned to match services/ray/requirements.in.
+
+# The reconcile cron drives deploy/evict/restart through the cli lib, which uses
+# the Ray client (pinned to match services/ray). cli.lib.checks.check_redis and
+# cli.lib.events.notify_reconcile need a redis client.
 ray[client]==2.55.1
-# cli.lib.checks.check_redis + cli.lib.util.notify_reconcile need a redis client.
 redis

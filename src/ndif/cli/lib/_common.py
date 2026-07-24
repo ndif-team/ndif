@@ -1,25 +1,18 @@
-"""Shared helpers used by the per-command lib modules (``deploy``, ``evict``,
-``restart``, ``status``).
+"""Shared helpers for the model-op lib modules (``deploy``, ``evict``, ``restart``).
 
-Anything in here is private to ``cli/lib/`` — callers should import from the
-specific command module (e.g. ``from ndif.cli.lib.deploy import deploy``).
+Private to ``cli/lib/`` — callers import from the specific command module
+(e.g. ``from ndif.cli.lib.deploy import deploy``).
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Callable, Iterable, Optional
-
-from .checks import check_ray, check_redis
-
-
-logger = logging.getLogger(__name__)
 
 OnMessage = Optional[Callable[[str], None]]
 
 
 class NDIFConnectivityError(RuntimeError):
-    """Raised when prerequisite services (Redis broker / Ray) are unreachable."""
+    """Raised when the Ray control plane is unreachable."""
 
 
 def emit(on_message: OnMessage, msg: str) -> None:
@@ -27,21 +20,13 @@ def emit(on_message: OnMessage, msg: str) -> None:
         on_message(msg)
 
 
-def check_prereqs(broker_url: Optional[str], ray_address: Optional[str]) -> None:
-    if broker_url and not check_redis(broker_url):
-        raise NDIFConnectivityError(f"Cannot reach broker at {broker_url}")
-    if ray_address and not check_ray(ray_address):
-        raise NDIFConnectivityError(f"Cannot reach Ray at {ray_address}")
-
-
 def ensure_ray_connected(ray_address: Optional[str] = None) -> None:
     """Ensure the Ray client is connected. Reset + reconnect once on failure.
 
-    Delegates the actual liveness check to ``RayProvider.connected()`` —
-    which already covers ``ray.is_initialized()``, the TCP listen probe,
-    and a controller-handle round-trip.
+    Liveness is delegated to ``RayProvider.connected()`` — which covers
+    ``ray.is_initialized()``, the TCP listen probe, and a controller-handle
+    round-trip.
     """
-    # Lazy import — avoids dragging the broker stack into nnsight CLI startup.
     from ...common.providers.ray import RayProvider
 
     if ray_address:
@@ -77,8 +62,12 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 "envoy_class": spec.get("envoy_class"),
                 "padding_factor": spec.get("padding_factor"),
                 "execution_timeout_seconds": spec.get("execution_timeout_seconds"),
-                # Optional pre-computed canonical key — when set, cli/lib/deploy
-                # skips ``get_model_key`` and uses this value verbatim.
+                # Whether the deployment may run the model's own repo code (HF
+                # trust_remote_code) and skip the execution sandbox. Off unless the
+                # caller opts in (the dashboard's deploy paths do).
+                "trusted": bool(spec.get("trusted", False)),
+                # Optional pre-computed canonical key — when set, deploy skips
+                # ``get_model_key`` and uses this value verbatim.
                 "model_key": spec.get("model_key"),
             }
         )

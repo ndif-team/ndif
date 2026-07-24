@@ -47,7 +47,7 @@ from .util import (
 )
 
 
-DEFAULT_URL = "http://localhost:5001"
+DEFAULT_URL = "http://localhost:8001"
 DEFAULT_MODEL_TIMEOUT = 60
 DEFAULT_MODEL_INTERVAL = 7200  # 2 hours
 SCRIPT_TIMEOUT = 480
@@ -156,12 +156,12 @@ def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dic
     """Trace a remote ``"Hello"`` against the given model.
 
     Reconstructs the nnsight wrapper from the full ``model_key`` via
-    ``RemoteableMixin.from_model_key``, which handles class + repo_id +
-    revision in one shot. This avoids hardcoding ``LanguageModel`` so VLMs
-    and other envoy types are exercised under their own wrapper class.
+    ``Remotable.from_model_key``, which handles class + repo_id + revision in
+    one shot. This avoids hardcoding a wrapper class so VLMs and other envoy
+    types are exercised under their own class.
     """
     from nnsight import CONFIG
-    from nnsight.modeling.mixins import RemoteableMixin
+    from nnsight.modeling.mixins.remotable import Remotable
 
     CONFIG.API.APIKEY = api_key
     # Point traces at this deployment's API; otherwise nnsight defaults to
@@ -171,7 +171,7 @@ def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dic
     result = {"model": model_key}
 
     try:
-        model = RemoteableMixin.from_model_key(model_key, trust_remote_code=True)
+        model = Remotable.from_model_key(model_key)
     except Exception as e:
         result["status"] = "load_error"
         result["error"] = str(e)

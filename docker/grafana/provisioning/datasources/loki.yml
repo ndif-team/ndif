@@ -1,0 +1,36 @@
+# Provisions the Loki datasource so Grafana's Explore view can query the NDIF
+# logs immediately. Loaded by Grafana at startup from
+# /etc/grafana/provisioning (mounted in docker-compose.yml).
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    jsonData:
+      maxLines: 5000
+      # Derived fields turn identifiers in the JSON log line into clickable
+      # links, so a single log becomes a jumping-off point:
+      #   request_id -> every log for that request, across all components
+      #   email      -> that user's Users & Usage dashboard
+      #   host       -> every log from that host/process
+      # The regexes read our structured JSON line (see logging_setup); ${__value.raw}
+      # is the captured value.
+      derivedFields:
+        - name: request_id
+          matcherRegex: '"request_id":\s*"([^"]+)"'
+          datasourceUid: loki
+          url: '{environment=~".+"} | json | request_id=`${__value.raw}`'
+          urlDisplayLabel: "All logs for this request"
+        - name: email
+          matcherRegex: '"email":\s*"([^"]+)"'
+          url: "/d/ndif-users/?var-email=${__value.raw}"
+          urlDisplayLabel: "User dashboard"
+        - name: host
+          matcherRegex: '"host":\s*"([^"]+)"'
+          datasourceUid: loki
+          url: '{environment=~".+"} | json | host=`${__value.raw}`'
+          urlDisplayLabel: "All logs from this host"

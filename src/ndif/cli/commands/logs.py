@@ -1,57 +1,36 @@
-"""Logs command for NDIF - View service logs"""
+"""``ndif logs`` — view a service's captured output."""
 
 import subprocess
 
 import click
 
-from ..lib.session import get_current_session, get_session_root
+from ..service import SERVICE_MAP
+from ..state import State
 
 
 @click.command()
-@click.argument('service', type=click.Choice(['api', 'ray', 'broker', 'object-store'], case_sensitive=False))
-@click.option('-f', '--follow', is_flag=True, help='Follow log output (like tail -f)')
-@click.option('-n', '--lines', type=int, default=100, help='Number of lines to show (default: 100)')
-def logs(service: str, follow: bool, lines: int):
-    """View logs for NDIF services.
+@click.argument("service", type=click.Choice(list(SERVICE_MAP)))
+@click.option("-f", "--follow", is_flag=True, help="Follow log output (like tail -f).")
+@click.option("-n", "--lines", type=int, default=100, help="Lines to show (default: 100).")
+def logs(service, follow, lines):
+    """Show a service's log at $NDIF_HOME/logs/<service>.log.
 
-    SERVICE: Which service logs to view (api, ray, broker, object-store)
-
-    By default, shows the last 100 lines of the current session's logs.
-    Use --follow to continuously stream new log entries.
-
-    \b
-    Examples:
-        ndif logs api           # Show last 100 lines of API logs
-        ndif logs ray           # Show Ray logs
-        ndif logs api -n 500    # Show last 500 lines
-        ndif logs api --follow  # Follow logs in real-time
+    Only detached services (the default `ndif start`) capture a log file; a
+    foreground service writes straight to the terminal.
     """
-    session = get_current_session()
-
-    if session is None:
-        click.echo("No active session found.", err=True)
-        click.echo("\nStart services with 'ndif start' first.", err=True)
-        raise click.Abort()
-
-    log_dir = session.logs_dir / service
-    log_file = log_dir / "output.log"
-
+    log_file = State.from_env().log_file(service)
     if not log_file.exists():
-        click.echo(f"No logs found for {service} service.", err=True)
-        click.echo(f"\nExpected: {log_file}", err=True)
-        click.echo(f"\nMake sure the service has been started with 'ndif start {service}'", err=True)
-        raise click.Abort()
+        raise click.ClickException(
+            f"No logs for {service} at {log_file}. Start it with `ndif start {service}`."
+        )
 
-    # Build tail command
-    tail_cmd = ['tail']
+    cmd = ["tail"]
     if follow:
-        tail_cmd.append('-f')
-    tail_cmd.extend(['-n', str(lines), str(log_file)])
-
+        cmd.append("-f")
+    cmd += ["-n", str(lines), str(log_file)]
     try:
-        subprocess.run(tail_cmd)
+        subprocess.run(cmd)
     except KeyboardInterrupt:
         click.echo("\nStopped following logs.")
     except FileNotFoundError:
-        click.echo("Error: 'tail' command not found.", err=True)
-        raise click.Abort()
+        raise click.ClickException("`tail` not found.")

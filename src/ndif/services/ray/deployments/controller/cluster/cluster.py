@@ -9,35 +9,41 @@ from ray._raylet import GcsClientOptions
 from ray.util.state import list_nodes
 
 from ......common.schema.controller import (
+    DeploymentConfig,
     DeployResponse,
     ModelDeployResult,
     ReplicaState,
     ReplicaStates,
 )
-from ......common.schema.deployment_config import DeploymentConfig
-from ......common.tracing import trace_span
 from ......common.types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 
-logger = logging.getLogger("ndif")
+logger = logging.getLogger("ndif.controller")
 
 
 class Cluster:
+    """In-memory model of the GPU cluster: its nodes, their resources, and the
+    placement/eviction decisions over them."""
+
     def __init__(
         self,
         minimum_deployment_time_seconds: float = None,
         model_cache_percentage: float = 0.5,
         default_padding_factor: float = 0.15,
         default_padding_bias: int = 0,
-        default_model_actor_class: str = "ndif.services.ray.deployments.modeling.base.ModelActor",
+        default_model_actor_class: str = (
+            "ndif.services.ray.deployments.modeling.base.ModelActor"
+        ),
     ):
         self.nodes: Dict[NODE_ID, Node] = {}
 
         self.default_padding_factor = default_padding_factor
         self.default_padding_bias = default_padding_bias
         self.default_model_actor_class = default_model_actor_class
-        self.evaluator = ModelEvaluator(padding_factor=default_padding_factor, padding_bias=default_padding_bias)
+        self.evaluator = ModelEvaluator(
+            padding_factor=default_padding_factor, padding_bias=default_padding_bias
+        )
 
         self._state = None
 
@@ -60,20 +66,23 @@ class Cluster:
         return self._state
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
-        """Get the state of the cluster."""
-
         state = {
             "nodes": [node.get_state() for node in self.nodes.values()],
             "evaluator": self.evaluator.get_state(),
         }
 
         if include_ray_state:
-            # TODO: The choice of cluster_resources() was arbitrary, GlobalState exposes a lot of potentially useful ray cluster information
             state["ray_state"] = self.state.cluster_resources()
 
         return state
 
     def update_nodes(self):
+        """Sync the node set with Ray: add new GPU nodes, purge departed ones.
+
+        Only GPU nodes are managed. Per-node GPU/CPU capacity is read from Ray's
+        reported resources (cuda_memory_bytes / cpu_memory_bytes), with the CPU
+        cache budget scaled by ``model_cache_percentage``.
+        """
         logger.info("Updating nodes...")
 
         nodes = list_nodes(detail=True)
@@ -81,21 +90,19 @@ class Cluster:
 
         for node in nodes:
             if "GPU" not in node.resources_total:
-                # We currently only do resource management for nodes with GPUs
                 continue
 
             id = node.node_id
             name = node.node_name
-            ip = getattr(node, "node_ip", None)
 
             current_nodes.add(id)
 
             if id not in self.nodes:
                 total_gpus = int(node.resources_total["GPU"])
                 gpu_type = node.labels.get("ray.io/accelerator-type", "unknown")
-                per_gpu_memory_bytes = int(
-                    node.resources_total["cuda_memory_bytes"]
-                ) // total_gpus
+                per_gpu_memory_bytes = (
+                    int(node.resources_total["cuda_memory_bytes"]) // total_gpus
+                )
                 cpu_memory_bytes = (
                     node.resources_total["cpu_memory_bytes"]
                     * self.model_cache_percentage
@@ -106,10 +113,7 @@ class Cluster:
                     for i in range(total_gpus)
                 ]
 
-                gpu_resources = GPUResources(
-                    gpu_type=gpu_type,
-                    gpus=gpus,
-                )
+                gpu_resources = GPUResources(gpu_type=gpu_type, gpus=gpus)
 
                 cpu_resources = CPUResources(
                     memory_bytes=cpu_memory_bytes,
@@ -122,185 +126,144 @@ class Cluster:
                     gpu_resources=gpu_resources,
                     cpu_resources=cpu_resources,
                     minimum_deployment_time_seconds=self.minimum_deployment_time_seconds,
-                    ip=ip,
                 )
 
             logger.info(
-                f"=> Node {name} updated with gpu_resources: {self.nodes[id].gpu_resources}, cpu_resources: {self.nodes[id].cpu_resources}"
+                f"=> Node {name} updated with gpu_resources: "
+                f"{self.nodes[id].gpu_resources}, cpu_resources: "
+                f"{self.nodes[id].cpu_resources}"
             )
 
-        for node_id in self.nodes.keys():
+        for node_id in list(self.nodes.keys()):
             if node_id not in current_nodes:
                 node = self.nodes.pop(node_id)
                 node.purge()
-
                 logger.info(f"=> Node {node_id} removed from cluster")
 
     def deploy(self, configs: Dict[MODEL_KEY, DeploymentConfig]) -> DeployResponse:
+        """Place new replicas for each model on the best available node.
+
+        ``config.replicas`` is additive. For each model, place that many new
+        replicas, re-picking the best node each iteration (its evaluate()
+        reflects state mutated by the previous placement). Biggest models go
+        first; the first CANT_ACCOMMODATE ends that model's loop.
+
+        Returns a DeployResponse: per-model results, the set of evicted
+        (model_key, replica_id) pairs, and a change flag.
         """
-        Deploy models on the cluster. This updates our internal state of the cluster.
+        logger.info(
+            f"Cluster deploying models: "
+            f"{[(key, cfg.pinned, cfg.replicas) for key, cfg in configs.items()]}..."
+        )
 
-        ``config.replicas`` is **additive**: every call places that many new
-        replicas regardless of what's already running. To shrink or replace
-        existing replicas, use ``Cluster.evict`` (model-wide or single-replica
-        targeted via the ``replica_id`` arg).
+        response = DeployResponse()
+        all_model_keys = set(configs.keys())
 
-        Args:
-            configs: Dict mapping model keys to their DeploymentConfig.
-
-        Returns:
-            A DeployResponse: per-model results keyed by model_key (new/old
-            replica ids and an optional error string), the set of evicted
-            (model_key, replica_id) pairs, and a change flag.
-        """
-
-        with trace_span("cluster.deploy", attributes={
-            "ndif.cluster.num_models": len(configs),
-            "ndif.cluster.num_nodes": len(self.nodes),
-        }) as span:
-            logger.info(
-                f"Cluster deploying models: "
-                f"{[(key, cfg.pinned, cfg.replicas) for key, cfg in configs.items()]}..."
+        # Evaluate sizes; record evaluator failures as per-model errors.
+        evaluated_configs = []
+        for model_key, config in configs.items():
+            size_in_bytes = self.evaluator(
+                model_key,
+                padding_factor=config.padding_factor,
+                dtype=config.dtype,
+                trust_remote_code=config.trusted,
             )
-
-            response = DeployResponse()
-            all_model_keys = set(configs.keys())
-
-            # Evaluate sizes; record evaluator failures as per-model errors.
-            evaluated_configs = []
-            for model_key, config in configs.items():
-                size_in_bytes = self.evaluator(model_key, padding_factor=config.padding_factor)
-                if isinstance(size_in_bytes, Exception):
-                    tb = "".join(
-                        traceback.format_exception(
-                            type(size_in_bytes), size_in_bytes, size_in_bytes.__traceback__
-                        )
+            if isinstance(size_in_bytes, Exception):
+                tb = "".join(
+                    traceback.format_exception(
+                        type(size_in_bytes),
+                        size_in_bytes,
+                        size_in_bytes.__traceback__,
                     )
-                    logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
-                    span.add_event("model_evaluation_failed", {"model_key": model_key})
-                    model_result = response.results.setdefault(
-                        model_key, ModelDeployResult()
-                    )
-                    model_result.error = f"{size_in_bytes}\n{tb}"
-                else:
-                    evaluated_configs.append((model_key, config, size_in_bytes))
-
-            # Deploy biggest models first.
-            sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
-
-            # For each model, place ``config.replicas`` new replicas, picking the
-            # best node fresh each iteration (evaluate() reflects state mutated
-            # by the previous replica's placement). The first CANT_ACCOMMODATE
-            # ends the loop for that model — the cluster only loses headroom
-            # from here, so subsequent attempts would fail the same way.
-            for model_key, config, size_in_bytes in sorted_configs:
-                pinned = config.pinned
+                )
+                logger.error(f"=> Model {model_key} failed to evaluate\n{tb}")
                 model_result = response.results.setdefault(
                     model_key, ModelDeployResult()
                 )
+                model_result.error = f"{size_in_bytes}\n{tb}"
+            else:
+                evaluated_configs.append((model_key, config, size_in_bytes))
 
-                for replica_index in range(config.replicas):
-                    logger.info(
-                        f"=> Analyzing deployment of {model_key} "
-                        f"(replica {replica_index + 1}/{config.replicas}) "
-                        f"with size {size_in_bytes}..."
-                    )
+        # Deploy biggest models first.
+        sorted_configs = sorted(evaluated_configs, key=lambda x: x[2], reverse=True)
 
-                    candidates: Dict[NODE_ID, Any] = {}
-                    best_level: Optional[CandidateLevel] = None
+        for model_key, config, size_in_bytes in sorted_configs:
+            pinned = config.pinned
+            model_result = response.results.setdefault(model_key, ModelDeployResult())
 
-                    for node in self.nodes.values():
-                        logger.info(
-                            f"==> Analyzing deployment of {model_key} for node {node.name}..."
-                        )
+            for replica_index in range(config.replicas):
+                logger.info(
+                    f"=> Analyzing deployment of {model_key} "
+                    f"(replica {replica_index + 1}/{config.replicas}) "
+                    f"with size {size_in_bytes}..."
+                )
 
-                        candidate = node.evaluate(
-                            model_key,
-                            size_in_bytes,
-                            pinned=pinned,
-                            exclude=all_model_keys,
-                        )
+                candidates: Dict[NODE_ID, Any] = {}
+                best_level: Optional[CandidateLevel] = None
 
-                        logger.info(
-                            f"==> Candidate: {candidate.candidate_level.name}, "
-                            f"gpus: {candidate.gpus}, evictions: {candidate.evictions}"
-                        )
-
-                        if best_level is None or candidate.candidate_level < best_level:
-                            candidates = {node.id: candidate}
-                            best_level = candidate.candidate_level
-                        elif candidate.candidate_level == best_level:
-                            candidates[node.id] = candidate
-                        # Strictly worse than best_level → ignore.
-
-                    node_id, candidate = random.choice(list(candidates.items()))
-                    candidate_level = candidate.candidate_level
-
-                    if candidate_level == CandidateLevel.CANT_ACCOMMODATE:
-                        logger.error(
-                            f"=> {model_key} (replica {replica_index + 1}/{config.replicas}) "
-                            f"cannot be deployed on any node — stopping further "
-                            f"attempts for this model"
-                        )
-                        model_result.error = (
-                            f"CANT_ACCOMMODATE: placed "
-                            f"{len(model_result.replicas)} of {config.replicas} "
-                            f"new replicas before the cluster ran out of room."
-                        )
-                        span.add_event(
-                            "model_placement_failed",
-                            {
-                                "model_key": model_key,
-                                "replicas_placed": len(model_result.replicas),
-                                "replicas_requested": config.replicas,
-                            },
-                        )
-                        break
-
-                    logger.info(
-                        f"=> Deploying {model_key} (replica "
-                        f"{replica_index + 1}/{config.replicas}) with size "
-                        f"{size_in_bytes} on {self.nodes[node_id].name} because "
-                        f"{candidate_level.name}. Requiring evictions: "
-                        f"{candidate.evictions}"
-                    )
-
-                    new_replica_id = self.nodes[node_id].deploy(
+                for node in self.nodes.values():
+                    candidate = node.evaluate(
                         model_key,
-                        candidate,
                         size_in_bytes,
                         pinned=pinned,
                         exclude=all_model_keys,
-                        execution_timeout_seconds=config.execution_timeout_seconds,
-                        actor_class=config.actor_class or self.default_model_actor_class,
                     )
 
-                    model_result.replicas.append(new_replica_id)
-                    response.evictions.update(candidate.evictions)
-                    response.change = True
+                    if best_level is None or candidate.candidate_level < best_level:
+                        candidates = {node.id: candidate}
+                        best_level = candidate.candidate_level
+                    elif candidate.candidate_level == best_level:
+                        candidates[node.id] = candidate
+                    # Strictly worse than best_level -> ignore.
 
-                    span.add_event("model_placement_decided", {
-                        "model_key": model_key,
-                        "replica_index": replica_index,
-                        "candidate_level": candidate_level.name,
-                        "node": self.nodes[node_id].name if node_id in self.nodes else "unknown",
-                        "size_bytes": size_in_bytes,
-                    })
+                if not candidates:
+                    model_result.error = "No GPU nodes available."
+                    break
 
-                # Contract: every result we return has either replicas
-                # populated or error set, so callers don't have to interpret
-                # an empty-and-silent result (e.g. config.replicas was 0 to
-                # begin with, or some edge case the loop didn't touch).
-                if not model_result.replicas and not model_result.error:
+                node_id, candidate = random.choice(list(candidates.items()))
+                candidate_level = candidate.candidate_level
+
+                if candidate_level == CandidateLevel.CANT_ACCOMMODATE:
+                    logger.error(
+                        f"=> {model_key} (replica {replica_index + 1}/"
+                        f"{config.replicas}) cannot be deployed on any node — "
+                        f"stopping further attempts for this model"
+                    )
                     model_result.error = (
-                        "Could not accommodate any replicas at this time."
+                        f"CANT_ACCOMMODATE: placed {len(model_result.replicas)} of "
+                        f"{config.replicas} new replicas before the cluster ran out "
+                        f"of room."
                     )
+                    break
 
-            span.set_attribute(
-                "ndif.cluster.total_evictions", len(response.evictions)
-            )
+                logger.info(
+                    f"=> Deploying {model_key} (replica {replica_index + 1}/"
+                    f"{config.replicas}) on {self.nodes[node_id].name} because "
+                    f"{candidate_level.name}. Requiring evictions: "
+                    f"{candidate.evictions}"
+                )
 
-            return response
+                new_replica_id = self.nodes[node_id].deploy(
+                    model_key,
+                    candidate,
+                    size_in_bytes,
+                    pinned=pinned,
+                    exclude=all_model_keys,
+                    execution_timeout_seconds=config.execution_timeout_seconds,
+                    actor_class=config.actor_class or self.default_model_actor_class,
+                    dtype=config.dtype,
+                    trusted=config.trusted,
+                )
+
+                model_result.replicas.append(new_replica_id)
+                response.evictions.update(candidate.evictions)
+                response.change = True
+
+            # Contract: every result has either replicas populated or error set.
+            if not model_result.replicas and not model_result.error:
+                model_result.error = "Could not accommodate any replicas at this time."
+
+        return response
 
     def evict(
         self,
@@ -309,89 +272,45 @@ class Cluster:
     ) -> ReplicaStates:
         """Evict replicas of a model.
 
-        If ``replica_id`` is given, evict only that specific replica
-        (matched first in HOT, then in WARM). Otherwise evict every HOT and
-        WARM replica of ``model_key``.
-
-        ``node.evict()`` releases GPU memory and, where CPU headroom allows,
-        demotes HOT → WARM; only when no cache room can be made is the
-        replica fully removed. The returned ReplicaState snapshots are taken
-        before that transition, so they always reflect the replica's pre-
-        eviction state.
-
-        Returns:
-            ReplicaStates listing the replicas that were evicted (empty if
-            nothing matched the query).
+        If ``replica_id`` is given, evict only that replica (HOT first, then
+        WARM). Otherwise evict every HOT and WARM replica of ``model_key``.
+        ``node.evict`` releases GPU memory and demotes HOT->WARM where CPU
+        headroom allows; the returned snapshots reflect the pre-eviction state.
         """
-        with trace_span(
-            "cluster.evict",
-            attributes={
-                "ndif.model.key": model_key,
-                "ndif.replica.id": replica_id or "",
-            },
-        ) as span:
-            response = ReplicaStates()
+        response = ReplicaStates()
 
-            # Lookups against node.deployments / node.cache always go inline
-            # against the live dict — caching a local ref is unsafe because
-            # node.evict's HOT->WARM demotion creates a new inner dict via
-            # ``setdefault`` when the model_key wasn't already present in
-            # cache, so any pre-captured ref would go stale.
-            for node in self.nodes.values():
-                if replica_id is not None:
-                    # Targeted: single node.evict. HOT may demote to WARM
-                    # (preserving rid) — that's intentional, the user can
-                    # promote it back via the dot's Deploy. WARM evicts
-                    # fully. Rids are unique cluster-wide so we stop after
-                    # the first hit.
-                    dep = (
-                        node.deployments.get(model_key, {}).get(replica_id)
-                        or node.cache.get(model_key, {}).get(replica_id)
-                    )
-                    if dep is None:
-                        continue
-                    response.replicas.append(ReplicaState(**dep.get_state()))
-                    node.evict(model_key, replica_id)
-                    span.add_event(
-                        "replica_evicted",
-                        {
-                            "model_key": model_key,
-                            "replica_id": replica_id,
-                            "node": node.name,
-                        },
-                    )
-                    break
+        # Look up against the live dicts each time — node.evict's HOT->WARM
+        # demotion can create a new inner cache dict, so cached refs go stale.
+        for node in self.nodes.values():
+            if replica_id is not None:
+                dep = node.deployments.get(model_key, {}).get(replica_id) or node.cache.get(
+                    model_key, {}
+                ).get(replica_id)
+                if dep is None:
+                    continue
+                response.replicas.append(ReplicaState(**dep.get_state()))
+                node.evict(model_key, replica_id)
+                break
 
-                # Fan-out: every replica of this model_key on this node.
-                # node.evict's HOT->WARM demotion preserves rid, so each
-                # eviction is wrapped in a drain loop until both dicts
-                # have no entry for it.
-                rids = sorted(
-                    {
-                        *node.deployments.get(model_key, {}).keys(),
-                        *node.cache.get(model_key, {}).keys(),
-                    }
-                )
-                for rid in rids:
-                    dep = (
-                        node.deployments.get(model_key, {}).get(rid)
-                        or node.cache.get(model_key, {}).get(rid)
-                    )
-                    if dep is None:
-                        continue
-                    response.replicas.append(ReplicaState(**dep.get_state()))
-                    while (
-                        rid in node.deployments.get(model_key, {})
-                        or rid in node.cache.get(model_key, {})
-                    ):
-                        node.evict(model_key, rid)
-                    span.add_event(
-                        "replica_evicted",
-                        {
-                            "model_key": model_key,
-                            "replica_id": rid,
-                            "node": node.name,
-                        },
-                    )
+            # Fan-out: every replica of this model on this node. The HOT->WARM
+            # demotion preserves rid, so each eviction drains until both dicts
+            # have no entry for it.
+            rids = sorted(
+                {
+                    *node.deployments.get(model_key, {}).keys(),
+                    *node.cache.get(model_key, {}).keys(),
+                }
+            )
+            for rid in rids:
+                dep = node.deployments.get(model_key, {}).get(rid) or node.cache.get(
+                    model_key, {}
+                ).get(rid)
+                if dep is None:
+                    continue
+                response.replicas.append(ReplicaState(**dep.get_state()))
+                while rid in node.deployments.get(model_key, {}) or rid in node.cache.get(
+                    model_key, {}
+                ):
+                    node.evict(model_key, rid)
 
-            return response
+        return response

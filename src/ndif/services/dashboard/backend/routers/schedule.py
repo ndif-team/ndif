@@ -25,7 +25,7 @@ def _canonicalize(payload: ScheduleEventIn) -> ScheduleEventIn:
     downstream — reconcile diff, /api/status pinned tag, evict — can use
     exact-string ``model_key`` comparison.
     """
-    from .....cli.lib.util import canonicalize_checkpoint
+    from .....cli.lib.models import canonicalize_checkpoint
 
     try:
         canon_cp, canon_rev, model_key = canonicalize_checkpoint(

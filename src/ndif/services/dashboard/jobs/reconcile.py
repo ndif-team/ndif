@@ -59,6 +59,7 @@ def _spec_from_event(e: ScheduleEvent) -> dict:
         "checkpoint": e.checkpoint,
         "revision": e.revision,
         "pinned": True,  # schedule entries are always pinned
+        "trusted": True,  # admin-configured, so trusted like any dashboard deploy
         "actor_class": e.actor_class,
         "envoy_class": e.envoy_class,
         "padding_factor": e.padding_factor,
@@ -84,7 +85,7 @@ def _fetch_hot_model_keys() -> Optional[set[str]]:
     """Return the set of model_keys currently HOT according to the controller.
 
     Reads live from the controller via Ray rather than the API service's
-    Redis-cached ``/status`` (TTL ``NDIF_STATUS_CACHE_FREQ_S``). The cached
+    Redis-cached ``/status`` (TTL ``NDIF_STATUS_TTL_S``, 60s). The cached
     path was racey: during a brief actor restart or before the cache
     refreshed, a pinned model would falsely look like it had drifted out
     of HOT, and the additive deploy below would stack another pinned

@@ -14,7 +14,7 @@ File layout (``<data_dir>/cache/values.json``)::
     {
       "repo_id":     ["meta-llama/Llama-3.1-8B", "openai-community/gpt2", ...],
       "actor_class": ["ndif.services.ray.deployments.modeling.base.ModelActor", ...],
-      "envoy_class": ["nnsight.modeling.language.LanguageModel", ...]
+      "envoy_class": ["nnsight.modeling.transformers.TransformersModel", ...]
     }
 """
 
@@ -128,7 +128,7 @@ def add_from_deploy_result(
     timeouts during ``wait_for_replica_ready``, …) is silently skipped.
     """
     # Lazy import — keeps the cache module free of cli dependency.
-    from ....cli.lib.util import extract_repo_id_from_model_key
+    from ....cli.lib.models import extract_repo_id_from_model_key
 
     specs_by_checkpoint = {s.get("checkpoint"): s for s in specs}
     entries: list[dict] = []

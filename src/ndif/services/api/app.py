@@ -1,51 +1,57 @@
 import asyncio
+import logging
 import pickle
-import traceback
+import time
 import uuid
+
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs
 
-import socketio
-import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi_socketio import SocketManager
+from fastapi.responses import JSONResponse
 
+from ndif.common.metrics import RequestSizeMetric, RequestStatusTimeMetric
+from ndif.common.providers.objectstore import ObjectStoreProvider
+from ndif.common.providers.redis import RedisProvider
+from ndif.common.schema import BackendRequestModel, BackendResponseModel, Status
+from ndif.common.telemetry import event
+from ndif.common.redis import (
+    ENV_KEY,
+    ENV_READY_CHANNEL,
+    ENV_REQUESTED_KEY,
+    ENV_TIMEOUT_S,
+    ENV_TRIGGER_STREAM,
+    STATUS_KEY,
+    STATUS_READY_CHANNEL,
+    STATUS_REQUESTED_KEY,
+    STATUS_TIMEOUT_S,
+    STATUS_TRIGGER_STREAM,
+)
 
-from opentelemetry import trace
-from opentelemetry.trace import format_trace_id
+from .auth import validate_request, verify_api_key
+from .versioning import validate_client_versions
+from .queue.config import CONFIG as QUEUE_CONFIG
 
-from nnsight.schema.response import ResponseModel
+# Telemetry sinks (Loki/InfluxDB) are connected per worker in gunicorn's
+# post_fork hook (see gunicorn_conf), so this module doesn't touch them.
+logger = logging.getLogger("ndif.api")
 
-from ...common.logging import set_logger
-from ...common.tracing import TracingContext, init_tracing, set_request_attributes, trace_span
-from ...common.types import REQUEST_ID, SESSION_ID
+app = FastAPI(title="NDIF API")
 
-logger = set_logger("API")
-
-from .config import AppConfig
-from .dependencies import validate_request, require_ray_connection
-from ...common.metrics import NetworkStatusMetric
-from ...common.providers.objectstore import ObjectStoreProvider
-from ...common.providers.redis import RedisProvider
-from ...common.schema.request import BackendRequestModel
-from ...common.schema.response import BackendResponseModel
-
-# Init tracing
-init_tracing("ndif-api")
-
-# Init FastAPI app
-app = FastAPI()
-
-try:
-    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-
-    FastAPIInstrumentor.instrument_app(app)
-except ImportError:
-    pass
-
-
-# Add middleware for CORS
+# Auth is header-based (ndif-api-key), not cookie-based, so credentials aren't
+# needed — and "*" origins with allow_credentials=True is a spec conflict
+# browsers reject. Keep credentials off so a wildcard origin is valid.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -54,334 +60,370 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Init async manager for communication between socketio servers.
-# socket_timeout=None mirrors RedisProvider.connect: redis-py 8.0+ otherwise
-# auto-sets socket_timeout=5 (maintenance notifications), which aborts this
-# manager's blocking pub/sub listen every 5s ("Cannot receive from redis...
-# retrying"). redis_options is forwarded verbatim to Redis.from_url().
-socketio_manager = socketio.AsyncRedisManager(
-    url=AppConfig.broker_url, redis_options={"socket_timeout": None}
-)
-# Init socketio manager app
-sm = SocketManager(
-    app=app,
-    mount_location="/ws",
-    client_manager=socketio_manager,
-    max_http_buffer_size=AppConfig.socketio_max_http_buffer_size,
-    ping_timeout=AppConfig.socketio_ping_timeout,
-    always_connect=True,
-    transports=["websocket"],
-)
 
-# Init object_store connection
-ObjectStoreProvider.connect()
+@app.exception_handler(HTTPException)
+async def log_http_exception(
+    http_request: Request, exc: HTTPException
+) -> JSONResponse:
+    """Emit a structured event for any HTTP error, then return the standard
+    response. Ingress failures (a rejected key, an unavailable backend, ...) raise
+    HTTPException before reaching an endpoint body, so this is where they become
+    observable. Server errors (5xx) log at ERROR; client errors (4xx) at INFO.
+    """
+    event(
+        logger,
+        f"api request rejected: {exc.status_code}",
+        level=logging.ERROR if exc.status_code >= 500 else logging.INFO,
+        path=http_request.url.path,
+        status_code=exc.status_code,
+        detail=str(exc.detail),
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(Exception)
+async def log_unhandled_exception(
+    http_request: Request, exc: Exception
+) -> JSONResponse:
+    """Log an unhandled failure (enqueue, a provider, ...) as a structured ERROR
+    event with its traceback, then return a generic 500 — so it's observable rather
+    than only uvicorn-logged, and internals never leak to the client."""
+    event(
+        logger,
+        "api unhandled error",
+        level=logging.ERROR,
+        exc_info=True,
+        path=http_request.url.path,
+        error_type=type(exc).__name__,
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
+async def require_ray_connection() -> None:
+    """Reject requests when the compute backend (Ray) isn't reachable.
+
+    The dispatcher maintains the ``ray:connected`` Redis flag (set once
+    connected, deleted while reconnecting). Used as a route dependency to
+    short-circuit with 503 before doing any work, rather than enqueuing a
+    request the backend can't serve.
+    """
+    if not await RedisProvider.async_client.get("ray:connected"):
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable: compute backend is "
+            "reconnecting. Please try again in a few minutes.",
+        )
 
 
 @app.post("/request", dependencies=[Depends(require_ray_connection)])
-async def request(
-    background_tasks: BackgroundTasks,
-    backend_request: BackendRequestModel = Depends(validate_request),
+async def create_request(
+    http_request: Request,
+    request: BackendRequestModel = Depends(validate_request),
+    blob: UploadFile = File(..., description="Serialized request blob"),
+    user_agent: Optional[str] = Header(default=None),
+    ndif_timestamp: Optional[str] = Header(default=None),
+    nnsight_version: Optional[str] = Header(default=None),
+    python_version: Optional[str] = Header(default=None),
 ) -> BackendResponseModel:
-    """Endpoint to submit request. See src/common/schema/request.py to see the headers and data that are validated and populated.
+    """Accept a multipart request: structured JSON `data` plus a binary `blob`.
 
-    Args:
-        background_tasks: FastAPI background tasks manager.
-        backend_request: Validated BackendRequestModel with all headers and data populated.
-
-    Returns:
-        BackendResponseModel: Response to the user request containing job status and metadata.
+    Returns the initial RECEIVED response over HTTP; all subsequent status
+    updates are published to the client's `/subscribe` websocket.
     """
+    # Reject incompatible clients early. A no-op unless NDIF_MIN_NNSIGHT_VERSION
+    # / NDIF_MIN_PYTHON_VERSION are configured; otherwise 400s an old client
+    # (from the nnsight-version / python-version headers) before any work.
+    validate_client_versions(nnsight_version, python_version)
 
-    with trace_span(
-        "api.request.receive", kind=trace.SpanKind.SERVER
-    ) as span:
-        set_request_attributes(span, backend_request)
-        span.set_attribute("ndif.content_length", backend_request.content_length)
+    # The request has been parsed, key-verified, and stamped with the caller's
+    # email + trusted flag by the validate_request dependency (see auth.py).
 
-        # process the request
+    # The blob (serialized interventions) rides on the request through the
+    # queue; the dispatcher routes it and the model actor runs it via Ray.
+    # TODO: the payload size is measured downstream but never enforced — add a
+    # configurable request-size cap (an NDIF_* limit) and reject oversized blobs
+    # here before they enter the queue.
+    request.payload = await blob.read()
+
+    # First status-time hop: client->server transit. The client stamps its send
+    # time in the ndif-timestamp header; if present (and not obvious clock skew),
+    # record received - sent as the "SENT" bucket. Then seed the clock at
+    # RECEIVED so the next hop (QUEUED) bills the RECEIVED->queue gap.
+    # last_status_time doubles as the ingress timestamp and travels with the
+    # pickled request through the dispatcher.
+    received_at = time.time()
+    sent_at = None
+    if ndif_timestamp:
         try:
-            response = backend_request.create_response(
-                status=ResponseModel.JobStatus.RECEIVED,
-                description="Your job has been received and is waiting to be queued.",
-                logger=logger,
-            )
+            sent_at = float(ndif_timestamp)
+        except ValueError:
+            sent_at = None
+    if sent_at is not None and received_at >= sent_at:
+        RequestStatusTimeMetric.update(
+            model_key=request.model_key,
+            request_id=request.id,
+            api_key=request.api_key,
+            email=request.email,
+            status="SENT",
+            duration_ms=round((received_at - sent_at) * 1000, 2),
+        )
+    # Advance to RECEIVED — seeds the clock so the next hop (QUEUED) bills the
+    # RECEIVED->queue gap, and last_status_time travels with the pickled request —
+    # and build the response we return once the request is enqueued.
+    response = request.response(
+        Status.RECEIVED, "Your job has been received and is waiting to be queued."
+    )
 
-            if not response.blocking:
-                response.save()
+    # Enqueue for the dispatcher (lpush + the dispatcher's brpop = FIFO). The
+    # request is pickled, so this uses the binary Redis client.
+    await RedisProvider.async_bytes_client.lpush(
+        QUEUE_CONFIG.queue_key, pickle.dumps(request)
+    )
 
-            # Run network status metric update in background. Capture the
-            # trace_id now so the metric record can be joined with the trace
-            # even though the background task runs outside this span.
-            ctx = span.get_span_context()
-            trace_id = format_trace_id(ctx.trace_id) if ctx and ctx.is_valid else None
-            background_tasks.add_task(
-                NetworkStatusMetric.update, backend_request, trace_id
-            )
+    # Caller identity: only needed here, for the ingress metric — not stored on
+    # the request (nothing downstream reads it).
+    ip_address = http_request.client.host if http_request.client else None
 
-            backend_request.request = await backend_request.request
+    RequestSizeMetric.update(
+        model_key=request.model_key,
+        request_id=request.id,
+        api_key=request.api_key,
+        email=request.email,
+        session_id=request.session_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        payload_bytes=len(request.payload) if request.payload else 0,
+    )
 
-            # Inject trace context before pickling for cross-process propagation
-            backend_request.trace_context = TracingContext.inject()
-
-            await RedisProvider.async_client.lpush(
-                "queue", pickle.dumps(backend_request)
-            )
-
-            span.add_event("request_queued")
-
-        except Exception as exception:
-            span.set_status(trace.StatusCode.ERROR, str(exception))
-            span.record_exception(exception)
-
-            description = f"{traceback.format_exc()}\n{str(exception)}"
-
-            # Create exception response object.
-            response = backend_request.create_response(
-                status=ResponseModel.JobStatus.ERROR,
-                description=description,
-                logger=logger,
-            )
-
-    # Return response.
     return response
 
 
-@sm.on("connect")
-async def connect(session_id: SESSION_ID, environ: Dict[str, Any]) -> None:
-    """Handle new SocketIO client connections.
+async def _coalesced_fetch(
+    *,
+    cache_key: str,
+    requested_key: str,
+    trigger_stream: str,
+    ready_channel: str,
+    timeout_s: int,
+    subject: str,
+) -> Response:
+    """Serve a Redis-cached JSON blob refreshed by a dispatcher worker.
 
-    Parses the query string from the connection request and adds the client
-    to a room based on their job_id if provided. This allows targeted message
-    delivery to specific job subscribers.
+    Both /status and /env work this way: the API can't reach Ray, so on a cache
+    miss concurrent callers coalesce through a SET NX lock (``requested_key``)
+    and only the winner appends to ``trigger_stream``; the dispatcher's worker
+    fetches from the controller, writes ``cache_key``, and publishes to
+    ``ready_channel`` to wake the waiters. Bounded by ``timeout_s``.
 
-    Args:
-        session_id: Unique identifier for this SocketIO session.
-        environ: WSGI environ dict containing connection metadata including
-            QUERY_STRING with optional job_id parameter.
+    503 if the refresh failed, 504 if it didn't arrive in time.
     """
-    query_string = environ.get("QUERY_STRING", "")
-    params = parse_qs(query_string)
+    redis = RedisProvider.async_client
 
-    # parse_qs returns lists, get first value if present
-    job_id = params.get("job_id", [None])[0]
+    cached = await redis.get(cache_key)
+    if cached is not None:
+        return Response(content=cached, media_type="application/json")
 
-    if job_id:
-        await sm.enter_room(session_id, job_id)
+    pubsub = redis.pubsub()
+    await pubsub.subscribe(ready_channel)
+    try:
+        # Double-check after subscribing so a refresh that landed between the
+        # first GET and the subscribe isn't missed.
+        cached = await redis.get(cache_key)
+        if cached is not None:
+            return Response(content=cached, media_type="application/json")
+
+        # Coalesce: only the request that wins the lock triggers a refresh.
+        if await redis.set(requested_key, "1", nx=True, ex=timeout_s):
+            await redis.xadd(
+                trigger_stream, {"t": "1"}, maxlen=16, approximate=True
+            )
+
+        try:
+            async with asyncio.timeout(timeout_s):
+                async for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    if message["data"] == "error":
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"Could not retrieve {subject}.",
+                        )
+                    cached = await redis.get(cache_key)
+                    if cached is not None:
+                        return Response(
+                            content=cached, media_type="application/json"
+                        )
+        except TimeoutError:
+            raise HTTPException(
+                status_code=504, detail=f"Timed out waiting for {subject}."
+            )
+    finally:
+        await pubsub.unsubscribe(ready_channel)
+        await pubsub.aclose()
+
+    raise HTTPException(status_code=503, detail=f"Could not retrieve {subject}.")
 
 
-@sm.on("blocking_response")
-async def blocking_response(
-    session_id: SESSION_ID, client_session_id: SESSION_ID, data: Any
-) -> None:
-    """Forward a blocking response to a specific client session.
+@app.get("/status", dependencies=[Depends(require_ray_connection)])
+async def get_status() -> Response:
+    """Return the cluster status: a JSON blob cached in Redis with a TTL.
 
-    Used internally to relay response data from the backend to the waiting
-    client. This is the final step in the blocking request flow.
+    On a cache miss, concurrent callers coalesce through a SET NX lock so only
+    one triggers the dispatcher's status worker (a heavy controller fetch); the
+    rest wait to be woken with the fresh value. Bounded by STATUS_TIMEOUT_S.
 
-    Args:
-        session_id: The sender's SocketIO session ID.
-        client_session_id: The target client's SocketIO session ID to receive
-            the response.
-        data: The response data to forward (typically pickled BackendResponseModel).
+    503 if the refresh failed, 504 if it didn't arrive in time.
     """
-    await sm.emit("blocking_response", data=data, to=client_session_id)
+    return await _coalesced_fetch(
+        cache_key=STATUS_KEY,
+        requested_key=STATUS_REQUESTED_KEY,
+        trigger_stream=STATUS_TRIGGER_STREAM,
+        ready_channel=STATUS_READY_CHANNEL,
+        timeout_s=STATUS_TIMEOUT_S,
+        subject="cluster status",
+    )
 
 
-@sm.on("stream")
-async def stream(
-    session_id: SESSION_ID, client_session_id: SESSION_ID, data: bytes, job_id: str
-) -> None:
-    """Handle streaming response initiation.
-
-    Registers the sender in the job's room for future streaming updates,
-    then forwards the initial response data to the client.
-
-    Args:
-        session_id: The sender's SocketIO session ID.
-        client_session_id: The target client's SocketIO session ID.
-        data: Initial response data to forward.
-        job_id: The job identifier used as the room name for streaming.
+@app.get("/env", dependencies=[Depends(require_ray_connection)])
+async def get_env() -> Response:
+    """Return the cluster's python version + installed packages (for the CLI to
+    match environments). Same coalesced-cache mechanism as /status, refreshed by
+    the dispatcher's env worker.
     """
-    await sm.enter_room(session_id, job_id)
-
-    await blocking_response(session_id, client_session_id, data)
-
-
-@sm.on("stream_upload")
-async def stream_upload(session_id: SESSION_ID, data: bytes, job_id: str) -> None:
-    """Broadcast streaming data to all subscribers of a job.
-
-    Emits data to all clients in the job's room, enabling real-time
-    streaming of intermediate results or progress updates.
-
-    Args:
-        session_id: The sender's SocketIO session ID.
-        data: The streaming data to broadcast.
-        job_id: The job identifier (room name) to broadcast to.
-    """
-    await sm.emit("stream_upload", data=data, room=job_id)
+    return await _coalesced_fetch(
+        cache_key=ENV_KEY,
+        requested_key=ENV_REQUESTED_KEY,
+        trigger_stream=ENV_TRIGGER_STREAM,
+        ready_channel=ENV_READY_CHANNEL,
+        timeout_s=ENV_TIMEOUT_S,
+        subject="cluster env",
+    )
 
 
 @app.get("/response/{id}")
-async def response(id: REQUEST_ID) -> BackendResponseModel:
-    """Endpoint to get latest response for id.
+async def get_response(id: str) -> Response:
+    """Return the latest status response for a non-blocking request.
 
-    Args:
-        id: ID of request/response.
-
-    Returns:
-        BackendResponseModel: Response.
+    A non-blocking request has no `/subscribe` websocket, so its responses are
+    saved to the object store as they progress (see BackendRequestModel.respond);
+    the client polls this endpoint by request id. 404 until the first response
+    lands (or if the id is unknown).
     """
-    with trace_span("api.response.load", attributes={
-        "ndif.request.id": str(id),
-    }):
-        return BackendResponseModel.load(id)
+    data = await asyncio.to_thread(
+        ObjectStoreProvider.get, f"responses/{id}.json"
+    )
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"No response for request {id}.")
+    return Response(content=data, media_type="application/json")
 
 
-@app.get("/ping", status_code=200)
-async def ping():
-    """Endpoint to check if the server is online."""
+@app.get("/ping")
+async def ping() -> str:
+    """Liveness probe: returns ``"pong"`` if the API process is up."""
     return "pong"
 
 
 @app.api_route(
     "/connected",
     methods=["GET", "HEAD"],
-    status_code=200,
     dependencies=[Depends(require_ray_connection)],
 )
-async def connected():
-    """Endpoint to check if Ray cluster is connected."""
+async def connected() -> Dict[str, str]:
+    """Report whether the compute backend (Ray) is reachable.
+
+    The ``require_ray_connection`` dependency 503s when the cluster is down or
+    reconnecting; reaching the body means it's connected.
+    """
     return {"status": "connected"}
 
 
-@app.get("/status", status_code=200, dependencies=[Depends(require_ray_connection)])
-async def status() -> Dict[str, Any]:
-    """Get the current cluster status.
+@app.get("/whoami")
+async def whoami(
+    api_key: Optional[str] = Header(default=None, alias="ndif-api-key"),
+) -> Dict[str, Any]:
+    """Resolve the email + tags associated with the caller's API key.
 
-    Returns cached status if available, otherwise triggers a status request
-    to the Controller and waits for the response via Redis pub/sub.
-
-    Returns:
-        Dictionary containing cluster status information including deployed
-        models, resource usage, and availability.
-
-    Raises:
-        HTTPException: If status request times out (504 Gateway Timeout).
-
-    See Also:
-        AppConfig.status_request_timeout_s: Configures the timeout duration.
+    Reads the key from the ``ndif-api-key`` header. Unlike the request path, an
+    unknown/missing/malformed key is not an error here — it just resolves to
+    ``{"email": None, "tags": []}`` (matching the pre-existing public contract,
+    where ``tags`` are the key's user_tags). A DB outage still surfaces as 503.
     """
-    # Check for cached status first
-    cached_status = await RedisProvider.async_client.get("status")
-    if cached_status is not None:
-        return pickle.loads(cached_status)
+    try:
+        identity = await verify_api_key(api_key)
+    except HTTPException as exc:
+        # 401 (missing/malformed) and 403 (unknown key) are non-fatal for a
+        # lookup; only propagate a real backend failure (503).
+        if exc.status_code in (401, 403):
+            return {"email": None, "tags": []}
+        raise
 
-    # No cached status, need to request and wait for it
+    # identity is None when auth is disabled (no Postgres configured).
+    if identity is None:
+        return {"email": None, "tags": []}
+
+    return {"email": identity.email, "tags": identity.user_tags}
+
+
+@app.websocket("/subscribe")
+async def subscribe(websocket: WebSocket):
+    """Open a session and stream its status updates to the client.
+
+    The server generates a `session_id` and sends it as the first message
+    (`{"session_id": "..."}`). The client echoes that id back as the
+    `session_id` of a subsequent `POST /request`. Thereafter, every Response
+    published to the Redis channel named by that id (already a JSON string) is
+    forwarded down this socket.
+    """
+    await websocket.accept()
+
+    session_id = uuid.uuid4().hex
+
+    # Subscribe BEFORE handing the client its session id. The client only POSTs
+    # /request after receiving the id, so subscribing first guarantees the
+    # channel is live before any status can be published — no lost-message race.
     pubsub = RedisProvider.async_client.pubsub()
+    await pubsub.subscribe(session_id)
 
-    try:
-        await pubsub.subscribe("status:event")
+    await websocket.send_json({"session_id": session_id})
 
-        # Trigger status request if not already requested
-        if await RedisProvider.async_client.set("status:requested", "1", nx=True):
-            await RedisProvider.async_client.xadd(
-                "status:trigger", {"reason": "requested"}
-            )
+    async def forward() -> None:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                await websocket.send_text(message["data"])
 
-        # Check again in case status was cached while we were setting up
-        cached_status = await RedisProvider.async_client.get("status")
-        if cached_status is not None:
-            return pickle.loads(cached_status)
-
-        # Wait for status event with timeout
-        async def wait_for_status() -> Optional[bytes]:
-            """Wait for status message from pub/sub."""
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                return message["data"]
-            return None
-
+    async def watch_disconnect() -> None:
+        # The client never sends on this socket, so receive() returns only when
+        # it disconnects (raising WebSocketDisconnect). Without this, an idle
+        # client that drops would leave forward() blocked in listen() forever.
         try:
-            status_data = await asyncio.wait_for(
-                wait_for_status(), timeout=AppConfig.status_request_timeout_s
-            )
-            if status_data is not None:
-                return pickle.loads(status_data)
-            else:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Status unavailable: pub/sub stream ended unexpectedly",
-                )
-        except asyncio.TimeoutError:
-            raise HTTPException(
-                status_code=504,
-                detail=f"Status request timed out after {AppConfig.status_request_timeout_s} seconds",
-            )
+            while True:
+                await websocket.receive()
+        except WebSocketDisconnect:
+            return
 
-    finally:
-        # Always cleanup pubsub resources
-        await pubsub.unsubscribe("status:event")
-        await pubsub.aclose()
-
-
-@app.get("/env", status_code=200, dependencies=[Depends(require_ray_connection)])
-async def env() -> Dict[str, Any]:
-    """Get the Python environment information from the Ray cluster.
-
-    Returns cached env info if available, otherwise sends a request to the
-    Dispatcher which queries the Controller for the environment details.
-
-    Returns:
-        Dictionary containing Python version and installed pip packages.
-
-    Raises:
-        HTTPException: If the request times out (504 Gateway Timeout).
-    """
-    # Check for cached env first
-    cached_env = await RedisProvider.async_client.get("env")
-    if cached_env is not None:
-        return pickle.loads(cached_env)
-
-    # No cached env, send event to dispatcher
-    response_key = f"env:response:{uuid.uuid4()}"
+    forward_task = asyncio.create_task(forward())
+    disconnect_task = asyncio.create_task(watch_disconnect())
 
     try:
-        # Send ENV event to dispatcher
-        await RedisProvider.async_client.xadd(
-            "dispatcher:events",
-            {
-                "event_type": "env",
-                "response_key": response_key,
-            },
+        # Whichever finishes first (forwarder erroring, or client disconnect)
+        # tears the other down.
+        await asyncio.wait(
+            {forward_task, disconnect_task},
+            return_when=asyncio.FIRST_COMPLETED,
         )
-
-        # Wait for response with timeout
-        result = await RedisProvider.async_client.brpop(
-            response_key, timeout=AppConfig.status_request_timeout_s
-        )
-
-        if result is None:
-            raise HTTPException(
-                status_code=504,
-                detail=f"Env request timed out after {AppConfig.status_request_timeout_s} seconds",
-            )
-
-        env_data = pickle.loads(result[1])
-
-        if "error" in env_data:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Error getting env info: {env_data['error']}",
-            )
-
-        return env_data
-
     finally:
-        # Clean up the response key
-        await RedisProvider.async_client.delete(response_key)
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001, workers=1)
+        for task in (forward_task, disconnect_task):
+            task.cancel()
+        # Await the tasks we just cancelled so their teardown completes. The
+        # CancelledError they raise is expected (it's the cancel we requested);
+        # return_exceptions captures it here instead of letting it bubble out of
+        # the handler as a logged "Exception in ASGI application". (CancelledError
+        # is a BaseException, so a plain `except Exception` / suppress(Exception)
+        # would miss it.) An outer cancel of this coroutine still propagates.
+        await asyncio.gather(forward_task, disconnect_task, return_exceptions=True)
+        await pubsub.unsubscribe(session_id)
+        await pubsub.aclose()

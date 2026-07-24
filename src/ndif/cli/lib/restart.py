@@ -1,16 +1,12 @@
-"""Programmatic implementation of ``ndif restart``."""
+"""Programmatic implementation of ``ndif restart`` (Ray controller only)."""
 
 from __future__ import annotations
 
 from typing import Optional
 
-from ...common.providers.ray import (
-    get_controller_actor_handle,
-    get_model_actor_handle,
-)
+from .. import config
 from ._common import NDIFConnectivityError, OnMessage, emit, ensure_ray_connected
-from .session import get_env
-from .util import get_model_key, wait_for_replica_ready
+from .models import get_model_key, wait_for_replica_ready
 
 
 def restart(
@@ -23,30 +19,19 @@ def restart(
     timeout: int = 300,
     on_message: OnMessage = None,
 ) -> dict:
-    """Restart replicas of a model.
+    """Restart replicas of a model by killing and awaiting respawn.
 
-    Either ``checkpoint`` (+ optional ``revision``) or a fully-formed
-    ``model_key`` must be supplied. ``model_key`` short-circuits the nnsight
-    LanguageModel-loading step and is much faster from the dashboard's
-    perspective when we already know the key from ``/status``.
+    Either ``checkpoint`` (+ optional ``revision``) or a ready ``model_key``
+    must be given. Restarts every HOT replica by default; ``replica`` targets
+    one. Blocks on ``wait_for_replica_ready`` until the new actor is ready.
 
-    If ``replica`` is provided, only that specific replica is restarted;
-    otherwise every HOT replica of the model is restarted in turn.
-
-    After ``ray.kill(no_restart=False)`` initiates the respawn we block on
-    ``wait_for_replica_ready`` until the new actor instance is ready (or
-    ``timeout`` elapses). Without that wait, callers — the dashboard's
-    "Restart" button in particular — would see "✓ restarted" the instant
-    the kill went through, while the model is actually still cold-loading.
-
-    Returns ``{"model_key", "replicas": [{"replica_id", "status", ...}]}``
-    where each per-replica ``status`` is ``"restarted"`` on success,
-    ``"timeout"`` if readiness wasn't observed within ``timeout`` seconds,
-    or ``"error"`` on initialization failure.
+    Returns ``{"model_key", "replicas": [{"replica_id", "status", ...}]}``.
     """
     import ray
 
-    ray_address = ray_address or get_env("NDIF_RAY_ADDRESS")
+    from ...common.providers.ray import get_controller_actor_handle
+
+    ray_address = ray_address or config.get("NDIF_RAY_ADDRESS")
 
     if model_key is None:
         if not checkpoint:
@@ -61,7 +46,6 @@ def restart(
 
     controller = get_controller_actor_handle()
 
-    # Resolve which replicas to restart from current cluster state.
     response = ray.get(controller.get_deployment.remote(model_key))
     replica_ids = [r.replica_id for r in response.replicas]
     if not replica_ids:
@@ -70,34 +54,24 @@ def restart(
 
     if replica is not None:
         if replica not in replica_ids:
-            emit(
-                on_message,
-                f"  ✗ {model_key}: replica {replica} not found "
-                f"(have: {', '.join(replica_ids) or '(none)'})",
-            )
+            emit(on_message,
+                 f"  ✗ {model_key}: replica {replica} not found "
+                 f"(have: {', '.join(replica_ids) or '(none)'})")
             return {"model_key": model_key, "replicas": []}
         replica_ids = [replica]
 
-    emit(
-        on_message,
-        f"Restarting {len(replica_ids)} replica(s) of {model_key}...",
-    )
+    emit(on_message, f"Restarting {len(replica_ids)} replica(s) of {model_key}...")
 
-    out: list[dict] = []
-    for rid in replica_ids:
-        out.append(_restart_one(model_key, rid, timeout, on_message))
-
+    out = [_restart_one(model_key, rid, timeout, on_message) for rid in replica_ids]
     return {"model_key": model_key, "replicas": out}
 
 
-def _restart_one(
-    model_key: str,
-    replica_id: str,
-    timeout: int,
-    on_message: OnMessage,
-) -> dict:
+def _restart_one(model_key: str, replica_id: str, timeout: int,
+                 on_message: OnMessage) -> dict:
     """Kill + respawn one replica, then wait for it to come back up."""
     import ray
+
+    from ...common.providers.ray import get_model_actor_handle
 
     try:
         actor = get_model_actor_handle(model_key, replica_id)
@@ -107,6 +81,7 @@ def _restart_one(
 
     emit(on_message, f"  ⋯ [{replica_id}] killing and awaiting respawn...")
     try:
+        # no_restart=False: max_restarts=-1 on the actor means Ray respawns it.
         ray.kill(actor, no_restart=False)
     except Exception as e:
         emit(on_message, f"  ✗ [{replica_id}] kill failed: {e}")
@@ -117,11 +92,8 @@ def _restart_one(
             emit(on_message, f"  ✓ [{replica_id}] restarted")
             return {"replica_id": replica_id, "status": "restarted"}
         emit(on_message, f"  ✗ [{replica_id}] timed out after {timeout}s")
-        return {
-            "replica_id": replica_id,
-            "status": "timeout",
-            "error": f"actor did not become ready within {timeout}s",
-        }
+        return {"replica_id": replica_id, "status": "timeout",
+                "error": f"actor did not become ready within {timeout}s"}
     except Exception as e:
         emit(on_message, f"  ✗ [{replica_id}] failed: {e}")
         return {"replica_id": replica_id, "status": "error", "error": str(e)}

@@ -9,45 +9,14 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 
 from ..auth import require_auth
 from ..config import Settings, get_settings
 from ..schedule_store import ScheduleStore, filter_active
-from .. import cache_store, ndif_client
+from .. import ndif_client
 
 
 router = APIRouter(prefix="/api", tags=["admin"])
-
-
-class ModelSpec(BaseModel):
-    checkpoint: str
-    revision: Optional[str] = None
-    pinned: bool = False
-    replicas: int = 1
-    actor_class: Optional[str] = None
-    envoy_class: Optional[str] = None
-    padding_factor: Optional[float] = None
-    execution_timeout_seconds: Optional[float] = None
-    # When supplied, skip the canonicalize-via-wrapper step in cli/lib/deploy
-    # and use the model_key as-is. The dashboard's WARM "redeploy" path sets
-    # this from the existing deployment card so we don't pay a second
-    # ``get_model_key`` HF roundtrip just to recompute a key we already have.
-    model_key: Optional[str] = None
-
-
-class DeployRequest(BaseModel):
-    specs: list[ModelSpec] = Field(min_length=1)
-    sync: bool = False
-
-
-class EvictRequest(BaseModel):
-    model_keys: Optional[list[str]] = None
-    checkpoints: Optional[list[tuple[str, Optional[str]]]] = None
-    evict_all: bool = False
-    # When set with a single-target selector (one model_key or one checkpoint),
-    # only the specified replica is evicted.
-    replica: Optional[str] = None
 
 
 @router.get("/status")
@@ -58,11 +27,11 @@ def status_endpoint(
     """Fetch controller status directly via Ray, dedupe HF cache shadows,
     aggregate per-replica entries into one card per model_key, and tag pinned.
 
-    Bypasses the NDIF API's 10s Redis-backed cache (``NDIF_STATUS_CACHE_FREQ_S``).
-    The dashboard's Deployments tab calls ``load()`` immediately after every
-    deploy / evict / restart action — if we went through the cached HTTP
-    path, the card you just acted on could read stale for up to 10s and
-    show the *previous* deployment_level. Hitting the controller actor
+    Bypasses the NDIF API's Redis-backed status cache (``NDIF_STATUS_TTL_S``,
+    default 60s). The dashboard's Deployments tab calls ``load()`` immediately
+    after every deploy / evict / restart action — if we went through the cached
+    HTTP path, the card you just acted on could read stale for up to that TTL
+    and show the *previous* deployment_level. Hitting the controller actor
     directly costs one Ray RPC per refresh and gives instant accuracy.
 
     Three transforms on the payload:
@@ -149,6 +118,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
         - deployment_level: HOT > WARM > COLD
         - application_state: RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY
         - pinned: True if any replica is pinned
+        - trusted: True if any replica is trusted
         - schedule: from any pinned replica that carries one
     """
     out: dict = {}
@@ -166,6 +136,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
             "deployment_level": entry.get("deployment_level"),
             "application_state": entry.get("application_state"),
             "pinned": bool(entry.get("pinned", False)),
+            "trusted": bool(entry.get("trusted", False)),
         }
 
         card = out.get(mk)
@@ -183,6 +154,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
                 "deployment_level": entry.get("deployment_level"),
                 "application_state": entry.get("application_state"),
                 "pinned": bool(entry.get("pinned", False)),
+                "trusted": bool(entry.get("trusted", False)),
                 "schedule": entry.get("schedule"),
                 "replicas": [],
             }
@@ -210,62 +182,9 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
             if entry.get("schedule") and not card.get("schedule"):
                 card["schedule"] = entry["schedule"]
 
+        if entry.get("trusted"):
+            card["trusted"] = True
+
         card["replicas"].append(replica_record)
 
     return out
-
-
-@router.post("/deploy")
-def deploy_endpoint(
-    payload: DeployRequest,
-    _: str = Depends(require_auth),
-    settings: Settings = Depends(get_settings),
-):
-    specs = [s.model_dump() for s in payload.specs]
-    try:
-        result = ndif_client.deploy(specs, sync=payload.sync)
-    except ndif_client.NDIFConnectivityError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        # Surface the real message (e.g. HF gated repo, controller errors)
-        # so the frontend toast can show something actionable.
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
-
-    cache_store.add_from_deploy_result(
-        settings.cache_path, specs, result.get("deployments") or []
-    )
-    return result
-
-
-@router.post("/evict")
-def evict_endpoint(
-    payload: EvictRequest,
-    _: str = Depends(require_auth),
-):
-    modes = [
-        bool(payload.model_keys),
-        bool(payload.checkpoints),
-        payload.evict_all,
-    ]
-    if sum(modes) != 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Exactly one of model_keys, checkpoints, evict_all",
-        )
-
-    try:
-        if payload.evict_all:
-            return ndif_client.evict_all()
-        return ndif_client.evict(
-            model_keys=payload.model_keys,
-            checkpoints=payload.checkpoints,
-            replica=payload.replica,
-        )
-    except ndif_client.NDIFConnectivityError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")

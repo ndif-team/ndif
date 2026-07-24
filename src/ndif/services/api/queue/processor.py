@@ -1,36 +1,23 @@
-"""Processor module for managing per-model request queues and replica pools.
+"""Processor: per-model request queue, replica pool, and dispatch.
 
-This module provides the Processor class which orchestrates the lifecycle of
-a model's deployment, including provisioning, request queuing, and routing
-across HOT replicas. Each Processor instance manages requests for a single
-``model_key`` and holds a pool of :class:`Replica` instances — the Replica
-owns the actor handle, worker task, and per-request dispatch logic; the
-Processor handles provisioning, the shared queue, and tear-down when the
-pool empties.
+Each Processor handles requests for exactly one ``model_key``, holding a request
+queue and a pool of :class:`Replica` workers that share it.
 
-Discovery is **lazy**: replicas are learned at provision time via
-``Controller.get_deployment`` (and from the response of the
-``Controller.deploy`` call when we deploy ourselves). The dispatcher does
-not receive explicit replica events from the controller — instead, the
-system is robust to staleness: if a Replica dispatches to an actor that has
-since been evicted, the resulting error (a lookup failure, a dead actor, or
-a cached-actor signal — see ``replica.EVICTED_ERRORS``) trips drift
-detection inside the Replica, which signals its exit, and the Processor
-drops it from its pool. When the last Replica exits the Processor asks the
-dispatcher to remove it.
+The Processor is lazy and self-healing:
 
-Typical usage:
-    The Processor is created and managed by the Dispatcher when a new model
-    request arrives.
+  - ``enqueue`` puts the request on the queue and, if there are no live
+    replicas, kicks off ``start`` to provision one.
+  - ``start`` discovers existing replicas (or deploys a fresh one), waits for
+    them to be ready, and spawns their workers.
+  - When a replica's worker exits (eviction or cancel), the Replica removes
+    itself from the pool and — if requests are still queued — asks the Processor
+    (``ensure_started``) to re-provision, so an eviction re-queues the in-flight
+    request rather than dropping it.
+  - A single long-lived ``autoscaling_loop`` adds more replicas under sustained
+    queue pressure.
 
-Example:
-    >>> processor = Processor(
-    ...     model_key="meta-llama/Llama-2-7b",
-    ...     eviction_queue=eviction_queue,
-    ...     error_queue=error_queue,
-    ... )
-    >>> asyncio.create_task(processor.processor_worker())
-    >>> processor.enqueue(request)
+There is no teardown: an idle Processor simply sits with an empty pool and is
+re-used (re-provisioned) on the next request.
 """
 
 import asyncio
@@ -39,38 +26,25 @@ import time
 from enum import Enum
 from typing import Dict, Optional
 
-from opentelemetry import trace
-
 from ....common.providers.ray import controller_handle
+from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
 from ....common.schema.request import BackendRequestModel
-from ....common.schema.response import BackendResponseModel
-from ....common.tracing import trace_span
+from ....common.telemetry import event
 from ....common.types import MODEL_KEY, REPLICA_ID
-from .config import QueueConfig
+from .config import CONFIG
 from .replica import Replica
 
-logger = logging.getLogger("ndif")
+logger = logging.getLogger("ndif.queue.processor")
 
 
 class ProcessorStatus(Enum):
-    """Enumeration of possible processor states.
+    """Processor lifecycle states.
 
-    The processor transitions through these states during its lifecycle:
-        UNINITIALIZED -> PROVISIONING -> DEPLOYING -> READY -> CANCELLED
-
-    Replica-level busy state is tracked on each :class:`Replica`, so there
-    is no global ``BUSY`` here — the Processor is ``READY`` whenever at
-    least one replica is serving.
-
-    Attributes:
-        UNINITIALIZED: Initial state before any operations have begun.
-        PROVISIONING: Looking up existing replicas and/or asking the
-            Controller to deploy.
-        DEPLOYING: Waiting for at least one replica to mark itself ready.
-        READY: At least one replica is up and serving requests.
-        CANCELLED: Terminal state. The processor will be removed by the
-            dispatcher.
+    UNINITIALIZED / READY are steady states (idle pool vs. serving); PROVISIONING
+    and DEPLOYING are the transient setup phases. Replica-level busy state lives
+    on each :class:`Replica`, so there's no global BUSY here — the Processor is
+    READY whenever at least one replica is serving.
     """
 
     UNINITIALIZED = "uninitialized"
@@ -81,124 +55,77 @@ class ProcessorStatus(Enum):
 
 
 class Processor:
-    """Orchestrates per-model request queues, replicas, and dispatch.
-
-    Each Processor instance handles requests for exactly one ``model_key``,
-    maintaining its own request queue and a pool of :class:`Replica` workers.
-
-    Lifecycle:
-        1. Created by Dispatcher when the first request for a model arrives.
-        2. ``provision`` discovers existing HOT replicas (via
-           ``Controller.get_deployment``) or deploys one if none exist.
-        3. ``processor_worker`` waits for the first replica to mark itself
-           ready, then transitions to READY.
-        4. Replicas pull from the shared queue and dispatch to their actor;
-           drift inside a Replica sheds it from the pool.
-        5. When the last Replica exits the Processor signals the dispatcher
-           via the eviction queue and transitions to CANCELLED.
-
-    Attributes:
-        model_key: Unique identifier for the model.
-        queue: Async queue holding pending requests; all Replicas pull from
-            this queue.
-        eviction_queue: Shared queue for reporting eviction events to the
-            dispatcher. Tuples of ``(model_key, reason)``.
-        error_queue: Shared queue for reporting errors to the dispatcher.
-            Tuples of ``(model_key, exception)``.
-        pinned: Whether the model is pinned (uniform across replicas).
-            ``None`` until ``provision`` resolves it.
-        replicas: ``replica_id -> Replica`` for every replica spawned by
-            this Processor that hasn't yet exited.
-    """
+    """Orchestrates per-model request queue, replicas, and dispatch."""
 
     def __init__(
         self,
         model_key: MODEL_KEY,
-        eviction_queue: asyncio.Queue,
         error_queue: asyncio.Queue,
-        metrics_event: Optional[asyncio.Event] = None,
     ) -> None:
-        """Initialize a new Processor for a specific model.
+        """Initialize a Processor for one model.
 
         Args:
-            model_key: Unique identifier for the model to manage.
-            eviction_queue: Shared async queue for reporting eviction events.
-                Tuples of (model_key, reason_message) are placed here.
-            error_queue: Shared async queue for reporting errors.
-                Tuples of (model_key, exception) are placed here.
+            model_key: The model this Processor serves.
+            error_queue: Shared queue for reporting errors to the dispatcher, as
+                ``(model_key, exception)`` tuples; a connection error there
+                triggers a Ray reconnect.
         """
         self.model_key = model_key
-        self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
-        self.eviction_queue = eviction_queue
         self.error_queue = error_queue
-        # Shared with the dispatcher's emit_queue_metrics_loop; set on any
-        # state change so the loop emits a fresh snapshot promptly.
-        self.metrics_event = metrics_event
-        self._status = ProcessorStatus.UNINITIALIZED
-        self.status_changed_at: float = 0
 
-        self.pinned: Optional[bool] = None
-
+        self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
+        self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
+        # Whether this model's deployment loads with trust_remote_code; set from the
+        # request that kicks off provisioning (see ensure_started) and threaded into
+        # the deploy config.
+        self.trusted = False
 
-        # Set by the first Replica that finishes setup (and also from its
-        # ``finally`` on exit, so a fully-failed pool doesn't deadlock the
-        # processor_worker).
-        self.ready_event: asyncio.Event = asyncio.Event()
-
-    def _notify_metrics(self) -> None:
-        """Wake the dispatcher's queue-metrics loop, if one is listening."""
-        if self.metrics_event is not None:
-            self.metrics_event.set()
-
-    @property
-    def status(self) -> ProcessorStatus:
-        return self._status
-
-    @status.setter
-    def status(self, value: ProcessorStatus) -> None:
-        self._status = value
-        self.status_changed_at = time.time()
-        self._notify_metrics()
+        self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
+            self.autoscaling_loop()
+        )
 
     @property
     def busy(self) -> bool:
         """Whether any replica is currently executing a request."""
         return any(replica.busy for replica in self.replicas.values())
 
-    def abort(self, reason: str) -> None:
-        """Mark this processor as cancelled and tell the dispatcher to remove it.
+    async def enqueue(
+        self, request: BackendRequestModel, prepend: bool = False
+    ) -> None:
+        """Add a request to the queue, provision if needed, acknowledge it.
 
-        Idempotent — repeated calls are no-ops once status is CANCELLED.
-        Used from every "give up" path: failed provision, no replicas
-        placed, exception during setup, last-replica-exit tear-down.
+        ``prepend`` puts the request at the *front* of the queue and rouses any
+        replica idle on ``get``. Used both when an evicted replica hands its
+        in-flight request back (preserving its place in line) and for a priority
+        request jumping the queue. A re-queued request keeps its original
+        ``enqueued_at`` so the autoscaler still sees how long it has really waited.
         """
-        if self.status == ProcessorStatus.CANCELLED:
-            return
-        self.eviction_queue.put_nowait((self.model_key, reason))
-        self.status = ProcessorStatus.CANCELLED
+        if request.enqueued_at is None:
+            # Stamp the enqueue time so the autoscaling loop can spot a stale head.
+            request.enqueued_at = time.time()
 
-    async def enqueue(self, request: BackendRequestModel) -> None:
-        """Add a request to the processing queue.
+        if prepend:
+            self.queue._queue.appendleft(request)
+            self.queue._wakeup_next(self.queue._getters)
+        else:
+            self.queue.put_nowait(request)
 
-        If the model is not pinned and the request doesn't have hotswapping
-        enabled, the request is immediately rejected — pinned-vs-hotswap is
-        the only access control at this layer.
-        """
-        if self.pinned is False and not request.hotswapping:
-            await request.create_response(
-                BackendResponseModel.JobStatus.ERROR,
-                logger,
-                "Model is not pinned and hotswapping is not supported for this API key. "
-                "See https://nnsight.net/status/ for a list of scheduled models.",
-            ).arespond()
-            return
+        self.ensure_started(request.trusted)
 
-        # Stamp the enqueue time so the autoscaling loop can spot the
-        # oldest queued request and decide whether to scale up.
-        request.enqueued_at = time.time()
-        self.queue.put_nowait(request)
-        self._notify_metrics()
+        # Queue-depth / throughput signal: position is 1-based depth at enqueue.
+        event(
+            logger,
+            "request enqueued",
+            model_key=self.model_key,
+            request_id=request.id,
+            api_key=request.api_key,
+            email=request.email,
+            stage="queued",
+            queue_size=self.queue.qsize(),
+            replicas=len(self.replicas),
+            processor_status=self.status.value,
+        )
 
         await self.reply(
             request=request,
@@ -210,294 +137,239 @@ class Processor:
             ),
         )
 
-    async def provision(self) -> None:
-        """Discover (or create) the replicas this processor will serve.
+    def ensure_started(self, trusted: Optional[bool] = None) -> None:
+        """Kick off provisioning when the pool is empty and idle.
 
-        Always queries the controller for current state first:
-            - If replicas exist, populate the pool with them. Pinned-ness is
-              taken from the first replica (uniform across siblings).
-            - If no replicas exist and any queued requests are hotswap-
-              eligible, ask the controller to deploy one replica and spawn
-              a Replica for the returned replica_id.
-            - If not pinned and no hotswap-eligible requests, the processor
-              is rejected via the eviction queue.
+        No-ops if a replica is already live or setup is already underway, so
+        it's safe to call on every enqueue and on last-replica exit. ``trusted``
+        (the kicking-off request's flag) sets whether the deployment loads with
+        trust_remote_code; a re-provision passes ``None`` to keep the value from the
+        request that first deployed it.
         """
-        with trace_span(
-            "processor.provision", attributes={"ndif.model.key": self.model_key}
-        ) as span:
-            try:
-                controller = controller_handle()
+        if self.replicas:
+            return
+        if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
+            return
+        if trusted is not None:
+            self.trusted = trusted
+        self.status = ProcessorStatus.PROVISIONING
+        asyncio.create_task(self.start())
 
-                response: ReplicaStates = await controller.get_deployment.remote(
-                    self.model_key
-                )
-                self.pinned = (
-                    response.replicas[0].pinned if response.replicas else False
-                )
+    def mark_idle(self) -> None:
+        """Drop back to UNINITIALIZED once the pool has drained to nothing.
 
-                span.set_attribute(
-                    "ndif.deploy.existing_replicas", len(response.replicas)
-                )
-                span.set_attribute("ndif.deploy.pinned", self.pinned)
-
-                # If not pinned and the queue already has work, drop any
-                # non-hotswap requests up front (and bail entirely if none
-                # are hotswap-eligible).
-                if not self.pinned and not self.queue.empty():
-                    if not await self.filter_hotswap_queue():
-                        self.abort(
-                            "Model is not pinned and hotswapping is not supported for this API key. "
-                            "See https://nnsight.net/status/ for a list of scheduled models."
-                        )
-                        return
-                # Already deployed replicas
-                if response.replicas:
-                    for state in response.replicas:
-                        self.spawn_replica(state.replica_id)
-                    return
-
-                # No replicas — deploy one and add it to the pool.
-                result = await Replica.deploy(self.model_key, replicas=1)
-
-                if result.error:
-                    self.abort(f"Failed to provision model: {result.error}")
-                    return
-
-                for replica_id in result.replicas:
-                    self.spawn_replica(replica_id)
-
-            except Exception as e:
-                span.set_status(trace.StatusCode.ERROR, str(e))
-                span.record_exception(e)
-                self.abort(
-                    "Error provisioning model deployment. "
-                    "Please try again later. Sorry for the inconvenience."
-                )
-                self.error_queue.put_nowait((self.model_key, e))
-
-    async def filter_hotswap_queue(self) -> bool:
-        """Drop non-hotswap requests from the queue.
-
-        Returns True if at least one hotswap-eligible request survived
-        (or the queue was empty), False if every queued request was rejected.
+        Called by the last replica's worker as it exits with an empty queue, so
+        ``status`` reflects "idle, nothing to serve" rather than a stale READY.
+        No-ops while any replica remains.
         """
-        hotswap_present = False
-        valid = []
-        while not self.queue.empty():
-            request = self.queue.get_nowait()
-            if request.hotswapping:
-                hotswap_present = True
-                valid.append(request)
-            else:
-                await request.create_response(
-                    BackendResponseModel.JobStatus.ERROR,
-                    logger,
-                    "Model is not pinned and hotswapping is not supported for this API key. "
-                    "See https://nnsight.net/status/ for a list of scheduled models.",
-                ).arespond()
-        for request in valid:
-            self.queue.put_nowait(request)
-        return hotswap_present
+        if not self.replicas:
+            self.status = ProcessorStatus.UNINITIALIZED
 
-    def spawn_replica(self, replica_id: REPLICA_ID) -> None:
-        replica = Replica(self.model_key, replica_id, self.metrics_event)
-        self.replicas[replica_id] = replica
-        replica.start(
-            queue=self.queue,
-            error_queue=self.error_queue,
-            ready_event=self.ready_event,
-            on_exit=self.on_replica_exit,
+    async def start(self) -> None:
+        """Bring the pool up: discover or deploy, wait ready, spawn workers.
+
+        Queries the controller: if it already lists replicas, adopt all of them;
+        otherwise deploy a fresh one. Each is registered, waited on, and given a
+        worker. On any failure (including a connection error) the phase-specific
+        ``error_message`` is logged with a traceback, reported to the error queue
+        (so the dispatcher reconnects on a connection error), and passed to
+        ``purge`` — which errors the queued users and clears the pool so nothing
+        hangs.
+        """
+        error_message = (
+            "Error starting model. Please try again later. Sorry for the inconvenience."
         )
 
-    async def reconcile(self) -> None:
-        """Re-sync the replica pool against the controller's current truth.
-
-        Called by the dispatcher when a CLI / dashboard mutation publishes
-        a ``RECONCILE_MODEL`` event for our model_key. Diffs
-        ``Controller.get_deployment(model_key)`` against the live pool:
-            - replica_ids on the controller but not in our pool → spawn
-            - replica_ids in our pool but not on the controller → cancel
-              (the Replica's on_exit hook handles removal + last-replica
-              tear-down)
-        Also refreshes ``self.pinned`` since pinned-ness can flip if a
-        schedule entry was added or removed.
-        """
-        with trace_span(
-            "processor.reconcile",
-            attributes={"ndif.model.key": self.model_key},
-        ) as span:
-            try:
-                response: ReplicaStates = await controller_handle().get_deployment.remote(
-                    self.model_key
-                )
-            except Exception as e:
-                span.set_status(trace.StatusCode.ERROR, str(e))
-                span.record_exception(e)
-                self.error_queue.put_nowait((self.model_key, e))
-                return
-
-            desired = {r.replica_id for r in response.replicas}
-            have = set(self.replicas.keys())
-
-            for rid in desired - have:
-                logger.info(
-                    f"Reconcile {self.model_key}: spawning new replica {rid}"
-                )
-                self.spawn_replica(rid)
-
-            for rid in have - desired:
-                logger.info(
-                    f"Reconcile {self.model_key}: cancelling stale replica {rid}"
-                )
-                await self.replicas[rid].cancel()
-
-            # pinned-ness can change (e.g. schedule entry added or removed)
-            if response.replicas:
-                self.pinned = response.replicas[0].pinned
-
-            span.set_attribute("ndif.reconcile.added", len(desired - have))
-            span.set_attribute("ndif.reconcile.removed", len(have - desired))
-
-    def on_replica_exit(self, replica: Replica) -> None:
-        """Called from each Replica's ``finally`` block as it tears down.
-
-        Removes the Replica from the pool, and — if it was the last live
-        replica — signals the dispatcher to tear the Processor down.
-        """
-        self.replicas.pop(replica.replica_id, None)
-        if not self.replicas:
-            self.abort(
-                "Model deployment evicted. "
-                "Please try again later. Sorry for the inconvenience."
+        try:
+            response: ReplicaStates = await controller_handle().get_deployment.remote(
+                self.model_key
             )
 
-    async def processor_worker(self) -> None:
-        """Walk the processor through setup, then run the autoscaling loop.
+            if response.replicas:
+                for state in response.replicas:
+                    replica = Replica(self.model_key, state.replica_id, self)
+                    self.replicas[replica.replica_id] = replica
+                self.status = ProcessorStatus.DEPLOYING
+            else:
+                error_message = (
+                    "Error provisioning model. "
+                    "Please try again later. Sorry for the inconvenience."
+                )
+                replica = await Replica.provision(self.model_key, self)
+                self.replicas[replica.replica_id] = replica
+                self.status = ProcessorStatus.DEPLOYING
 
-        Replicas do the request-serving work; this coroutine transitions
-        the processor from PROVISIONING → DEPLOYING → READY (or short-
-        circuits to CANCELLED on a failed provision), then drops into
-        ``autoscaling_loop`` which scales the pool up under sustained
-        queue pressure. The Processor exits the loop (and the task ends)
-        when ``status`` becomes CANCELLED — either because the dispatcher
-        purged us or because the last Replica exited.
-        """
-        self.status = ProcessorStatus.PROVISIONING
-        await self.reply()
+            error_message = (
+                "Error starting model. "
+                "Please try again later. Sorry for the inconvenience."
+            )
+            await self.reply()
 
-        await self.provision()
+            for replica in list(self.replicas.values()):
+                await replica.wait()
+                replica.start()
+                self.status = ProcessorStatus.READY
+            await self.reply()
 
-        if self.status == ProcessorStatus.CANCELLED:
-            return
-
-        self.status = ProcessorStatus.DEPLOYING
-        await self.reply()
-
-        await self.ready_event.wait()
-
-        if self.status == ProcessorStatus.CANCELLED:
-            return
-
-        self.status = ProcessorStatus.READY
-        await self.reply()
-
-        await self.autoscaling_loop()
+        except Exception as e:
+            event(
+                logger,
+                error_message,
+                level=logging.ERROR,
+                exc_info=True,
+                model_key=self.model_key,
+                stage=self.status.value,
+                error_type=type(e).__name__,
+            )
+            self.error_queue.put_nowait((self.model_key, e))
+            
+            if self.status != ProcessorStatus.READY:
+                await self.purge(error_message)
 
     async def autoscaling_loop(self) -> None:
         """Scale the replica pool up under sustained queue pressure.
 
-        Every ``NDIF_AUTOSCALING_INTERVAL_S`` seconds, peek at the head of
-        the queue. If its ``enqueued_at`` shows it's been waiting longer
-        than ``NDIF_AUTOSCALING_WAIT_THRESHOLD_S``, ask the controller to
-        add one more replica and sleep ``NDIF_AUTOSCALING_BACKOFF_S``
-        before re-checking — the backoff gives the new replica time to
-        come up and drain queue depth before we'd fire another scale-up.
-        Scale-ups stop once ``NDIF_AUTOSCALING_MAX_REPLICAS`` replicas
-        are running.
+        A single long-lived task (created in ``__init__``). Every
+        ``autoscaling_interval_s`` seconds, while serving, peek the queue head.
+        If it has waited longer than ``autoscaling_wait_threshold_s``, ask for
+        one more replica and sleep ``autoscaling_backoff_s`` before re-checking
+        (so the new replica can drain depth before another scale-up). Only acts
+        when READY — first-replica provisioning is ``start``'s job — and stops
+        once ``autoscaling_max_replicas`` replicas are running.
+
+        Each tick is guarded so a transient error can't kill the task and leave
+        the Processor unable to scale for the rest of its life.
         """
         while self.status != ProcessorStatus.CANCELLED:
-            head = self.queue._queue[0] if self.queue._queue else None
-            if head is not None and head.enqueued_at is not None:
-                wait = time.time() - head.enqueued_at
-                if (
-                    wait > QueueConfig.autoscaling_wait_threshold_s
-                    and len(self.replicas) < QueueConfig.autoscaling_max_replicas
-                ):
-                    await self.scale_up(wait)
-                    await asyncio.sleep(QueueConfig.autoscaling_backoff_s)
-                    continue
+            try:
+                if self.status == ProcessorStatus.READY:
+                    head = self.queue._queue[0] if self.queue._queue else None
+                    if head is not None and head.enqueued_at is not None:
+                        wait = time.time() - head.enqueued_at
+                        if (
+                            wait > CONFIG.autoscaling_wait_threshold_s
+                            and len(self.replicas) < CONFIG.autoscaling_max_replicas
+                        ):
+                            await self.scale_up(wait)
+                            await asyncio.sleep(CONFIG.autoscaling_backoff_s)
+                            continue
 
-            await asyncio.sleep(QueueConfig.autoscaling_interval_s)
+                await asyncio.sleep(CONFIG.autoscaling_interval_s)
+            except Exception:
+                logger.exception(
+                    f"autoscaling loop error for {self.model_key}; continuing"
+                )
+                await asyncio.sleep(CONFIG.autoscaling_interval_s)
 
     async def scale_up(self, wait: float) -> None:
-        """Ask the controller for one more replica and spawn its worker."""
-        with trace_span(
-            "processor.scale_up",
-            attributes={
-                "ndif.model.key": self.model_key,
-                "ndif.autoscale.queue_head_wait_s": wait,
-                "ndif.autoscale.current_replicas": len(self.replicas),
+        """Deploy one more replica and bring it up.
+
+        ``Replica.deploy`` registers the replica before its worker starts (so it
+        counts against ``autoscaling_max_replicas`` while coming up), then waits
+        for readiness — so this blocks the autoscaling loop until the new replica
+        is ready, which is fine since the loop backs off after a scale-up anyway.
+        """
+        replicas_before = len(self.replicas)
+        logger.info(
+            f"Autoscaling {self.model_key}: queue head has waited {wait:.1f}s "
+            f"(>{CONFIG.autoscaling_wait_threshold_s}s); adding a replica.",
+            extra={
+                "model_key": self.model_key,
+                "event": "autoscale_trigger",
+                "wait_s": round(wait, 2),
+                "threshold_s": CONFIG.autoscaling_wait_threshold_s,
+                "queue_size": self.queue.qsize(),
+                "replicas_before": replicas_before,
             },
-        ) as span:
-            logger.info(
-                f"Autoscaling {self.model_key}: queue head has waited "
-                f"{wait:.1f}s (>{QueueConfig.autoscaling_wait_threshold_s}s); "
-                f"adding a replica."
+        )
+
+        try:
+            # ``deploy`` registers the replica with this Processor before its
+            # worker starts, so it counts toward the pool while coming up.
+            await Replica.deploy(self.model_key, self)
+        except Exception as e:
+            self.error_queue.put_nowait((self.model_key, e))
+            event(
+                logger,
+                f"Autoscaling {self.model_key} failed to add replica: {e}",
+                level=logging.WARNING,
+                exc_info=True,
+                model_key=self.model_key,
+                autoscale_result="error",
+                replicas_before=replicas_before,
+                error=str(e),
             )
-            result = await Replica.deploy(self.model_key, replicas=1)
-            if result.error:
-                span.set_attribute("ndif.autoscale.error", result.error)
-                logger.warning(
-                    f"Autoscaling {self.model_key} failed to add replica: "
-                    f"{result.error}"
-                )
-                return
-            for rid in result.replicas:
-                self.spawn_replica(rid)
-            span.set_attribute("ndif.autoscale.new_replicas", len(result.replicas))
+            return
+
+        event(
+            logger,
+            f"Autoscaling {self.model_key}: provisioning replica; "
+            f"{replicas_before} -> {len(self.replicas)}",
+            model_key=self.model_key,
+            autoscale_result="added",
+            replicas_before=replicas_before,
+            replicas_after=len(self.replicas),
+        )
 
     async def reply(
         self,
         request: Optional[BackendRequestModel] = None,
         description: Optional[str] = None,
-        status: BackendResponseModel.JobStatus = BackendResponseModel.JobStatus.QUEUED,
+        status: Status = Status.QUEUED,
     ) -> None:
         """Send a status message to queued users.
 
-        ``request=None`` broadcasts to every request currently in the queue,
-        annotating each with its position. Otherwise the message is sent to
-        the single given request.
+        ``request=None`` broadcasts to every queued request, annotating each
+        with its position. Otherwise the message goes to the single request.
+        A ``None`` description is resolved to the current setup phase's text.
         """
         if description is None:
             if self.status == ProcessorStatus.PROVISIONING:
                 description = "Model Provisioning..."
+                status = Status.PROVISIONING
             elif self.status == ProcessorStatus.DEPLOYING:
                 description = "Model Deploying..."
+                status = Status.DEPLOYING
 
         if request is None:
             for i, queued in enumerate(list(self.queue._queue)):
-                await queued.create_response(
+                await queued.arespond(
                     status,
-                    logger,
-                    (
-                        description
-                        if description is not None
-                        else f"Moved to position {i + 1} in Queue."
-                    ),
-                ).arespond()
+                    description
+                    if description is not None
+                    else f"Moved to position {i + 1} in Queue.",
+                )
         else:
-            await request.create_response(
-                status,
-                logger,
-                description,
-            ).arespond()
+            await request.arespond(status, description or "")
+
+    async def reconcile(self) -> None:
+        """Shed replicas the controller no longer lists.
+
+        Invoked after an out-of-band deploy/evict (via the dispatcher's events
+        worker): cancel workers for replicas the controller has dropped. Each
+        cancelled worker removes itself and re-provisions (via ``ensure_started``)
+        if work remains. A connection error is reported so the dispatcher can
+        reconnect.
+        """
+        try:
+            response: ReplicaStates = await controller_handle().get_deployment.remote(
+                self.model_key
+            )
+        except Exception as e:
+            self.error_queue.put_nowait((self.model_key, e))
+            return
+
+        current = {state.replica_id for state in response.replicas}
+        for replica_id in set(self.replicas) - current:
+            await self.replicas[replica_id].cancel("Replica evicted.")
 
     async def purge(self, message: Optional[str] = None) -> None:
         """Error every queued request and cancel all replica workers.
 
-        Called by the dispatcher when this processor is being removed
-        (either because the last replica exited or because of a critical
-        failure).
+        Called on a critical failure — the dispatcher on a Ray connection error,
+        or ``start`` on a failed provision. The queue is cleared before replicas
+        are cancelled so their exits don't re-provision against requests that
+        were just errored.
         """
         if message is None:
             message = (
@@ -505,86 +377,54 @@ class Processor:
                 "Please try again later. Sorry for the inconvenience."
             )
 
-        await self.reply(
-            description=message, status=BackendResponseModel.JobStatus.ERROR
-        )
+        await self.reply(description=message, status=Status.ERROR)
+        self.queue._queue.clear()
 
         for replica in list(self.replicas.values()):
             await replica.cancel(message)
 
-    def get_state(self) -> dict:
-        """Snapshot of processor + per-replica state.
+        # Drop any replicas that were registered but never started their worker
+        # (so no ``finally`` will remove them); started ones self-remove too.
+        self.replicas.clear()
+        self.status = ProcessorStatus.UNINITIALIZED
 
-        Returns:
-            Dict with model_key, status, status_changed_at, request_ids,
-            pinned, busy (any replica running), num_replicas, and a
-            ``replicas`` list of per-replica state dicts.
-        """
-        request_ids = [req.id for req in self.queue._queue]
-
+    def snapshot(self) -> dict:
+        """A JSON-serializable view of this Processor's live state (for `ndif queue`)."""
         return {
             "model_key": self.model_key,
             "status": self.status.value,
-            "status_changed_at": self.status_changed_at,
-            "request_ids": request_ids,
-            "pinned": self.pinned,
-            "busy": self.busy,
-            "num_replicas": len(self.replicas),
-            "replicas": [r.get_state() for r in self.replicas.values()],
-        }
-
-    async def kill_request(self, request_id: str) -> dict:
-        """Kill a specific request by ID.
-
-        Searches in-flight requests on every replica first, then the queue.
-        """
-        # In-flight on a replica?
-        for replica in list(self.replicas.values()):
-            if replica.current_request is None:
-                continue
-            if replica.current_request.id != request_id:
-                continue
-            cancelled = await replica.cancel_current_request()
-            if cancelled:
-                return {
-                    "status": "cancelled_execution",
-                    "message": (
-                        f"Cancelled executing request {request_id} on replica "
-                        f"{replica.replica_id}"
+            "queue_size": self.queue.qsize(),
+            "request_ids": [request.id for request in list(self.queue._queue)],
+            "replicas": [
+                {
+                    "replica_id": replica.replica_id,
+                    "ready": not replica.dropped,
+                    "busy": replica.busy,
+                    "current_request_id": (
+                        replica.current_request.id
+                        if replica.current_request
+                        else None
                     ),
+                    "current_started_at": replica.current_started_at,
                 }
-            return {
-                "status": "error",
-                "message": (
-                    f"Error cancelling request {request_id} on replica "
-                    f"{replica.replica_id}"
-                ),
-            }
-
-        # Queued?
-        found = None
-        for request in self.queue._queue:
-            if request.id == request_id:
-                found = request
-                break
-
-        if found is not None:
-            self.queue._queue.remove(found)
-
-            await found.create_response(
-                BackendResponseModel.JobStatus.ERROR,
-                logger,
-                "Request cancelled.",
-            ).arespond()
-
-            await self.reply()
-
-            return {
-                "status": "removed_from_queue",
-                "message": f"Removed request {request_id} from queue",
-            }
-
-        return {
-            "status": "not_found",
-            "message": f"Request {request_id} not found in processor {self.model_key}",
+                for replica in self.replicas.values()
+            ],
         }
+
+    def pop_queued(self, request_id: str) -> Optional[BackendRequestModel]:
+        """Remove a queued request by id and return it, or None if not queued."""
+        for request in list(self.queue._queue):
+            if request.id == request_id:
+                self.queue._queue.remove(request)
+                return request
+        return None
+
+    def executing_replica(self, request_id: str) -> Optional[Replica]:
+        """The Replica currently running ``request_id``, or None."""
+        for replica in self.replicas.values():
+            if (
+                replica.current_request is not None
+                and replica.current_request.id == request_id
+            ):
+                return replica
+        return None

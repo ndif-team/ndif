@@ -1,0 +1,62 @@
+# Install into the ndif env (Python 3.12):
+#   pip install -r requirements.txt
+#
+# torch is pinned to a CUDA 12.4 build to match a CUDA 12.x driver. The
+# +cu124 wheels live on the PyTorch index below, not on PyPI.
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# The client library the server runs traced blocks for. Installed into the image
+# so it is self-contained; for local development `just up` bind-mounts your
+# working nnsight checkout over this install (see the justfile / compose), so a
+# code change on the client side is picked up without a rebuild.
+nnsight
+
+torch==2.6.0+cu124
+ray[default]==2.55.1
+transformers==5.12.1
+numpy==2.5.0
+pydantic==2.13.4
+accelerate==1.2.0
+# The model actor applies PEFT adapters requested per-request via the model's
+# _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
+# dependency the server install must provide.
+peft==0.19.1
+cloudpickle==3.1.2
+click==8.1.8
+# The CLI layers ./.env (and an explicit --env-file) over the environment.
+python-dotenv==1.0.1
+# The CLI reads/writes models.yaml deployment configs (deploy -f / export).
+pyyaml==6.0.2
+# Request payloads arrive zstd-compressed (nnsight compresses by default); the
+# model actor needs this to decompress them.
+zstandard==0.25.0
+
+# API service
+fastapi==0.138.1
+uvicorn[standard]==0.49.0
+gunicorn==23.0.0
+python-multipart==0.0.32
+redis==8.0.1
+
+# Object store client (boto3/S3) — result blobs are staged there. boto3 speaks
+# S3 to both MinIO (dev) and AWS S3 (prod).
+boto3==1.35.49
+
+# Telemetry sinks (the `metrics` extra) — bundled in the image so the
+# compose-provisioned Loki + InfluxDB work out of the box. Both providers fail
+# open, so these are only exercised when NDIF_LOKI_URL / NDIF_INFLUX_URL are set.
+influxdb-client==1.49.0
+python-logging-loki==0.3.1
+
+# Postgres auth (the `postgres` extra) — async driver for API-key verification
+# against the user/keys DB. Only exercised when NDIF_POSTGRES_URL is set; the
+# API runs unauthenticated otherwise.
+asyncpg==0.30.0
+
+# Dashboard backend (the `dashboard` extra) — admin UI + schedule/monitor crons.
+# fastapi/uvicorn/python-multipart above are shared with the API; these are the
+# dashboard-only additions. Only exercised by `ndif start dashboard`.
+pydantic-settings==2.14.2
+itsdangerous==2.2.0
+bcrypt==5.0.0
+requests==2.34.2

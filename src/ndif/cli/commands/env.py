@@ -1,257 +1,137 @@
-"""Env command for NDIF - view Ray cluster environment information."""
+"""``ndif env`` — show the Ray cluster's Python/package environment.
+
+Fetches the cluster env from the API's ``/env`` endpoint (served from a
+Redis-cached, coalesced refresh the dispatcher populates). Use ``--local`` to
+show this machine's environment instead — handy for spotting version drift
+between a client and the cluster.
+"""
 
 import json
-import pickle
-import time
-import click
-import importlib.metadata
+import platform
 import subprocess
 import sys
-import platform
-import requests
+import urllib.error
+import urllib.request
 
-from ..lib.session import get_current_session, get_env
-from ..lib.checks import check_redis, check_api
+import click
 
-# Key packages from pyproject.toml dependencies
+from .. import config
+
+# Packages worth surfacing by default (matched against import names).
 KEY_PACKAGES = [
-    'fastapi',
-    'python-socketio',
-    'redis',
-    'uvicorn',
-    'gunicorn',
-    'ray',
-    'nnsight',
-    'boto3',
-    'torch',
-    'transformers',
-    'numpy',
+    "fastapi", "uvicorn", "gunicorn", "redis", "ray", "nnsight",
+    "boto3", "torch", "transformers", "numpy", "pydantic",
 ]
 
 
-@click.group(invoke_without_command=True)
-@click.option('--json-output', 'json_flag', is_flag=True, help='Output as JSON')
-@click.option('--all', 'show_all', is_flag=True, help='Show all installed packages (default: key packages only)')
-@click.option('--local', is_flag=True, help='Show local system info instead of cluster env')
-@click.option('--broker-url', default=None, help='Broker URL (default: from NDIF_BROKER_URL)')
-@click.pass_context
-def env(ctx, json_flag: bool, show_all: bool, local: bool, broker_url: str):
-    """Show Ray cluster environment information.
-
-    Displays Python version and installed packages from the Ray cluster,
-    as cached in Redis by the API service.
+@click.command()
+@click.option("--json-output", "json_flag", is_flag=True, help="Output as JSON.")
+@click.option("--all", "show_all", is_flag=True, help="Show all packages (default: key packages).")
+@click.option("--local", is_flag=True, help="Show this machine's environment instead of the cluster's.")
+@click.option("--api-url", default=None, help="API URL (default: NDIF_API_URL).")
+def env(json_flag, show_all, local, api_url):
+    """Show the Ray cluster's Python version and installed packages.
 
     \b
     Examples:
-        ndif env             # Show key packages only
-        ndif env --all       # Show all installed packages
+        ndif env
+        ndif env --all
         ndif env --json-output
-        ndif env --local     # Show local system info
-        ndif env example     # Print the bundled .env.example template
-                             # (use `ndif env example > .env` to bootstrap config)
+        ndif env --local
     """
-    if ctx.invoked_subcommand is not None:
-        return
-
     if local:
         _show_local_env(json_flag)
         return
 
-    # Get broker URL and API URL: CLI arg > session > env default
-    session = get_current_session()
-    if broker_url is None:
-        broker_url = session.config.broker_url if session else get_env("NDIF_BROKER_URL")
-    api_url = session.config.api_url if session else get_env("NDIF_API_URL")
-
-    # Check if Redis is reachable
-    if not check_redis(broker_url):
-        click.echo(f"Error: Cannot reach broker at {broker_url}", err=True)
-        click.echo("Make sure the broker is running (ndif start broker)", err=True)
-        click.echo("\nUse --local to show local system info instead.", err=True)
-        return
-
-    # Try to get cached env from Redis
+    api_url = api_url or config.get("NDIF_API_URL")
     try:
-        import redis as redis_sync
-        client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
-        cached_env = client.get("env")
+        with urllib.request.urlopen(f"{api_url.rstrip('/')}/env", timeout=60) as resp:
+            env_data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        click.echo(f"Error: API returned {e.code} fetching cluster env from {api_url}", err=True)
+        click.echo("The cluster may be down. Use --local to show this machine instead.", err=True)
+        raise click.Abort()
+    except (urllib.error.URLError, OSError) as e:
+        click.echo(f"Error: cannot reach API at {api_url}: {e}", err=True)
+        click.echo("Start the API (ndif start api). Use --local to show this machine instead.", err=True)
+        raise click.Abort()
 
-        # If not cached, trigger the API to populate it
-        if cached_env is None:
-            client.close()
-            cached_env = _fetch_and_cache_env(api_url, broker_url)
-
-        else:
-            client.close()
-
-        if cached_env is None:
-            click.echo("No environment info available.")
-            click.echo("\nUse --local to show local system info instead.")
-            return
-
-        env_data = pickle.loads(cached_env)
-
-        if json_flag:
-            click.echo(json.dumps(env_data, indent=2))
-        else:
-            _format_env_human(env_data, show_all)
-
-    except Exception as e:
-        click.echo(f"Error reading environment info: {e}", err=True)
+    if json_flag:
+        click.echo(json.dumps(env_data, indent=2))
+    else:
+        _format_env(env_data, show_all)
 
 
-def _fetch_and_cache_env(api_url: str, broker_url: str, timeout: int = 30) -> bytes | None:
-    """Request /env from the API to populate the cache, then return cached data.
-
-    Args:
-        api_url: API base URL
-        broker_url: Redis broker URL
-        timeout: Maximum seconds to wait for cache to populate
-
-    Returns:
-        Cached env data as bytes, or None if failed
-    """
-    # Check if API is reachable
-    if not check_api(api_url):
-        click.echo(f"Error: Cannot reach API at {api_url}", err=True)
-        click.echo("Make sure the API service is running (ndif start api)", err=True)
-        return None
-
-    # Make the /env request to trigger caching
-    click.echo("Fetching environment info from cluster...")
-    try:
-        response = requests.get(f"{api_url}/env", timeout=timeout)
-        if response.status_code != 200:
-            click.echo(f"Error: API returned status {response.status_code}", err=True)
-            return None
-    except requests.RequestException as e:
-        click.echo(f"Error fetching from API: {e}", err=True)
-        return None
-
-    # Wait briefly for cache to populate, then read from Redis
-    time.sleep(0.5)
-
-    try:
-        import redis as redis_sync
-        client = redis_sync.Redis.from_url(broker_url, socket_connect_timeout=2)
-        cached_env = client.get("env")
-        client.close()
-        return cached_env
-    except Exception as e:
-        click.echo(f"Error reading from cache: {e}", err=True)
-        return None
-
-
-def _format_env_human(env_data: dict, show_all: bool = False):
-    """Format environment data for human readability."""
+def _format_env(env_data: dict, show_all: bool) -> None:
     click.echo("Ray Cluster Environment")
     click.echo("=" * 60)
     click.echo()
-
-    # Python version
-    python_version = env_data.get('python_version', 'unknown')
-    click.echo(f"Python Version: {python_version}")
+    click.echo(f"Python: {env_data.get('python_version', 'unknown').split()[0]}")
     click.echo()
 
-    # Installed packages (dict: name -> version)
-    all_packages = env_data.get('packages', {})
-
+    all_packages = env_data.get("packages", {})
     if show_all:
         packages = all_packages
         click.echo(f"All Installed Packages ({len(packages)}):")
     else:
-        # Filter to key packages only
-        packages = {k: v for k, v in all_packages.items() if k.lower() in [p.lower() for p in KEY_PACKAGES]}
+        key = {p.lower() for p in KEY_PACKAGES}
+        packages = {k: v for k, v in all_packages.items() if k.lower() in key}
         click.echo(f"Key Packages ({len(packages)}/{len(all_packages)} total):")
 
-    if packages:
-        click.echo("-" * 40)
+    if not packages:
+        click.echo("  (no package information available)")
+        return
 
-        # Sort packages alphabetically
-        for name in sorted(packages.keys(), key=str.lower):
-            version = packages[name]
-            click.echo(f"  {name}=={version}")
-
-        if not show_all:
-            click.echo()
-            click.echo("Use --all to show all installed packages.")
-    else:
-        click.echo("No package information available.")
+    click.echo("-" * 40)
+    for name in sorted(packages, key=str.lower):
+        click.echo(f"  {name}=={packages[name]}")
+    if not show_all:
+        click.echo("\nUse --all to show every package.")
 
 
-def _show_local_env(json_flag: bool):
-    """Show local system environment info."""
+def _show_local_env(json_flag: bool) -> None:
+    import importlib.metadata
 
     data = {
-        'python_version': sys.version,
-        'platform': platform.platform(),
-        'machine': platform.machine(),
-        'processor': platform.processor(),
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
     }
-
-    # Try to get GPU info
     try:
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
-            capture_output=True,
-            text=True,
-            check=False
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3,
         )
-        if result.returncode == 0:
-            gpus = []
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    gpus.append(line.strip())
-            data['gpus'] = gpus
+        if r.returncode == 0 and r.stdout.strip():
+            data["gpus"] = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
     except FileNotFoundError:
         pass
 
-    # Try to get key packages
-    try:
-        key_packages = ['torch', 'ray', 'nnsight', 'transformers', 'numpy']
-        installed = {}
-        for pkg in key_packages:
-            try:
-                version = importlib.metadata.version(pkg)
-                installed[pkg] = version
-            except importlib.metadata.PackageNotFoundError:
-                pass
-        data['key_packages'] = installed
-    except ImportError:
-        pass
+    installed = {}
+    for pkg in ("torch", "ray", "nnsight", "transformers", "numpy"):
+        try:
+            installed[pkg] = importlib.metadata.version(pkg)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    data["key_packages"] = installed
 
     if json_flag:
         click.echo(json.dumps(data, indent=2))
-    else:
-        click.echo("Local System Environment")
-        click.echo("=" * 60)
+        return
+
+    click.echo("Local System Environment")
+    click.echo("=" * 60)
+    click.echo()
+    click.echo(f"Python: {data['python_version'].split()[0]}")
+    click.echo(f"Platform: {data['platform']}")
+    click.echo(f"Machine: {data['machine']}")
+    click.echo()
+    if data.get("gpus"):
+        click.echo("GPUs:")
+        for gpu in data["gpus"]:
+            click.echo(f"  {gpu}")
         click.echo()
-        click.echo(f"Python: {data['python_version'].split()[0]}")
-        click.echo(f"Platform: {data['platform']}")
-        click.echo(f"Machine: {data['machine']}")
-        click.echo()
-
-        if 'gpus' in data:
-            click.echo("GPUs:")
-            for gpu in data['gpus']:
-                click.echo(f"  {gpu}")
-            click.echo()
-
-        if 'key_packages' in data:
-            click.echo("Key Packages:")
-            for name, version in data['key_packages'].items():
-                click.echo(f"  {name}=={version}")
-
-
-@env.command(name='example')
-def env_example():
-    """Print the bundled .env.example template.
-
-    Pipe to a file to bootstrap your config:
-
-        ndif env example > .env
-
-    Then edit, and `ndif start` will auto-load it from the CWD.
-    """
-    from importlib.resources import files
-    click.echo(files('ndif').joinpath('.env.example').read_text(), nl=False)
+    if installed:
+        click.echo("Key Packages:")
+        for name, version in installed.items():
+            click.echo(f"  {name}=={version}")

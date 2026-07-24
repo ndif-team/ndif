@@ -1,8 +1,9 @@
 import asyncio
+import importlib
+import logging
 import os
 import sys
-import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import distributions, packages_distributions
 from typing import Any, Dict, List, Optional, Union
@@ -11,25 +12,24 @@ import ray
 from pydantic import BaseModel
 from ray.util.state import list_actors
 
-from opentelemetry import trace
-
-from .....common.logging.logger import set_logger
-from .....common.metrics import (
-    DeploymentGPUMetric,
-    DeploymentStateMetric,
-    NodeCPUMetric,
-    NodeGPUMetric,
+from .....common.schema.controller import (
+    DeploymentConfig,
+    DeployResponse,
+    ReplicaState,
+    ReplicaStates,
 )
-from .....common.providers.mailgun import MailgunProvider
-from .....common.providers.objectstore import ObjectStoreProvider
-from .....common.providers.socketio import SioProvider
-from .....common.schema.controller import DeployResponse, ReplicaState, ReplicaStates
-from .....common.schema.deployment_config import DeploymentConfig
-from .....common.tracing import TracingContext, init_tracing, trace_span
 from .....common.types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
+
+logger = logging.getLogger("ndif.controller")
+
+
+def _import_from_path(path: str):
+    """Import and return the object named by a dotted path (``pkg.mod.Name``)."""
+    module_path, _, attr = path.rpartition(".")
+    return getattr(importlib.import_module(module_path), attr)
 
 
 @dataclass
@@ -41,30 +41,47 @@ class DeploymentDelta:
 
 
 class _ControllerActor:
+    """Reconciles desired model deployments against live Ray actors.
+
+    The cluster decides *where* replicas go (placement, eviction, HOT/WARM/COLD
+    caching); this actor turns those decisions into Ray actor lifecycle ops via
+    a build()/apply() diff, and exposes the deploy/evict/get_deployment API the
+    queue uses (plus status/env for the dashboard and CLI).
+    """
+
     def __init__(
         self,
         deployments: List[MODEL_KEY],
         model_import_path: str,
+        controller_import_path: str,
         default_execution_timeout_seconds: float,
-        default_model_actor_class: str,
         model_cache_percentage: float,
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
         default_padding_bias: int,
+        default_dtype: str = "bfloat16",
     ):
         super().__init__()
 
-        init_tracing("ndif-ray")
+        # Install the Loki log handler in this actor's worker process (each Ray
+        # actor is its own process, so it must be set up here, not on the driver).
+        from .....common.providers.loki import LokiProvider
+
+        LokiProvider.connect()
 
         self.model_import_path = model_import_path
+        self.controller_import_path = controller_import_path
         self.default_execution_timeout_seconds = default_execution_timeout_seconds
-        self.default_model_actor_class = default_model_actor_class
+        # The model actor class every deployment is built from (a per-deployment
+        # DeploymentConfig.actor_class overrides it). Resolved to a concrete
+        # class downstream in Deployment.create.
+        self.default_model_actor_class = model_import_path
         self.minimum_deployment_time_seconds = minimum_deployment_time_seconds
         self.model_cache_percentage = model_cache_percentage
         self.default_padding_factor = default_padding_factor
         self.default_padding_bias = default_padding_bias
+        self.default_dtype = default_dtype
         self.runtime_context = ray.get_runtime_context()
-        self.logger = set_logger("Controller")
 
         # Keyed by (node_id, model_key, replica_id). Each replica is tracked
         # independently so the build()/apply() diff can fire create/delete/
@@ -79,17 +96,18 @@ class _ControllerActor:
             default_model_actor_class=self.default_model_actor_class,
         )
 
+        # TODO: detached model actors from a previous controller outlive a
+        # controller restart but aren't re-adopted here — the rebuilt cluster
+        # starts empty and can re-place onto GPUs those orphans still hold,
+        # over-committing memory. Reconcile against live ModelActors on startup.
         self.cluster.update_nodes()
 
         if deployments and deployments != [""]:
             self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
 
         asyncio.create_task(self.check_nodes())
-        asyncio.create_task(self.emit_deployment_metrics_loop())
 
     def get_state(self, include_ray_state: bool = False) -> Dict[str, Any]:
-        """Get the state of the controller."""
-
         state = {
             "cluster": self.cluster.get_state(include_ray_state=include_ray_state),
             "default_execution_timeout_seconds": self.default_execution_timeout_seconds,
@@ -98,15 +116,9 @@ class _ControllerActor:
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "default_padding_factor": self.default_padding_factor,
             "default_padding_bias": self.default_padding_bias,
+            "runtime_context": self.runtime_context.get(),
+            "datetime": datetime.now().isoformat(),
         }
-
-        if include_ray_state:
-            state["ray_dashboard_url"] = self.ray_dashboard_url
-            state["runtime_context"] = self.runtime_context.get()
-            state["replica_context"] = asdict(self.replica_context)
-            state["serve_details"] = self.client.get_serve_details()
-
-        state["datetime"] = datetime.now().isoformat()
         return state
 
     async def check_nodes(self):
@@ -116,402 +128,187 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    async def emit_deployment_metrics_loop(self):
-        """Heartbeat the current deployment state to InfluxDB.
-
-        Runs alongside the on-change emission in ``apply()`` so that long-lived
-        deployments still produce a regular series (the join against periodic
-        GPU/node profiles relies on having a recent point near any timestamp).
-        """
-        interval = int(
-            os.environ.get("NDIF_DEPLOYMENT_METRIC_INTERVAL_S", "30")
-        )
-        while True:
-            self._emit_deployment_metrics()
-            await asyncio.sleep(interval)
-
-    def _emit_deployment_metrics(self):
-        """Emit one snapshot of the cluster's deployment state to InfluxDB.
-
-        A pure projection of a single ``cluster.get_state()`` call (no second
-        traversal of cluster internals): per live replica a ``deployment_state``
-        point (what/where/sizing) + a ``deployment_gpu`` point per GPU it
-        occupies (model-attributed allocation), and per (node, GPU) a
-        ``node_gpu`` point (GPU resource accounting). All keyed by
-        node_ip + gpu_index for joining against Ray's per-GPU profiles.
-
-        Liveness is implicit in emission recency — the controller has already
-        dropped dead/evicted/failed deployments from its state, so they stop
-        appearing here. Best-effort: a metrics failure must never disrupt the
-        controller, so the whole thing is guarded.
-        """
-        try:
-            now = time.time()
-            state = self.cluster.get_state()
-            eval_cache = state["evaluator"]["cache"]
-
-            for node in state["nodes"]:
-                node_id = node["id"]
-                node_name = node["name"]
-                node_ip = node["ip"]
-                resources = node["resources"]
-                gpu_details = resources["gpu_details"]
-
-                # HOT replicas only carry GPU allocations; count how many touch
-                # each GPU so node_gpu reports co-location without per-replica
-                # double-counting.
-                replicas_per_gpu = {gpu["index"]: 0 for gpu in gpu_details}
-                for deployment in node["deployments"]:
-                    for gpu_index in deployment["gpus"]:
-                        if gpu_index in replicas_per_gpu:
-                            replicas_per_gpu[gpu_index] += 1
-
-                for deployment in node["deployments"]:
-                    self._emit_deployment(
-                        deployment, node_id, node_name, node_ip, eval_cache, now
-                    )
-                for deployment in node["cache"]:
-                    self._emit_deployment(
-                        deployment, node_id, node_name, node_ip, eval_cache, now
-                    )
-
-                for gpu in gpu_details:
-                    NodeGPUMetric.update(
-                        node_id=node_id,
-                        node_name=node_name,
-                        node_ip=node_ip,
-                        gpu_type=resources["gpu_type"],
-                        gpu_index=gpu["index"],
-                        total_memory_bytes=gpu["memory_bytes"],
-                        allocated_bytes=(
-                            gpu["memory_bytes"] - gpu["available_memory_bytes"]
-                        ),
-                        available_memory_bytes=gpu["available_memory_bytes"],
-                        num_replicas=replicas_per_gpu[gpu["index"]],
-                    )
-
-                cpu_total = resources["cpu_memory_bytes"]
-                cpu_available = resources["available_cpu_memory_bytes"]
-                NodeCPUMetric.update(
-                    node_id=node_id,
-                    node_name=node_name,
-                    node_ip=node_ip,
-                    total_memory_bytes=cpu_total,
-                    allocated_bytes=cpu_total - cpu_available,
-                    available_memory_bytes=cpu_available,
-                    num_cached=len(node["cache"]),
-                )
-        except Exception:
-            self.logger.exception("Error emitting deployment metrics")
-
-    def _emit_deployment(
-        self, deployment, node_id, node_name, node_ip, eval_cache, now
-    ):
-        """Project one deployment.get_state() dict onto the metrics."""
-        model_key = deployment["model_key"]
-        replica_id = deployment["replica_id"]
-        level = deployment["deployment_level"]
-        gpus = deployment["gpus"]
-
-        entry = eval_cache.get(model_key, {})
-
-        DeploymentStateMetric.update(
-            model_key=model_key,
-            replica_id=replica_id,
-            node_id=node_id,
-            node_name=node_name,
-            node_ip=node_ip,
-            deployment_level=level,
-            pinned=deployment["pinned"],
-            actor_class=deployment["actor_class"],
-            base_size_bytes=entry.get("base_size_in_bytes", 0),
-            padded_size_bytes=deployment["size_bytes"],
-            n_params=entry.get("n_params", 0),
-            gpus=gpus,
-            age_seconds=now - deployment["deployed"],
-        )
-
-        for gpu_index, allocated_bytes in gpus.items():
-            DeploymentGPUMetric.update(
-                model_key=model_key,
-                replica_id=replica_id,
-                node_id=node_id,
-                node_name=node_name,
-                node_ip=node_ip,
-                deployment_level=level,
-                gpu_index=gpu_index,
-                allocated_bytes=allocated_bytes,
-            )
-
     def _deploy(
         self,
         deployments: Union[
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
         ],
-        trace_context: Optional[Dict[str, str]] = None,
     ) -> DeployResponse:
         configs = DeploymentConfig.normalize(deployments)
 
-        parent_ctx = TracingContext.extract(trace_context)
-        with trace_span(
-            "controller.deploy",
-            parent_context=parent_ctx,
-            attributes={
-                "ndif.model.keys": str(list(configs.keys())),
-                "ndif.deploy.num_models": len(configs),
-            },
-        ) as span:
-            self.logger.info(
-                f"Deploying models: {[(key, cfg.pinned) for key, cfg in configs.items()]}"
-            )
+        # Pin each config's dtype to a concrete value now, so the evaluator's
+        # size estimate and the actor's load use the *same* dtype (the memory
+        # accounting that places a replica must match what it actually loads).
+        for config in configs.values():
+            if config.dtype is None:
+                config.dtype = self.default_dtype
 
-            response = self.cluster.deploy(configs)
+        logger.info(
+            f"Deploying models: "
+            f"{[(key, cfg.pinned) for key, cfg in configs.items()]}"
+        )
 
-            span.set_attribute("ndif.deploy.changed", response.change)
-            for model_key, model_result in response.results.items():
-                span.add_event(
-                    "deploy_result",
-                    {
-                        "model_key": model_key,
-                        "replicas": ",".join(model_result.replicas),
-                        "error": model_result.error or "",
-                    },
-                )
-            for evicted_model_key, evicted_replica_id in response.evictions:
-                span.add_event(
-                    "deploy_eviction",
-                    {
-                        "model_key": evicted_model_key,
-                        "replica_id": evicted_replica_id,
-                    },
-                )
+        response = self.cluster.deploy(configs)
 
-            if response.change:
-                self.apply()
+        if response.change:
+            self.apply()
 
-            return response
+        return response
 
     async def deploy(
         self,
         deployments: Union[
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
         ],
-        trace_context: Optional[Dict[str, str]] = None,
     ) -> DeployResponse:
-        return self._deploy(deployments, trace_context=trace_context)
+        return self._deploy(deployments)
 
     def evict(
         self,
         model_key: MODEL_KEY,
         replica_id: Optional[REPLICA_ID] = None,
-        trace_context: Optional[Dict[str, str]] = None,
     ) -> ReplicaStates:
         """Evict replicas of a model.
 
-        If ``replica_id`` is provided, only that one replica is evicted.
-        Otherwise every HOT and WARM replica of ``model_key`` is evicted.
-        Returns the pre-eviction state of every replica that was evicted.
+        With ``replica_id``, only that one is evicted; otherwise every HOT and
+        WARM replica of ``model_key``. Returns the pre-eviction state of every
+        replica that was evicted.
         """
-        parent_ctx = TracingContext.extract(trace_context)
-        with trace_span(
-            "controller.evict",
-            parent_context=parent_ctx,
-            attributes={
-                "ndif.model.key": model_key,
-                "ndif.replica.id": replica_id or "",
-            },
-        ) as span:
-            response = self.cluster.evict(model_key, replica_id)
+        response = self.cluster.evict(model_key, replica_id)
 
-            span.set_attribute("ndif.evict.count", len(response.replicas))
+        if response.replicas:
+            self.apply()
 
-            if response.replicas:
-                self.apply()
+        return response
 
-            return response
+    def build(self) -> DeploymentDelta:
+        """Diff the live cluster against the last-applied state.
 
-    def build(self):
-        with trace_span("controller.build") as span:
-            new_state = {}
+        Walks each node's cache/deployments and classifies every replica into
+        create / from_cache / to_cache, with whatever's left in the old state
+        being to_delete. Updates ``self.state`` to the new truth.
+        """
+        new_state = {}
 
-            deployments_to_cache = []
-            deployments_from_cache = []
-            deployments_to_create = []
-            deployments_to_delete = []
+        deployments_to_cache = []
+        deployments_from_cache = []
+        deployments_to_create = []
+        deployments_to_delete = []
 
-            # For every node
-            for id, node in self.cluster.nodes.items():
-                # For every cached replica
-                for model_key, replica_id, cached in node.iter_cache():
-                    # It will always exist in the state if its now cached.
-                    existing_deployment = self.state.pop((id, model_key, replica_id))
+        for id, node in self.cluster.nodes.items():
+            # Every cached (WARM) replica.
+            for model_key, replica_id, cached in node.iter_cache():
+                # It will always exist in state if it's now cached.
+                existing_deployment = self.state.pop((id, model_key, replica_id))
 
-                    # If the deployment is hot, we need to actually cache it.
-                    if existing_deployment.deployment_level == DeploymentLevel.HOT:
-                        deployments_to_cache.append(cached)
+                if existing_deployment.deployment_level == DeploymentLevel.HOT:
+                    deployments_to_cache.append(cached)
 
-                    # Update state.
-                    new_state[(id, model_key, replica_id)] = cached
+                new_state[(id, model_key, replica_id)] = cached
 
-                # For every deployed (HOT) replica
-                for model_key, replica_id, deployment in node.iter_deployments():
-                    existing_deployment = self.state.pop(
-                        (id, model_key, replica_id), None
-                    )
+            # Every deployed (HOT) replica.
+            for model_key, replica_id, deployment in node.iter_deployments():
+                existing_deployment = self.state.pop((id, model_key, replica_id), None)
 
-                    # If the deployment didn't exist before, we need to create it.
-                    if existing_deployment is None:
-                        deployments_to_create.append((node.name, deployment))
-                    # If the deployment is warm, we need to move it from cache.
-                    elif existing_deployment.deployment_level == DeploymentLevel.WARM:
-                        deployments_from_cache.append(deployment)
-                    # Update state.
-                    new_state[(id, model_key, replica_id)] = deployment
+                if existing_deployment is None:
+                    deployments_to_create.append((node.name, deployment))
+                elif existing_deployment.deployment_level == DeploymentLevel.WARM:
+                    deployments_from_cache.append(deployment)
 
-            # For every deployment that doesn't exist in the new state, we need to delete it.
-            for (id, model_key, replica_id), deployment in self.state.items():
-                deployments_to_delete.append(deployment)
+                new_state[(id, model_key, replica_id)] = deployment
 
-            # Update state.
-            self.state = new_state
+        # Anything left in the old state no longer exists -> delete.
+        for (id, model_key, replica_id), deployment in self.state.items():
+            deployments_to_delete.append(deployment)
 
-            delta = DeploymentDelta(
-                deployments_to_cache=deployments_to_cache,
-                deployments_from_cache=deployments_from_cache,
-                deployments_to_create=deployments_to_create,
-                deployments_to_delete=deployments_to_delete,
-            )
+        self.state = new_state
 
-            span.set_attribute("ndif.delta.to_cache", len(delta.deployments_to_cache))
-            span.set_attribute(
-                "ndif.delta.from_cache", len(delta.deployments_from_cache)
-            )
-            span.set_attribute("ndif.delta.to_create", len(delta.deployments_to_create))
-            span.set_attribute("ndif.delta.to_delete", len(delta.deployments_to_delete))
-
-            return delta
+        return DeploymentDelta(
+            deployments_to_cache=deployments_to_cache,
+            deployments_from_cache=deployments_from_cache,
+            deployments_to_create=deployments_to_create,
+            deployments_to_delete=deployments_to_delete,
+        )
 
     def apply(self):
-        with trace_span("controller.apply") as span:
+        """Execute the build() delta as Ray actor lifecycle operations."""
+        deployment_delta = self.build()
 
-            deployment_delta = self.build()
+        # Delete.
+        for deployment in deployment_delta.deployments_to_delete:
+            deployment.delete()
 
-            # Delete deployments
-            for deployment in deployment_delta.deployments_to_delete:
-                span.add_event(
-                    "deleting_deployment", {"model_key": deployment.model_key}
+        # Cache (HOT->WARM): must finish before from_cache frees its resources.
+        cache_futures = []
+        cache_deployments = []
+        for deployment in deployment_delta.deployments_to_cache:
+            cache_future = deployment.cache()
+            if cache_future is not None:
+                cache_futures.append(cache_future)
+                cache_deployments.append(deployment)
+            else:
+                logger.error(f"Failed to initiate cache for {deployment.model_key}")
+                try:
+                    deployment.delete()
+                except Exception:
+                    pass
+                self._remove_deployment_from_state(deployment)
+
+        for future, deployment in zip(cache_futures, cache_deployments):
+            try:
+                ray.get(future)
+            except Exception as e:
+                logger.error(
+                    f"Deployment {deployment.model_key} failed during cache: {e}"
+                )
+                try:
+                    deployment.delete()
+                except Exception:
+                    pass
+                self._remove_deployment_from_state(deployment)
+
+        # Restore from cache (WARM->HOT): monitor asynchronously.
+        for deployment in deployment_delta.deployments_from_cache:
+            future = deployment.from_cache()
+            if future is not None:
+                asyncio.create_task(
+                    self._monitor_deployment(future, deployment, "from_cache")
+                )
+            else:
+                logger.error(
+                    f"Failed to initiate from_cache for {deployment.model_key}"
                 )
                 deployment.delete()
+                self._remove_deployment_from_state(deployment)
 
-            # Cache deployments - must complete before from_cache can proceed to free up resources
-            cache_futures = []
-            cache_deployments = []
-            for deployment in deployment_delta.deployments_to_cache:
-                span.add_event(
-                    "caching_deployment", {"model_key": deployment.model_key}
+        # Create from disk: monitor the actor's readiness asynchronously.
+        for name, deployment in deployment_delta.deployments_to_create:
+            execution_timeout = (
+                deployment.execution_timeout_seconds
+                if deployment.execution_timeout_seconds is not None
+                else self.default_execution_timeout_seconds
+            )
+            deployment_args = BaseModelDeploymentArgs(
+                model_key=deployment.model_key,
+                execution_timeout=execution_timeout,
+                dtype=deployment.dtype or self.default_dtype,
+                trust_remote_code=deployment.trusted,
+            )
+
+            deployment.create(name, deployment_args)
+
+            try:
+                actor = deployment.actor
+                ready_future = actor.__ray_ready__.remote()
+                asyncio.create_task(
+                    self._monitor_deployment(ready_future, deployment, "create")
                 )
-                cache_future = deployment.cache()
-
-                if cache_future is not None:
-                    cache_futures.append(cache_future)
-                    cache_deployments.append(deployment)
-                else:
-                    # cache() failed immediately - clean up
-                    self.logger.error(
-                        f"Failed to initiate cache for {deployment.model_key}"
-                    )
-                    span.add_event("cache_failed", {"model_key": deployment.model_key})
-                    try:
-                        deployment.delete()
-                    except Exception:
-                        pass
-                    self._remove_deployment_from_state(deployment)
-
-            # Wait for all cache operations to complete before proceeding
-            for future, deployment in zip(cache_futures, cache_deployments):
-                try:
-                    ray.get(future)
-                    span.add_event(
-                        "cache_completed", {"model_key": deployment.model_key}
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"Deployment {deployment.model_key} failed during cache: {e}"
-                    )
-                    span.add_event(
-                        "cache_failed",
-                        {"model_key": deployment.model_key, "error": str(e)},
-                    )
-                    try:
-                        deployment.delete()
-                    except Exception:
-                        pass
-                    self._remove_deployment_from_state(deployment)
-
-            # Deploy models from cache - spawn monitoring tasks
-            for deployment in deployment_delta.deployments_from_cache:
-                span.add_event(
-                    "restoring_from_cache", {"model_key": deployment.model_key}
+            except Exception as e:
+                logger.error(
+                    f"Failed to get actor handle for {deployment.model_key}: {e}"
                 )
-                future = deployment.from_cache()
-                if future is not None:
-                    asyncio.create_task(
-                        self._monitor_deployment(future, deployment, "from_cache")
-                    )
-                else:
-                    # from_cache() failed immediately - clean up
-                    self.logger.error(
-                        f"Failed to initiate from_cache for {deployment.model_key}"
-                    )
-                    span.add_event(
-                        "from_cache_failed", {"model_key": deployment.model_key}
-                    )
-                    deployment.delete()
-                    self._remove_deployment_from_state(deployment)
-
-            # Create models from disk - spawn monitoring tasks
-            for name, deployment in deployment_delta.deployments_to_create:
-                span.add_event(
-                    "creating_deployment",
-                    {"model_key": deployment.model_key, "node": name},
-                )
-                execution_timeout = (
-                    deployment.execution_timeout_seconds
-                    if deployment.execution_timeout_seconds is not None
-                    else self.default_execution_timeout_seconds
-                )
-                deployment_args = BaseModelDeploymentArgs(
-                    model_key=deployment.model_key,
-                    execution_timeout=execution_timeout,
-                )
-
-                # create() returns None always, but may fail internally
-                deployment.create(name, deployment_args)
-
-                # Get the actor handle and monitor its ready state
-                try:
-                    actor = deployment.actor
-                    ready_future = actor.__ray_ready__.remote()
-                    asyncio.create_task(
-                        self._monitor_deployment(ready_future, deployment, "create")
-                    )
-                except Exception as e:
-                    # create() failed or actor not available - clean up
-                    self.logger.error(
-                        f"Failed to get actor handle for {deployment.model_key}: {e}"
-                    )
-                    span.add_event(
-                        "create_failed",
-                        {"model_key": deployment.model_key, "error": str(e)},
-                    )
-                    deployment.delete()
-                    self._remove_deployment_from_state(deployment)
-
-            # Snapshot the post-apply deployment state so transitions are
-            # captured immediately, not just at the next heartbeat. Note:
-            # from_cache/create complete asynchronously, so this reflects the
-            # intended state — the heartbeat reconciles the steady state.
-            self._emit_deployment_metrics()
+                deployment.delete()
+                self._remove_deployment_from_state(deployment)
 
     async def _monitor_deployment(
         self,
@@ -519,71 +316,43 @@ class _ControllerActor:
         deployment: "Deployment",
         operation: str,
     ) -> None:
-        """Monitor a deployment future and clean up on failure.
+        """Await a deployment future off the main path; clean up on failure.
 
-        This runs as an async task, so it doesn't block the controller.
-
-        Args:
-            future: Ray future to monitor.
-            deployment: The Deployment object being monitored.
-            operation: Name of the operation for logging.
+        Awaiting the ObjectRef directly is valid in an async actor and
+        non-blocking — no thread parked for the (possibly minutes-long) op. On
+        failure, return the resources and prune our internal state.
         """
-        with trace_span(
-            "controller.monitor_deployment",
-            attributes={
-                "ndif.model.key": deployment.model_key,
-                "ndif.deploy.operation": operation,
-            },
-        ) as span:
+        try:
+            await future
+        except Exception as e:
+            logger.error(
+                f"Deployment {deployment.model_key} failed during {operation}: {e}"
+            )
             try:
-                span.add_event("waiting_for_ray_actor")
-                # Await the ObjectRef directly — valid in an async actor and
-                # non-blocking, without parking a thread-pool thread for the
-                # whole (potentially minutes-long) deploy/from_cache. If the
-                # underlying op failed, the await re-raises and the cleanup
-                # below returns resources and prunes our internal state.
-                await future
-                span.add_event("ray_actor_ready")
-            except Exception as e:
-                span.set_status(trace.StatusCode.ERROR, str(e))
-                span.record_exception(e)
-                self.logger.error(
-                    f"Deployment {deployment.model_key} failed during {operation}: {e}"
+                deployment.delete()
+            except Exception as delete_error:
+                logger.debug(
+                    f"Error deleting failed deployment {deployment.model_key}: "
+                    f"{delete_error}"
                 )
-                # Delete the failed deployment to return resources
-                # Wrap in try-catch as the actor may already be gone
-                try:
-                    deployment.delete()
-                except Exception as delete_error:
-                    self.logger.debug(
-                        f"Error deleting failed deployment {deployment.model_key}: {delete_error}"
-                    )
-                self._remove_deployment_from_state(deployment)
+            self._remove_deployment_from_state(deployment)
 
     def _remove_deployment_from_state(self, deployment: "Deployment") -> None:
-        """Remove a deployment from the internal state.
-
-        Args:
-            deployment: The deployment to remove.
-        """
-        # Remove from state using node_id + replica_id
+        """Drop a deployment from internal state and return its node resources."""
         state_key = (deployment.node_id, deployment.model_key, deployment.replica_id)
         if state_key in self.state:
             del self.state[state_key]
 
-        # Remove from the specific cluster node using node_id + replica_id
         if deployment.node_id and deployment.node_id in self.cluster.nodes:
             node = self.cluster.nodes[deployment.node_id]
             replicas = node.deployments.get(deployment.model_key)
             if replicas is not None and deployment.replica_id in replicas:
-                # Return GPUs to the node
                 node.gpu_resources.release(deployment.gpus)
                 del replicas[deployment.replica_id]
                 if not replicas:
                     del node.deployments[deployment.model_key]
             cached_replicas = node.cache.get(deployment.model_key)
             if cached_replicas is not None and deployment.replica_id in cached_replicas:
-                # Return CPU memory to the node
                 node.cpu_resources.release(deployment.size_bytes)
                 del cached_replicas[deployment.replica_id]
                 if not cached_replicas:
@@ -594,86 +363,54 @@ class _ControllerActor:
         model_key: MODEL_KEY,
         replica_id: Optional[REPLICA_ID] = None,
     ) -> ReplicaStates:
-        """List HOT deployments matching the query.
-
-        Always returns a ReplicaStates wrapper, even if the caller scoped to
-        a specific replica (in which case the list is 0 or 1 entries long).
-        WARM (cached) replicas are not included — callers wanting to inspect
-        the cache should use the full cluster state.
-        """
+        """List HOT replicas matching the query (WARM/cached are not included)."""
         response = ReplicaStates()
         for node in self.cluster.nodes.values():
             replicas = node.deployments.get(model_key, {})
             if replica_id is not None:
                 deployment = replicas.get(replica_id)
                 if deployment is not None:
-                    response.replicas.append(
-                        ReplicaState(**deployment.get_state())
-                    )
+                    response.replicas.append(ReplicaState(**deployment.get_state()))
             else:
                 for deployment in replicas.values():
-                    response.replicas.append(
-                        ReplicaState(**deployment.get_state())
-                    )
+                    response.replicas.append(ReplicaState(**deployment.get_state()))
         return response
 
     def env(self) -> Dict[str, Any]:
-        """Get the Python environment information.
-
-        Returns:
-            Dictionary containing Python version and installed pip packages.
-        """
+        """Python version + installed pip packages (for the CLI to match envs)."""
         pd_map = packages_distributions()
         dist_to_imports = {}
         for import_name, dist_names in pd_map.items():
             for dist_name in dist_names:
-                if dist_name not in dist_to_imports:
-                    dist_to_imports[dist_name] = []
-                dist_to_imports[dist_name].append(import_name)
+                dist_to_imports.setdefault(dist_name, []).append(import_name)
 
         packages = {}
         for dist in distributions():
             dist_name = dist.metadata["Name"]
             version = dist.version
-
-            # Get import names from packages_distributions mapping
             import_names = dist_to_imports.get(dist_name, [])
-
             if import_names:
                 for imp_name in import_names:
                     packages[imp_name] = version
             else:
-                # Fallback to distribution name if no import mapping found
                 packages[dist_name] = version
 
-        return {
-            "python_version": sys.version,
-            "packages": packages,
-        }
+        return {"python_version": sys.version, "packages": packages}
 
     def status(self):
+        """Dashboard view: per-deployment health + cluster resources + COLD models."""
         ray_status = list_actors()
 
         status = {}
 
-        # A single ModelActor name can have multiple Ray entries — every
-        # restart (ray.kill(no_restart=False), CUDA self-kill, etc.) leaves
-        # a DEAD record behind alongside the new ALIVE one. The previous
-        # loop just overwrote on each iteration, so whichever entry came
-        # last won — typically a stale DEAD record, leaving the dashboard
-        # showing "UNHEALTHY" for a perfectly healthy deployment.
-        #
-        # Collapse to the healthiest state for each name. RUNNING beats
-        # DEPLOYING beats UNHEALTHY — once a successor actor is up, the
-        # ghosts of its predecessors don't matter to the user.
+        # One ModelActor name can have multiple Ray entries (restarts leave DEAD
+        # records beside the ALIVE one). Collapse to the healthiest state.
         STATE_PRIORITY = {"RUNNING": 0, "DEPLOYING": 1, "UNHEALTHY": 2}
 
         for actor_state in ray_status:
-            # Actor names are now "{replica_id}:ModelActor:{model_key}".
-            # Match by substring so existing ModelActor: prefixed names from a
-            # previous release would also be picked up if they linger.
-            if ":ModelActor:" not in actor_state.name and not actor_state.name.startswith(
-                "ModelActor:"
+            if (
+                ":ModelActor:" not in actor_state.name
+                and not actor_state.name.startswith("ModelActor:")
             ):
                 continue
             if actor_state.state in {
@@ -690,28 +427,24 @@ class _ControllerActor:
                 continue
 
             existing = status.get(actor_state.name, {}).get("application_state")
-            if existing is None or STATE_PRIORITY[application_state] < STATE_PRIORITY[existing]:
-                status[actor_state.name] = {
-                    "application_state": application_state,
-                }
+            if (
+                existing is None
+                or STATE_PRIORITY[application_state] < STATE_PRIORITY[existing]
+            ):
+                status[actor_state.name] = {"application_state": application_state}
 
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
             for _, _, deployment in node.iter_deployments():
                 application_name = deployment.name
-
                 if application_name not in status:
                     continue
-
                 if deployment.model_key not in self.cluster.evaluator.cache:
                     continue
 
                 entry = self.cluster.evaluator.cache[deployment.model_key]
 
-                # Mirror the actor_class normalization in Deployment.get_state:
-                # accept dotted-path strings as-is; render decorated classes
-                # as ``module.qualname``; ``None`` → ``None``.
                 if deployment.actor_class is None:
                     actor_class_repr = None
                 elif isinstance(deployment.actor_class, str):
@@ -726,6 +459,9 @@ class _ControllerActor:
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "pinned": deployment.pinned,
+                    "trusted": deployment.trusted,
+                    "dtype": deployment.dtype,
+                    "execution_timeout_seconds": deployment.execution_timeout_seconds,
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
                     "repo_id": entry.config._name_or_path,
@@ -750,10 +486,8 @@ class _ControllerActor:
 
             for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
-
                 if application_name not in status:
                     continue
-
                 if cached_deployment.model_key not in self.cluster.evaluator.cache:
                     continue
 
@@ -771,9 +505,7 @@ class _ControllerActor:
 
                 existing_repo_ids.add(entry.config._name_or_path)
 
-        downloaded_models = get_downloaded_models()
-
-        for repo_id in downloaded_models:
+        for repo_id in get_downloaded_models():
             if repo_id not in existing_repo_ids:
                 status[repo_id] = {
                     "deployment_level": DeploymentLevel.COLD.name,
@@ -817,13 +549,25 @@ class ControllerActor(_ControllerActor):
 class ControllerDeploymentArgs(BaseModel):
     deployments: List[MODEL_KEY] = os.environ.get("NDIF_DEPLOYMENTS", "").split("|")
 
-    model_import_path: str = "ndif.services.ray.deployments.modeling.model:app"
+    # Dotted import path of the model actor class the controller instantiates
+    # per deployment (a per-deployment DeploymentConfig.actor_class overrides
+    # it). NDIF_DEFAULT_MODEL_ACTOR_CLASS is still honored so an environment
+    # that points it at the sandboxed actor keeps working unchanged.
+    model_import_path: str = os.environ.get(
+        "NDIF_MODEL_IMPORT_PATH",
+        os.environ.get(
+            "NDIF_DEFAULT_MODEL_ACTOR_CLASS",
+            "ndif.services.ray.deployments.modeling.base.ModelActor",
+        ),
+    )
+    # Dotted import path of the controller actor class app() launches. Lets an
+    # operator swap in a subclass without editing this module.
+    controller_import_path: str = os.environ.get(
+        "NDIF_CONTROLLER_IMPORT_PATH",
+        "ndif.services.ray.deployments.controller.controller.ControllerActor",
+    )
     default_execution_timeout_seconds: Optional[float] = float(
         os.environ.get("NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS", "3600")
-    )
-    default_model_actor_class: str = os.environ.get(
-        "NDIF_DEFAULT_MODEL_ACTOR_CLASS",
-        "ndif.services.ray.deployments.modeling.base.ModelActor",
     )
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")
@@ -837,18 +581,37 @@ class ControllerDeploymentArgs(BaseModel):
     default_padding_bias: Optional[int] = int(
         os.environ.get("NDIF_DEFAULT_PADDING_BIAS", str(500 * 1024 * 1024))
     )
+    default_dtype: str = os.environ.get("NDIF_DEFAULT_DTYPE", "bfloat16")
 
 
 def app(**kwargs):
+    """Launch the detached Controller actor in the NDIF namespace."""
     args = ControllerDeploymentArgs(**kwargs)
 
-    actor = ControllerActor.options(
+    # The actor runs in its own Ray worker (inheriting only the node's ambient
+    # env), and connects Loki in __init__ to ship its logs. Propagate this
+    # launcher's Loki config into the actor's runtime_env so it reaches the same
+    # Loki regardless of the worker node's environment.
+    from .....common.providers.loki import LokiProvider
+
+    LokiProvider.from_env()
+
+    controller_cls = _import_from_path(args.controller_import_path)
+
+    # get_if_exists makes relaunch idempotent: if a detached Controller from a
+    # previous run is still alive (e.g. the launcher container restarted), reuse
+    # it instead of failing on the name collision.
+    controller_cls.options(
         name="Controller",
         namespace="NDIF",
         lifetime="detached",
-        runtime_env={
-            **SioProvider.to_env(),
-            **ObjectStoreProvider.to_env(),
-            **MailgunProvider.to_env(),
-        },
+        get_if_exists=True,
+        runtime_env={"env_vars": LokiProvider.to_env()},
     ).remote(**args.model_dump())
+
+
+if __name__ == "__main__":
+    # Driver-side launch: attach to the running head and schedule the actor.
+    # The detached actor persists after this process exits.
+    ray.init(address="auto", namespace="NDIF", logging_level="error")
+    app()
