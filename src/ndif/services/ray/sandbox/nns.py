@@ -49,6 +49,7 @@ from nnsight.intervention.source import SourceEnvoy
 from nnsight.intervention.tracer import InterleavingTracer
 from nnsight.schema.request import RequestModel
 from nnsight.tracing.tracer import _saves, dec, inc
+from nnsight.modeling.huggingface import HuggingFaceModel
 
 from ..deployments.modeling.util import cpu_pickle_module
 
@@ -245,7 +246,7 @@ class IPCCloudUnpickler(CustomCloudUnpickler):
     """
 
     def __init__(self, file, persistent_objects=None):
-        super().__init__(file, persistent_objects=None)
+        super().__init__(file, persistent_objects=persistent_objects)
 
     def persistent_load(self, pid):
         # One interleaver is shared across the envoy tree; bind it to this
@@ -253,6 +254,9 @@ class IPCCloudUnpickler(CustomCloudUnpickler):
         # model, its modules) is never touched in this process.
         if pid == "Interleaver":
             return IPCInterleaver(connection)
+        elif pid in self.persistent_objects:
+            return self.persistent_objects[pid]
+
         return None
 
 
@@ -327,6 +331,10 @@ def ipc_cache(self, *args, **kwargs):
 _original_cache = InterleavingTracer.cache
 InterleavingTracer.cache = ipc_cache
 
+PERSISTENT_OBJECTS = {}
+
+def load_meta_model(model_key):
+    PERSISTENT_OBJECTS.update(HuggingFaceModel.from_model_key(model_key)._remoteable_persistent_objects())
 
 def run(conn, blob: bytes, compress: bool = False) -> None:
     """Deserialize the request in this process and execute it; interleave over IPC.
@@ -345,7 +353,7 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
         deserialize_started = time.time()
-        tracer = RequestModel.deserialize(blob, compress=compress, unpickler=IPCCloudUnpickler)
+        tracer = RequestModel.deserialize(blob, persistent_objects=PERSISTENT_OBJECTS, compress=compress, unpickler=IPCCloudUnpickler)
         deserialize_ms = round((time.time() - deserialize_started) * 1000, 2)
         # Bracket execution in a trace scope so nnsight.save() records into this
         # thread's save set, then collect the marked values (by identity) by name.

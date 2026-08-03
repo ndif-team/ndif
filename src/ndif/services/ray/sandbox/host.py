@@ -76,7 +76,7 @@ class Sandbox:
             pass
 
 
-def spawn(python: str = sys.executable, quiet: bool = True, timeout: float = 30.0) -> Sandbox:
+def spawn(python: str = sys.executable, runner_args=[], quiet: bool = True, timeout: float = 30.0) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting."""
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     env = dict(os.environ)
@@ -85,7 +85,7 @@ def spawn(python: str = sys.executable, quiet: bool = True, timeout: float = 30.
     )
     output = subprocess.DEVNULL if quiet else None
     process = subprocess.Popen(
-        [python, "-m", "ndif.services.ray.sandbox.runner", path],
+        [python, "-m", "ndif.services.ray.sandbox.runner", path] + runner_args,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=output,
@@ -120,8 +120,9 @@ class Pool:
     release-back-to-pool.
     """
 
-    def __init__(self, size: int = 2, python: str = sys.executable, quiet: bool = True):
+    def __init__(self, size: int = 2, runner_args=[], python: str = sys.executable, quiet: bool = True):
         self.size = size
+        self.runner_args = runner_args
         self.python = python
         self.quiet = quiet
         self.ready: "queue.Queue" = queue.Queue()
@@ -141,7 +142,9 @@ class Pool:
 
         def warm():
             try:
-                sandbox = spawn(python=self.python, quiet=self.quiet)
+                sandbox = spawn(
+                    python=self.python, runner_args=self.runner_args, quiet=self.quiet
+                )
             finally:
                 with self.lock:
                     self.spawning -= 1
@@ -158,7 +161,9 @@ class Pool:
         try:
             sandbox = self.ready.get(timeout=timeout)
         except queue.Empty:
-            sandbox = spawn(python=self.python, quiet=self.quiet)
+            sandbox = spawn(
+                python=self.python, runner_args=self.runner_args, quiet=self.quiet
+            )
         self.refill()
         return sandbox
 

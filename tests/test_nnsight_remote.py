@@ -363,6 +363,15 @@ class TestNdif:
         assert isinstance(result.mismatches, dict)
         assert "Python Version:" in str(result)  # printable
 
+    
+    def test_persistent_objects(self, model):
+        tokens = model.tokenizer("Hello World!", return_tensors="pt")["input_ids"]
+
+        with model.trace("Hi", remote=True):
+            tokens_remote = model.tokenizer("Hello World!", return_tensors="pt")["input_ids"].save()
+
+        assert torch.equal(tokens, tokens_remote)
+
 
 
 def _inline_negate(x):

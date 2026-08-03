@@ -66,10 +66,11 @@ class Writer:
 class Runner:
     """Serves user code over a Unix socket."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, model_key: str):
         self.path = path
         if os.path.exists(path):
             os.unlink(path)
+        nns.load_meta_model(model_key)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.bind(path)
         self.socket.listen()
@@ -96,4 +97,4 @@ class Runner:
 
 
 if __name__ == "__main__":
-    Runner(sys.argv[1]).serve()
+    Runner(*sys.argv[1:]).serve()

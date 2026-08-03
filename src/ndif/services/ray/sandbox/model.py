@@ -175,7 +175,7 @@ class SandboxModelDeployment(BaseModelDeployment):
 
     def __init__(self, *args: Any, pool_size: int = 2, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self.pool = Pool(size=pool_size)
+        self.pool = Pool(size=pool_size, runner_args=[self.model_key], quiet=False)
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
         self.execution_sandbox = None
