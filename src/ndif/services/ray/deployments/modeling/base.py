@@ -421,8 +421,6 @@ class BaseModelDeployment:
                 description="Your job has started running.",
             )
 
-            span.add_event("applying_env")
-            self.model._remoteable_set_env(self.request.env)
             self.persistent_objects = self.model._remoteable_persistent_objects()
 
             span.add_event("deserializing_request")
