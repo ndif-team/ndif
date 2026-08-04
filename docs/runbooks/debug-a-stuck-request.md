@@ -171,7 +171,10 @@ ndif status --json-output | jq '.deployments[] |
   HuggingFace cache (`controller.py:443-496`).
 - `application_state` is the **Ray actor's** state, mapped from `list_actors()`:
   `ALIVE`→`RUNNING`, `PENDING_CREATION`/`RESTARTING`/`DEPENDENCIES_UNREADY`→`DEPLOYING`,
-  `DEAD`→`UNHEALTHY` (`controller.py:401-412`).
+  `DEAD`→`UNHEALTHY` (`controller.py:401-412`). A `DEAD` actor the controller no
+  longer tracks is dropped rather than listed, so `UNHEALTHY` always refers to a
+  deployment the controller still believes in — you will not see rows with a
+  null `repo_id` left over from past evictions.
 
 Combinations and what they mean:
 

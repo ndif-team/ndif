@@ -505,6 +505,28 @@ class _ControllerActor:
 
                 existing_repo_ids.add(entry.config._name_or_path)
 
+        # Drop orphaned dead actors. Ray keeps a DEAD record for every actor it
+        # has ever run, so each evict/restart leaves one behind forever; the
+        # loops above only enrich names the controller still tracks, so an
+        # orphan stays a bare {"application_state": "UNHEALTHY"} with no
+        # repo_id. Left in, they accumulate monotonically — one per teardown,
+        # never reaped — and on a cluster that swaps models routinely they come
+        # to outnumber the real entries (9 ghosts to 4 real ones after a single
+        # day of testing), breaking any consumer that reads `deployments` and
+        # expects a repo_id.
+        #
+        # Only *orphans* are dropped. A dead actor the controller still tracks
+        # did get enriched, and is worth surfacing: it means the controller
+        # believes a replica is deployed while its actor is gone.
+        status = {
+            name: entry
+            for name, entry in status.items()
+            if not (
+                entry.get("application_state") == "UNHEALTHY"
+                and entry.get("model_key") is None
+            )
+        }
+
         for repo_id in get_downloaded_models():
             if repo_id not in existing_repo_ids:
                 status[repo_id] = {

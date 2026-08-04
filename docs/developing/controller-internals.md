@@ -261,6 +261,15 @@ from Ray's `list_actors()`, collapses duplicate records for an actor name to the
 (`RUNNING` < `DEPLOYING` < `UNHEALTHY`), then enriches from the controller's own view — so an actor
 Ray knows about but the controller doesn't ends up with **only** `application_state` set.
 
+Those un-enriched entries are then **dropped**, and only them: an `UNHEALTHY` entry that never
+picked up a `model_key` is an orphan. Ray retains a `DEAD` record for every actor it has ever run,
+so without this every evict and every restart left one behind permanently — they accumulate
+monotonically and, on a cluster that swaps models routinely, come to outnumber the real entries
+(9 orphans against 4 real deployments after a single day of testing), breaking consumers that read
+`deployments` and assume a `repo_id`. A dead actor the controller *does* still track survives the
+filter, because that combination is a genuine signal: the controller believes a replica is deployed
+while its actor is gone.
+
 ## Environment
 
 Every var below is read in `ControllerDeploymentArgs` (`controller.py:532`) at module import in the
