@@ -147,6 +147,17 @@ node's CPU cache — greedily dropping the smallest `WARM` entries if needed
 **keeping its `replica_id`**, so the actor name stays stable across the
 transition; if not, it is removed outright and the actor is killed.
 
+**Both outcomes are transparent to an in-flight request**, and it is worth
+knowing they did not always agree. A removed actor makes the queue's Ray call
+raise `ActorDiedError`; a demotion makes `to_cache()` cancel the running request
+first (`modeling/base.py:191`, before the weights move). That cancellation used
+to be reported to the user as
+`"Your job was cancelled or preempted by the server."`, so the *tidier* eviction
+— the one that keeps the model in CPU RAM for a fast restore — was the one that
+destroyed the request, while the wasteful one was silently retried. The demote
+path now raises `CachedActorError` instead, so both land in `EVICTED_ERRORS` and
+both re-queue.
+
 The CPU cache budget is the node's total RAM scaled by
 `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`), read from the `cpu_memory_bytes`
 resource that `resources.py` advertises at `ray start`

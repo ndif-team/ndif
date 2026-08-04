@@ -130,7 +130,7 @@ descriptions a user can receive:
 | Message the user sees | Emitted at | What actually happened |
 |---|---|---|
 | `Your job exceeded the execution timeout of Ns.` | `modeling/base.py:322-326` | ran past `execution_timeout` |
-| `Your job was cancelled or preempted by the server.` | `modeling/base.py:314-317` | the actor's kill switch fired (`to_cache`, i.e. a HOT→WARM demotion) |
+| `Your job was cancelled or preempted by the server.` | `modeling/base.py`, the `kill in done` branch | the actor's kill switch fired for a reason other than parking — i.e. somebody deliberately cancelled this request. **A HOT→WARM demotion no longer lands here**: `to_cache` sets `cancel(KILL_REASON_PREEMPTED)`, which raises `CachedActorError` so the queue re-queues instead. If you're chasing a *disappeared* request rather than a failed one, grep for `model execution preempted; requeued`. |
 | `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch |
 | `Request cancelled by operator.` | `queue/dispatcher.py:346` | someone ran `ndif kill` |
 | `Error submitting request to model deployment.` | `queue/replica.py:254-258` | the Ray call to the actor raised something unclassified |

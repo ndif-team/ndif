@@ -92,7 +92,14 @@ methods it calls:
 | `execution_scope(request)` (`base.py:428`) | Context manager around the raced wait; redirects `sys.stdout` into `LogStream` so prints become `LOG` responses | Your executor reports output another way (or not at all) |
 | `interrupt()` (`base.py:440`) | `kill_thread(self.execution_ident)` | There is something else to stop — a subprocess, a socket, an engine request |
 | `format_error(exc) -> (str, bool)` (`base.py:444`) | Clean nnsight + actor frames out of the traceback; flag unrecoverable CUDA errors as fatal | Your errors arrive pre-formatted, or a different failure class is fatal |
-| `cleanup()` (`base.py:521`) | Clear the kill switch and `execution_ident`, cancel the interleaver, `synchronize`/`gc`/`empty_cache` | You hold per-request resources; call `super().cleanup()` |
+| `cleanup()` (`base.py:521`) | Clear the kill switch, `kill_reason` and `execution_ident`, cancel the interleaver, `synchronize`/`gc`/`empty_cache` | You hold per-request resources; call `super().cleanup()` |
+
+> **If you call `cancel()` yourself**, mind the `reason`. The default (unset)
+> means "genuinely cancelled": the user is told, and the request stops there.
+> Pass `KILL_REASON_PREEMPTED` only when the request is blameless and still
+> runnable — it makes `run` raise `CachedActorError` so the queue re-queues it,
+> and a re-queue goes to the *front* of the line, so mislabelling a deliberate
+> cancellation re-runs it forever.
 
 Everything else — `load_from_disk`, `to_cache`/`from_cache`, `cancel`, `restart`,
 `report`, `upload_bytes`, and `run` itself — should be inherited unchanged. Overriding

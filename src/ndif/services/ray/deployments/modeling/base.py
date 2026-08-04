@@ -62,6 +62,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("ndif.modeling")
 
+# cancel(reason=...) value meaning "this request was not at fault and is still
+# runnable — re-queue it rather than failing it". Set when a replica is parked
+# (HOT->WARM) out from under a running request. Any other reason, including the
+# default of none, is treated as a genuine cancellation.
+KILL_REASON_PREEMPTED = "preempted"
+
 # CUDA errors that leave the process's CUDA context permanently broken — every
 # subsequent CUDA op raises — so the only recovery is restarting the process.
 _UNRECOVERABLE_CUDA_ERRORS = (
@@ -129,6 +135,14 @@ class BaseModelDeployment:
         # Execution runs on a worker thread so run() can time it out or cancel
         # it; kill_switch signals a cancel, execution_ident is that thread's id.
         self.kill_switch = asyncio.Event()
+        # Why the kill switch was set. run() needs this to decide whether the
+        # request is retryable (PREEMPTED -> the replica is being parked, so
+        # re-queue it) or genuinely cancelled (-> tell the user and stop).
+        # Deliberately NOT inferred from "the switch fired": a caller that
+        # cancels for some other reason must not have its request silently
+        # re-queued, which — since re-queues go to the *front* — would re-run it
+        # forever. Unset means "genuine cancellation", the safe default.
+        self.kill_reason: Optional[str] = None
         self.execution_ident: Optional[int] = None
 
         # Held so we can kill+restart ourselves after an unrecoverable failure.
@@ -187,8 +201,13 @@ class BaseModelDeployment:
         out from under it), moves the whole module to CPU in one pass, lifts the
         per-GPU allocation caps (``from_cache`` re-applies them), then drops the
         now-dangling CUDA allocations so the freed VRAM is returned to the driver.
+
+        The cancel is flagged ``PREEMPTED`` because the request it interrupts did
+        nothing wrong: run() turns that into a ``CachedActorError`` so the queue
+        re-queues it, matching what happens when an eviction removes the actor
+        outright instead of parking it.
         """
-        await self.cancel()
+        await self.cancel(KILL_REASON_PREEMPTED)
 
         self.model._module.to("cpu")
 
@@ -308,6 +327,27 @@ class BaseModelDeployment:
                 exec_ms = elapsed_ms(exec_started)
             elif kill in done:
                 self.interrupt()
+                if self.kill_reason == KILL_REASON_PREEMPTED:
+                    # The replica is being parked (HOT->WARM) out from under a
+                    # request that was running fine. Fail it the way a *removed*
+                    # actor fails — raise so the queue's EVICTED_ERRORS path puts
+                    # it back at the front of the line and re-provisions — rather
+                    # than erroring a user who did nothing wrong and whose work is
+                    # still runnable.
+                    #
+                    # Parking used to be the harsher of the two eviction outcomes
+                    # precisely because it was the tidier one for the cluster: it
+                    # keeps the weights in CPU RAM for a fast restore, and killed
+                    # the request as a side effect.
+                    self.report(request, "preempted", elapsed_ms(exec_started))
+                    raise CachedActorError(
+                        f"Model actor {self.model_key} was cached (WARM) "
+                        "mid-execution."
+                    )
+                # Any other cancellation is deliberate: somebody wants this
+                # request stopped. Terminal, and never re-queued — a re-queue
+                # goes to the front of the line, so retrying a request that was
+                # cancelled on purpose would re-run it indefinitely.
                 request.respond(
                     Status.ERROR,
                     "Your job was cancelled or preempted by the server.",
@@ -338,6 +378,11 @@ class BaseModelDeployment:
             upload_started = time.time()
             url = self.upload_bytes(request, data)
             upload_ms = elapsed_ms(upload_started)
+        except CachedActorError:
+            # Eviction, not a failure of the request. Propagate so the queue
+            # re-queues it; turning this into a user-facing ERROR is exactly the
+            # bug above. The finally below still restores state and cleans up.
+            raise
         except Exception as exception:
             message, fatal = self.format_error(exception)
             request.respond(Status.ERROR, message)
@@ -470,6 +515,17 @@ class BaseModelDeployment:
                 api_key=request.api_key, email=request.email,
                 stage="running", error_type="cancelled", exec_ms=exec_ms,
             )
+        elif status == "preempted":
+            # Not a failure: the replica was parked mid-execution and the queue
+            # is re-running this request. Logged so the re-run is visible as one
+            # request that took two attempts rather than as a mystery latency
+            # spike, and so preemption rate is greppable.
+            event(
+                logger, "model execution preempted; requeued", level=logging.WARNING,
+                model_key=self.model_key, request_id=request.id,
+                api_key=request.api_key, email=request.email,
+                stage="running", error_type="preempted", exec_ms=exec_ms,
+            )
         elif status == "timeout":
             event(
                 logger, "model execution timed out", level=logging.WARNING,
@@ -495,14 +551,21 @@ class BaseModelDeployment:
             deserialize_ms=deserialize_ms, upload_ms=upload_ms,
         )
 
-    async def cancel(self) -> None:
+    async def cancel(self, reason: Optional[str] = None) -> None:
         """Request cancellation of the in-flight execution, if any.
 
         Sets the kill switch that run() is waiting on; run() interrupts the
         execution thread and reports the cancellation. No-op when nothing is
         executing.
+
+        ``reason`` tells run() how to treat the request. Pass
+        :data:`KILL_REASON_PREEMPTED` when the request is still perfectly
+        runnable and should be re-queued (the replica is being parked out from
+        under it). Leave it unset for a genuine cancellation — the caller wants
+        this request *stopped* — and the user is told it was cancelled.
         """
         if self.execution_ident is not None:
+            self.kill_reason = reason
             self.kill_switch.set()
 
     def restart(self) -> None:
@@ -523,6 +586,7 @@ class BaseModelDeployment:
         resets the per-request cancellation state.
         """
         self.kill_switch.clear()
+        self.kill_reason = None
         self.execution_ident = None
         self.model.interleaver.cancel()
 
