@@ -7,7 +7,7 @@ from urllib.parse import parse_qs
 
 import socketio
 import uvicorn
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi_socketio import SocketManager
 
@@ -19,12 +19,17 @@ from nnsight.schema.response import ResponseModel
 
 from ...common.logging import set_logger
 from ...common.tracing import TracingContext, init_tracing, set_request_attributes, trace_span
-from ...common.types import REQUEST_ID, SESSION_ID
+from ...common.types import API_KEY, REQUEST_ID, SESSION_ID
 
 logger = set_logger("API")
 
 from .config import AppConfig
-from .dependencies import validate_request, require_ray_connection
+from .dependencies import (
+    authenticate_api_key,
+    check_hotswapping_access,
+    validate_request,
+    require_ray_connection,
+)
 from ...common.metrics import NetworkStatusMetric
 from ...common.providers.objectstore import ObjectStoreProvider
 from ...common.providers.redis import RedisProvider
@@ -236,6 +241,31 @@ async def response(id: REQUEST_ID) -> BackendResponseModel:
         "ndif.request.id": str(id),
     }):
         return BackendResponseModel.load(id)
+
+
+@app.get("/validate-api-key", status_code=200)
+async def validate_api_key(
+    ndif_api_key: API_KEY = Header(default="", alias="ndif-api-key"),
+) -> Dict[str, Any]:
+    """Endpoint to validate an API key against the accounts database.
+
+    Args:
+        ndif_api_key: API key supplied via the `ndif-api-key` header.
+
+    Returns:
+        Dictionary with the key's validity and the tiers it has access to.
+
+    Raises:
+        HTTPException: 400 if the key is malformed, 401 if it is unknown or
+            key validation is not configured.
+    """
+    with trace_span("api.validate_api_key") as span:
+        await authenticate_api_key(ndif_api_key)
+
+        hotswapping = await check_hotswapping_access(ndif_api_key)
+        span.set_attribute("ndif.api_key.hotswapping", hotswapping)
+
+        return {"valid": True, "hotswapping": hotswapping}
 
 
 @app.get("/ping", status_code=200)
