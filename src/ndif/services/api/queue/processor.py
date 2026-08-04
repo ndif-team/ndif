@@ -127,10 +127,16 @@ class Processor:
             processor_status=self.status.value,
         )
 
+        # Depth is only the new request's position when it was appended; a
+        # prepended one (priority key, or an evicted replica handing its
+        # in-flight request back) is at the front. Reporting depth for those
+        # told a priority caller they were last in a line they had just jumped.
+        position = 1 if prepend else self.queue.qsize()
+
         await self.reply(
             request=request,
             description=(
-                f"Added to Queue at position {self.queue.qsize()}."
+                f"Added to Queue at position {position}."
                 if self.status
                 not in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING)
                 else None
