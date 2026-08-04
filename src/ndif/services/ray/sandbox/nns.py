@@ -341,43 +341,58 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
     """
     global connection
     connection = conn
+
+    # Deserialization is separated from execution because the two fail for
+    # entirely different reasons and only the second has a user traceback worth
+    # sending. Sharing one `except` meant a corrupt payload came back dressed as
+    # a user-code failure: NDIF's own frames, this file's path, and a
+    # `ZstdError` the caller could do nothing with.
     try:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
         deserialize_started = time.time()
         tracer = RequestModel.deserialize(blob, compress=compress, unpickler=IPCCloudUnpickler)
         deserialize_ms = round((time.time() - deserialize_started) * 1000, 2)
-        # Bracket execution in a trace scope so nnsight.save() records into this
-        # thread's save set, then collect the marked values (by identity) by name.
-        inc()
-        try:
-            tracer.execute(tracer.info.code)
-            saves = _saves()
-            saved = {
-                name: value
-                for name, value in tracer.info.frame.f_locals.items()
-                if id(value) in saves
-            }
-        finally:
-            dec()
-        buffer = io.BytesIO()
-        torch.save(saved, buffer, pickle_module=cpu_pickle_module())
     except Exception as error:
-        # Format the traceback here, where it's live: an exception loses its
-        # __traceback__ when cloudpickled across the socket. A worker error already
-        # carries a clean, intervention-only traceback (stashed by Mediator.switch);
-        # otherwise drop nnsight's plumbing. Send the formatted text, not the object.
-        import traceback
+        # No user frames exist yet, so there is no traceback worth sending —
+        # just say what went wrong. Shared with the trusted path, which
+        # deserializes in the actor instead, so both phrase this identically.
+        from ndif.common.errors import payload_error_message
 
-        from nnsight.tracing.util import clean_traceback
-
-        tb = getattr(error, "__intervention_tb__", None) or clean_traceback(
-            error.__traceback__
-        )
-        message = "".join(traceback.format_exception(type(error), error, tb))
-        terminal = ("EXCEPTION", message)
+        terminal = ("EXCEPTION", payload_error_message(error))
     else:
-        terminal = ("END", buffer.getvalue(), deserialize_ms)
+        try:
+            # Bracket execution in a trace scope so nnsight.save() records into this
+            # thread's save set, then collect the marked values (by identity) by name.
+            inc()
+            try:
+                tracer.execute(tracer.info.code)
+                saves = _saves()
+                saved = {
+                    name: value
+                    for name, value in tracer.info.frame.f_locals.items()
+                    if id(value) in saves
+                }
+            finally:
+                dec()
+            buffer = io.BytesIO()
+            torch.save(saved, buffer, pickle_module=cpu_pickle_module())
+        except Exception as error:
+            # Format the traceback here, where it's live: an exception loses its
+            # __traceback__ when cloudpickled across the socket. A worker error already
+            # carries a clean, intervention-only traceback (stashed by Mediator.switch);
+            # otherwise drop nnsight's plumbing. Send the formatted text, not the object.
+            import traceback
+
+            from nnsight.tracing.util import clean_traceback
+
+            tb = getattr(error, "__intervention_tb__", None) or clean_traceback(
+                error.__traceback__
+            )
+            message = "".join(traceback.format_exception(type(error), error, tb))
+            terminal = ("EXCEPTION", message)
+        else:
+            terminal = ("END", buffer.getvalue(), deserialize_ms)
     # Drain a trailing partial print line (stdout is the runner's line-buffering
     # Writer here) so it lands before the terminal event on the socket.
     sys.stdout.flush()
