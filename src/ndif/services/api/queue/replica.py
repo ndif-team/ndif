@@ -52,6 +52,19 @@ logger = logging.getLogger("ndif.queue.replica")
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
 
 
+class DeploymentError(Exception):
+    """A deploy the controller refused, carrying the reason it gave.
+
+    Distinct from an arbitrary failure during provisioning so the queue can tell
+    "the cluster explained why this cannot be deployed" from "something broke on
+    the way there". The former is safe — and useful — to show the caller: these
+    messages say things like `CANT_ACCOMMODATE: placed 0 of 1 new replicas` or
+    HuggingFace's own "Repository Not Found ... make sure you specified the
+    correct `repo_id`". The latter is an internal fault the caller can do
+    nothing with, and keeps the generic message.
+    """
+
+
 class Replica:
     """A single model-actor replica serving requests for one ``model_key``."""
 
@@ -105,7 +118,7 @@ class Replica:
 
         result = response.results[model_key]
         if result.error:
-            raise Exception(result.error)
+            raise DeploymentError(result.error)
 
         return cls(model_key, result.replicas[0], processor)
 

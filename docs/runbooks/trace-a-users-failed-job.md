@@ -134,7 +134,8 @@ descriptions a user can receive:
 | `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch. **Only `ndif kill` and `purge` reach this now** — `reconcile` no longer cancels a shed replica, so an ordinary eviction re-queues the request instead of erroring it. |
 | `Request cancelled by operator.` | `queue/dispatcher.py:346` | someone ran `ndif kill` |
 | `Error submitting request to model deployment.` | `queue/replica.py:254-258` | the Ray call to the actor raised something unclassified |
-| `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica |
+| `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica, **and did not say why** — an internal fault; the traceback is in the API log |
+| `Could not deploy this model. <reason>` | `queue/processor.py`, the `DeploymentError` branch of `start` | the controller refused and explained: mistyped `repo_id`, gated repo, `CANT_ACCOMMODATE`. The reason is the controller's own text, forwarded verbatim |
 | `Critical server error occurred.` | `queue/dispatcher.py:195`, `processor.py:374-378` | a Ray connection error purged every Processor |
 
 Each of those also produces a structured server log with the real cause. The

@@ -171,8 +171,16 @@ whichever phase was current when the exception landed picks the wording. On a
 failure before `READY` the Processor calls `purge()`, which errors **every**
 queued request for that model — so several users see the same message at once.
 
-The generic text is deliberate: the real cause is server-side and is only in the
-API log. The usual ones:
+**When the controller said why, that reason now reaches the caller** as
+`Could not deploy this model. <reason>` — a mistyped `repo_id`, a gated repo, or
+`CANT_ACCOMMODATE` on a full cluster. Those are the actionable cases, and
+HuggingFace already phrases most of them for end users (naming the repo and the
+page to visit); they used to be logged and then replaced with "Please try again
+later", which is advice that cannot work for any of them.
+
+The generic text above remains for everything else — an internal fault whose
+text would leak implementation detail and tell the caller nothing. For those the
+real cause is server-side and only in the API log. The usual ones:
 
 | Underlying cause | Where it shows |
 |---|---|

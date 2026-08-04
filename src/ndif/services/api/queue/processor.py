@@ -33,9 +33,15 @@ from ....common.schema.request import BackendRequestModel
 from ....common.telemetry import event
 from ....common.types import MODEL_KEY, REPLICA_ID
 from .config import CONFIG
-from .replica import Replica
+from .replica import DeploymentError, Replica
 
 logger = logging.getLogger("ndif.queue.processor")
+
+# Cap on a controller-supplied failure reason forwarded to the caller. The
+# useful ones (HuggingFace's "Repository Not Found ...", CANT_ACCOMMODATE) are
+# well under this; the cap only stops a pathological error string becoming the
+# websocket payload.
+_MAX_REASON_CHARS = 1500
 
 
 class ProcessorStatus(Enum):
@@ -228,9 +234,28 @@ class Processor:
                 error_type=type(e).__name__,
             )
             self.error_queue.put_nowait((self.model_key, e))
-            
+
+            # When the controller said *why* it refused, tell the caller that
+            # instead of the canned line. These reasons are the actionable ones
+            # -- a mistyped repo, a gated repo, a model too big for the cluster
+            # -- and HuggingFace phrases most of them for end users already,
+            # naming the repo and the page to visit. They were being logged and
+            # then replaced with "Please try again later", which is advice that
+            # cannot work for any of them.
+            #
+            # Deliberately only DeploymentError: any other exception here is an
+            # internal fault whose text would leak implementation detail and
+            # tell the caller nothing.
+            if isinstance(e, DeploymentError):
+                reason = str(e).strip()
+                if len(reason) > _MAX_REASON_CHARS:
+                    reason = reason[:_MAX_REASON_CHARS].rstrip() + "…"
+                user_message = f"Could not deploy this model. {reason}"
+            else:
+                user_message = error_message
+
             if self.status != ProcessorStatus.READY:
-                await self.purge(error_message)
+                await self.purge(user_message)
 
     async def autoscaling_loop(self) -> None:
         """Scale the replica pool up under sustained queue pressure.
