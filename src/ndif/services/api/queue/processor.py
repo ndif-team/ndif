@@ -354,9 +354,7 @@ class Processor:
         Invoked after an out-of-band deploy/evict (via the dispatcher's events
         worker):
 
-          - replicas the controller has dropped are cancelled; each cancelled
-            worker removes itself and re-provisions (via ``ensure_started``) if
-            work remains;
+          - replicas the controller has dropped are *left alone* — see below;
           - replicas the controller has gained are adopted, so capacity added
             out-of-band (``ndif deploy``, the dashboard) is actually used.
 
@@ -365,6 +363,22 @@ class Processor:
         whenever the pool is non-empty, and ``start`` only runs on an empty
         pool. Without it, deploying a second replica of a busy model added no
         capacity at all until the dispatcher restarted.
+
+        Shedding, by contrast, is deliberately **not** done here. It used to
+        call ``Replica.cancel``, which errors the in-flight request — so an
+        eviction that demoted a replica to WARM killed the request running on
+        it, even though that request was blameless and still runnable. The
+        worker already handles this correctly on its own: the next (or current)
+        dispatch to a gone replica raises one of ``EVICTED_ERRORS``
+        (``CachedActorError`` when demoted, ``ValueError``/``ActorDiedError``
+        when removed), which hands the request back to the *front* of the queue,
+        drops the replica, and re-provisions. Letting that happen is both
+        simpler and the only version that doesn't lose work.
+
+        The cost is that a replica whose worker is idle lingers in the pool
+        until traffic exercises it. That is harmless — there is nothing to serve
+        while the queue is empty — and self-corrects on the next request, which
+        pays one wasted dispatch and is then re-queued and served.
 
         A connection error is reported so the dispatcher can reconnect.
         """
@@ -377,8 +391,18 @@ class Processor:
             return
 
         current = {state.replica_id for state in response.replicas}
-        for replica_id in set(self.replicas) - current:
-            await self.replicas[replica_id].cancel("Replica evicted.")
+        shed = set(self.replicas) - current
+        if shed:
+            # Logged, not cancelled: the dispatch that next touches one of these
+            # re-queues its request and drops the replica by itself.
+            event(
+                logger,
+                "replicas no longer listed by the controller; "
+                "leaving them to drop themselves on next dispatch",
+                model_key=self.model_key,
+                replica_ids=sorted(shed),
+                replicas=len(self.replicas),
+            )
 
         # A start() already in flight adopts everything the controller lists, so
         # adopting here too would race it and leave two workers on one replica.

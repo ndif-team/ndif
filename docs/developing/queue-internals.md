@@ -230,13 +230,25 @@ There is no scale-*down* here. Shrinking is eviction, driven by the controller
 
 ### reconcile and purge
 
-`reconcile()` (`processor.py:351`) re-reads the controller's replica list and
-syncs the pool **both ways**:
+`reconcile()` (`processor.py:351`) re-reads the controller's replica list. It
+**adopts** what the controller has gained — registered, then waited on and
+started by `adopt()` in a background task — and deliberately **does nothing**
+about what the controller has dropped beyond logging it.
 
-- replicas the controller no longer lists have their workers cancelled; each
-  cancelled worker removes itself and re-provisions if work remains;
-- replicas the controller has gained are **adopted** — registered, then waited
-  on and started by `adopt()` in a background task.
+Not shedding is the point. It used to call `Replica.cancel`, which errors the
+in-flight request; an eviction that demoted a replica to WARM therefore killed
+the request running on it, even though that request was blameless and still
+runnable. The worker already handles a vanished replica correctly by itself:
+the next dispatch to it raises one of `EVICTED_ERRORS` (`CachedActorError` when
+demoted, `ValueError`/`ActorDiedError` when removed), `dispatch` hands the
+request back to the *front* of the queue, sets `task = None`, the loop
+condition flips, and the `finally` drops the replica and re-provisions. Letting
+that happen is both simpler and the only version that doesn't lose work.
+
+The cost is a replica whose worker is idle lingering in the pool until traffic
+touches it. Harmless — there is nothing to serve while the queue is empty — and
+self-correcting: the next request pays one wasted dispatch, is re-queued, and is
+served by a fresh replica.
 
 Adoption is the only path that picks up a replica while the model is already
 serving: `ensure_started` no-ops on a non-empty pool and `start` only runs on an

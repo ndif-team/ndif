@@ -131,7 +131,7 @@ descriptions a user can receive:
 |---|---|---|
 | `Your job exceeded the execution timeout of Ns.` | `modeling/base.py:322-326` | ran past `execution_timeout` |
 | `Your job was cancelled or preempted by the server.` | `modeling/base.py`, the `kill in done` branch | the actor's kill switch fired for a reason other than parking — i.e. somebody deliberately cancelled this request. **A HOT→WARM demotion no longer lands here**: `to_cache` sets `cancel(KILL_REASON_PREEMPTED)`, which raises `CachedActorError` so the queue re-queues instead. If you're chasing a *disappeared* request rather than a failed one, grep for `model execution preempted; requeued`. |
-| `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch |
+| `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch. **Only `ndif kill` and `purge` reach this now** — `reconcile` no longer cancels a shed replica, so an ordinary eviction re-queues the request instead of erroring it. |
 | `Request cancelled by operator.` | `queue/dispatcher.py:346` | someone ran `ndif kill` |
 | `Error submitting request to model deployment.` | `queue/replica.py:254-258` | the Ray call to the actor raised something unclassified |
 | `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica |

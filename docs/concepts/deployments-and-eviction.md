@@ -191,8 +191,10 @@ under a replica the dispatch fails, and the queue treats a lookup `ValueError`,
 `ActorDiedError`, or `CachedActorError` identically: drop the replica, put the
 request back at the front of the line, re-provision if work remains
 (`.../queue/replica.py:52`). An out-of-band deploy or evict (CLI, dashboard)
-also pushes a `reconcile_model` event so the affected `Processor` re-syncs its
-pool against `get_deployment`.
+also pushes a `reconcile_model` event so the affected `Processor` picks up any
+replica added out-of-band. It does *not* tear down replicas the controller has
+dropped — those drop themselves through the `EVICTED_ERRORS` path above, which
+re-queues whatever they were running.
 
 > **Gotcha:** `NDIF_MODEL_CACHE_PERCENTAGE` is the fraction of a node's **CPU
 > RAM** budgeted for the WARM cache, not GPU memory — the README's one-line
