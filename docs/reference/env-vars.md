@@ -144,6 +144,7 @@ is only a *default*; a per-model `DeploymentConfig` overrides it.
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | `controller.py:550` | Multiplicative slack in the memory estimate used to place a replica. |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | `controller.py:553` | Additive slack in the same estimate. |
 | `NDIF_DEFAULT_DTYPE` | `bfloat16` | `controller.py:555` | Dtype a model loads in when its config doesn't name one. Pinned into the config before placement (`controller.py:127-129`) so the size estimate and the actual load agree. |
+| `NDIF_SANDBOX_POOL_SIZE` | `7` | `sandbox/model.py:DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor (ignored by the base, in-process actor). Sized from the costs it trades: a cold spawn is ~4s against a ~0.7s warm execution, so the pool must be at least spawn/execute ≈ 6 or a saturated queue drains it and requests pay the spawn inline. Each warm runner holds ~420 MB (PSS) whether used or not — 7 is ~2.9 GB per model actor — and refills contend for CPU on the actor's node. Turn it down on memory- or core-tight nodes, or when many models are resident at once. A per-deployment `pool_size` kwarg still overrides it. |
 
 ## Object store
 

@@ -127,8 +127,19 @@ socket accepts (30s), raising if the process dies first.
 (`refill`, `:134`) so acquiring one doesn't pay Python + nnsight import cost;
 `acquire` (`:155`) takes a warm one (spawning inline if the queue is empty) and
 tops the pool back up. **There is no release-back-to-pool** — the caller owns the
-process and must `stop()` it. `size` defaults to 2 via `SandboxModelDeployment`'s
-`pool_size` kwarg (`model.py:173`); no env var sets it.
+process and must `stop()` it. `size` comes from `SandboxModelDeployment`'s
+`pool_size` kwarg, which defaults to `NDIF_SANDBOX_POOL_SIZE` (**7**,
+`model.py:DEFAULT_POOL_SIZE`).
+
+That default is sized from the two costs the pool trades off, measured on a
+g4dn.xlarge: a cold spawn is ~4s, a warm execution ~0.7s. Refills run
+concurrently (one thread each), so the pool keeps up only if it is at least
+spawn/execute ≈ 6. It was previously 2, which meant a saturated queue drained it
+immediately and every other request paid the ~4s spawn inline — worth roughly 5×
+throughput on the untrusted path. Raising it is not free: each warm runner holds
+~420 MB (PSS) idle, so 7 is ~2.9 GB per model actor, and concurrent refills
+contend for CPU on the actor's node — which is why adding replicas scales the
+sandbox path far worse than the in-process one.
 `SandboxModelDeployment` otherwise overrides only the seams of the
 `BaseModelDeployment.run` template (`base.py:244`) — `execute`, `execution_scope`,
 `interrupt` (`:201`), `cleanup` (`:196`), `format_error` (`:188`) — so the

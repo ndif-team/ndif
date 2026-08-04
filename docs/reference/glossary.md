@@ -207,8 +207,8 @@ Distinct from `session_id`, which addresses the client's websocket. See
 The separate OS process that executes an untrusted request's traced block, started
 as `python -m ndif.services.ray.sandbox.runner <socket>`. A **fresh runner per
 request**, stopped afterward, so nothing leaks between requests; `Pool`
-(`sandbox/host.py:112`) keeps a couple pre-warmed so acquiring one doesn't pay
-Python/nnsight startup. It holds no model; it drives the host's model over the socket.
+(`sandbox/host.py:112`) keeps `NDIF_SANDBOX_POOL_SIZE` (7) pre-warmed so
+acquiring one doesn't pay Python/nnsight startup. It holds no model; it drives the host's model over the socket.
 
 ## Sandbox
 
