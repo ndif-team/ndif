@@ -230,10 +230,28 @@ There is no scale-*down* here. Shrinking is eviction, driven by the controller
 
 ### reconcile and purge
 
-`reconcile()` (`processor.py:345`) re-reads the controller's replica list and
-cancels the workers for any replica the controller no longer lists; each
-cancelled worker removes itself and re-provisions if work remains. `purge()`
-(`processor.py:366`) errors every queued request, **clears the queue first**,
+`reconcile()` (`processor.py:351`) re-reads the controller's replica list and
+syncs the pool **both ways**:
+
+- replicas the controller no longer lists have their workers cancelled; each
+  cancelled worker removes itself and re-provisions if work remains;
+- replicas the controller has gained are **adopted** — registered, then waited
+  on and started by `adopt()` in a background task.
+
+Adoption is the only path that picks up a replica while the model is already
+serving: `ensure_started` no-ops on a non-empty pool and `start` only runs on an
+empty one. Without it, an out-of-band `ndif deploy` that added a second replica
+to a busy model contributed no capacity at all until the dispatcher restarted.
+
+Two details worth keeping if you touch this. `adopt` runs as a task rather than
+inline because `reconcile` is *awaited* by the events worker and `Replica.wait`
+has no timeout — waiting inline would wedge that worker, and every later
+reconcile and `ndif kill`, on one unready actor. And adoption is skipped while
+`status` is `PROVISIONING`/`DEPLOYING`, because a `start()` already in flight
+adopts the same list and the two would race into two workers on one replica.
+
+`purge()`
+(`processor.py:428`) errors every queued request, **clears the queue first**,
 then cancels every replica — the ordering matters, otherwise the cancelled
 workers' `finally` blocks would re-provision against requests that were just
 errored. It ends with `replicas.clear()` and status `UNINITIALIZED`.
@@ -320,7 +338,7 @@ terminal response. Those are Python objects in the dispatcher's heap.
 > `ensure_started` keys off `self.replicas` being empty (`processor.py:149`), so
 > a Processor with one wedged replica will not provision a second no matter how
 > deep its queue gets — autoscaling requires `READY`, `ensure_started` requires an
-> empty pool.
+> empty pool. Deploying one out-of-band is the way out: `reconcile` adopts it.
 
 > **`Processor.trusted` is sticky.** It is set from the first request that
 > triggers provisioning and only overwritten when `ensure_started` is called with

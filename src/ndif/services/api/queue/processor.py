@@ -343,13 +343,24 @@ class Processor:
             await request.arespond(status, description or "")
 
     async def reconcile(self) -> None:
-        """Shed replicas the controller no longer lists.
+        """Match the pool to the controller's replica list, both directions.
 
         Invoked after an out-of-band deploy/evict (via the dispatcher's events
-        worker): cancel workers for replicas the controller has dropped. Each
-        cancelled worker removes itself and re-provisions (via ``ensure_started``)
-        if work remains. A connection error is reported so the dispatcher can
-        reconnect.
+        worker):
+
+          - replicas the controller has dropped are cancelled; each cancelled
+            worker removes itself and re-provisions (via ``ensure_started``) if
+            work remains;
+          - replicas the controller has gained are adopted, so capacity added
+            out-of-band (``ndif deploy``, the dashboard) is actually used.
+
+        Adoption matters because it is the *only* path that picks up a new
+        replica while the model is already serving: ``ensure_started`` no-ops
+        whenever the pool is non-empty, and ``start`` only runs on an empty
+        pool. Without it, deploying a second replica of a busy model added no
+        capacity at all until the dispatcher restarted.
+
+        A connection error is reported so the dispatcher can reconnect.
         """
         try:
             response: ReplicaStates = await controller_handle().get_deployment.remote(
@@ -362,6 +373,51 @@ class Processor:
         current = {state.replica_id for state in response.replicas}
         for replica_id in set(self.replicas) - current:
             await self.replicas[replica_id].cancel("Replica evicted.")
+
+        # A start() already in flight adopts everything the controller lists, so
+        # adopting here too would race it and leave two workers on one replica.
+        if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
+            return
+
+        for replica_id in current - set(self.replicas):
+            replica = Replica(self.model_key, replica_id, self)
+            # Register before waiting so the replica counts against the pool
+            # (keeping ensure_started from provisioning a duplicate) while it
+            # comes up.
+            self.replicas[replica_id] = replica
+            # Backgrounded: this is awaited by the dispatcher's events worker,
+            # and Replica.wait has no timeout — doing it inline would wedge that
+            # worker (and every later reconcile/kill) on one unready actor.
+            asyncio.create_task(self.adopt(replica))
+
+    async def adopt(self, replica: Replica) -> None:
+        """Wait for an out-of-band replica to be ready, then put it to work."""
+        try:
+            await replica.wait()
+        except Exception as e:
+            self.replicas.pop(replica.replica_id, None)
+            event(
+                logger,
+                "failed to adopt replica",
+                level=logging.ERROR,
+                exc_info=True,
+                model_key=self.model_key,
+                replica_id=replica.replica_id,
+                error_type=type(e).__name__,
+            )
+            self.error_queue.put_nowait((self.model_key, e))
+            return
+
+        replica.start()
+        self.status = ProcessorStatus.READY
+        event(
+            logger,
+            "adopted replica",
+            model_key=self.model_key,
+            replica_id=replica.replica_id,
+            replicas=len(self.replicas),
+        )
+        await self.reply()
 
     async def purge(self, message: Optional[str] = None) -> None:
         """Error every queued request and cancel all replica workers.
