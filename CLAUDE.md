@@ -154,6 +154,18 @@ Read the first two if a behavior seems inexplicable:
 - **NDIF does not use Ray Serve.** Deployments are detached Ray actors named
   `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. The README says
   otherwise; the README is wrong.
+- **You cannot catch an actor's exception by type across the Ray boundary.** An
+  exception raised inside an actor reaches the caller wrapped in a
+  `RayTaskError`; the dual class that would make `isinstance` work is only built
+  when Ray applies `as_instanceof_cause()`, and over Ray Client — how the
+  dispatcher connects — it does not. Read `.cause`
+  (`queue.replica.is_evicted_error`). A bare `isinstance` silently matches
+  nothing, which is how a whole retry path can be dead while every log line
+  looks correct.
+- **The sandbox runner pool costs memory per model actor.** `NDIF_SANDBOX_POOL_SIZE`
+  (7) pre-warms that many runners per actor at ~420 MB each — ~2.9 GB per
+  resident model, whether or not anything is running. Sized for throughput on
+  one model; turn it down on a node hosting several.
 - **`NDIF_MODEL_CACHE_PERCENTAGE` scales host RAM**, not GPU memory — it's the WARM
   cache budget. Wrong lever for a GPU OOM.
 - **`NDIF_RAY_METRICS_PORT` is Ray's `--metrics-export-port`** (the Prometheus

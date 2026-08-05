@@ -235,10 +235,10 @@ There is no scale-*down* here. Shrinking is eviction, driven by the controller
 started by `adopt()` in a background task — and deliberately **does nothing**
 about what the controller has dropped beyond logging it.
 
-Not shedding is the point. It used to call `Replica.cancel`, which errors the
-in-flight request; an eviction that demoted a replica to WARM therefore killed
-the request running on it, even though that request was blameless and still
-runnable. The worker already handles a vanished replica correctly by itself:
+Not shedding is the point. `Replica.cancel` errors the in-flight request, so
+shedding here would kill a request that is blameless and still runnable — the
+common case being an eviction that demotes a replica to WARM. The worker handles
+a vanished replica correctly by itself:
 the next dispatch to it raises one of `EVICTED_ERRORS` (`CachedActorError` when
 demoted, `ValueError`/`ActorDiedError` when removed), `dispatch` hands the
 request back to the *front* of the queue, sets `task = None`, the loop
@@ -309,11 +309,13 @@ most consequential logic in this package:
 `CachedActorError` is raised inside the actor and arrives wrapped in a
 `ray.exceptions.RayTaskError`; the dual RayTaskError-plus-cause class that
 would satisfy `isinstance` is only built when `as_instanceof_cause()` is
-applied, and over Ray Client — how the dispatcher connects — it is not. A
-bare isinstance therefore never matched, and a HOT→WARM demotion errored the
-user instead of re-queueing. (Verified: the actor log showed the
-`CachedActorError` raised as designed while the dispatcher logged
-`error_type=RayTaskError` and took the generic branch.) `cancel()` (`replica.py:279`) errors the in-flight
+applied, and over Ray Client — how the dispatcher connects — it is not. A bare
+isinstance matches nothing here, which costs a re-queue on every HOT→WARM
+demotion; the symptom is an actor log showing `CachedActorError` raised as
+designed while the dispatcher logs `error_type=RayTaskError` and takes the
+generic branch.
+
+`cancel()` (`replica.py:279`) errors the in-flight
 request *before* cancelling the task, because a teardown only notifies queued
 requests via `Processor.reply` — the running one would otherwise hang.
 

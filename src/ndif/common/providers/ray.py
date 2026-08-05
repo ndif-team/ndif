@@ -36,9 +36,9 @@ class CachedActorError(Exception):
     dispatcher connects. The wrapper arrives plain and the cause has to be read
     off ``.cause``; use ``queue.replica.is_evicted_error``.
 
-    This docstring previously claimed the opposite, and the queue believed it:
-    ``except EVICTED_ERRORS`` never matched, so every HOT->WARM demotion errored
-    the in-flight request instead of re-queueing it.
+    Getting this wrong is expensive and quiet: a bare ``except EVICTED_ERRORS``
+    matches nothing, and every HOT->WARM demotion errors the in-flight request
+    instead of re-queueing it, on a cluster that otherwise looks healthy.
     """
 
     pass

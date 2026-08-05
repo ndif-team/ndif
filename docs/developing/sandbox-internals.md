@@ -134,9 +134,9 @@ process and must `stop()` it. `size` comes from `SandboxModelDeployment`'s
 That default is sized from the two costs the pool trades off, measured on a
 g4dn.xlarge: a cold spawn is ~4s, a warm execution ~0.7s. Refills run
 concurrently (one thread each), so the pool keeps up only if it is at least
-spawn/execute ≈ 6. It was previously 2, which meant a saturated queue drained it
-immediately and every other request paid the ~4s spawn inline — worth roughly 5×
-throughput on the untrusted path. Raising it is not free: each warm runner holds
+spawn/execute ≈ 6. Below that a saturated queue drains the pool and every other
+request pays the ~4s spawn inline, which costs roughly 5× throughput on the
+untrusted path. Size is not free either: each warm runner holds
 ~420 MB (PSS) idle, so 7 is ~2.9 GB per model actor, and concurrent refills
 contend for CPU on the actor's node — which is why adding replicas scales the
 sandbox path far worse than the in-process one.
