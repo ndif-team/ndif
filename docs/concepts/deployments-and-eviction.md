@@ -147,6 +147,18 @@ node's CPU cache — greedily dropping the smallest `WARM` entries if needed
 **keeping its `replica_id`**, so the actor name stays stable across the
 transition; if not, it is removed outright and the actor is killed.
 
+**Both outcomes are transparent to an in-flight request**, by different routes.
+A removed actor makes the queue's Ray call raise `ActorDiedError`. A demotion
+cancels the running request in `to_cache()` (`modeling/base.py:191`, before the
+weights move) and raises `CachedActorError`. Both land in `EVICTED_ERRORS` and
+both re-queue.
+
+Keeping them in step takes care, because the demote path is the one that looks
+harmless: it is the *tidier* eviction — the model stays in CPU RAM for a fast
+restore — so anything that makes the WARM cache more effective makes that path
+more frequent. If it ever stops re-queueing, evictions quietly start destroying
+work on a cluster that appears to be behaving well.
+
 The CPU cache budget is the node's total RAM scaled by
 `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`), read from the `cpu_memory_bytes`
 resource that `resources.py` advertises at `ray start`
@@ -180,8 +192,10 @@ under a replica the dispatch fails, and the queue treats a lookup `ValueError`,
 `ActorDiedError`, or `CachedActorError` identically: drop the replica, put the
 request back at the front of the line, re-provision if work remains
 (`.../queue/replica.py:52`). An out-of-band deploy or evict (CLI, dashboard)
-also pushes a `reconcile_model` event so the affected `Processor` re-syncs its
-pool against `get_deployment`.
+also pushes a `reconcile_model` event so the affected `Processor` picks up any
+replica added out-of-band. It does *not* tear down replicas the controller has
+dropped — those drop themselves through the `EVICTED_ERRORS` path above, which
+re-queues whatever they were running.
 
 > **Gotcha:** `NDIF_MODEL_CACHE_PERCENTAGE` is the fraction of a node's **CPU
 > RAM** budgeted for the WARM cache, not GPU memory — the README's one-line

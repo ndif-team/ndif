@@ -71,8 +71,10 @@ resolves. Note `resources={f"node:{node_name}": 0.01}` and no `num_gpus`: placem
 by node, and GPU targeting happens inside the actor via `max_memory`.
 
 > **Gotcha:** an extra constructor parameter of your own has no path from the
-> controller. `SandboxModelDeployment.__init__` takes `pool_size: int = 2`
-> (`sandbox/model.py:176`) and nothing can set it — it is always 2 in production.
+> controller. `SandboxModelDeployment.__init__` takes `pool_size`
+> (`sandbox/model.py:193`) and nothing can set it — which is why its default falls
+> back to `NDIF_SANDBOX_POOL_SIZE` (`DEFAULT_POOL_SIZE`, `:188`) rather than a
+> literal, and it is that env value in production.
 > Read your own options from the environment (the actor's `runtime_env` carries the
 > provider config already) or add a field to `BaseModelDeploymentArgs`, which also
 > means teaching `DeploymentConfig` and the controller to populate it.
@@ -92,7 +94,14 @@ methods it calls:
 | `execution_scope(request)` (`base.py:428`) | Context manager around the raced wait; redirects `sys.stdout` into `LogStream` so prints become `LOG` responses | Your executor reports output another way (or not at all) |
 | `interrupt()` (`base.py:440`) | `kill_thread(self.execution_ident)` | There is something else to stop — a subprocess, a socket, an engine request |
 | `format_error(exc) -> (str, bool)` (`base.py:444`) | Clean nnsight + actor frames out of the traceback; flag unrecoverable CUDA errors as fatal | Your errors arrive pre-formatted, or a different failure class is fatal |
-| `cleanup()` (`base.py:521`) | Clear the kill switch and `execution_ident`, cancel the interleaver, `synchronize`/`gc`/`empty_cache` | You hold per-request resources; call `super().cleanup()` |
+| `cleanup()` (`base.py:521`) | Clear the kill switch, `kill_reason` and `execution_ident`, cancel the interleaver, `synchronize`/`gc`/`empty_cache` | You hold per-request resources; call `super().cleanup()` |
+
+> **If you call `cancel()` yourself**, mind the `reason`. The default (unset)
+> means "genuinely cancelled": the user is told, and the request stops there.
+> Pass `KILL_REASON_PREEMPTED` only when the request is blameless and still
+> runnable — it makes `run` raise `CachedActorError` so the queue re-queues it,
+> and a re-queue goes to the *front* of the line, so mislabelling a deliberate
+> cancellation re-runs it forever.
 
 Everything else — `load_from_disk`, `to_cache`/`from_cache`, `cancel`, `restart`,
 `report`, `upload_bytes`, and `run` itself — should be inherited unchanged. Overriding
@@ -135,9 +144,12 @@ process, driven over a socket. It overrides the five hooks and nothing else.
 
 ```python
 class SandboxModelDeployment(BaseModelDeployment):
-    def __init__(self, *args, pool_size: int = 2, **kwargs):
+    def __init__(self, *args, pool_size: Optional[int] = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pool = Pool(size=pool_size)
+        self.pool = Pool(
+            size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
+            runner_args=[self.model_key],   # each runner builds its own meta model
+        )
         self.execution_sandbox = None
 
     def execute(self, request):

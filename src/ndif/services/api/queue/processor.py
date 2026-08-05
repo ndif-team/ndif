@@ -30,12 +30,18 @@ from ....common.providers.ray import controller_handle
 from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
 from ....common.schema.request import BackendRequestModel
-from ....common.telemetry import event
+from ....common.telemetry import error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 from .config import CONFIG
-from .replica import Replica
+from .replica import DeploymentError, Replica
 
 logger = logging.getLogger("ndif.queue.processor")
+
+# Cap on a controller-supplied failure reason forwarded to the caller. The
+# useful ones (HuggingFace's "Repository Not Found ...", CANT_ACCOMMODATE) are
+# well under this; the cap only stops a pathological error string becoming the
+# websocket payload.
+_MAX_REASON_CHARS = 1500
 
 
 class ProcessorStatus(Enum):
@@ -127,10 +133,16 @@ class Processor:
             processor_status=self.status.value,
         )
 
+        # Depth is only the new request's position when it was appended; a
+        # prepended one (priority key, or an evicted replica handing its
+        # in-flight request back) is at the front. Reporting depth for those
+        # told a priority caller they were last in a line they had just jumped.
+        position = 1 if prepend else self.queue.qsize()
+
         await self.reply(
             request=request,
             description=(
-                f"Added to Queue at position {self.queue.qsize()}."
+                f"Added to Queue at position {position}."
                 if self.status
                 not in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING)
                 else None
@@ -219,12 +231,31 @@ class Processor:
                 exc_info=True,
                 model_key=self.model_key,
                 stage=self.status.value,
-                error_type=type(e).__name__,
+                error_type=error_type_name(e),
             )
             self.error_queue.put_nowait((self.model_key, e))
-            
+
+            # When the controller said *why* it refused, tell the caller that
+            # instead of the canned line. These reasons are the actionable ones
+            # -- a mistyped repo, a gated repo, a model too big for the cluster
+            # -- and HuggingFace phrases most of them for end users already,
+            # naming the repo and the page to visit. They were being logged and
+            # then replaced with "Please try again later", which is advice that
+            # cannot work for any of them.
+            #
+            # Deliberately only DeploymentError: any other exception here is an
+            # internal fault whose text would leak implementation detail and
+            # tell the caller nothing.
+            if isinstance(e, DeploymentError):
+                reason = str(e).strip()
+                if len(reason) > _MAX_REASON_CHARS:
+                    reason = reason[:_MAX_REASON_CHARS].rstrip() + "…"
+                user_message = f"Could not deploy this model. {reason}"
+            else:
+                user_message = error_message
+
             if self.status != ProcessorStatus.READY:
-                await self.purge(error_message)
+                await self.purge(user_message)
 
     async def autoscaling_loop(self) -> None:
         """Scale the replica pool up under sustained queue pressure.
@@ -343,13 +374,38 @@ class Processor:
             await request.arespond(status, description or "")
 
     async def reconcile(self) -> None:
-        """Shed replicas the controller no longer lists.
+        """Match the pool to the controller's replica list, both directions.
 
         Invoked after an out-of-band deploy/evict (via the dispatcher's events
-        worker): cancel workers for replicas the controller has dropped. Each
-        cancelled worker removes itself and re-provisions (via ``ensure_started``)
-        if work remains. A connection error is reported so the dispatcher can
-        reconnect.
+        worker):
+
+          - replicas the controller has dropped are *left alone* — see below;
+          - replicas the controller has gained are adopted, so capacity added
+            out-of-band (``ndif deploy``, the dashboard) is actually used.
+
+        Adoption matters because it is the *only* path that picks up a new
+        replica while the model is already serving: ``ensure_started`` no-ops
+        whenever the pool is non-empty, and ``start`` only runs on an empty
+        pool. Without it, deploying a second replica of a busy model added no
+        capacity at all until the dispatcher restarted.
+
+        Shedding, by contrast, is deliberately **not** done here. It used to
+        call ``Replica.cancel``, which errors the in-flight request — so an
+        eviction that demoted a replica to WARM killed the request running on
+        it, even though that request was blameless and still runnable. The
+        worker already handles this correctly on its own: the next (or current)
+        dispatch to a gone replica raises one of ``EVICTED_ERRORS``
+        (``CachedActorError`` when demoted, ``ValueError``/``ActorDiedError``
+        when removed), which hands the request back to the *front* of the queue,
+        drops the replica, and re-provisions. Letting that happen is both
+        simpler and the only version that doesn't lose work.
+
+        The cost is that a replica whose worker is idle lingers in the pool
+        until traffic exercises it. That is harmless — there is nothing to serve
+        while the queue is empty — and self-corrects on the next request, which
+        pays one wasted dispatch and is then re-queued and served.
+
+        A connection error is reported so the dispatcher can reconnect.
         """
         try:
             response: ReplicaStates = await controller_handle().get_deployment.remote(
@@ -360,8 +416,63 @@ class Processor:
             return
 
         current = {state.replica_id for state in response.replicas}
-        for replica_id in set(self.replicas) - current:
-            await self.replicas[replica_id].cancel("Replica evicted.")
+        shed = set(self.replicas) - current
+        if shed:
+            # Logged, not cancelled: the dispatch that next touches one of these
+            # re-queues its request and drops the replica by itself.
+            event(
+                logger,
+                "replicas no longer listed by the controller; "
+                "leaving them to drop themselves on next dispatch",
+                model_key=self.model_key,
+                replica_ids=sorted(shed),
+                replicas=len(self.replicas),
+            )
+
+        # A start() already in flight adopts everything the controller lists, so
+        # adopting here too would race it and leave two workers on one replica.
+        if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
+            return
+
+        for replica_id in current - set(self.replicas):
+            replica = Replica(self.model_key, replica_id, self)
+            # Register before waiting so the replica counts against the pool
+            # (keeping ensure_started from provisioning a duplicate) while it
+            # comes up.
+            self.replicas[replica_id] = replica
+            # Backgrounded: this is awaited by the dispatcher's events worker,
+            # and Replica.wait has no timeout — doing it inline would wedge that
+            # worker (and every later reconcile/kill) on one unready actor.
+            asyncio.create_task(self.adopt(replica))
+
+    async def adopt(self, replica: Replica) -> None:
+        """Wait for an out-of-band replica to be ready, then put it to work."""
+        try:
+            await replica.wait()
+        except Exception as e:
+            self.replicas.pop(replica.replica_id, None)
+            event(
+                logger,
+                "failed to adopt replica",
+                level=logging.ERROR,
+                exc_info=True,
+                model_key=self.model_key,
+                replica_id=replica.replica_id,
+                error_type=error_type_name(e),
+            )
+            self.error_queue.put_nowait((self.model_key, e))
+            return
+
+        replica.start()
+        self.status = ProcessorStatus.READY
+        event(
+            logger,
+            "adopted replica",
+            model_key=self.model_key,
+            replica_id=replica.replica_id,
+            replicas=len(self.replicas),
+        )
+        await self.reply()
 
     async def purge(self, message: Optional[str] = None) -> None:
         """Error every queued request and cancel all replica workers.

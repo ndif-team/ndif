@@ -64,6 +64,26 @@ def event(
     )
 
 
+def error_type_name(error: BaseException) -> str:
+    """Type name for a log line, naming a wrapped cause when there is one.
+
+    An exception raised inside a Ray actor reaches the caller as a
+    ``RayTaskError``, whose own type says nothing about what actually failed —
+    so ``error_type=RayTaskError`` hides precisely the fact you are looking for.
+    Ray keeps the original on ``.cause``; naming both gives
+    ``RayTaskError[CachedActorError]``, which is greppable and says which
+    handler should have caught it.
+
+    Cheap to call and safe on any exception: no cause, or a cause of the same
+    type, yields the plain name.
+    """
+    name = type(error).__name__
+    cause = getattr(error, "cause", None)
+    if cause is not None and type(cause) is not type(error):
+        return f"{name}[{type(cause).__name__}]"
+    return name
+
+
 def elapsed_ms(start: float) -> float:
     """Milliseconds since ``start`` (a ``time.time()`` value), rounded."""
     return round((time.time() - start) * 1000, 2)

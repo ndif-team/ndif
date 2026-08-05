@@ -26,10 +26,19 @@ class CachedActorError(Exception):
     """A ModelActor that has been moved to CPU cache (WARM).
 
     The actor process is still alive, but it is no longer serving on GPU, so a
-    dispatch must be treated the same as hitting an evicted/dead replica. When
-    raised inside the actor it propagates to the caller wrapped in a
-    ``ray.exceptions.RayTaskError`` whose dynamic subclass still satisfies
-    ``isinstance(e, CachedActorError)``.
+    dispatch must be treated the same as hitting an evicted/dead replica.
+
+    **Do not catch this by type on the caller's side.** Raised inside the actor,
+    it reaches the caller wrapped in a ``ray.exceptions.RayTaskError``, and the
+    dual RayTaskError-plus-cause class that would satisfy
+    ``isinstance(e, CachedActorError)`` is only built when Ray applies
+    ``as_instanceof_cause()`` — which it does not over Ray Client, the way the
+    dispatcher connects. The wrapper arrives plain and the cause has to be read
+    off ``.cause``; use ``queue.replica.is_evicted_error``.
+
+    Getting this wrong is expensive and quiet: a bare ``except EVICTED_ERRORS``
+    matches nothing, and every HOT->WARM demotion errors the in-flight request
+    instead of re-queueing it, on a cluster that otherwise looks healthy.
     """
 
     pass

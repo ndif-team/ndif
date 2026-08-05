@@ -25,8 +25,9 @@ WORKDIR /app
 # gcc + libc6-dev: let nnsight's optional `nnsight._c.py_mount` C extension
 # compile when nnsight installs from an sdist (it mounts `.save()` on objects;
 # without a compiler setuptools skips it and `value.save()` breaks on the server).
+# git: required to install nnsight from GitHub in requirements.txt.
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends cron gcc libc6-dev \
+    && apt-get install -y --no-install-recommends cron gcc libc6-dev git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

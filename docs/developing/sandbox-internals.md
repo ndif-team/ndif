@@ -129,10 +129,24 @@ process dies first.
 the meta-model build the runner does before binding;
 `acquire` (`:158`) takes a warm one (spawning inline if the queue is empty) and
 tops the pool back up. **There is no release-back-to-pool** — the caller owns the
-process and must `stop()` it. `size` defaults to 2 via `SandboxModelDeployment`'s
-`pool_size` kwarg (`model.py:176`); no env var sets it. The pool also carries
-`runner_args` — `[self.model_key]` (`model.py:178`) — through to every `spawn`,
-which is how a runner knows which model to build its persistent-id map from.
+process and must `stop()` it. `size` comes from `SandboxModelDeployment`'s
+`pool_size` kwarg, which defaults to `NDIF_SANDBOX_POOL_SIZE` (**7**,
+`model.py:DEFAULT_POOL_SIZE`).
+
+That default is sized from the two costs the pool trades off, measured on a
+g4dn.xlarge: a cold spawn is ~4s, a warm execution ~0.7s. Refills run
+concurrently (one thread each), so the pool keeps up only if it is at least
+spawn/execute ≈ 6. Below that a saturated queue drains the pool and every other
+request pays the ~4s spawn inline, which costs roughly 5× throughput on the
+untrusted path. Size is not free either: each warm runner holds
+~420 MB (PSS) idle, so 7 is ~2.9 GB per model actor, and concurrent refills
+contend for CPU on the actor's node — which is why adding replicas scales the
+sandbox path far worse than the in-process one.
+
+The pool also carries `runner_args` — `[self.model_key]` (`model.py:198`) — through
+to every `spawn`, which is how a runner knows which model to build its
+persistent-id map from. That map costs a meta build per runner, paid inside
+`spawn`'s readiness window and therefore folded into the ~4s figure above.
 
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and

@@ -24,7 +24,8 @@ Two things the runner can't do without a local module — ``.source`` and an ad-
 module call (``IPCEnvoy.__call__``) — become SOURCE / CALL events the host serves.
 
 ``IPCCloudUnpickler`` resolves the persistent interleaver to an ``IPCInterleaver``
-bound to this request's socket; the model / modules load as None (never touched).
+bound to this request's socket; the model / modules / tokenizer load from this
+runner's meta model (``load_meta_model``) — structure, never weights.
 """
 
 import io
@@ -47,10 +48,11 @@ from nnsight.intervention.interleaver import (
 from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.intervention.source import SourceEnvoy
 from nnsight.intervention.tracer import InterleavingTracer
-from nnsight.schema.request import RequestModel
 from nnsight.tracing.tracer import _saves, dec, inc
 from nnsight.modeling.huggingface import HuggingFaceModel
 
+from ....common.errors import RequestError
+from ....common.schema.request import BackendRequestModel
 from ..deployments.modeling.util import cpu_pickle_module
 
 # The runner's connection to the host, for the request currently executing. The
@@ -100,7 +102,8 @@ class IPCInterleaver(Interleaver):
         self.caches: dict[int, Cache] = {}
 
     def instrument(self, envoy: Envoy) -> None:
-        # No model in this process (modules load as None) — nothing to hook.
+        # This process only has meta modules — the forward runs on the host, so
+        # hooking here would fire on nothing.
         pass
 
     def pump(self):
@@ -240,12 +243,15 @@ class IPCEnvoy(Envoy):
 class IPCCloudUnpickler(CustomCloudUnpickler):
     """nnsight unpickler that resolves the interleaver to an IPC one.
 
-    Passed to ``RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)``, which
-    instantiates it as ``IPCCloudUnpickler(file, persistent_objects)`` — here the
-    map ``load_meta_model`` built from this runner's meta model, so ``Module:<path>``,
-    ``Tokenizer`` and ``Pipeline`` ids resolve to real (weightless) objects in this
-    process. Unlike the base class an unknown id is not an error: it resolves to
-    ``None``, since the payload can mention objects only the host has.
+    Passed to ``BackendRequestModel.deserialize(..., unpickler=IPCCloudUnpickler)``,
+    which instantiates it as ``IPCCloudUnpickler(file, persistent_objects)`` — here
+    the map ``load_meta_model`` built from this runner's meta model, so
+    ``Module:<path>``, ``Tokenizer`` and ``Pipeline`` ids resolve to real
+    (weightless) objects in this process. Unlike the base class an unknown id is not
+    an error: it resolves to ``None``, since the payload can mention objects only the
+    host has. That also means an id the meta tree lacks never reaches
+    ``BackendRequestModel.deserialize``'s ``ArchitectureMismatchError`` classification
+    on this path — it surfaces later as an ``AttributeError`` in the block instead.
     """
 
     def __init__(self, file, persistent_objects=None):
@@ -362,43 +368,62 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
     """
     global connection
     connection = conn
+
+    # Deserialization is separated from execution because the two fail for
+    # entirely different reasons and only the second has a user traceback worth
+    # sending. Sharing one `except` meant a corrupt payload came back dressed as
+    # a user-code failure: NDIF's own frames, this file's path, and a
+    # `ZstdError` the caller could do nothing with.
     try:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
         deserialize_started = time.time()
-        tracer = RequestModel.deserialize(blob, persistent_objects=PERSISTENT_OBJECTS, compress=compress, unpickler=IPCCloudUnpickler)
-        deserialize_ms = round((time.time() - deserialize_started) * 1000, 2)
-        # Bracket execution in a trace scope so nnsight.save() records into this
-        # thread's save set, then collect the marked values (by identity) by name.
-        inc()
-        try:
-            tracer.execute(tracer.info.code)
-            saves = _saves()
-            saved = {
-                name: value
-                for name, value in tracer.info.frame.f_locals.items()
-                if id(value) in saves
-            }
-        finally:
-            dec()
-        buffer = io.BytesIO()
-        torch.save(saved, buffer, pickle_module=cpu_pickle_module())
-    except Exception as error:
-        # Format the traceback here, where it's live: an exception loses its
-        # __traceback__ when cloudpickled across the socket. A worker error already
-        # carries a clean, intervention-only traceback (stashed by Mediator.switch);
-        # otherwise drop nnsight's plumbing. Send the formatted text, not the object.
-        import traceback
-
-        from nnsight.tracing.util import clean_traceback
-
-        tb = getattr(error, "__intervention_tb__", None) or clean_traceback(
-            error.__traceback__
+        tracer = BackendRequestModel.deserialize(
+            blob,
+            persistent_objects=PERSISTENT_OBJECTS,
+            compress=compress,
+            unpickler=IPCCloudUnpickler,
         )
-        message = "".join(traceback.format_exception(type(error), error, tb))
-        terminal = ("EXCEPTION", message)
+        deserialize_ms = round((time.time() - deserialize_started) * 1000, 2)
+    except RequestError as error:
+        # No user frames exist yet, so there is no traceback worth sending —
+        # just the sentence BackendRequestModel.deserialize already classified
+        # this into. The in-process path raises the very same object; only text
+        # crosses this socket, so the runner ships str() of it.
+        terminal = ("EXCEPTION", str(error))
     else:
-        terminal = ("END", buffer.getvalue(), deserialize_ms)
+        try:
+            # Bracket execution in a trace scope so nnsight.save() records into this
+            # thread's save set, then collect the marked values (by identity) by name.
+            inc()
+            try:
+                tracer.execute(tracer.info.code)
+                saves = _saves()
+                saved = {
+                    name: value
+                    for name, value in tracer.info.frame.f_locals.items()
+                    if id(value) in saves
+                }
+            finally:
+                dec()
+            buffer = io.BytesIO()
+            torch.save(saved, buffer, pickle_module=cpu_pickle_module())
+        except Exception as error:
+            # Format the traceback here, where it's live: an exception loses its
+            # __traceback__ when cloudpickled across the socket. A worker error already
+            # carries a clean, intervention-only traceback (stashed by Mediator.switch);
+            # otherwise drop nnsight's plumbing. Send the formatted text, not the object.
+            import traceback
+
+            from nnsight.tracing.util import clean_traceback
+
+            tb = getattr(error, "__intervention_tb__", None) or clean_traceback(
+                error.__traceback__
+            )
+            message = "".join(traceback.format_exception(type(error), error, tb))
+            terminal = ("EXCEPTION", message)
+        else:
+            terminal = ("END", buffer.getvalue(), deserialize_ms)
     # Drain a trailing partial print line (stdout is the runner's line-buffering
     # Writer here) so it lands before the terminal event on the socket.
     sys.stdout.flush()

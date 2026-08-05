@@ -18,8 +18,9 @@ resolves those. The final result goes back for the process to return to the clie
 """
 
 import contextlib
+import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import ray
 import torch
@@ -170,12 +171,37 @@ class MediatorProxy(Mediator):
         return self.pending
 
 
+# How many runners to keep pre-warmed per model actor.
+#
+# Sized from the two costs it trades off, both measured on a g4dn.xlarge:
+# a cold spawn (python + torch + nnsight import) takes ~4s, while executing an
+# already-warm request takes ~0.7s. A pool only keeps up if refills — which run
+# concurrently, one thread each — cover the drain rate, so it needs to be at
+# least spawn/execute ~= 6. At the old default of 2 a saturated queue drained
+# the pool immediately and every other request paid the full ~4s spawn inline,
+# which cost roughly 5x throughput on the untrusted path.
+#
+# The costs of raising it: each warm runner holds ~420 MB (PSS) whether or not
+# it is used, so 7 is ~2.9 GB per model actor, and concurrent refills contend
+# for CPU on the node hosting the actor. On a memory- or core-tight node, or
+# with many models resident at once, turn this down.
+DEFAULT_POOL_SIZE = int(os.environ.get("NDIF_SANDBOX_POOL_SIZE", "7"))
+
+
 class SandboxModelDeployment(BaseModelDeployment):
     """Loads the model on the host; runs user code in a process pool."""
 
-    def __init__(self, *args: Any, pool_size: int = 2, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, pool_size: Optional[int] = None, **kwargs: Any
+    ) -> None:
         super().__init__(*args, **kwargs)
-        self.pool = Pool(size=pool_size, runner_args=[self.model_key], quiet=False)
+        self.pool = Pool(
+            size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
+            # Each runner builds its own meta model from this key, so its
+            # persistent-id map matches the tree this actor loaded.
+            runner_args=[self.model_key],
+            quiet=False,
+        )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
         self.execution_sandbox = None

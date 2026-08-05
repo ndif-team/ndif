@@ -124,17 +124,22 @@ implementation: `clean_traceback` strips nnsight's plumbing and `filter_tracebac
 drops the actor's own frames, leaving the user's block
 (`modeling/base.py:444-454`).
 
-Server-side failures never carry a traceback. The complete set of canned
-descriptions a user can receive:
+Server-side failures never carry a traceback. Both deserialization failures
+below are classified in one place — `BackendRequestModel.deserialize` — which
+the in-process actor and the sandbox runner both call, so the two paths cannot
+drift. The complete set of canned descriptions a user can receive:
 
 | Message the user sees | Emitted at | What actually happened |
 |---|---|---|
 | `Your job exceeded the execution timeout of Ns.` | `modeling/base.py:322-326` | ran past `execution_timeout` |
-| `Your job was cancelled or preempted by the server.` | `modeling/base.py:314-317` | the actor's kill switch fired (`to_cache`, i.e. a HOT→WARM demotion) |
-| `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch |
+| `Your job was cancelled or preempted by the server.` | `modeling/base.py`, the `kill in done` branch | the actor's kill switch fired for a reason other than parking — somebody deliberately cancelled this request. A HOT→WARM demotion does **not** land here: `to_cache` passes `KILL_REASON_PREEMPTED`, which raises `CachedActorError` and re-queues. If you are chasing a *disappeared* request rather than a failed one, grep for `model execution preempted; requeued`. |
+| `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch. Reached only by `ndif kill` and `purge`; an ordinary eviction re-queues the request rather than erroring it, so this message means somebody or something deliberately tore the replica down. |
+| `Your request payload could not be read (...)` | `common/errors.py:PayloadError` | the blob failed to deserialize — truncated, corrupted, or a compress-flag mismatch. **Precedes any user code**, so despite being the caller's problem it is deliberately *not* a traceback |
+| `The model architecture on this server doesn't match ...` | `common/errors.py:ArchitectureMismatchError` | a `Module:<path>` the server's tree doesn't have — the client and server built different trees, nearly always a `transformers` version difference. Names the *first* diverging path, not the layer the user asked for, because the block references the whole envoy tree. Points the user at `ndif.compare()` |
 | `Request cancelled by operator.` | `queue/dispatcher.py:346` | someone ran `ndif kill` |
 | `Error submitting request to model deployment.` | `queue/replica.py:254-258` | the Ray call to the actor raised something unclassified |
-| `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica |
+| `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica, **and did not say why** — an internal fault; the traceback is in the API log |
+| `Could not deploy this model. <reason>` | `queue/processor.py`, the `DeploymentError` branch of `start` | the controller refused and explained: mistyped `repo_id`, gated repo, `CANT_ACCOMMODATE`. The reason is the controller's own text, forwarded verbatim |
 | `Critical server error occurred.` | `queue/dispatcher.py:195`, `processor.py:374-378` | a Ray connection error purged every Processor |
 
 Each of those also produces a structured server log with the real cause. The

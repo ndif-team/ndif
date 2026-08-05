@@ -43,6 +43,7 @@ from ....common.redis import (
 )
 from ....common.schema import Status
 from ....common.schema.request import BackendRequestModel
+from ....common.telemetry import error_type_name
 from .config import CONFIG
 from .processor import Processor
 
@@ -205,7 +206,7 @@ class Dispatcher:
                 f"Error in component {name}: {error}\n{tb_str}",
                 extra={
                     "component_name": name,
-                    "error_type": type(error).__name__,
+                    "error_type": error_type_name(error),
                     "is_connection_error": RayProvider.is_connection_error(error),
                 },
             )

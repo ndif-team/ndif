@@ -230,10 +230,40 @@ There is no scale-*down* here. Shrinking is eviction, driven by the controller
 
 ### reconcile and purge
 
-`reconcile()` (`processor.py:345`) re-reads the controller's replica list and
-cancels the workers for any replica the controller no longer lists; each
-cancelled worker removes itself and re-provisions if work remains. `purge()`
-(`processor.py:366`) errors every queued request, **clears the queue first**,
+`reconcile()` (`processor.py:351`) re-reads the controller's replica list. It
+**adopts** what the controller has gained — registered, then waited on and
+started by `adopt()` in a background task — and deliberately **does nothing**
+about what the controller has dropped beyond logging it.
+
+Not shedding is the point. `Replica.cancel` errors the in-flight request, so
+shedding here would kill a request that is blameless and still runnable — the
+common case being an eviction that demotes a replica to WARM. The worker handles
+a vanished replica correctly by itself:
+the next dispatch to it raises one of `EVICTED_ERRORS` (`CachedActorError` when
+demoted, `ValueError`/`ActorDiedError` when removed), `dispatch` hands the
+request back to the *front* of the queue, sets `task = None`, the loop
+condition flips, and the `finally` drops the replica and re-provisions. Letting
+that happen is both simpler and the only version that doesn't lose work.
+
+The cost is a replica whose worker is idle lingering in the pool until traffic
+touches it. Harmless — there is nothing to serve while the queue is empty — and
+self-correcting: the next request pays one wasted dispatch, is re-queued, and is
+served by a fresh replica.
+
+Adoption is the only path that picks up a replica while the model is already
+serving: `ensure_started` no-ops on a non-empty pool and `start` only runs on an
+empty one. Without it, an out-of-band `ndif deploy` that added a second replica
+to a busy model contributed no capacity at all until the dispatcher restarted.
+
+Two details worth keeping if you touch this. `adopt` runs as a task rather than
+inline because `reconcile` is *awaited* by the events worker and `Replica.wait`
+has no timeout — waiting inline would wedge that worker, and every later
+reconcile and `ndif kill`, on one unready actor. And adoption is skipped while
+`status` is `PROVISIONING`/`DEPLOYING`, because a `start()` already in flight
+adopts the same list and the two would race into two workers on one replica.
+
+`purge()`
+(`processor.py:428`) errors every queued request, **clears the queue first**,
 then cancels every replica — the ordering matters, otherwise the cancelled
 workers' `finally` blocks would re-provision against requests that were just
 errored. It ends with `replicas.clear()` and status `UNINITIALIZED`.
@@ -274,11 +304,18 @@ most consequential logic in this package:
 | `EVICTED_ERRORS` (`:231`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
 | `Exception` (`:253`) | Anything else | Error the user, push to `error_queue`, keep serving |
 
-`EVICTED_ERRORS` (`replica.py:52`) is matched **by type, not message**.
-`CachedActorError` is raised inside the actor
-(`services/ray/deployments/modeling/base.py:259`) and arrives wrapped in a
-`RayTaskError` whose dynamic subclass still satisfies `isinstance`
-(`providers/ray.py:25`). `cancel()` (`replica.py:279`) errors the in-flight
+`EVICTED_ERRORS` (`replica.py:52`) is matched by type, but **not by a bare
+`isinstance`** — `is_evicted_error` also reads the wrapper's `.cause`.
+`CachedActorError` is raised inside the actor and arrives wrapped in a
+`ray.exceptions.RayTaskError`; the dual RayTaskError-plus-cause class that
+would satisfy `isinstance` is only built when `as_instanceof_cause()` is
+applied, and over Ray Client — how the dispatcher connects — it is not. A bare
+isinstance matches nothing here, which costs a re-queue on every HOT→WARM
+demotion; the symptom is an actor log showing `CachedActorError` raised as
+designed while the dispatcher logs `error_type=RayTaskError` and takes the
+generic branch.
+
+`cancel()` (`replica.py:279`) errors the in-flight
 request *before* cancelling the task, because a teardown only notifies queued
 requests via `Processor.reply` — the running one would otherwise hang.
 
@@ -320,7 +357,7 @@ terminal response. Those are Python objects in the dispatcher's heap.
 > `ensure_started` keys off `self.replicas` being empty (`processor.py:149`), so
 > a Processor with one wedged replica will not provision a second no matter how
 > deep its queue gets — autoscaling requires `READY`, `ensure_started` requires an
-> empty pool.
+> empty pool. Deploying one out-of-band is the way out: `reconcile` adopts it.
 
 > **`Processor.trusted` is sticky.** It is set from the first request that
 > triggers provisioning and only overwritten when `ensure_started` is called with

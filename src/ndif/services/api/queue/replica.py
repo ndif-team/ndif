@@ -34,7 +34,7 @@ from ....common.providers.ray import (
 from ....common.schema import Status
 from ....common.schema.controller import DeployResponse, DeploymentConfig
 from ....common.schema.request import BackendRequestModel
-from ....common.telemetry import elapsed_ms, event
+from ....common.telemetry import elapsed_ms, error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 
 if TYPE_CHECKING:
@@ -50,6 +50,39 @@ logger = logging.getLogger("ndif.queue.replica")
 #   - ActorDiedError   : the actor process died / was killed.
 #   - CachedActorError : actor alive but moved to CPU cache (WARM).
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
+
+
+def is_evicted_error(error: BaseException) -> bool:
+    """Whether a dispatch failure means the replica is no longer serving.
+
+    Not a bare ``isinstance``: an exception raised *inside* the actor comes back
+    wrapped in a ``ray.exceptions.RayTaskError``, and the dual
+    RayTaskError-plus-cause class that would satisfy ``isinstance`` is only
+    built when ``as_instanceof_cause()`` is applied. Over Ray Client — which is
+    how the dispatcher connects — it is not, so the wrapper arrives as a plain
+    ``RayTaskError`` and the cause has to be read off ``.cause``.
+
+    Missing this meant a HOT->WARM demotion never re-queued: the actor raised
+    CachedActorError exactly as designed, the match failed, and the request fell
+    through to the generic handler and was errored to the user.
+    """
+    if isinstance(error, EVICTED_ERRORS):
+        return True
+    cause = getattr(error, "cause", None)
+    return cause is not None and isinstance(cause, EVICTED_ERRORS)
+
+
+class DeploymentError(Exception):
+    """A deploy the controller refused, carrying the reason it gave.
+
+    Distinct from an arbitrary failure during provisioning so the queue can tell
+    "the cluster explained why this cannot be deployed" from "something broke on
+    the way there". The former is safe — and useful — to show the caller: these
+    messages say things like `CANT_ACCOMMODATE: placed 0 of 1 new replicas` or
+    HuggingFace's own "Repository Not Found ... make sure you specified the
+    correct `repo_id`". The latter is an internal fault the caller can do
+    nothing with, and keeps the generic message.
+    """
 
 
 class Replica:
@@ -105,7 +138,7 @@ class Replica:
 
         result = response.results[model_key]
         if result.error:
-            raise Exception(result.error)
+            raise DeploymentError(result.error)
 
         return cls(model_key, result.replicas[0], processor)
 
@@ -228,29 +261,29 @@ class Replica:
             )
             raise
 
-        except EVICTED_ERRORS as e:
-            # The replica is gone (lookup failure or moved to CPU cache). Drop
-            # this replica (task -> None ends the worker loop) and hand the
-            # in-flight request back to the front of the queue for a sibling or
-            # a freshly re-provisioned replica.
-            self.task = None
-            await self.processor.enqueue(request, prepend=True)
-            event(
-                logger,
-                f"Replica {self.model_key}[{self.replica_id}] evicted "
-                f"({type(e).__name__}) — re-queueing request, dropping from pool.",
-                level=logging.WARNING,
-                model_key=self.model_key,
-                replica_id=self.replica_id,
-                request_id=request.id,
-                api_key=request.api_key,
-                email=request.email,
-                stage="running",
-                error_type=f"evicted:{type(e).__name__}",
-                exec_ms=elapsed_ms(self.current_started_at),
-            )
-
         except Exception as e:
+            if is_evicted_error(e):
+                # The replica is gone (lookup failure, actor died, or moved to
+                # CPU cache). Drop this replica (task -> None ends the worker
+                # loop) and hand the in-flight request back to the front of the
+                # queue for a sibling or a freshly re-provisioned replica.
+                self.task = None
+                await self.processor.enqueue(request, prepend=True)
+                event(
+                    logger,
+                    f"Replica {self.model_key}[{self.replica_id}] evicted "
+                    f"({type(e).__name__}) — re-queueing request, dropping from pool.",
+                    level=logging.WARNING,
+                    model_key=self.model_key,
+                    replica_id=self.replica_id,
+                    request_id=request.id,
+                    api_key=request.api_key,
+                    email=request.email,
+                    stage="running",
+                    error_type=f"evicted:{error_type_name(e)}",
+                    exec_ms=elapsed_ms(self.current_started_at),
+                )
+                return
             await request.arespond(
                 Status.ERROR,
                 "Error submitting request to model deployment. "
@@ -267,7 +300,7 @@ class Replica:
                 api_key=request.api_key,
                 email=request.email,
                 stage="running",
-                error_type=type(e).__name__,
+                error_type=error_type_name(e),
                 exec_ms=elapsed_ms(self.current_started_at),
             )
             self.error_queue.put_nowait((self.model_key, e))
