@@ -124,15 +124,18 @@ implementation: `clean_traceback` strips nnsight's plumbing and `filter_tracebac
 drops the actor's own frames, leaving the user's block
 (`modeling/base.py:444-454`).
 
-Server-side failures never carry a traceback. The complete set of canned
-descriptions a user can receive:
+Server-side failures never carry a traceback. Both deserialization failures
+below are classified in one place — `BackendRequestModel.deserialize` — which
+the in-process actor and the sandbox runner both call, so the two paths cannot
+drift. The complete set of canned descriptions a user can receive:
 
 | Message the user sees | Emitted at | What actually happened |
 |---|---|---|
 | `Your job exceeded the execution timeout of Ns.` | `modeling/base.py:322-326` | ran past `execution_timeout` |
 | `Your job was cancelled or preempted by the server.` | `modeling/base.py`, the `kill in done` branch | the actor's kill switch fired for a reason other than parking — i.e. somebody deliberately cancelled this request. **A HOT→WARM demotion no longer lands here**: `to_cache` sets `cancel(KILL_REASON_PREEMPTED)`, which raises `CachedActorError` so the queue re-queues instead. If you're chasing a *disappeared* request rather than a failed one, grep for `model execution preempted; requeued`. |
 | `Replica was evicted while processing your request.` | `queue/replica.py:211-215`, `:289-293` | the worker task was cancelled mid-dispatch. **Only `ndif kill` and `purge` reach this now** — `reconcile` no longer cancels a shed replica, so an ordinary eviction re-queues the request instead of erroring it. |
-| `Your request payload could not be read (...)` | `common/errors.py:payload_error_message` | the blob failed to deserialize — truncated, corrupted, or a compress-flag mismatch. **Precedes any user code**, so despite being the caller's problem it is deliberately *not* a traceback; both the trusted and sandbox paths emit the same sentence |
+| `Your request payload could not be read (...)` | `common/errors.py:PayloadError` | the blob failed to deserialize — truncated, corrupted, or a compress-flag mismatch. **Precedes any user code**, so despite being the caller's problem it is deliberately *not* a traceback |
+| `The model architecture on this server doesn't match ...` | `common/errors.py:ArchitectureMismatchError` | a `Module:<path>` the server's tree doesn't have — the client and server built different trees, nearly always a `transformers` version difference. Names the *first* diverging path, not the layer the user asked for, because the block references the whole envoy tree. Points the user at `ndif.compare()` |
 | `Request cancelled by operator.` | `queue/dispatcher.py:346` | someone ran `ndif kill` |
 | `Error submitting request to model deployment.` | `queue/replica.py:254-258` | the Ray call to the actor raised something unclassified |
 | `Error starting model.` / `Error provisioning model.` | `queue/processor.py:179`, `:194` | the controller couldn't place or ready a replica, **and did not say why** — an internal fault; the traceback is in the API log |

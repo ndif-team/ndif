@@ -32,7 +32,7 @@ from nnsight.tracing.globals import BLOCKS, SOURCES
 from nnsight.tracing.tracer import _saves, dec, inc
 from nnsight.tracing.util import clean_traceback, filter_traceback
 
-from .....common.errors import PayloadError, payload_error_message
+from .....common.errors import RequestError
 from .....common.metrics import (
     ExecutionTimeMetric,
     GPUMemMetric,
@@ -432,16 +432,16 @@ class BaseModelDeployment:
 
         deserialize_started = time.time()
         persistent_objects = self.model._remoteable_persistent_objects()
-        try:
-            tracer = RequestModel.deserialize(
-                request.payload, persistent_objects, compress=request.compress
-            )
-        except Exception as error:
-            # Raised as PayloadError so format_error reports it as a sentence
-            # rather than a traceback: the failure precedes the user's block, so
-            # every frame here is server-side. The sandbox path does the same in
-            # its runner, using the same message.
-            raise PayloadError(payload_error_message(error)) from error
+        # BackendRequestModel's override, not nnsight's RequestModel: it
+        # classifies every way this can fail into a caller-facing RequestError,
+        # so there is nothing to catch here. Imported locally to keep the
+        # actor's module-level imports clear of the schema package's provider
+        # chain (importing it connects Redis).
+        from .....common.schema.request import BackendRequestModel
+
+        tracer = BackendRequestModel.deserialize(
+            request.payload, persistent_objects, compress=request.compress
+        )
         deserialize_ms = elapsed_ms(deserialize_started)
 
         # Autocast tensors the user's code creates to the model's dtype, matching
@@ -498,10 +498,10 @@ class BaseModelDeployment:
         frames, leaving the user's code, and flags an unrecoverable CUDA error so
         run() restarts the replica.
         """
-        # An unreadable payload has no user frames to show — report the sentence
-        # it already carries. Not fatal: the caller's request is malformed, the
-        # actor is fine.
-        if isinstance(exception, PayloadError):
+        # A rejected request (unreadable payload, architecture mismatch) has no
+        # user frames to show — report the sentence it already carries. Not
+        # fatal: the request is unusable, the actor is fine.
+        if isinstance(exception, RequestError):
             return str(exception), False
 
         tb = clean_traceback(exception.__traceback__)

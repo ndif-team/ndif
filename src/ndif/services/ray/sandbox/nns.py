@@ -47,9 +47,10 @@ from nnsight.intervention.interleaver import (
 from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.intervention.source import SourceEnvoy
 from nnsight.intervention.tracer import InterleavingTracer
-from nnsight.schema.request import RequestModel
 from nnsight.tracing.tracer import _saves, dec, inc
 
+from ....common.errors import RequestError
+from ....common.schema.request import BackendRequestModel
 from ..deployments.modeling.util import cpu_pickle_module
 
 # The runner's connection to the host, for the request currently executing. The
@@ -239,7 +240,7 @@ class IPCEnvoy(Envoy):
 class IPCCloudUnpickler(CustomCloudUnpickler):
     """nnsight unpickler that resolves the interleaver to an IPC one, model to None.
 
-    Passed to ``RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)``, which
+    Passed to ``BackendRequestModel.deserialize(..., unpickler=IPCCloudUnpickler)``, which
     instantiates it as ``IPCCloudUnpickler(file, persistent_objects)``; the sandbox
     has no persistent objects, so they're ignored.
     """
@@ -351,15 +352,16 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
         deserialize_started = time.time()
-        tracer = RequestModel.deserialize(blob, compress=compress, unpickler=IPCCloudUnpickler)
+        tracer = BackendRequestModel.deserialize(
+            blob, compress=compress, unpickler=IPCCloudUnpickler
+        )
         deserialize_ms = round((time.time() - deserialize_started) * 1000, 2)
-    except Exception as error:
+    except RequestError as error:
         # No user frames exist yet, so there is no traceback worth sending —
-        # just say what went wrong. Shared with the trusted path, which
-        # deserializes in the actor instead, so both phrase this identically.
-        from ndif.common.errors import payload_error_message
-
-        terminal = ("EXCEPTION", payload_error_message(error))
+        # just the sentence BackendRequestModel.deserialize already classified
+        # this into. The in-process path raises the very same object; only text
+        # crosses this socket, so the runner ships str() of it.
+        terminal = ("EXCEPTION", str(error))
     else:
         try:
             # Bracket execution in a trace scope so nnsight.save() records into this

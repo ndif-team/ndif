@@ -4,12 +4,11 @@ import time
 from typing import Any, Optional
 from uuid import uuid4
 
+from nnsight.intervention.serialization import UnknownPersistentIdError
 from nnsight.schema.request import RequestModel
 from pydantic import Field
 
-from ..metrics import RequestStatusTimeMetric
-from ..providers.objectstore import ObjectStoreProvider
-from ..providers.redis import RedisProvider
+from ..errors import ArchitectureMismatchError, PayloadError
 from ..telemetry import event
 from .response import BackendResponseModel, Status
 
@@ -72,6 +71,32 @@ class BackendRequestModel(RequestModel):
     last_status: Optional[Status] = None
     last_status_time: Optional[float] = None
 
+    @staticmethod
+    def deserialize(*args: Any, **kwargs: Any) -> Any:
+        """:meth:`RequestModel.deserialize`, with caller-facing failures.
+
+        Every way reading a request can fail is classified here, so callers of
+        deserialize need no error handling of their own and both server-side
+        deserialization sites agree on what a given failure means.
+
+        ``UnknownPersistentIdError`` is the interesting one. The block records
+        each module it touches as a persistent id (``Module:<path>``) resolved
+        against the server's live model, so an id with no entry means the two
+        model trees were built differently — nearly always package drift, and
+        usually ``transformers``, which decides a checkpoint's module layout.
+        Raw, it names a module the caller never mentioned: the block references
+        the whole envoy tree, so it fails at the *first* path where the trees
+        diverge rather than the layer they were reaching for.
+
+        Anything else means the bytes themselves were unreadable.
+        """
+        try:
+            return RequestModel.deserialize(*args, **kwargs)
+        except UnknownPersistentIdError as error:
+            raise ArchitectureMismatchError(str(error)) from error
+        except Exception as error:
+            raise PayloadError(error) from error
+
     def response(
         self, status: Status, description: str = "", data: Optional[Any] = None
     ) -> BackendResponseModel:
@@ -98,6 +123,8 @@ class BackendRequestModel(RequestModel):
         """
         if status == Status.LOG or status == self.last_status:
             return
+
+        from ..metrics import RequestStatusTimeMetric
 
         now = time.time()
         previous_status = self.last_status
@@ -143,6 +170,9 @@ class BackendRequestModel(RequestModel):
         latest response is saved to the object store instead, where the client
         reads it via ``GET /response/{id}`` (LOG updates are skipped).
         """
+        from ..providers.objectstore import ObjectStoreProvider
+        from ..providers.redis import RedisProvider
+
         response = self.response(status, description, data)
 
         if self.session_id:
@@ -167,6 +197,9 @@ class BackendRequestModel(RequestModel):
         publishing a status update doesn't block the event loop on a sync Redis
         round-trip.
         """
+        from ..providers.objectstore import ObjectStoreProvider
+        from ..providers.redis import RedisProvider
+
         response = self.response(status, description, data)
 
         if self.session_id:
