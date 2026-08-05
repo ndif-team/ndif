@@ -136,7 +136,16 @@ Field names are conventions, not a schema, and Grafana queries key off them —
 keep them stable. Established ones: `model_key`, `replica_id`, `request_id`,
 `session_id`, `api_key`, `email`, `stage`, `prev_stage`, `prev_stage_ms`,
 `duration_ms`, `exec_ms`, `queue_size`, `replicas_before`, `replicas_after`,
-`error_type`. The densest emitter is `BackendRequestModel._advance_status`
+`error_type`.
+
+`error_type` is built by `error_type_name` (`common/telemetry.py`) wherever the
+exception may have crossed the Ray boundary. An exception raised inside an actor
+arrives wrapped in a `RayTaskError` whose own type describes nothing, so the
+helper reads `.cause` and renders `RayTaskError[CachedActorError]`. Query on the
+bracketed part when you want the thing that actually failed — a bare
+`error_type=RayTaskError` means the cause was absent, not that Ray itself broke.
+
+The densest emitter is `BackendRequestModel._advance_status`
 (`common/schema/request.py:121`): one event per lifecycle transition carrying
 `stage`, `prev_stage`, and `prev_stage_ms` — enough to reconstruct a request's
 whole timeline from logs alone.
