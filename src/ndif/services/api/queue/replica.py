@@ -52,6 +52,26 @@ logger = logging.getLogger("ndif.queue.replica")
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
 
 
+def is_evicted_error(error: BaseException) -> bool:
+    """Whether a dispatch failure means the replica is no longer serving.
+
+    Not a bare ``isinstance``: an exception raised *inside* the actor comes back
+    wrapped in a ``ray.exceptions.RayTaskError``, and the dual
+    RayTaskError-plus-cause class that would satisfy ``isinstance`` is only
+    built when ``as_instanceof_cause()`` is applied. Over Ray Client — which is
+    how the dispatcher connects — it is not, so the wrapper arrives as a plain
+    ``RayTaskError`` and the cause has to be read off ``.cause``.
+
+    Missing this meant a HOT->WARM demotion never re-queued: the actor raised
+    CachedActorError exactly as designed, the match failed, and the request fell
+    through to the generic handler and was errored to the user.
+    """
+    if isinstance(error, EVICTED_ERRORS):
+        return True
+    cause = getattr(error, "cause", None)
+    return cause is not None and isinstance(cause, EVICTED_ERRORS)
+
+
 class DeploymentError(Exception):
     """A deploy the controller refused, carrying the reason it gave.
 
@@ -241,29 +261,29 @@ class Replica:
             )
             raise
 
-        except EVICTED_ERRORS as e:
-            # The replica is gone (lookup failure or moved to CPU cache). Drop
-            # this replica (task -> None ends the worker loop) and hand the
-            # in-flight request back to the front of the queue for a sibling or
-            # a freshly re-provisioned replica.
-            self.task = None
-            await self.processor.enqueue(request, prepend=True)
-            event(
-                logger,
-                f"Replica {self.model_key}[{self.replica_id}] evicted "
-                f"({type(e).__name__}) — re-queueing request, dropping from pool.",
-                level=logging.WARNING,
-                model_key=self.model_key,
-                replica_id=self.replica_id,
-                request_id=request.id,
-                api_key=request.api_key,
-                email=request.email,
-                stage="running",
-                error_type=f"evicted:{type(e).__name__}",
-                exec_ms=elapsed_ms(self.current_started_at),
-            )
-
         except Exception as e:
+            if is_evicted_error(e):
+                # The replica is gone (lookup failure, actor died, or moved to
+                # CPU cache). Drop this replica (task -> None ends the worker
+                # loop) and hand the in-flight request back to the front of the
+                # queue for a sibling or a freshly re-provisioned replica.
+                self.task = None
+                await self.processor.enqueue(request, prepend=True)
+                event(
+                    logger,
+                    f"Replica {self.model_key}[{self.replica_id}] evicted "
+                    f"({type(e).__name__}) — re-queueing request, dropping from pool.",
+                    level=logging.WARNING,
+                    model_key=self.model_key,
+                    replica_id=self.replica_id,
+                    request_id=request.id,
+                    api_key=request.api_key,
+                    email=request.email,
+                    stage="running",
+                    error_type=f"evicted:{type(e).__name__}",
+                    exec_ms=elapsed_ms(self.current_started_at),
+                )
+                return
             await request.arespond(
                 Status.ERROR,
                 "Error submitting request to model deployment. "

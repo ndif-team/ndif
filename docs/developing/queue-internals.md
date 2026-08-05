@@ -304,11 +304,16 @@ most consequential logic in this package:
 | `EVICTED_ERRORS` (`:231`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
 | `Exception` (`:253`) | Anything else | Error the user, push to `error_queue`, keep serving |
 
-`EVICTED_ERRORS` (`replica.py:52`) is matched **by type, not message**.
-`CachedActorError` is raised inside the actor
-(`services/ray/deployments/modeling/base.py:259`) and arrives wrapped in a
-`RayTaskError` whose dynamic subclass still satisfies `isinstance`
-(`providers/ray.py:25`). `cancel()` (`replica.py:279`) errors the in-flight
+`EVICTED_ERRORS` (`replica.py:52`) is matched by type, but **not by a bare
+`isinstance`** — `is_evicted_error` also reads the wrapper's `.cause`.
+`CachedActorError` is raised inside the actor and arrives wrapped in a
+`ray.exceptions.RayTaskError`; the dual RayTaskError-plus-cause class that
+would satisfy `isinstance` is only built when `as_instanceof_cause()` is
+applied, and over Ray Client — how the dispatcher connects — it is not. A
+bare isinstance therefore never matched, and a HOT→WARM demotion errored the
+user instead of re-queueing. (Verified: the actor log showed the
+`CachedActorError` raised as designed while the dispatcher logged
+`error_type=RayTaskError` and took the generic branch.) `cancel()` (`replica.py:279`) errors the in-flight
 request *before* cancelling the task, because a teardown only notifies queued
 requests via `Processor.reply` — the running one would otherwise hang.
 
