@@ -36,7 +36,7 @@ Three facts organise everything below:
 |---|---|---|---|---|
 | `RunnerError` | defined `sandbox/model.py:40`, raised `sandbox/model.py:229` | `ERROR` with the block's own traceback | The user's block raised inside the runner process | **user** |
 | Any block exception (trusted path) | propagates out of `BaseModelDeployment.execute`, `base.py:379`, caught at `base.py:343` | `ERROR` with the block's own traceback | The user's block raised in the actor process | **user** |
-| `OutOfOrderError` | thrown into a worker by `IPCInterleaver.throw`, `sandbox/nns.py:170` | `ERROR`: `'<location>' was requested but the model already ran past it` | A worker was still parked on a location the forward pass never reached | **user** |
+| `OutOfOrderError` | thrown into a worker by `IPCInterleaver.throw`, `sandbox/nns.py:173` | `ERROR`: `'<location>' was requested but the model already ran past it` | A worker was still parked on a location the forward pass never reached | **user** |
 | `EarlyStopException` | `sandbox/model.py:140`, `:164`; nnsight's `tracer.stop()` | nothing — the job completes normally | Intentional early stop | **neither** |
 | *(no exception)* — timeout | the race in `base.py:298` expires | `ERROR`: `Your job exceeded the execution timeout of {n}s.` | Block ran past `execution_timeout` | **user** (usually) |
 | *(no exception)* — kill switch | `base.py:316` | `ERROR`: `Your job was cancelled or preempted by the server.` | `ndif kill`, or an operator cancel | **operator** |
@@ -47,7 +47,7 @@ Three facts organise everything below:
 | `ConnectionError` | `sandbox/protocol.py:79` | `ERROR` (host-side traceback) | The runner died or was stopped mid-exchange | **server** (or a deliberate interrupt) |
 | `RuntimeError: runner process exited before its socket was ready` | `sandbox/host.py:106` | `ERROR` (host-side traceback) | The runner subprocess crashed at import | **server** |
 | `TimeoutError: timed out waiting for the runner socket` | `sandbox/host.py:109` | `ERROR` (host-side traceback) | Runner took >30s to bind its socket | **server** |
-| `ModuleNotFoundError` / unpickling errors | inside `RequestModel.deserialize`, called from `base.py:379` or `sandbox/nns.py:346` | `ERROR` with the deserialize traceback | The payload references a module the server doesn't have | **user** |
+| `ModuleNotFoundError` / unpickling errors | inside `RequestModel.deserialize`, called from `base.py:379` or `sandbox/nns.py:369` | `ERROR` with the deserialize traceback | The payload references a module the server doesn't have | **user** |
 | `torch.cuda.OutOfMemoryError` (at run) | inside the block, `base.py:379` | `ERROR` with a CUDA OOM traceback | The request's activations exceeded the replica's budget | **user** |
 | `torch.cuda.OutOfMemoryError` / `RuntimeError` (at load) | `load_from_disk`, `base.py:144` | `ERROR`: `Error starting model...` | The controller's size estimate was wrong, or the GPU wasn't actually free | **server** |
 | `RuntimeError` from `verify_device_placement` | `modeling/util.py:166` | `ERROR`: `Error starting model...` | A weight landed on `meta`, `cpu`, or an unassigned GPU | **server** |
@@ -71,7 +71,7 @@ class RunnerError(Exception):
 The runner catches everything out of the block, formats the traceback **in its
 own process** — preferring the worker's `__intervention_tb__` when the failure
 came from intervention code, else nnsight's `clean_traceback` — and sends
-`("EXCEPTION", text)` (`sandbox/nns.py:363`-`378`). On the host, `next_event`
+`("EXCEPTION", text)` (`sandbox/nns.py:386`-`401`). On the host, `next_event`
 turns that into `raise RunnerError(text)` (`model.py:229`), and
 `SandboxModelDeployment.format_error` (`model.py:188`) returns the string
 verbatim with `fatal=False`:
@@ -92,7 +92,7 @@ plumbing and the actor's own frames before formatting.
 After the forward pass returns, `check_dangling` (`model.py:368`) looks for
 proxies still holding a park — a worker waiting on a location the model never
 reached — and sends `("THROW", id, requester, iteration != 0)` (`model.py:380`).
-The runner's `IPCInterleaver.throw` (`nns.py:170`) constructs the error and
+The runner's `IPCInterleaver.throw` (`nns.py:173`) constructs the error and
 throws it into the greenlet so the traceback points at the line that was waiting:
 
 ```python
@@ -118,10 +118,10 @@ modules in forward-pass order, or bound the iteration.
 ### EarlyStopException — not an error
 
 `tracer.stop()` raises `EarlyStopException` in a worker. Over the socket the
-runner's `pump` sends `("STOP",)` and re-raises (`nns.py:139`); on the host both
+runner's `pump` sends `("STOP",)` and re-raises (`nns.py:140`); on the host both
 `MediatorProxy.switch` (`model.py:164`) and `settle_control` (`model.py:140`)
 raise it to unwind the forward pass, which the model's `Interleaver.__exit__`
-swallows, and `IPCEnvoy.interleave` swallows it in the runner too (`nns.py:224`).
+swallows, and `IPCEnvoy.interleave` swallows it in the runner too (`nns.py:227`).
 The job proceeds to upload its saves and completes. Seeing this in a stack trace
 is normal.
 

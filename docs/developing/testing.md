@@ -66,7 +66,7 @@ there is no environment variable for it.
 
 ## What the suite covers
 
-50 tests across 18 classes in `tests/test_nnsight_remote.py`, each one opening a
+51 tests across 18 classes in `tests/test_nnsight_remote.py`, each one opening a
 real `with model.trace(..., remote=True):`.
 
 | Class | What it proves about the server |
@@ -83,7 +83,7 @@ real `with model.trace(..., remote=True):`.
 | `TestRemoteGradients` | Backward works once an activation is opted in — the server loads weights with `requires_grad_(False)`. |
 | `TestRemoteCache` | `tracer.cache()` round-trips and captures every reached module. |
 | `TestRemotePeft` | A per-request PEFT adapter id rides on the request env and is applied before the run. |
-| `TestNdif` | `nnsight.status()`, `is_model_running`, `get_remote_env`, `compare` against the live `/status` and `/env`. |
+| `TestNdif` | `nnsight.status()`, `is_model_running`, `get_remote_env`, `compare` against the live `/status` and `/env`; also `test_persistent_objects`, which tokenizes inside the block and asserts it matches a local tokenization — on the sandbox path that only passes because the runner resolves `Tokenizer` from its own meta model. |
 | `TestRemoteLocalCode` | Non-installed local modules/classes ship to the server by value automatically. |
 | `TestRemoteNonBlocking` | `blocking=False` submit, then poll `GET /response/{id}` — needs object-store response persistence. |
 | `TestRemoteEdit` | `model.edit()` edits ride to the server and apply. |
@@ -161,7 +161,7 @@ divergence is a sandbox bug (or a new xfail), and
 `src/ndif/services/ray/sandbox/ARCHITECTURE.md`'s "Current simplifications"
 section is where the deliberate ones are listed. Read that list against the code
 before believing it: `tracer.cache()` is listed as unsupported but is in fact
-served over IPC now (`sandbox/model.py:133`, `sandbox/nns.py:321`).
+served over IPC now (`sandbox/model.py:133`, `sandbox/nns.py:332`).
 
 **The faithful way**, if you want the real trust plumbing rather than a client-set
 flag: uncomment `NDIF_POSTGRES_URL` in `docker/docker-compose.yml:156`, insert a

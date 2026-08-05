@@ -72,7 +72,7 @@ by node, and GPU targeting happens inside the actor via `max_memory`.
 
 > **Gotcha:** an extra constructor parameter of your own has no path from the
 > controller. `SandboxModelDeployment.__init__` takes `pool_size: int = 2`
-> (`sandbox/model.py:173`) and nothing can set it — it is always 2 in production.
+> (`sandbox/model.py:176`) and nothing can set it — it is always 2 in production.
 > Read your own options from the environment (the actor's `runtime_env` carries the
 > provider config already) or add a field to `BaseModelDeploymentArgs`, which also
 > means teaching `DeploymentConfig` and the controller to populate it.

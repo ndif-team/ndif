@@ -36,7 +36,7 @@ across a process boundary.
 |------|------|
 | [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model on the host (base class), owns a pool of runners, drives one per request, and holds the **host side** of the interleaver (`MediatorProxy`). |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the transport `Connection`. |
-| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
+| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <model_key>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
 | [`nns.py`](nns.py) | The nnsight glue that runs **inside the runner**: deserialize the tracer, execute the block, and host the **worker side** of the interleaver (`IPCInterleaver`, patched `Mediator.event`, `IPCEnvoy`). |
 | [`protocol.py`](protocol.py) | The wire contract: framing, a type-tagged codec, and the authoritative **message catalog**. |
 
@@ -50,7 +50,7 @@ across a process boundary.
                         │  Unix socket (protocol.py)
                         │  RESUME / PARK / THROW / DONE / INTERLEAVE / …
         ┌───────────────┴───────────────────────▼─────────────────────┐
-        │  runner process (no model)                                   │
+        │  runner process (meta model, no weights)                     │
         │    • nns.run: deserialize + execute the traced block         │
         │    • IPCInterleaver + worker greenlets  (worker side)        │
         └──────────────────────────────────────────────────────────────┘
@@ -82,8 +82,10 @@ across a process boundary.
    `nns.run`, which:
    - Deserializes the tracer with `IPCCloudUnpickler`. Persistent ids resolve
      specially here: the **interleaver** → an `IPCInterleaver` bound to this socket;
-     the **model and its modules** → `None` (they live on the host and are never
-     touched in the runner).
+     the **model, its modules and its tokenizer** → the runner's own *meta* build
+     (structure, no weights), registered by `load_meta_model` at startup; anything
+     unknown → `None`. The weights live on the host and are never touched here, so
+     every activation still crosses the socket.
    - Runs `tracer.execute(...)`. The block runs as a set of greenlet **workers**.
      Whenever the block calls the model, it hits `IPCEnvoy.interleave`.
 
@@ -208,8 +210,8 @@ executed in the runner process; the host never imports `nns`. This is also why t
 handoff is a plain `(blob, compress)` message rather than a pickled callable — the
 runner already knows to run `nns.run`.
 
-The runner runs as `python -m ndif.services.ray.sandbox.runner` (with the repo
-root on `PYTHONPATH`), i.e. as a normal `ndif` submodule, so it can reuse ndif
+The runner runs as `python -m ndif.services.ray.sandbox.runner <socket> <model_key>`
+(with the repo root on `PYTHONPATH`), i.e. as a normal `ndif` submodule, so it can reuse ndif
 helpers rather than duplicate them: `nns.run` deserializes via nnsight's own
 `RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)` (an unpickler hook
 added to nnsight), and imports `cpu_pickle_module` from `deployments/modeling/util`.

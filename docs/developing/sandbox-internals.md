@@ -59,7 +59,7 @@ flowchart TB
     M["model + weights on GPU<br/>real Interleaver, forward hooks"]
     P["MediatorProxy per worker<br/>occurrence counter, pin, batch_group"]
   end
-  subgraph run["runner process (no model)"]
+  subgraph run["runner process (meta model, no weights)"]
     W["nns.run + IPCInterleaver.pump<br/>worker greenlets, one per invoke / edit"]
   end
   D --- M --- P
@@ -100,15 +100,15 @@ host owns the `.i{n}` occurrence tag.
 | `("THROW", id, requester, is_iter)` | h→r | worker `id` is still parked on `requester`, which the model never reached | `check_dangling`, `model.py:380` | none |
 | `("CACHE_HIT", cache_id, path, key, value)` | h→r | one filtered, transformed value for a `tracer.cache()` living in the runner | `ShippingCache._record`, `model.py:71` | none |
 | `("DONE", result)` | h→r | the forward pass returned `result` | `interleave`, `model.py:366` | none — ends `pump` |
-| `("INTERLEAVE", fn_name, parks, batch_groups, invokes, **kwargs)` | r→h | run wrapper method `fn_name` (`_call` / `generate` / `pipe`) on the model; one initial park per worker, each worker's `[start, size]` batch rows, the raw per-invoke inputs, and the trace-level forward kwargs | `IPCEnvoy.interleave`, `nns.py:220` | a stream of `RESUME`/`THROW`, then `DONE` |
-| `("PARK", id, park)` | r→h | worker `id`'s next park, or `None` if it finished | `pump`, `nns.py:145`; `writeback`, `:167` | `RESUME` (unless the run is ending) |
-| `("STOP",)` | r→h | a worker called `tracer.stop()` | `pump`, `nns.py:139` | none |
+| `("INTERLEAVE", fn_name, parks, batch_groups, invokes, **kwargs)` | r→h | run wrapper method `fn_name` (`_call` / `generate` / `pipe`) on the model; one initial park per worker, each worker's `[start, size]` batch rows, the raw per-invoke inputs, and the trace-level forward kwargs | `IPCEnvoy.interleave`, `nns.py:223` | a stream of `RESUME`/`THROW`, then `DONE` |
+| `("PARK", id, park)` | r→h | worker `id`'s next park, or `None` if it finished | `pump`, `nns.py:146`; `writeback`, `:170` | `RESUME` (unless the run is ending) |
+| `("STOP",)` | r→h | a worker called `tracer.stop()` | `pump`, `nns.py:140` | none |
 | `("PRINT", text)` | r→h | one complete line of the block's stdout | `Connection.print_event`, `runner.py:39` | none — echoed as a `LOG` response |
-| `("END", blob, deserialize_ms)` | r→h | `torch.save` of the block's saved values, plus the runner's deserialize time | `run`, `nns.py:378` | none |
-| `("EXCEPTION", text)` | r→h | the block raised; already-formatted traceback text | `run`, `nns.py:376` | none |
-| `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:273` | served by `install_source` (`model.py:281`) → operation names, or `None` if the forward can't be sourced |
-| `("CALL", path, None, hook, args, kwargs)` | park | control park: run the module's forward ad hoc (logit lens) | `IPCEnvoy.__call__`, `nns.py:234` | served by `run_module` (`model.py:293`) → the module's output |
-| `("CACHE", cache_id, None, config)` | park | control park: register a `tracer.cache()` filter | `ipc_cache`, `nns.py:321` | `settle_control` attaches a `ShippingCache` → `None` |
+| `("END", blob, deserialize_ms)` | r→h | `torch.save` of the block's saved values, plus the runner's deserialize time | `run`, `nns.py:401` | none |
+| `("EXCEPTION", text)` | r→h | the block raised; already-formatted traceback text | `run`, `nns.py:399` | none |
+| `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:284` | served by `install_source` (`model.py:281`) → operation names, or `None` if the forward can't be sourced |
+| `("CALL", path, None, hook, args, kwargs)` | park | control park: run the module's forward ad hoc (logit lens) | `IPCEnvoy.__call__`, `nns.py:237` | served by `run_module` (`model.py:293`) → the module's output |
+| `("CACHE", cache_id, None, config)` | park | control park: register a `tracer.cache()` filter | `ipc_cache`, `nns.py:332` | `settle_control` attaches a `ShippingCache` → `None` |
 
 The last three name nothing the forward produces: they ride inside a `PARK`, are
 drained by `settle_control` before `handle` sees them, and are answered in the next
@@ -120,15 +120,26 @@ drained by `settle_control` before `handle` sees them, and are answered in the n
 runner process plus its socket path, and `stop()` (`:65`) terminates it (SIGKILL
 after 5s) and unlinks the socket. `spawn` (`:79`) picks `/tmp/sbx-<12 hex>.sock`,
 copies the actor's environment, prepends the repo root to `PYTHONPATH` (so the
-runner can `import ndif.*`), launches the runner module, and polls until the
-socket accepts (30s), raising if the process dies first.
+runner can `import ndif.*`), launches the runner module with `runner_args`
+appended to its argv, and polls until the socket accepts (30s), raising if the
+process dies first.
 
 `Pool` (`:112`) keeps up to `size` runners pre-warmed on background threads
-(`refill`, `:134`) so acquiring one doesn't pay Python + nnsight import cost;
-`acquire` (`:155`) takes a warm one (spawning inline if the queue is empty) and
+(`refill`, `:135`) so acquiring one doesn't pay Python + nnsight import cost, nor
+the meta-model build the runner does before binding;
+`acquire` (`:158`) takes a warm one (spawning inline if the queue is empty) and
 tops the pool back up. **There is no release-back-to-pool** — the caller owns the
 process and must `stop()` it. `size` defaults to 2 via `SandboxModelDeployment`'s
-`pool_size` kwarg (`model.py:173`); no env var sets it.
+`pool_size` kwarg (`model.py:176`); no env var sets it. The pool also carries
+`runner_args` — `[self.model_key]` (`model.py:178`) — through to every `spawn`,
+which is how a runner knows which model to build its persistent-id map from.
+
+> **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
+> decrements the counter in its `finally`; the exception dies with the thread and
+> lands in the Ray worker's `.err` file, never the actor's log. The visible symptom
+> is `acquire` blocking for its full 30s timeout and then falling through to an
+> inline spawn.
+
 `SandboxModelDeployment` otherwise overrides only the seams of the
 `BaseModelDeployment.run` template (`base.py:244`) — `execute`, `execution_scope`,
 `interrupt` (`:201`), `cleanup` (`:196`), `format_error` (`:188`) — so the
@@ -136,29 +147,50 @@ timeout/cancel race, metrics, event logs, and upload stay shared.
 
 ## Runner side
 
-`Runner.serve` (`runner.py:75`) accepts connections one at a time forever (a
-failing exchange goes to stderr and doesn't kill the loop); `handle` (`:86`) reads
-`(blob, compress)`, redirects stdout to `Writer` (`:42`, one `PRINT` per complete
+`Runner.__init__` (`runner.py:69`) takes the socket path **and the model key** —
+`spawn` passes it as the second argv entry — and calls `nns.load_meta_model` before
+binding, so the process has an undispatched (weightless) model tree ready.
+`Runner.serve` (`:78`) accepts connections one at a time forever (a
+failing exchange goes to stderr and doesn't kill the loop); `handle` (`:89`) reads
+`(blob, compress)`, redirects stdout to `Writer` (`:45`, one `PRINT` per complete
 line, mirroring the in-process `LogStream`), and calls `nns.run`. `nns.run`
-(`nns.py:329`) deserializes with nnsight's own
+(`nns.py:352`) deserializes with nnsight's own
 `RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)`, brackets
 `tracer.execute` in `inc()`/`dec()` so `nnsight.save()` records into this thread's
 save set, collects the marked frame locals by identity, and `torch.save`s them
 with the shared `cpu_pickle_module` (`deployments/modeling/util.py:269`) — so the
 host uploads the bytes as-is, no unpickle/repickle round trip. Tracebacks don't
 survive cloudpickle, so an exception is **formatted here** (preferring the
-worker's `__intervention_tb__`) and shipped as text. `IPCCloudUnpickler`
-(`nns.py:237`) is the only persistent-id resolution the runner does:
-`"Interleaver"` becomes an `IPCInterleaver` bound to this request's socket, and
-**everything else — the model, every module, the tokenizer — resolves to `None`**
-(`persistent_load`, `:248`).
+worker's `__intervention_tb__`) and shipped as text.
+
+`IPCCloudUnpickler` (`nns.py:240`) resolves the payload's persistent ids
+(`persistent_load`, `:254`) in three steps: `"Interleaver"` becomes an
+`IPCInterleaver` bound to this request's socket — checked first, so the meta
+model's own interleaver can't shadow it; anything in `PERSISTENT_OBJECTS`
+(`Module:<path>`, `Tokenizer`, `Pipeline`, …) resolves to the runner's **meta**
+object, which is what lets a block call `model.tokenizer(...)` without a round
+trip; and anything else resolves to `None` rather than raising
+`UnknownPersistentIdError` as the base class would.
+
+The map is built once per runner by `load_meta_model` (`:341`) from the model key,
+via `HuggingFaceModel.from_model_key(...)._remoteable_persistent_objects()` — the
+same map the in-process actor builds from its real model, which is why the keys
+line up. **Weights are still host-only**: a resolved module is the meta build's, so
+reading its activations crosses the socket exactly as before. What changed is that
+the runner can answer *structural* questions locally.
+
+> **Consequence:** the runner's tree and the host's must agree on module paths. They
+> do because both are derived from the same model key — but a model whose meta build
+> diverges from its loaded form (a `trust_remote_code` checkpoint, a PEFT-adapted
+> tree) will resolve ids to the wrong modules, and the `None` fallthrough means that
+> surfaces as an `AttributeError` in the block rather than an unpickling error.
 
 Importing `nns` installs process-wide patches, which is why `runner.py` imports it
-and the host never does: `Mediator.event` → `ipc_event` (`:74`, park untagged);
+and the host never does: `Mediator.event` → `ipc_event` (`:75`, park untagged);
 every callable on `IPCEnvoy` shadowing one on `Envoy` grafted onto `Envoy` itself
-(`:290`) — a whole-class patch, because the tracer's root is a model-wrapper
-subclass that *inherits* `interleave`; `Envoy.source` → `IPCSource` (`:296`); and
-`InterleavingTracer.cache` → `ipc_cache` (`:326`).
+(`:303`) — a whole-class patch, because the tracer's root is a model-wrapper
+subclass that *inherits* `interleave`; `Envoy.source` → `IPCSource` (`:307`); and
+`InterleavingTracer.cache` → `ipc_cache` (`:337`).
 
 ## The split interleaver
 
@@ -168,10 +200,10 @@ Each nnsight `Mediator` is cut in half at the model↔mediator seam:
 |---|---|---|
 | block execution / parking | worker greenlet; patched `Mediator.event` parks untagged with the pin | `MediatorProxy.adopt` tags `.i{n}` |
 | occurrence counting, pin relaxation | none (pin pushed back on every `RESUME`) | inherited `Mediator.handle` on the proxy |
-| forward hooks | `IPCInterleaver.instrument` is a no-op (`nns.py:101`) | the model's real `Interleaver` |
+| forward hooks | `IPCInterleaver.instrument` is a no-op (`nns.py:102`) | the model's real `Interleaver` |
 | batch scoping, input assembly | `batch_group` computed by the tracer, shipped | `Batcher` + `narrow`/`widen`, `_assemble` (`model.py:321`) |
 | `.source` / ad-hoc call / cache | `IPCSource`, `IPCEnvoy.__call__`, the real `Cache` | `install_source`, `run_module`, `ShippingCache` |
-| dangling workers | `IPCInterleaver.throw` (`nns.py:170`) | `check_dangling` sends `THROW` |
+| dangling workers | `IPCInterleaver.throw` (`nns.py:173`) | `check_dangling` sends `THROW` |
 
 `MediatorProxy` (`model.py:74`) **subclasses `Mediator` and reuses `handle`
 unchanged** — the matching, iteration, and relaxation logic is stock nnsight. It
@@ -180,10 +212,10 @@ overrides three things: `adopt` (`:100`) re-tags an incoming park, `switch`
 (`:143`) only records the interleaver (there is no local greenlet — the worker's
 first park arrived in `INTERLEAVE`). `alive` (`:151`) is "has a pending park".
 
-`IPCEnvoy.interleave` (`nns.py:197`) is the runner's entry into a model call: it
+`IPCEnvoy.interleave` (`nns.py:200`) is the runner's entry into a model call: it
 prepends the trace's edits, enters the interleaver (starting every worker so each
 parks on its first location), ships `INTERLEAVE`, then hands the socket to
-`IPCInterleaver.pump` (`:105`) until `DONE`. On the host,
+`IPCInterleaver.pump` (`:106`) until `DONE`. On the host,
 `SandboxModelDeployment.interleave` (`model.py:336`) builds one proxy per park,
 settles their control events, installs them as the model interleaver's mediators,
 assembles the inputs, runs `fn(...)` for real, serves the return value at
@@ -230,7 +262,7 @@ read then a swap three; a location no worker is parked on never crosses at all.
 nnsight splits occurrence handling between `Mediator.handle` (counts visits,
 relaxes a pin) and `Mediator.event` (tags a park from that count); here all of it
 lives on the host. The runner parks untagged with `worker.mediator().iteration` as
-`pin` (`ipc_event`, `nns.py:60`); `adopt` (`model.py:100`) sets
+`pin` (`ipc_event`, `nns.py:70`); `adopt` (`model.py:100`) sets
 `self.iteration = pin` and tags with `pin` when pinned, else with the proxy's own
 `iterations[location]` — the counter `handle` matches against; and every `RESUME`
 pushes the proxy's `iteration` back, which `pump` assigns to the runner-side
@@ -238,9 +270,10 @@ mediator (`nns.py:129`), so a pin relaxed on the host relaxes in the worker too.
 
 ### Batching
 
-The tracer computes each worker's `batch_group` in the runner, but the tokenizer
-and pipeline that turn text into model inputs live on the host — so the runner
-ships `batcher.invokes` raw (`IPCEnvoy.interleave`, `nns.py:219`) and the host
+The tracer computes each worker's `batch_group` in the runner, but assembly stays
+on the host — the runner's tokenizer and pipeline are meta-side copies the block
+may call directly, not the ones that feed the forward — so the runner
+ships `batcher.invokes` raw (`IPCEnvoy.interleave`, `nns.py:222`) and the host
 rebuilds a `Batcher`, `add`s each invoke, and calls `assemble(fn)` (`_assemble`,
 `model.py:321`); trace-level kwargs (`max_new_tokens`) win, and input tensors are
 device-placed (`_to_device`, `:272`). Each proxy carries its shipped `batch_group`
@@ -254,7 +287,7 @@ invoke's rows and widens its edit back into the batch.
 worker parks on a real model location — once per proxy before the forward starts,
 and again after every `switch`.
 
-`tracer.cache()` **is** supported over the socket: `ipc_cache` (`nns.py:299`)
+`tracer.cache()` **is** supported over the socket: `ipc_cache` (`nns.py:310`)
 builds the ordinary nnsight `Cache`/`CacheView` in the runner (so the client can
 deserialize it), registers it on `IPCInterleaver.caches`, and parks on `CACHE` with
 the filter config. The host attaches a `ShippingCache` (`model.py:46`) — a `Cache`
@@ -267,8 +300,8 @@ worker's rows; `pump` records each hit into the runner's cache (`nns.py:149`).
 | Path | Trigger | Mechanism |
 |---|---|---|
 | Normal | block finishes | forward returns → `DONE` → `pump` returns → block ends → `END` with the saved-values blob → host uploads it |
-| `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises (`nns.py:139`); the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
-| Dangling worker | worker still parked after the forward | `check_dangling` (`model.py:368`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:170`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
+| `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises (`nns.py:140`); the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
+| Dangling worker | worker still parked after the forward | `check_dangling` (`model.py:368`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:173`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` (`model.py:214`) raises `RunnerError`; `format_error` returns it verbatim, non-fatal |
 | Timeout / cancel | `run`'s race (`base.py:298`) | `interrupt` (`model.py:201`) stops the runner; the host thread's `recv` fails with `ConnectionError` |
 | Always | after every request | `cleanup` (`:196`) → `discard_sandbox` stops the request's runner |

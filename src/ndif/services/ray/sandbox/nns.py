@@ -238,11 +238,14 @@ class IPCEnvoy(Envoy):
 
 
 class IPCCloudUnpickler(CustomCloudUnpickler):
-    """nnsight unpickler that resolves the interleaver to an IPC one, model to None.
+    """nnsight unpickler that resolves the interleaver to an IPC one.
 
     Passed to ``RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)``, which
-    instantiates it as ``IPCCloudUnpickler(file, persistent_objects)``; the sandbox
-    has no persistent objects, so they're ignored.
+    instantiates it as ``IPCCloudUnpickler(file, persistent_objects)`` — here the
+    map ``load_meta_model`` built from this runner's meta model, so ``Module:<path>``,
+    ``Tokenizer`` and ``Pipeline`` ids resolve to real (weightless) objects in this
+    process. Unlike the base class an unknown id is not an error: it resolves to
+    ``None``, since the payload can mention objects only the host has.
     """
 
     def __init__(self, file, persistent_objects=None):
@@ -250,8 +253,10 @@ class IPCCloudUnpickler(CustomCloudUnpickler):
 
     def persistent_load(self, pid):
         # One interleaver is shared across the envoy tree; bind it to this
-        # request's socket. Everything else a normal server would resolve (the
-        # model, its modules) is never touched in this process.
+        # request's socket. Checked before the map so the meta model's own
+        # interleaver (also keyed "Interleaver") can't shadow the IPC one. The model
+        # weights themselves are never in this process — a resolved module is the
+        # meta build's, and reads of its activations still cross the socket.
         if pid == "Interleaver":
             return IPCInterleaver(connection)
         elif pid in self.persistent_objects:
@@ -334,6 +339,14 @@ InterleavingTracer.cache = ipc_cache
 PERSISTENT_OBJECTS = {}
 
 def load_meta_model(model_key):
+    """Build this runner's meta model and register its persistent-id map.
+
+    Called once at runner start (``Runner.__init__``, before the socket binds), so
+    every request this process serves resolves ``Module:<path>`` / ``Tokenizer`` /
+    ``Pipeline`` against a tree with the same paths as the host's real model. The
+    build is undispatched — structure only, no weights — and its cost is paid per
+    runner, i.e. inside ``spawn``'s readiness window.
+    """
     PERSISTENT_OBJECTS.update(HuggingFaceModel.from_model_key(model_key)._remoteable_persistent_objects())
 
 def run(conn, blob: bytes, compress: bool = False) -> None:
