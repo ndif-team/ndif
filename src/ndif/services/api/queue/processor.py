@@ -30,7 +30,7 @@ from ....common.providers.ray import controller_handle
 from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
 from ....common.schema.request import BackendRequestModel
-from ....common.telemetry import event
+from ....common.telemetry import error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 from .config import CONFIG
 from .replica import DeploymentError, Replica
@@ -231,7 +231,7 @@ class Processor:
                 exc_info=True,
                 model_key=self.model_key,
                 stage=self.status.value,
-                error_type=type(e).__name__,
+                error_type=error_type_name(e),
             )
             self.error_queue.put_nowait((self.model_key, e))
 
@@ -458,7 +458,7 @@ class Processor:
                 exc_info=True,
                 model_key=self.model_key,
                 replica_id=replica.replica_id,
-                error_type=type(e).__name__,
+                error_type=error_type_name(e),
             )
             self.error_queue.put_nowait((self.model_key, e))
             return

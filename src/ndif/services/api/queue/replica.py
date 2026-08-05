@@ -34,7 +34,7 @@ from ....common.providers.ray import (
 from ....common.schema import Status
 from ....common.schema.controller import DeployResponse, DeploymentConfig
 from ....common.schema.request import BackendRequestModel
-from ....common.telemetry import elapsed_ms, event
+from ....common.telemetry import elapsed_ms, error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 
 if TYPE_CHECKING:
@@ -280,7 +280,7 @@ class Replica:
                     api_key=request.api_key,
                     email=request.email,
                     stage="running",
-                    error_type=f"evicted:{type(e).__name__}",
+                    error_type=f"evicted:{error_type_name(e)}",
                     exec_ms=elapsed_ms(self.current_started_at),
                 )
                 return
@@ -300,7 +300,7 @@ class Replica:
                 api_key=request.api_key,
                 email=request.email,
                 stage="running",
-                error_type=type(e).__name__,
+                error_type=error_type_name(e),
                 exec_ms=elapsed_ms(self.current_started_at),
             )
             self.error_queue.put_nowait((self.model_key, e))
