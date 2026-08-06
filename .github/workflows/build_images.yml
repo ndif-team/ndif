@@ -1,0 +1,161 @@
+name: Build Images
+
+# One image serves every NDIF service; the container picks what to run from
+# NDIF_SERVICE at runtime, and the ECS task definitions (in the ndif-aws repo)
+# set that per service.
+#
+# Tagging is deliberately identical to ndif-aws/push.sh, which is the manual
+# path onto the same repositories: every push produces BOTH
+#
+#   sha-<7-char commit>   immutable, the thing to pin a deploy to
+#   latest                mutable convenience pointer
+#
+# Keep the two in step. The ECR lifecycle policy in ndif-aws keys on `sha-*`
+# (it keeps the newest 4) and expires untagged images after 14 days, so an
+# image pushed without its sha tag becomes unreferenceable garbage two weeks
+# later — including the digest a running task happens to be on.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: ECR namespace / environment to build for
+        type: choice
+        options: [dev, test, prod]
+        default: dev
+      deploy:
+        description: Force a new ECS deployment after pushing
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-images-${{ github.ref }}-${{ inputs.namespace || 'prod' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      namespace: ${{ steps.target.outputs.namespace }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Resolve target namespace
+        id: target
+        run: echo "namespace=${{ inputs.namespace || 'prod' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # type=sha renders as sha-<7 chars>; push.sh builds the same string from
+      # `git rev-parse --short=7`. Changing the format here silently breaks the
+      # lifecycle policy's `sha-*` rule.
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ steps.target.outputs.namespace }}/ndif
+          tags: |
+            type=sha
+            type=raw,value=latest
+
+      # The build cache lives in dev/ndif:cache regardless of target, so a prod
+      # build reuses layers from dev builds. `cache` matches no lifecycle rule,
+      # so it is never expired.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/dev/ndif:cache,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Pushed to \`${{ steps.target.outputs.namespace }}/ndif\`"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Manual only. The previous version of this workflow force-redeployed
+  # NDIF-Prod/API on every push to main, which is why prod's API and Dashboard
+  # drifted onto different builds: both track :latest, but only one was ever
+  # restarted. It also deployed prod unattended, which the ndif-aws ground rules
+  # forbid. This job redeploys *every* service running the image, and only when
+  # someone asks for it.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: inputs.deploy
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: us-east-1
+          output-credentials: true
+
+      - name: Force new deployment for every service on this image
+        env:
+          NS: ${{ needs.build.outputs.namespace }}
+        run: |
+          set -euo pipefail
+          case "$NS" in
+            dev)  CLUSTER=NDIF-Dev ;;
+            test) CLUSTER=NDIF-Test ;;
+            prod) CLUSTER=NDIF-Prod ;;
+            *)    echo "unknown namespace $NS" >&2; exit 1 ;;
+          esac
+          echo "cluster: $CLUSTER"
+
+          mapfile -t SERVICES < <(aws ecs list-services --cluster "$CLUSTER" \
+            --query 'serviceArns[]' --output text | tr '\t' '\n')
+
+          redeployed=0
+          for arn in "${SERVICES[@]}"; do
+            [ -n "$arn" ] || continue
+            name="${arn##*/}"
+            td=$(aws ecs describe-services --cluster "$CLUSTER" --services "$arn" \
+              --query 'services[0].taskDefinition' --output text)
+            images=$(aws ecs describe-task-definition --task-definition "$td" \
+              --query 'taskDefinition.containerDefinitions[].image' --output text)
+            case "$images" in
+              *"/${NS}/ndif:"*)
+                aws ecs update-service --cluster "$CLUSTER" --service "$name" \
+                  --force-new-deployment --no-cli-pager > /dev/null
+                echo "  redeployed $name"
+                redeployed=$((redeployed + 1))
+                ;;
+            esac
+          done
+          echo "$redeployed service(s) redeployed"
+          [ "$redeployed" -gt 0 ] || echo "::warning::no service referenced ${NS}/ndif"
