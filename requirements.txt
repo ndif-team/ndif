@@ -1,22 +1,36 @@
 # Install into the ndif env (Python 3.12):
 #   pip install -r requirements.txt
 #
-# torch is pinned to a CUDA 12.4 build to match a CUDA 12.x driver. The
-# +cu124 wheels live on the PyTorch index below, not on PyPI.
---extra-index-url https://download.pytorch.org/whl/cu124
+# torch comes from PyPI, whose manylinux wheels bundle their own CUDA runtime —
+# hence no --extra-index-url and no +cuXXX pin. It is also unpinned, as are
+# transformers / numpy / accelerate, which are left for nnsight to resolve so a
+# server install can't contradict the client library it runs blocks for.
+#
+# The cost is that the image is only as reproducible as the day it was built.
+# What a build resolved to is recoverable after the fact:
+#   docker run --rm --entrypoint pip <image> freeze
+# The 2026-08-04 test image resolved torch 2.13.0, transformers 5.14.1,
+# numpy 2.5.1, accelerate 1.14.0.
 
-# The client library the server runs traced blocks for. Installed into the image
-# so it is self-contained; for local development `just up` bind-mounts your
-# working nnsight checkout over this install (see the justfile / compose), so a
-# code change on the client side is picked up without a rebuild.
-nnsight
+# The client library the server runs traced blocks for. Tracked to the 0.8
+# branch rather than a PyPI release: 0.8 has no tag yet, so setuptools-scm
+# derives 0.7.1.devN from v0.7.0 and the release on PyPI is the older line.
+# Installing from git is why the image needs `git` (see docker/Dockerfile).
+# For local development `just up` bind-mounts your working nnsight checkout over
+# this install (see the justfile / compose), so a code change on the client side
+# is picked up without a rebuild.
+# Pinned to a commit, not the branch tip: an unpinned branch means every
+# rebuild silently ships a different client library. The 2026-08-04 rebuild
+# moved 3 commits and touched intervention/serialization.py and
+# tracing/util.py — the serialization path the server depends on — which
+# would have been deployed unnoticed. Bump this deliberately.
+git+https://github.com/ndif-team/nnsight.git@ad939e9bb24a6bde237dd3a48a49e3d36b1cc87f
 
-torch==2.6.0+cu124
+torch
 ray[default]==2.55.1
-transformers==5.12.1
-numpy==2.5.0
+
 pydantic==2.13.4
-accelerate==1.2.0
+
 # The model actor applies PEFT adapters requested per-request via the model's
 # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
 # dependency the server install must provide.
