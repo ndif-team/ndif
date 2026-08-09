@@ -413,11 +413,19 @@ ndif doctor                     # verify
 ndif start                      # run the stack
 ```
 
-Most tests need a running stack:
+Install the development dependencies and run the API unit tests without starting
+any NDIF services:
 
 ```bash
-cd tests
-pytest --run-remote             # against localhost:5001
+uv sync --group dev
+uv run pytest src/ndif/services/api/tests/unit
+```
+
+Most tests in the repository-level suite need a running stack. From the
+repository root:
+
+```bash
+uv run pytest tests --run-remote  # against localhost:5001
 ```
 
 ### Docker dev loop
