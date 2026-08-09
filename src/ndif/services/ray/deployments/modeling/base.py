@@ -452,7 +452,10 @@ class BaseModelDeployment:
             torch.bfloat16,
         )
         with torch.autocast(
-            device_type="cuda", dtype=self.dtype, enabled=autocast_enabled
+            device_type="cuda",
+            dtype=self.dtype,
+            enabled=autocast_enabled,
+            cache_enabled=False,
         ):
             # Bracket execution in a trace scope (inc/dec), the way the client's
             # Tracer.__exit__ does, so nnsight's save() records into this thread's
