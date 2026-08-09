@@ -26,7 +26,15 @@
 # would have been deployed unnoticed. Bump this deliberately.
 git+https://github.com/ndif-team/nnsight.git@ad939e9bb24a6bde237dd3a48a49e3d36b1cc87f
 
-torch
+# Pinned for this host: driver 555.42.02 tops out at CUDA 12.5, and the default
+# PyPI wheel (2.13.0+cu130 as of 2026-08-08) is a CUDA *13* build, which refuses
+# to initialise -- "the NVIDIA driver on your system is too old (found version
+# 12050)" and torch.cuda.is_available() is False. Any 12.x build runs on a 12.x
+# driver (CUDA minor version compatibility, driver >= 525), so this is the same
+# torch version the image already resolved, only built against 12.6. The local
+# version tag is what forces the pytorch index over PyPI's cu130 wheel.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.13.0+cu126
 ray[default]==2.55.1
 
 pydantic==2.13.4
