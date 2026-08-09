@@ -43,6 +43,12 @@ pydantic==2.13.4
 # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
 # dependency the server install must provide.
 peft==0.19.1
+# Traced blocks routinely load their evaluation data server-side rather than
+# shipping it in the request payload -- a HuggingFace Dataset is memory-mapped,
+# so pickling one sends a path to an arrow file that only exists on the client.
+# `from datasets import load_dataset` inside a session is the documented pattern
+# (nnsight docs/patterns/remote-dataset-sweep.md), so the server must provide it.
+datasets
 cloudpickle==3.1.2
 click==8.1.8
 # The CLI layers ./.env (and an explicit --env-file) over the environment.
