@@ -84,7 +84,7 @@ API never validates it — it is just a dict key:
 ```python
 if request.model_key not in self.processors:
     self.processors[request.model_key] = Processor(request.model_key, self.error_queue)
-await self.processors[request.model_key].enqueue(request, prepend=request.priority)
+await self.processors[request.model_key].enqueue(request)
 ```
 
 (`src/ndif/services/api/queue/dispatcher.py:135`)
@@ -177,15 +177,19 @@ Not much, and it is worth being explicit about it:
 - **Across models:** a single global FIFO on the Redis list, then independent
   per-model lines. A burst for one model does not delay another model's requests
   beyond the shared drain loop.
-- **Within a model:** strict FIFO, except that a key tagged `priority` is
-  prepended (`src/ndif/services/api/auth.py:48`). One user submitting a hundred
-  requests occupies the line ahead of a user who submits one.
+- **Within a model:** two FIFO groups — every `priority`-tagged request is
+  served before every normal one, and each group is FIFO by arrival
+  (`request_queue.py`). One user submitting a hundred requests occupies the line
+  ahead of a user who submits one, within their group. There is no aging, so
+  sustained priority traffic starves normal traffic indefinitely; the autoscaler
+  is the only relief, and it caps at `NDIF_AUTOSCALING_MAX_REPLICAS`.
 - **Per user:** nothing. There is no per-key concurrency cap, no quota, and no
   rate limit anywhere on the request path.
 - **Head-of-line blocking is real.** A replica handles one request at a time and
   a long-running block holds it for up to
-  `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` (default 3600). The only relief is
-  autoscaling up to the ceiling.
+  `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, which is **unset by default** — so a
+  block holds its replica until it finishes. The only relief is autoscaling up to
+  the ceiling. Set the variable on a shared deployment.
 
 ## Related
 

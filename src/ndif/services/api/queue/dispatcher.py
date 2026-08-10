@@ -145,9 +145,7 @@ class Dispatcher:
                 request.model_key, self.error_queue
             )
 
-        await self.processors[request.model_key].enqueue(
-            request, prepend=request.priority
-        )
+        await self.processors[request.model_key].enqueue(request)
 
     async def purge(self, message: str) -> None:
         """Error every queued user and drop every replica (critical failure).

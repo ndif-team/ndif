@@ -115,7 +115,7 @@ lazily created `Processor` (`dispatcher.py:143`).
 
 **5. Processor queues and provisions.** `Processor.enqueue`
 (`src/ndif/services/api/queue/processor.py:93`) stamps `enqueued_at`, appends
-(or, for a `priority` key, prepends) to that model's in-memory `asyncio.Queue`,
+to that model's in-memory priority queue (a `priority` key sorts ahead of normal traffic),
 calls `ensure_started`, and publishes `QUEUED` with the queue position. If no
 replica exists, `start()` asks the controller for existing replicas and adopts
 them, or asks for a new one — the client sees `PROVISIONING`, then `DEPLOYING`.

@@ -128,7 +128,7 @@ distinguished from "unknown key".
 | Tag | Constant | Effect |
 |---|---|---|
 | `trusted` | `TRUSTED_TAG` (`auth.py:44`) | the request runs in-process instead of in a runner, and any model it triggers a deploy for loads with `trust_remote_code` |
-| `priority` | `PRIORITY_TAG` (`auth.py:48`) | the request is prepended to the front of its model's queue instead of appended (`queue/processor.py:108-112`) |
+| `priority` | `PRIORITY_TAG` (`auth.py:48`) | the request is served ahead of all normal traffic for that model, FIFO against other priority requests (`queue/request_queue.py`) |
 
 Every other tag name is inert — only `trusted` and `priority` change server
 behavior. With auth off, `priority` is left at the request's value (`False` unless

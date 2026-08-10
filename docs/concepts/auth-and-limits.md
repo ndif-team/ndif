@@ -91,7 +91,7 @@ key" is distinguished from "known key, no tags".
 | Tag | Effect |
 |---|---|
 | `trusted` | The request's block runs in-process in the model actor, and any deployment it triggers loads with `trust_remote_code` |
-| `priority` | The request is prepended to its model's queue instead of appended (with auth off there is no key to read it from, so `priority` is left as the client sent it — `False` unless the client set it) |
+| `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests (with auth off there is no key to read it from, so `priority` is left as the client sent it — `False` unless the client set it) |
 
 Everything else about identity is **observability only**. `email` is carried on
 the request — across the Ray boundary via pickling — so every downstream log

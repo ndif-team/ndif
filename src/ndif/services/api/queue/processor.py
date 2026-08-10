@@ -34,6 +34,7 @@ from ....common.telemetry import error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
 from .config import CONFIG
 from .replica import DeploymentError, Replica
+from .request_queue import RequestQueue
 
 logger = logging.getLogger("ndif.queue.processor")
 
@@ -79,7 +80,7 @@ class Processor:
         self.model_key = model_key
         self.error_queue = error_queue
 
-        self.queue: asyncio.Queue[BackendRequestModel] = asyncio.Queue()
+        self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
         # Whether this model's deployment loads with trust_remote_code; set from the
@@ -101,21 +102,19 @@ class Processor:
     ) -> None:
         """Add a request to the queue, provision if needed, acknowledge it.
 
-        ``prepend`` puts the request at the *front* of the queue and rouses any
-        replica idle on ``get``. Used both when an evicted replica hands its
-        in-flight request back (preserving its place in line) and for a priority
-        request jumping the queue. A re-queued request keeps its original
-        ``enqueued_at`` so the autoscaler still sees how long it has really waited.
-        """
-        if request.enqueued_at is None:
-            # Stamp the enqueue time so the autoscaling loop can spot a stale head.
-            request.enqueued_at = time.time()
+        ``prepend`` puts the request at the front of *its own priority group*,
+        not of the whole queue — used when an evicted replica hands its in-flight
+        request back, so it keeps its place in line. A priority request does
+        **not** prepend: it sorts ahead of normal traffic by group, and stays
+        FIFO against its peers. Prepending it instead made the priority group
+        LIFO, which starved everyone (see ``request_queue``).
 
-        if prepend:
-            self.queue._queue.appendleft(request)
-            self.queue._wakeup_next(self.queue._getters)
-        else:
-            self.queue.put_nowait(request)
+        A re-queued request keeps its original ``enqueued_at``, so the autoscaler
+        still sees how long it has really waited.
+        """
+        # RequestQueue stamps enqueued_at if unset and orders by
+        # (group, prepend, enqueued_at) -- see request_queue.py.
+        self.queue.put(request, prepend=prepend)
 
         self.ensure_started(request.trusted)
 
@@ -133,11 +132,11 @@ class Processor:
             processor_status=self.status.value,
         )
 
-        # Depth is only the new request's position when it was appended; a
-        # prepended one (priority key, or an evicted replica handing its
-        # in-flight request back) is at the front. Reporting depth for those
-        # told a priority caller they were last in a line they had just jumped.
-        position = 1 if prepend else self.queue.qsize()
+        # Ask the queue where the request actually landed. Depth-at-enqueue was
+        # only ever right for a plain append: a priority or re-queued request
+        # sorts ahead of others, and telling such a caller they were last in a
+        # line they had just jumped is exactly backwards.
+        position = self.queue.position(request.id) or self.queue.qsize()
 
         await self.reply(
             request=request,
@@ -261,9 +260,10 @@ class Processor:
         """Scale the replica pool up under sustained queue pressure.
 
         A single long-lived task (created in ``__init__``). Every
-        ``autoscaling_interval_s`` seconds, while serving, peek the queue head.
-        If it has waited longer than ``autoscaling_wait_threshold_s``, ask for
-        one more replica and sleep ``autoscaling_backoff_s`` before re-checking
+        ``autoscaling_interval_s`` seconds, while serving, find the request that
+        has waited longest across both priority groups. If it has waited longer
+        than ``autoscaling_wait_threshold_s``, ask for one more replica and
+        sleep ``autoscaling_backoff_s`` before re-checking
         (so the new replica can drain depth before another scale-up). Only acts
         when READY — first-replica provisioning is ``start``'s job — and stops
         once ``autoscaling_max_replicas`` replicas are running.
@@ -274,9 +274,10 @@ class Processor:
         while self.status != ProcessorStatus.CANCELLED:
             try:
                 if self.status == ProcessorStatus.READY:
-                    head = self.queue._queue[0] if self.queue._queue else None
-                    if head is not None and head.enqueued_at is not None:
-                        wait = time.time() - head.enqueued_at
+                
+                    oldest = self.queue.oldest()
+                    if oldest is not None and oldest.enqueued_at is not None:
+                        wait = time.time() - oldest.enqueued_at
                         if (
                             wait > CONFIG.autoscaling_wait_threshold_s
                             and len(self.replicas) < CONFIG.autoscaling_max_replicas
@@ -302,7 +303,8 @@ class Processor:
         """
         replicas_before = len(self.replicas)
         logger.info(
-            f"Autoscaling {self.model_key}: queue head has waited {wait:.1f}s "
+            f"Autoscaling {self.model_key}: oldest queued request has waited "
+            f"{wait:.1f}s "
             f"(>{CONFIG.autoscaling_wait_threshold_s}s); adding a replica.",
             extra={
                 "model_key": self.model_key,
@@ -363,7 +365,7 @@ class Processor:
                 status = Status.DEPLOYING
 
         if request is None:
-            for i, queued in enumerate(list(self.queue._queue)):
+            for i, queued in enumerate(self.queue.snapshot()):
                 await queued.arespond(
                     status,
                     description
@@ -489,7 +491,7 @@ class Processor:
             )
 
         await self.reply(description=message, status=Status.ERROR)
-        self.queue._queue.clear()
+        self.queue.clear()
 
         for replica in list(self.replicas.values()):
             await replica.cancel(message)
@@ -505,7 +507,7 @@ class Processor:
             "model_key": self.model_key,
             "status": self.status.value,
             "queue_size": self.queue.qsize(),
-            "request_ids": [request.id for request in list(self.queue._queue)],
+            "request_ids": [request.id for request in self.queue.snapshot()],
             "replicas": [
                 {
                     "replica_id": replica.replica_id,
@@ -524,11 +526,7 @@ class Processor:
 
     def pop_queued(self, request_id: str) -> Optional[BackendRequestModel]:
         """Remove a queued request by id and return it, or None if not queued."""
-        for request in list(self.queue._queue):
-            if request.id == request_id:
-                self.queue._queue.remove(request)
-                return request
-        return None
+        return self.queue.remove(request_id)
 
     def executing_replica(self, request_id: str) -> Optional[Replica]:
         """The Replica currently running ``request_id``, or None."""

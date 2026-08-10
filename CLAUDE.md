@@ -169,6 +169,11 @@ Read the first two if a behavior seems inexplicable:
   one model; turn it down on a node hosting several.
 - **`NDIF_MODEL_CACHE_PERCENTAGE` scales host RAM**, not GPU memory — it's the WARM
   cache budget. Wrong lever for a GPU OOM.
+- **`priority` is a strict group, not a queue jump, and there is no aging.**
+  Priority requests sort ahead of all normal traffic and stay FIFO among
+  themselves; sustained priority load starves normal traffic indefinitely, with
+  autoscaling (max 3 replicas) the only relief. `prepend` is now only for
+  re-queueing an evicted request to the front of *its own* group.
 - **`NDIF_RAY_METRICS_PORT` is Ray's `--metrics-export-port`** (the Prometheus
   scrape target, default 8080). Nothing to do with Ray Serve. Formerly
   `NDIF_RAY_SERVE_PORT` — renamed, no alias.

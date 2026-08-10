@@ -3,14 +3,14 @@ title: Queue Internals
 one_liner: The dispatcher process — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
 tags: [internals, dev, queue, redis, ray]
 related: [docs/developing/api-service.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/redis-keys.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
+sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
 ---
 
 # Queue Internals
 
 ## What this covers
 
-`src/ndif/services/api/queue/` — four modules that turn a flat Redis list of
+`src/ndif/services/api/queue/` — five modules that turn a flat Redis list of
 pickled requests into per-model queues serviced by Ray model actors. It lives
 under the API package but runs in its own process. The chain is
 `Redis queue -> Dispatcher -> Processor -> Replica -> model actor`.
@@ -38,8 +38,8 @@ rather than silently defaulting.
 | `queue_key` | `NDIF_QUEUE_KEY` | `queue` | The Redis list the API LPUSHes to and the dispatcher BRPOPs from |
 | `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — bounds how long an idle loop waits before draining errors |
 | `fetch_batch_max` | `NDIF_QUEUE_FETCH_BATCH_MAX` | 32 | Max requests drained per dispatch iteration |
-| `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its queue head |
-| `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Head-of-queue wait that triggers a scale-up |
+| `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its oldest queued request |
+| `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Oldest-request wait that triggers a scale-up |
 | `autoscaling_backoff_s` | `NDIF_AUTOSCALING_BACKOFF_S` | 120 | Pause after a scale-up before re-checking |
 | `autoscaling_max_replicas` | `NDIF_AUTOSCALING_MAX_REPLICAS` | 3 | Cap on replicas per model_key added by autoscaling |
 
@@ -73,7 +73,7 @@ is reachable *and* the `Controller` actor exists.
 flowchart TB
   subgraph DW["dispatch_worker (dispatcher.py:364)"]
     G["get(): BRPOP queue (fetch_timeout_s)<br/>then RPOP up to fetch_batch_max-1 more"]
-    D["dispatch(request) per request<br/>Processor per model_key<br/>enqueue(prepend=request.priority)"]
+    D["dispatch(request) per request<br/>Processor per model_key<br/>enqueue(request)"]
     H["handle_errors(): drain error_queue"]
     CE{"connection error?"}
     P["purge() every Processor<br/>then connect()"]
@@ -134,8 +134,8 @@ Replies are `LPUSH`ed to the caller-supplied `response_key` and expired after
 
 ## The Processor
 
-One `Processor` per `model_key` (`processor.py:57`), owning an
-`asyncio.Queue[BackendRequestModel]` (the per-model line), a
+One `Processor` per `model_key` (`processor.py:57`), owning a
+`RequestQueue` (the per-model line), a
 `Dict[REPLICA_ID, Replica]` pool sharing it, a `trusted` flag (whether this
 model's deployment loads with `trust_remote_code`, taken from the request that
 kicked off provisioning), an autoscaling task created in `__init__` and never
@@ -148,15 +148,15 @@ empty pool and is re-provisioned on the next request.
 
 ### enqueue
 
-`enqueue` (`processor.py:93`) stamps `enqueued_at` **only if unset**, so a
-request handed back after an eviction keeps its original timestamp and the
-autoscaler still sees how long it has really waited. `prepend=True` reaches into
-asyncio internals — `self.queue._queue.appendleft(request)` followed by
-`self.queue._wakeup_next(self.queue._getters)` — and is used for two things: a
-`priority`-tagged key jumping the line (`dispatcher.py:148`), and an evicted
-replica returning its in-flight request to the front (`replica.py:237`). Then
+`enqueue` hands the request to `RequestQueue.put`, which stamps `enqueued_at`
+**only if unset** — so a request handed back after an eviction keeps its original
+timestamp and the autoscaler still sees how long it has really waited. Then
 `ensure_started(request.trusted)` and a QUEUED reply carrying the request's
-1-based position.
+1-based position, read back from the queue rather than assumed to be the depth.
+
+`prepend=True` now means "front of my own priority group" and is used only when
+an evicted replica returns its in-flight request (`replica.py`). A `priority`
+key does **not** prepend — it sorts ahead by group. See `RequestQueue` below.
 
 `ensure_started` (`processor.py:140`) no-ops if any replica exists or setup is
 already underway, which is why it is safe to call on every enqueue and on every
@@ -171,6 +171,47 @@ deployment's `trust_remote_code` for its lifetime** — a trusted caller's reque
 can leave a `trust_remote_code=True` deployment serving later untrusted callers.
 See `docs/developing/api-service.md` for where `trusted` comes from and what else
 it decides.
+
+### RequestQueue
+
+The per-model line (`request_queue.py`). An `asyncio.PriorityQueue` keyed
+`(rank, enqueued_at, seq)`:
+
+```
+rank 0  priority, re-queued      rank 2  normal, re-queued
+rank 1  priority                 rank 3  normal
+```
+
+The group is doubled so `prepend` is a sub-rank inside it — a plain "+1" would
+collide a re-queued normal request with a fresh priority one. Every tier
+tiebreaks on `enqueued_at`, so each is FIFO and nothing starves *within* a group.
+`seq` is a monotonic counter that stops tuple comparison before it reaches the
+`BackendRequestModel`, which is not orderable.
+
+Priority used to be a `deque.appendleft`, which made the priority group LIFO: a
+closed-loop client that won the head kept winning it. On a 16-client run two
+priority clients completed 73 requests each while the other fourteen completed
+one apiece.
+
+Callers go through the class rather than touching `_queue`, because a heap's
+list is only partially sorted — reading it raw gives a plausible-looking wrong
+order:
+
+| Method | For |
+|---|---|
+| `put(request, prepend=False)` | enqueue; stamps `enqueued_at` if unset |
+| `get()` | await the next request to serve |
+| `snapshot()` | queued requests in true service order (position replies, status) |
+| `oldest()` | longest-waiting request across *both* groups — what autoscaling reads |
+| `position(id)` | 1-based place in the service order |
+| `remove(id)` | pull one out by id, re-heapifying |
+
+`oldest()` is a scan, not a maintained watermark: O(n) on a queue of tens, once
+per autoscaling tick, versus an invariant every enqueue, dequeue and re-queue
+would have to honour.
+
+**No aging.** Sustained priority traffic starves normal traffic indefinitely —
+autoscaling is the only relief and it caps at `autoscaling_max_replicas`.
 
 ### start
 
@@ -200,9 +241,9 @@ Processor:
 ```python
 while self.status != ProcessorStatus.CANCELLED:
     if self.status == ProcessorStatus.READY:
-        head = self.queue._queue[0] if self.queue._queue else None
-        if head is not None and head.enqueued_at is not None:
-            wait = time.time() - head.enqueued_at
+        oldest = self.queue.oldest()
+        if oldest is not None and oldest.enqueued_at is not None:
+            wait = time.time() - oldest.enqueued_at
             if (wait > CONFIG.autoscaling_wait_threshold_s
                     and len(self.replicas) < CONFIG.autoscaling_max_replicas):
                 await self.scale_up(wait)
@@ -211,9 +252,12 @@ while self.status != ProcessorStatus.CANCELLED:
     await asyncio.sleep(CONFIG.autoscaling_interval_s)
 ```
 
-The decision is entirely **head-of-line wait** — not queue depth, not throughput.
-A hundred requests that all arrived a second ago will not scale up; one request
-that has waited 31 seconds will. It only fires in `READY` (bringing up the
+The decision is entirely **oldest-request wait** — not queue depth, not
+throughput. A hundred requests that all arrived a second ago will not scale up;
+one request that has waited 31 seconds will. It reads the *oldest* request
+rather than the head because the head is the next one to serve, which under
+priority traffic is the newest thing enqueued — reading it meant the autoscaler
+saw a wait near zero at exactly the moment normal requests were starving. It only fires in `READY` (bringing up the
 *first* replica is `start()`'s job) and stops at `autoscaling_max_replicas` (3).
 Each tick is individually guarded so one transient error can't kill the task and
 leave the model unable to scale for the dispatcher's remaining life.
