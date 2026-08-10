@@ -1,6 +1,6 @@
 {
   "uid": "ndif-users",
-  "title": "NDIF \u2014 Users & Usage (Postgres + InfluxDB)",
+  "title": "NDIF — Users & Usage (Postgres + InfluxDB)",
   "tags": [
     "ndif",
     "users",
@@ -10,7 +10,7 @@
   "editable": true,
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-24h",
@@ -79,6 +79,19 @@
         "current": {},
         "options": [],
         "hide": 0
+      },
+      {
+        "name": "key",
+        "label": "api key contains",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0,
+        "description": "Paste a key (or any fragment of one) to find its owner. Empty lists every key."
       }
     ]
   },
@@ -570,7 +583,7 @@
     {
       "id": 10,
       "type": "table",
-      "title": "Users leaderboard \u2014 email + usage",
+      "title": "Users leaderboard — email + usage",
       "datasource": {
         "type": "datasource",
         "uid": "-- Mixed --"
@@ -667,6 +680,45 @@
         ]
       },
       "description": "All users: Postgres email/tier joined to Influx usage on email (email is a metric tag)."
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "API keys → user",
+      "description": "Resolve an api_key to the person behind it. api_key is a tag on every metric and a field on every request log, but only the email is human-readable — this is the bridge. Columns are filterable.",
+      "datasource": {
+        "type": "postgres",
+        "uid": "postgres"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "postgres"
+          },
+          "rawSql": "SELECT k.key_id::text AS key_id, u.email, u.verification_status::text AS verification, string_agg(DISTINCT ut.name, ', ') AS tags, k.created_at AS created FROM keys k JOIN users u ON u.user_id = k.user_id LEFT JOIN key_user_tag_assignments kuta ON kuta.key_id = k.key_id LEFT JOIN user_tags ut ON ut.user_tag_id = kuta.user_tag_id WHERE k.key_id::text ILIKE '%${key}%' GROUP BY k.key_id, u.email, u.verification_status, k.created_at ORDER BY u.email, k.created_at",
+          "rawQuery": true,
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
     }
   ]
 }

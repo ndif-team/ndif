@@ -1,6 +1,6 @@
 {
   "uid": "ndif-errors",
-  "title": "NDIF \u2014 Errors & Health (Loki)",
+  "title": "NDIF — Errors & Health (Loki)",
   "tags": [
     "ndif",
     "loki"
@@ -8,7 +8,7 @@
   "editable": true,
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 3,
   "refresh": "30s",
   "time": {
     "from": "now-6h",
@@ -99,6 +99,25 @@
           }
         ],
         "hide": 0
+      },
+      {
+        "name": "exception",
+        "label": "exception type",
+        "type": "textbox",
+        "query": ".*",
+        "current": {
+          "text": ".*",
+          "value": ".*"
+        },
+        "options": [
+          {
+            "text": ".*",
+            "value": ".*",
+            "selected": true
+          }
+        ],
+        "hide": 0,
+        "description": "Regex over exception_type. Set it to one class name to focus the tables and the stacktrace stream below."
       }
     ]
   },
@@ -1044,6 +1063,258 @@
           }
         }
       ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Exceptions & triage",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Exception rate by type",
+      "description": "Which exception classes are firing, and when. A new line appearing here is the fastest signal that a deploy broke something.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 14,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum by (exception_type) (rate({environment=~\"${environment:regex}\", service=~\"${service:regex}\"} | json | exception_type!=`` | exception_type=~`$exception` [$__interval]))",
+          "legendFormat": "{{exception_type}}",
+          "refId": "A",
+          "editorMode": "code",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "table",
+      "title": "Top exception types",
+      "description": "Python exception classes from exception_type, which is distinct from the error_type taxonomy above (cancelled/preempted/timeout).",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 44,
+        "w": 10,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "topk(15, sum by (exception_type) (count_over_time({environment=~\"${environment:regex}\", service=~\"${service:regex}\"} | json | exception_type!=`` [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Count",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "Count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "type": "table",
+      "title": "Distinct exception messages (ids normalized)",
+      "description": "The triage view: one row per distinct failure, not per occurrence. A traceback is reduced to its final line — which also peels the sandbox's RunnerError wrapper off the user's real exception — then uuids, hex ids, byte sizes and numbers are masked to …, so one bug hitting 400 request ids collapses to a single row with a count of 400. Sort by Count to find what to fix first, then set the `exception` variable and read the stacktraces below.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "topk(25, sum by (exception_type, message_pattern) (count_over_time({environment=~\"${environment:regex}\", service=~\"${service:regex}\"} | json | exception_message!=`` | exception_type=~`$exception` | label_format trimmed=`{{ regexReplaceAll \"\\n+$\" .exception_message \"\" }}` | label_format error_line=`{{ regexReplaceAll \"(?s).*\\n\" .trimmed \"\" }}` | label_format message_pattern=`{{ regexReplaceAll \"([0-9]+([.][0-9]+)?[ ]?[KMGT]i?B|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|0x[0-9a-fA-F]+|[0-9a-fA-F]{8,}|[0-9]+)\" .error_line \"…\" }}` [$__range])))",
+          "queryType": "instant",
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "filterable": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "message_pattern"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 900
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Count",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "Count",
+              "exception_type": "Type",
+              "message_pattern": "Message"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "type": "logs",
+      "title": "Exception detail — stacktraces",
+      "description": "Raw exceptions for the selected `exception` type. Expand a line for the full stacktrace, plus request_id / email / host — the request_id link jumps to every log for that request.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "{environment=~\"${environment:regex}\", service=~\"${service:regex}\"} | json | exception_type!=`` | exception_type=~`$exception` | email=~`$email`",
+          "queryType": "range",
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
     }
   ]
 }
