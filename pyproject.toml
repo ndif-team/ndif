@@ -56,6 +56,33 @@ ray = [
     # dependency the server install must provide.
     "peft",
 ]
+# Packages user-submitted traced blocks may import. Not dependencies of NDIF —
+# nothing here is imported by ndif's own code — but the server has to provide
+# them or a block that imports one dies with ModuleNotFoundError on the far side.
+#
+# Keep this in step with the sandbox import whitelist: the whitelist says what a
+# block is *allowed* to import, this says what is actually *installed*, and a
+# name in one but not the other is a bug either way. Most of the whitelist needs
+# no entry here because transformers/datasets/torch already pull it in
+# (huggingface_hub, tokenizers, pandas, fsspec, regex, tqdm, jinja2, pydantic,
+# urllib3, hf_xet, httpcore, sympy, numpy); listed below is the remainder.
+ext = [
+    # Evaluation data loaded server-side rather than pickled into the request —
+    # a memory-mapped Dataset ships an arrow path that only exists on the client
+    # (nnsight docs/patterns/remote-dataset-sweep.md).
+    "datasets",
+    # Tensor reshaping in intervention code; assumed present by nnsight's own
+    # _SERVER_MODULES.
+    "einops",
+    # Image inputs for vision and multimodal models (PIL).
+    "pillow",
+    # nnsight's DiffusionModel runtime.
+    "diffusers",
+    # scipy.stats / scipy.sparse in analysis code.
+    "scipy",
+    # Standardised transformer wrapper some blocks are written against.
+    "nnterp",
+]
 # Telemetry sinks — optional. Both providers fail open when their package is
 # absent (or their server is unreachable): without this extra, InfluxDB metrics
 # and Loki log-shipping are disabled and the services run console-only. Enable

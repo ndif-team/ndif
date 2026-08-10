@@ -1,10 +1,9 @@
 # Install into the ndif env (Python 3.12):
 #   pip install -r requirements.txt
 #
-# torch comes from PyPI, whose manylinux wheels bundle their own CUDA runtime —
-# hence no --extra-index-url and no +cuXXX pin. It is also unpinned, as are
-# transformers / numpy / accelerate, which are left for nnsight to resolve so a
-# server install can't contradict the client library it runs blocks for.
+# transformers / numpy / accelerate are left unpinned, for nnsight to resolve, so
+# a server install can't contradict the client library it runs blocks for. torch
+# is installed by docker/Dockerfile instead — see the note below.
 #
 # The cost is that the image is only as reproducible as the day it was built.
 # What a build resolved to is recoverable after the fact:
@@ -26,15 +25,8 @@
 # would have been deployed unnoticed. Bump this deliberately.
 git+https://github.com/ndif-team/nnsight.git@ad939e9bb24a6bde237dd3a48a49e3d36b1cc87f
 
-# Pinned for this host: driver 555.42.02 tops out at CUDA 12.5, and the default
-# PyPI wheel (2.13.0+cu130 as of 2026-08-08) is a CUDA *13* build, which refuses
-# to initialise -- "the NVIDIA driver on your system is too old (found version
-# 12050)" and torch.cuda.is_available() is False. Any 12.x build runs on a 12.x
-# driver (CUDA minor version compatibility, driver >= 525), so this is the same
-# torch version the image already resolved, only built against 12.6. The local
-# version tag is what forces the pytorch index over PyPI's cu130 wheel.
---extra-index-url https://download.pytorch.org/whl/cu126
-torch==2.13.0+cu126
+# torch is NOT here — the right wheel depends on the host's CUDA driver, which is
+# not a property of this repo. docker/Dockerfile installs it from a build arg.
 ray[default]==2.55.1
 
 pydantic==2.13.4
@@ -43,12 +35,6 @@ pydantic==2.13.4
 # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
 # dependency the server install must provide.
 peft==0.19.1
-# Traced blocks routinely load their evaluation data server-side rather than
-# shipping it in the request payload -- a HuggingFace Dataset is memory-mapped,
-# so pickling one sends a path to an arrow file that only exists on the client.
-# `from datasets import load_dataset` inside a session is the documented pattern
-# (nnsight docs/patterns/remote-dataset-sweep.md), so the server must provide it.
-datasets
 cloudpickle==3.1.2
 click==8.1.8
 # The CLI layers ./.env (and an explicit --env-file) over the environment.
