@@ -15,9 +15,49 @@ import contextlib
 import os
 import socket
 import sys
+import threading
+import time
 
 from . import nns
 from .protocol import decode, pack, recv_frame, send_frame
+
+_PARENT_POLL_S = 1.0
+
+
+def die_with_parent() -> None:
+    """Exit when the model actor that spawned this runner goes away.
+
+    Without this a runner outlives its actor. The graceful paths already stop it
+    (``cleanup`` -> ``discard_sandbox`` after every request, ``interrupt`` on a
+    timeout or cancel), but eviction is ``ray.kill(no_restart=True)`` and an
+    unrecoverable-CUDA restart is ``ray.kill(no_restart=False)`` — both SIGKILL
+    the actor, so no Python cleanup of any kind runs. A runner executing a
+    runaway block at that moment is orphaned and keeps spinning at 100% of a
+    core until the container restarts, invisible to ``ndif status`` because its
+    deployment is gone. Re-queueing leaks one of these per eviction.
+
+    Polling ``getppid`` rather than ``prctl(PR_SET_PDEATHSIG)``: that signal
+    fires when the parent **thread** exits, not the parent process, and the pool
+    warms every runner on a short-lived ``threading.Thread`` (``host.Pool.refill``)
+    while ``acquire`` spawns from the per-request execution thread. Armed with
+    prctl, every runner is killed seconds after it is created and the whole
+    sandbox path fails with connection-refused.
+
+    A daemon thread costs nothing and is thread-agnostic. A pure-Python runaway
+    block still yields the GIL on the interpreter's switch interval, so the
+    watchdog keeps getting scheduled while user code spins.
+    """
+    parent = os.getppid()
+
+    def watch() -> None:
+        while True:
+            time.sleep(_PARENT_POLL_S)
+            # Reparented (to init, or to whatever subreaper claims us) means the
+            # actor is gone.
+            if os.getppid() != parent:
+                os._exit(1)
+
+    threading.Thread(target=watch, daemon=True, name="die-with-parent").start()
 
 
 class Connection:
@@ -96,4 +136,5 @@ class Runner:
 
 
 if __name__ == "__main__":
+    die_with_parent()
     Runner(sys.argv[1]).serve()
