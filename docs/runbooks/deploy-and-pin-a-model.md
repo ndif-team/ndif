@@ -31,6 +31,11 @@ procedure.
 ndif deploy openai-community/gpt2
 ```
 
+`deploy` talks to the Ray controller, so it runs from anywhere the CLI is installed
+and `NDIF_RAY_ADDRESS` is reachable — the host if you started NDIF with `ndif start`,
+or inside the container for the compose stack
+(`docker compose -f docker/docker-compose.yml exec ray ndif deploy ...`).
+
 Real output:
 
 ```

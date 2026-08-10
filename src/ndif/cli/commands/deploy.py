@@ -76,11 +76,26 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
         ]
 
     try:
-        deploy_lib(specs, sync=sync, ray_address=ray_address, redis_url=redis_url,
-                   on_message=click.echo)
+        result = deploy_lib(specs, sync=sync, ray_address=ray_address,
+                            redis_url=redis_url, on_message=click.echo)
     except NDIFConnectivityError as e:
         click.echo(f"✗ Error: {e}", err=True)
         raise click.Abort()
     except Exception as e:
         click.echo(f"✗ Error: {e}", err=True)
+        raise click.Abort()
+
+    # A model that couldn't be placed is reported in the result, not raised:
+    # deploy_lib is shared with the dashboard's HTTP endpoint, so it returns
+    # outcomes as data. Translate that back into an exit code here, or a failed
+    # deploy looks like a success to a script.
+    failed = [
+        entry for entry in result.get("deployments", [])
+        if entry.get("status") != "READY"
+    ]
+    if failed:
+        click.echo(
+            f"\n✗ {len(failed)} of {len(result['deployments'])} model(s) not ready.",
+            err=True,
+        )
         raise click.Abort()

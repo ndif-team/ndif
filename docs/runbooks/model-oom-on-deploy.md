@@ -114,15 +114,19 @@ Every message here is emitted verbatim by the controller and echoed by the CLI
 
 | Message | Raised at | Means |
 |---|---|---|
-| `CANT_ACCOMMODATE: placed N of M new replicas…` | `cluster.py:232-236` | no node could fit it, even after evicting everything evictable. Placement stops for that model at the first failure. |
+| `CANT_ACCOMMODATE: placed N of M new replicas…` | `cluster.py:232-236` | no node could fit it, even after evicting everything evictable. Placement stops for that model at the first failure. The message carries no arithmetic — get the sized bytes from the actor log below, and check the effective knobs with `docker compose exec ray env \| grep NDIF_DEFAULT`, since an override there is invisible to every page that quotes the defaults. |
 | `No GPU nodes available.` | `cluster.py:220` | the controller has zero nodes with a `GPU` resource — see [add-a-gpu-node](add-a-gpu-node.md). |
 | `Could not accommodate any replicas at this time.` | `cluster.py:264` | fallback when no replicas were placed and nothing else set an error. |
 | a Python traceback | `cluster.py:171-183` | the **evaluator** failed — the model was never sized. Gated repo (401), unknown architecture, a repo needing `trust_remote_code`, or no network. This is not a memory problem. |
 
-Check the controller's own view of why:
+Check the controller's own view of why. The controller is a **Ray actor**, so its
+output never reaches `docker compose logs` / `just logs ray` — it goes to Ray's own
+log directory inside the `ray` container:
 
 ```bash
-just logs ray | grep -E 'Analyzing deployment|cannot be deployed|Deploying .* on '
+docker compose -f docker/docker-compose.yml exec ray \
+  bash -c "grep -hE 'Analyzing deployment|cannot be deployed|Deploying .* on ' \
+           /tmp/ray/session_latest/logs/worker-*.out"
 ```
 
 ```
