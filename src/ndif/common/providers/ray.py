@@ -34,7 +34,7 @@ class CachedActorError(Exception):
     ``isinstance(e, CachedActorError)`` is only built when Ray applies
     ``as_instanceof_cause()`` — which it does not over Ray Client, the way the
     dispatcher connects. The wrapper arrives plain and the cause has to be read
-    off ``.cause``; use ``queue.replica.is_evicted_error``.
+    off ``.cause``; see the eviction check in ``queue.replica.Replica.dispatch``.
 
     Getting this wrong is expensive and quiet: a bare ``except EVICTED_ERRORS``
     matches nothing, and every HOT->WARM demotion errors the in-flight request

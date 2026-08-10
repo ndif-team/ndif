@@ -158,10 +158,11 @@ Read the first two if a behavior seems inexplicable:
   exception raised inside an actor reaches the caller wrapped in a
   `RayTaskError`; the dual class that would make `isinstance` work is only built
   when Ray applies `as_instanceof_cause()`, and over Ray Client — how the
-  dispatcher connects — it does not. Read `.cause`
-  (`queue.replica.is_evicted_error`). A bare `isinstance` silently matches
+  dispatcher connects — it does not. Read `.cause` (the eviction check in
+  `queue.replica.Replica.dispatch`). A bare `isinstance` silently matches
   nothing, which is how a whole retry path can be dead while every log line
-  looks correct.
+  looks correct. The exception is `ActorUnavailableError` — Ray raises that
+  itself, so it *does* arrive bare and is matched directly.
 - **The sandbox runner pool costs memory per model actor.** `NDIF_SANDBOX_POOL_SIZE`
   (7) pre-warms that many runners per actor at ~420 MB each — ~2.9 GB per
   resident model, whether or not anything is running. Sized for throughput on

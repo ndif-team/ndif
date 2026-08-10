@@ -300,12 +300,13 @@ most consequential logic in this package:
 
 | Caught | Meaning | Result |
 |---|---|---|
-| `asyncio.CancelledError` (`:205`) | Deliberate cancel — operator kill, reconcile, or purge | Error the user, then re-raise to exit the worker. `CancelledError` is a `BaseException`, so without this branch the user would sit on DISPATCHED forever |
-| `EVICTED_ERRORS` (`:231`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
-| `Exception` (`:253`) | Anything else | Error the user, push to `error_queue`, keep serving |
+| `asyncio.CancelledError` (`:225`) | Deliberate cancel — operator kill, reconcile, or purge | Error the user, then re-raise to exit the worker. `CancelledError` is a `BaseException`, so without this branch the user would sit on DISPATCHED forever |
+| `EVICTED_ERRORS` (`:269`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
+| `ActorUnavailableError` (`:312`) | The actor killed itself to clear an unrecoverable CUDA fault (`modeling.base.restart`) and Ray is respawning the *same* replica (`max_restarts=-1`) | Error the user, then `await self.wait()` — the worker parks until the replica is serving again instead of erroring every queued request for the length of the reload. Nothing is re-queued and the replica is not dropped |
+| `Exception` (`:251`) | Anything else | Error the user, push to `error_queue`, keep serving |
 
 `EVICTED_ERRORS` (`replica.py:52`) is matched by type, but **not by a bare
-`isinstance`** — `is_evicted_error` also reads the wrapper's `.cause`.
+`isinstance`** — the check in `dispatch` also reads the wrapper's `.cause`.
 `CachedActorError` is raised inside the actor and arrives wrapped in a
 `ray.exceptions.RayTaskError`; the dual RayTaskError-plus-cause class that
 would satisfy `isinstance` is only built when `as_instanceof_cause()` is

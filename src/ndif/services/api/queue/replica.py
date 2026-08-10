@@ -24,7 +24,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
-from ray.exceptions import ActorDiedError
+from ray.exceptions import ActorDiedError, ActorUnavailableError
 
 from ....common.providers.ray import (
     CachedActorError,
@@ -50,26 +50,6 @@ logger = logging.getLogger("ndif.queue.replica")
 #   - ActorDiedError   : the actor process died / was killed.
 #   - CachedActorError : actor alive but moved to CPU cache (WARM).
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
-
-
-def is_evicted_error(error: BaseException) -> bool:
-    """Whether a dispatch failure means the replica is no longer serving.
-
-    Not a bare ``isinstance``: an exception raised *inside* the actor comes back
-    wrapped in a ``ray.exceptions.RayTaskError``, and the dual
-    RayTaskError-plus-cause class that would satisfy ``isinstance`` is only
-    built when ``as_instanceof_cause()`` is applied. Over Ray Client — which is
-    how the dispatcher connects — it is not, so the wrapper arrives as a plain
-    ``RayTaskError`` and the cause has to be read off ``.cause``.
-
-    Missing this meant a HOT->WARM demotion never re-queued: the actor raised
-    CachedActorError exactly as designed, the match failed, and the request fell
-    through to the generic handler and was errored to the user.
-    """
-    if isinstance(error, EVICTED_ERRORS):
-        return True
-    cause = getattr(error, "cause", None)
-    return cause is not None and isinstance(cause, EVICTED_ERRORS)
 
 
 class DeploymentError(Exception):
@@ -163,17 +143,24 @@ class Replica:
     async def wait(self) -> None:
         """Block until the backing actor exists and is ready to serve.
 
-        The controller creates the actor asynchronously after ``deploy``
-        returns, so a lookup ``ValueError`` just means "not yet" — poll until it
-        appears. Any other exception (most importantly a connection error)
-        propagates to the caller, which reports it.
+        Two failures mean "not yet" and are polled through:
+
+          - ``ValueError``: the controller creates the actor asynchronously
+            after ``deploy`` returns, so the lookup hasn't resolved yet.
+          - ``ActorUnavailableError``: the actor exists but is restarting. Over
+            Ray Client — how the dispatcher connects — ``__ray_ready__`` raises
+            immediately rather than blocking through the restart the way it does
+            for a driver-mode caller, so it has to be polled the same way.
+
+        Any other exception (most importantly a connection error) propagates to
+        the caller, which reports it.
         """
         while True:
             try:
                 handle = get_model_actor_handle(self.model_key, self.replica_id)
                 await handle.__ray_ready__.remote()
                 return
-            except ValueError:
+            except (ValueError, ActorUnavailableError):
                 await asyncio.sleep(1)
                 continue
 
@@ -262,7 +249,24 @@ class Replica:
             raise
 
         except Exception as e:
-            if is_evicted_error(e):
+            # Not a bare ``isinstance``: an exception raised *inside* the actor
+            # (CachedActorError, on a HOT->WARM demotion) comes back wrapped in a
+            # ``ray.exceptions.RayTaskError``, and the dual RayTaskError-plus-cause
+            # class that would satisfy ``isinstance`` is only built when Ray
+            # applies ``as_instanceof_cause()`` — which it does not over Ray
+            # Client, the way the dispatcher connects. The wrapper arrives plain,
+            # so the cause has to be read off ``.cause``.
+            #
+            # Missing this meant a demotion never re-queued: the actor raised
+            # CachedActorError exactly as designed, the match failed, and the
+            # request fell through to the generic handler and was errored to the
+            # user, on a cluster that otherwise looked healthy.
+            cause = getattr(e, "cause", None)
+            evicted = isinstance(e, EVICTED_ERRORS) or (
+                cause is not None and isinstance(cause, EVICTED_ERRORS)
+            )
+
+            if evicted:
                 # The replica is gone (lookup failure, actor died, or moved to
                 # CPU cache). Drop this replica (task -> None ends the worker
                 # loop) and hand the in-flight request back to the front of the
@@ -304,6 +308,32 @@ class Replica:
                 exec_ms=elapsed_ms(self.current_started_at),
             )
             self.error_queue.put_nowait((self.model_key, e))
+
+            if isinstance(e, ActorUnavailableError):
+                # The actor killed itself to recover from an unrecoverable CUDA
+                # fault (``modeling.base.restart``) and Ray is bringing the same
+                # replica back (``max_restarts=-1``). Not an eviction: nothing to
+                # re-queue and nothing to drop.
+                #
+                # This request is already errored above, but the worker would
+                # otherwise loop straight on to the next one and error that too,
+                # burning through the queue for as long as the reload takes. Park
+                # until the replica is serving again — queued requests just wait,
+                # and a deliberate cancel still unwinds us because CancelledError
+                # propagates through ``wait``.
+                restart_started = time.time()
+                await self.wait()
+                event(
+                    logger,
+                    f"Replica {self.model_key}[{self.replica_id}] restarted "
+                    f"and ready.",
+                    level=logging.WARNING,
+                    model_key=self.model_key,
+                    replica_id=self.replica_id,
+                    stage="restart",
+                    event_type="replica_restarted",
+                    exec_ms=elapsed_ms(restart_started),
+                )
 
         finally:
             self.current_request = None
