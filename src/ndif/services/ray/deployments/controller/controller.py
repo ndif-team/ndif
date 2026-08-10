@@ -122,6 +122,38 @@ class _ControllerActor:
         return state
 
     async def check_nodes(self):
+        # TODO: this reconciles *nodes* against reality but never *actors*, and
+        # a model actor that dies permanently after a successful deploy wedges
+        # its model until an operator intervenes. `_monitor_deployment` only
+        # awaits the initial deploy future, so once a deployment succeeds
+        # nothing looks at it again; the record (and its GPU reservation)
+        # survives the actor. `get_deployment` then keeps handing that dead
+        # replica id to the queue, `Processor.start` adopts it and awaits
+        # `Replica.wait`, and that wait neither returns nor raises — so the
+        # healthy replicas behind it in the list are never started, the purge
+        # that would error the queued users is never reached, and every request
+        # for the model hangs with no error and no timeout. Observed: a
+        # `ray.kill(no_restart=True)` on an 8B replica left the model
+        # permanently unusable, with the controller reporting 29.0/47.4 GB free
+        # against 620 MiB actually in use. Neither a redeploy nor an API restart
+        # recovers it (the fresh Processor re-adopts the same dead id); only
+        # `ndif evict` clears the record.
+        #
+        # Reaping here would fix it at the source, and the cleanup already
+        # exists: `_remove_deployment_from_state` drops the entry *and* releases
+        # the node's gpu/cpu resources. Two things to get right:
+        #   - key off Ray's actor state, not a name lookup failing. A recoverable
+        #     restart reports RESTARTING (never DEAD) and its record must be left
+        #     alone or the dispatch-side restart wait breaks; a name that doesn't
+        #     resolve is also the normal PENDING_CREATION window.
+        #   - drop only, and let demand re-provision. Re-provisioning from a
+        #     heartbeat turns a model that reliably OOMs on load into a flap loop.
+        #
+        # This prevents the wedge but cannot cure one: `Replica.wait` is pinned
+        # to a replica id, so forgetting the record here won't wake a Processor
+        # already stuck on it. That needs a bound on the adoption wait in
+        # `Processor.start` — deliberately unlike the dispatch-side wait, which
+        # is unbounded because there the actor is known to be coming back.
         while True:
             self.cluster.update_nodes()
             await asyncio.sleep(
