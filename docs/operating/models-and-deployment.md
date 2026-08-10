@@ -114,7 +114,7 @@ model key.
 | `replicas` | `1` | — | How many **new** replicas this call places. | CLI `--replicas`, yaml, dashboard |
 | `trusted` | `False` | — | Becomes `trust_remote_code` at load. See below. | CLI `--trusted`, yaml, dashboard, `lib.deploy` API, implicit deploy |
 | `padding_factor` | `None` | `NDIF_DEFAULT_PADDING_FACTOR` = `0.15` | Headroom added on top of weight size when sizing. | yaml, dashboard, `lib.deploy` API |
-| `execution_timeout_seconds` | `None` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` = `3600` | Per-request wall clock on the actor; on expiry the user gets `ERROR` (`modeling/base.py:322`). | yaml, dashboard, `lib.deploy` API |
+| `execution_timeout_seconds` | `None` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, itself unset by default (no cap) | Per-request wall clock on the actor; on expiry the user gets `ERROR` (`modeling/base.py:322`). Set it per model, or via the env var, on a shared deployment. | yaml, dashboard, `lib.deploy` API |
 | `dtype` | `None` | `NDIF_DEFAULT_DTYPE` = `bfloat16` | The dtype weights load in **and** the dtype the size estimate assumes. | CLI `--dtype`, yaml, dashboard, `lib.deploy` API |
 | `actor_class` | `None` | `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Dotted path of the Ray actor class serving the replica. | CLI `--actor-class`, yaml, dashboard |
 

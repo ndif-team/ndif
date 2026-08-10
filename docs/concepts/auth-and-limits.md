@@ -151,9 +151,15 @@ it in a reverse proxy in front of the API; there is no `NDIF_*` knob for it.
 
 ## The per-request execution timeout
 
-`NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` (default `3600`) is the controller's
-default, passed into each actor as `execution_timeout`; a deployment can
-override it per model via `DeploymentConfig.execution_timeout_seconds`. The
+`NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` is **unset by default**, meaning no
+cap: a request runs until it finishes, so a legitimately long job is never cut
+off on a deployment serving only its owner. Set it on anything shared — without
+a cap a runaway block holds its replica for as long as it likes, and
+`NDIF_AUTOSCALING_MAX_REPLICAS` (3) of those take the model out entirely.
+
+The value is the controller's default, passed into each actor as
+`execution_timeout`; a deployment can override it per model via
+`DeploymentConfig.execution_timeout_seconds`. The
 actor enforces it by racing the execution against a timer
 (`src/ndif/services/ray/deployments/modeling/base.py:298`):
 
@@ -193,7 +199,7 @@ How hard that interrupt lands depends on the fork:
 | Requests per key / rate limit | — | — | **no** |
 | Queue depth | — | — | **no** — unbounded |
 | Replicas per model | `NDIF_AUTOSCALING_MAX_REPLICAS` | 3 | yes |
-| Per-request execution time | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | 3600 | yes, with the caveat above |
+| Per-request execution time | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | unset (no cap) | only if you set it; see the caveat above |
 | Per-actor GPU memory | controller's allocation, applied as `max_memory` + a per-process cap | per model | yes |
 | HTTP worker timeout | `NDIF_API_TIMEOUT` | 120 | yes — gunicorn, bounds the HTTP handler, not the job |
 

@@ -620,8 +620,16 @@ class ControllerDeploymentArgs(BaseModel):
         "NDIF_CONTROLLER_IMPORT_PATH",
         "ndif.services.ray.deployments.controller.controller.ControllerActor",
     )
-    default_execution_timeout_seconds: Optional[float] = float(
-        os.environ.get("NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS", "3600")
+    # Unset by default: no execution cap, so a legitimately long job is never
+    # cut off on someone's own deployment. Set the env var (or a per-model
+    # ``execution_timeout_seconds``) on anything shared — without a cap a
+    # runaway block holds its replica indefinitely, and with a small
+    # ``NDIF_AUTOSCALING_MAX_REPLICAS`` a few of those take the model out.
+    _execution_timeout_env: Optional[str] = os.environ.get(
+        "NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS"
+    )
+    default_execution_timeout_seconds: Optional[float] = (
+        float(_execution_timeout_env) if _execution_timeout_env else None
     )
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")

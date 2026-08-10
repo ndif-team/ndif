@@ -169,6 +169,10 @@ Read the first two if a behavior seems inexplicable:
   one model; turn it down on a node hosting several.
 - **`NDIF_MODEL_CACHE_PERCENTAGE` scales host RAM**, not GPU memory — it's the WARM
   cache budget. Wrong lever for a GPU OOM.
+- **There is no execution timeout by default.** `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`
+  is unset, so a block runs until it finishes and holds its replica for the
+  duration. Right for a single-user box, wrong for a shared one — set it (or a
+  per-model `execution_timeout_seconds`) before other people can submit.
 - **`priority` is a strict group, not a queue jump, and there is no aging.**
   Priority requests sort ahead of all normal traffic and stay FIFO among
   themselves; sustained priority load starves normal traffic indefinitely, with
