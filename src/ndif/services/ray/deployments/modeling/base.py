@@ -26,10 +26,8 @@ from pydantic import BaseModel, ConfigDict
 from transformers.integrations.accelerate import _get_device_map
 
 from nnsight.modeling.huggingface import HuggingFaceModel
-from nnsight.schema.request import RequestModel
 from nnsight.schema.response import Status
 from nnsight.tracing.globals import BLOCKS, SOURCES
-from nnsight.tracing.tracer import _saves, dec, inc
 from nnsight.tracing.util import clean_traceback, filter_traceback
 
 from .....common.errors import RequestError
@@ -43,6 +41,7 @@ from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.ray import CachedActorError
 from .....common.telemetry import elapsed_ms, event
 from .....common.types import MODEL_KEY
+from .nns import execute_traced_block, prepare_traced_block
 from .util import (
     LogStream,
     build_max_memory,
@@ -430,8 +429,6 @@ class BaseModelDeployment:
         """
         self.execution_ident = threading.current_thread().ident
 
-        deserialize_started = time.time()
-        persistent_objects = self.model._remoteable_persistent_objects()
         # BackendRequestModel's override, not nnsight's RequestModel: it
         # classifies every way this can fail into a caller-facing RequestError,
         # so there is nothing to catch here. Imported locally to keep the
@@ -439,43 +436,29 @@ class BaseModelDeployment:
         # chain (importing it connects Redis).
         from .....common.schema.request import BackendRequestModel
 
-        tracer = BackendRequestModel.deserialize(
-            request.payload, persistent_objects, compress=request.compress
+        tracer, deserialize_ms = prepare_traced_block(
+            self.model,
+            request.payload,
+            request.compress,
+            deserialize=BackendRequestModel.deserialize,
         )
-        deserialize_ms = elapsed_ms(deserialize_started)
-
-        # Autocast tensors the user's code creates to the model's dtype, matching
-        # how the weights were loaded. Only meaningful for half precision; a
-        # no-op (enabled=False) otherwise, and when there's no CUDA device.
-        autocast_enabled = torch.cuda.is_available() and self.dtype in (
-            torch.float16,
-            torch.bfloat16,
-        )
-        with torch.autocast(
-            device_type="cuda",
-            dtype=self.dtype,
-            enabled=autocast_enabled,
-            cache_enabled=False,
-        ):
-            # Bracket execution in a trace scope (inc/dec), the way the client's
-            # Tracer.__exit__ does, so nnsight's save() records into this thread's
-            # save set and it's cleared afterward, then collect the values the
-            # block marked with nnsight.save() (by identity).
-            inc()
-            try:
-                tracer.execute(tracer.info.code)
-                saves = _saves()
-                saved = {
-                    name: value
-                    for name, value in tracer.info.frame.f_locals.items()
-                    if id(value) in saves
-                }
-            finally:
-                dec()
+        self.commit()
+        saved = execute_traced_block(tracer, self.dtype)
 
         buffer = io.BytesIO()
         torch.save(saved, buffer, pickle_module=cpu_pickle_module())
         return buffer.getvalue(), deserialize_ms
+
+    def commit(self) -> None:
+        """The block is built and is about to run. Nothing to do here.
+
+        The seam between *can this request run* and *running it*. Deserializing is
+        where a request usually fails, and it touches nothing outside this
+        process, so an actor with anything to commit — another process to release,
+        a lock to take — wants to do it here rather than before, and get a clean
+        failure for a bad payload instead of a half-started one. See the
+        tensor-parallel actor, which releases its other ranks from here.
+        """
 
     @contextlib.contextmanager
     def execution_scope(self, request: "BackendRequestModel"):

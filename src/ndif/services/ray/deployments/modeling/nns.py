@@ -1,0 +1,116 @@
+"""Running a user's traced block against a loaded model.
+
+The nnsight-facing half of a request: rebuild the tracer the client serialized,
+run the block interleaved with the model's forward, and collect the values it
+marked with ``nnsight.save()``. Everything around it — statuses, timeouts,
+metrics, uploads — belongs to the actor in `base.py`.
+
+Separate from that actor for two reasons. It is the one part of a request the
+**tensor-parallel shards** also run, and they must run it *identically* — the
+autocast dtype in particular, since ranks that disagree would reduce tensors of
+different dtypes. And a shard has no use for the actor's world: importing
+`base.py` would pull Ray, boto3 and influxdb_client into a process that only ever
+runs a block, and connect to the object store on the way past.
+
+Building the block and running it are separate calls because a tensor-parallel
+group needs to get between them: every rank proves it can *build* the block
+before any rank starts a forward pass, since deserializing is where a request
+usually fails and the last point where one can fail safely (see
+`ray/tp/host.py`). A single-process actor just calls both, which is
+`run_traced_block`.
+"""
+
+import time
+
+import torch
+
+from nnsight.tracing.tracer import _saves, dec, inc
+
+from .....common.telemetry import elapsed_ms
+
+
+def prepare_traced_block(model, payload, compress, deserialize):
+    """Rebuild a request's tracer against this process's live model.
+
+    Split from :func:`execute_traced_block` because a tensor-parallel deployment
+    needs the two apart: its shards prove they can *build* a block before rank 0
+    commits to a forward pass, since a payload that fails to deserialize is the
+    common failure and the last one that can still be reported without leaving
+    the other ranks blocked in a collective.
+
+    ``deserialize`` is the intended difference between callers: the actor passes
+    ``BackendRequestModel.deserialize`` (which classifies failures into
+    caller-facing errors), a bare shard passes nnsight's, whose errors go home as
+    text over its own channel.
+
+    Returns ``(tracer, deserialize_ms)``.
+    """
+    deserialize_started = time.time()
+    persistent_objects = model._remoteable_persistent_objects()
+    tracer = deserialize(payload, persistent_objects, compress=compress)
+    return tracer, elapsed_ms(deserialize_started)
+
+
+def execute_traced_block(tracer, dtype):
+    """Run an already-built block and return the values it saved.
+
+    Autocasts user-created tensors to the model's dtype, runs the block bracketed
+    in a trace scope, and collects the values it marked with ``nnsight.save()``.
+
+    Shared with the tensor-parallel shards rather than reimplemented there,
+    because every rank has to execute a block *identically* — the autocast dtype
+    in particular, since a mismatch would have the ranks reduce tensors of
+    different dtypes. Two copies of this would be two chances to drift.
+    """
+    # Autocast tensors the user's code creates to the model's dtype, matching how
+    # the weights were loaded. Only meaningful for half precision; a no-op
+    # (enabled=False) otherwise, and when there's no CUDA device.
+    autocast_enabled = torch.cuda.is_available() and dtype in (
+        torch.float16,
+        torch.bfloat16,
+    )
+    # cache_enabled=False because this region spans the *whole* request, not
+    # one forward pass. Autocast's cache keeps the half-precision copy it made
+    # of each fp32 leaf that requires grad and reuses it for the rest of the
+    # region -- which is correct for a single forward, and silently wrong for a
+    # session that trains. A block that creates parameters and steps an
+    # optimizer (the LoRA tutorial) then runs every forward after the first
+    # against the snapshot taken before the first `optimizer.step()`: the
+    # gradients are real and the weights do move, but the model never sees the
+    # new values, so the loss doesn't respond and nothing appears to train.
+    # Disabling the cache costs nothing here -- the served weights are already
+    # loaded in `dtype`, so there is no weight cast to reuse.
+    with torch.autocast(
+        device_type="cuda",
+        dtype=dtype,
+        enabled=autocast_enabled,
+        cache_enabled=False,
+    ):
+        # Bracket execution in a trace scope (inc/dec), the way the client's
+        # Tracer.__exit__ does, so nnsight's save() records into this thread's
+        # save set and it's cleared afterward, then collect the values the block
+        # marked with nnsight.save() (by identity).
+        inc()
+        try:
+            tracer.execute(tracer.info.code)
+            saves = _saves()
+            saved = {
+                name: value
+                for name, value in tracer.info.frame.f_locals.items()
+                if id(value) in saves
+            }
+        finally:
+            dec()
+
+    return saved
+
+
+def run_traced_block(model, payload, compress, dtype, deserialize):
+    """Build a request's block and run it: the whole body of a request.
+
+    Returns ``(saved_values, deserialize_ms)``.
+    """
+    tracer, deserialize_ms = prepare_traced_block(
+        model, payload, compress, deserialize
+    )
+    return execute_traced_block(tracer, dtype), deserialize_ms
