@@ -123,6 +123,11 @@ class TPModelDeployment(BaseModelDeployment):
         # never reached one (a load failure, or a prepare that threw first).
         self.committed = False
         self.rank_zero_raised = False
+        self.dispatched = False
+        # Whether the shards confirmed they went back to idle after a request
+        # that never ran. False means one didn't answer, which is the only
+        # version of "didn't run" that costs the replica.
+        self.stood_down = True
 
         super().__init__(
             model_key,
@@ -217,11 +222,19 @@ class TPModelDeployment(BaseModelDeployment):
         # different tokens. See common.seed_ranks.
         seed = random.getrandbits(31)
 
-        self.group.prepare(request.payload, request.compress, request.env, seed)
-        seed_ranks(seed)
         self.committed = False
         self.rank_zero_raised = False
+        self.dispatched = False
+        self.stood_down = True
         try:
+            # Set *before* the call, not after it succeeds: `prepare` sends to
+            # every shard and only then collects, so a payload one shard rejects
+            # leaves the others already parked on a GO. "Did any shard hear about
+            # this request" is the question the stand-down below has to answer,
+            # and it is true from here on.
+            self.dispatched = True
+            self.group.prepare(request.payload, request.compress, request.env, seed)
+            seed_ranks(seed)
             return super().execute(request)
         except BaseException:
             # Recorded for :meth:`_await_shards`, which runs after this returns
@@ -231,11 +244,24 @@ class TPModelDeployment(BaseModelDeployment):
             raise
         finally:
             self.abort.disarm()
-            if not self.committed:
-                # This rank failed to build what the shards already built — they
-                # are waiting on a GO that is never coming, so send them back to
-                # idle rather than leaving them parked until their hour is up.
-                self.group.release()
+            if self.dispatched and not self.committed:
+                # The shards built the block and this rank did not go ahead —
+                # it failed to build the same thing, or the request died between
+                # the two. They are waiting on a GO that is never coming, so send
+                # them back to idle rather than leaving them parked until their
+                # hour is up, and wait for them to say they got there.
+                #
+                # `prepare` is inside the try for this: a shard that fails to
+                # deserialize raises ShardError out of it, and the shards that
+                # *did* prepare are then holding exactly as they are here. With
+                # the call above the try they were left parked for an hour, which
+                # is the failure the two-phase protocol exists to prevent.
+                lost = self.group.release()
+                if lost:
+                    logger.error(
+                        f"TP shards did not stand down on {self.model_key}: {lost}"
+                    )
+                    self.stood_down = False
 
     def commit(self) -> None:
         """Release the other ranks into the forward, and arm the abort checkpoint.
@@ -296,6 +322,15 @@ class TPModelDeployment(BaseModelDeployment):
         """
         if self.group is None:
             return True
+
+        if not self.committed:
+            # Nothing ran, so there is nothing to collect — the shards either
+            # never prepared or were stood down by `execute`, and either way they
+            # are not going to send a DONE. Asking anyway meant every failed
+            # deserialization timed out here and restarted the replica, which is
+            # the opposite of what standing them down was for.
+            return self.stood_down
+
         try:
             raised, lost = self.group.collect(timeout=SETTLE_TIMEOUT_SECONDS)
         except Exception:

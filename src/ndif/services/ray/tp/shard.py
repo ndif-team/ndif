@@ -103,6 +103,15 @@ def main() -> int:
         if not isinstance(message, tuple) or message[0] == "SHUTDOWN":
             return 0
 
+        if message[0] == "SKIP":
+            # A stand-down for a request this shard never got as far as running:
+            # it rejected the payload in phase 1 and looped back here, while
+            # another rank's failure was what actually stopped the group. Answer
+            # anyway — rank 0 waits for every shard, and cannot tell "already
+            # idle" from "wedged" except by being told.
+            connection.send(("IDLE", args.rank))
+            continue
+
         if message[0] != "PREPARE":
             continue
 
@@ -130,6 +139,15 @@ def main() -> int:
                 continue
 
             if not _await_go(connection):
+                # Stood down (or rank 0 vanished). Say so: `release` waits for
+                # this, because "the group is back at idle" has to be something
+                # rank 0 observes rather than assumes. Sending nothing here is
+                # indistinguishable from a wedged shard, and cost a replica
+                # restart on every request that failed to build.
+                try:
+                    connection.send(("IDLE", args.rank))
+                except OSError:
+                    return 0
                 continue
 
             # Phase 2 — run it, in lockstep with every other rank. Whatever the
@@ -151,6 +169,12 @@ def main() -> int:
 
 
 def _await_go(connection: Channel) -> bool:
+    """Whether rank 0 committed to the forward.
+
+    ``False`` for a ``SKIP`` (rank 0 could not go ahead), and for rank 0 going
+    away entirely — the caller answers ``IDLE`` either way, and a dead socket
+    makes that a no-op.
+    """
     try:
         message = connection.recv(timeout=IDLE_TIMEOUT_SECONDS)
     except Exception:

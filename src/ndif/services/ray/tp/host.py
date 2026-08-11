@@ -48,6 +48,9 @@ START_TIMEOUT_SECONDS = 1800.0
 # How long to wait for every shard to deserialize a block. Short — no model work
 # happens here, and a hang means something is wrong.
 PREPARE_TIMEOUT_SECONDS = 300.0
+# How long to wait for the group to confirm it stood down. Very short: a released
+# shard does nothing but loop, so this is a message in flight and nothing else.
+RELEASE_TIMEOUT_SECONDS = 30.0
 
 
 class ShardError(Exception):
@@ -271,19 +274,38 @@ class ShardGroup:
         for shard in self.shards:
             shard.send(("GO",))
 
-    def release(self) -> None:
+    def release(self, timeout: float = RELEASE_TIMEOUT_SECONDS) -> List[str]:
         """Send prepared shards back to idle without running anything.
 
         For when rank 0 cannot go ahead after the shards have already prepared —
         it failed to build the same block, or the request died between the two.
         Without this they sit waiting for a ``GO`` until their idle timeout, and
         the replica looks alive while being unable to serve anything.
+
+        Waits for each shard to *acknowledge* being back at idle, and returns the
+        ranks that didn't. A stand-down has to be observable or it is worth
+        nothing: the caller's next question is "can this group serve the next
+        request", and a shard that was sent ``SKIP`` and said nothing is not an
+        answer to it. Sent to every shard before waiting on any, so a slow one
+        doesn't serialize the rest.
         """
         for shard in self.shards:
             try:
                 shard.send(("SKIP",))
             except OSError:
                 logger.warning(f"could not release rank {shard.rank}")
+
+        lost = []
+        deadline = time.time() + timeout
+        for shard in self.shards:
+            try:
+                message = shard.recv(timeout=max(0.0, deadline - time.time()))
+            except Exception as exception:
+                lost.append(f"rank {shard.rank}: {exception}")
+                continue
+            if not (isinstance(message, tuple) and message[0] == "IDLE"):
+                lost.append(f"rank {shard.rank}: {self._describe(message)}")
+        return lost
 
     def collect(self, timeout: float) -> Tuple[List[str], List[str]]:
         """Wait for every shard to finish; return ``(raised, lost)``.
@@ -302,9 +324,15 @@ class ShardGroup:
           one this group can start another request from.
         """
         raised, lost = [], []
+        # One deadline for the whole group, not `timeout` each. The ranks leave
+        # the last collective together, so they answer together; charging the
+        # full timeout per shard would make the real bound `timeout * (tp - 1)`
+        # -- 210s at degree 8 against a 30s constant that was chosen precisely
+        # because this runs on the actor's event loop.
+        deadline = time.time() + timeout
         for shard in self.shards:
             try:
-                message = shard.recv(timeout=timeout)
+                message = shard.recv(timeout=max(0.0, deadline - time.time()))
             except Exception as exception:
                 lost.append(f"rank {shard.rank}: {exception}")
                 continue

@@ -103,6 +103,13 @@ identical results — that invariant is why the sandbox is shaped as it is, and
 new entry point that imports them too early gets neither console formatting nor
 telemetry, silently.
 
+## Proposals (not implemented)
+
+- [Checkpoint Description](checkpoint-description-proposal.md) — the controller
+  asks nnsight four separate questions before placing a model, fetches the same
+  config twice doing it, and blocks its own event loop on un-timed-out Hub calls.
+  The last of those is a live availability problem; the interface change is not.
+
 ## Related
 
 - [Concepts](../concepts/index.md) — the mental models behind all of this.

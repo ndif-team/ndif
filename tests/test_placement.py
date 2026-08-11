@@ -240,6 +240,11 @@ class TestShardSettleVerdict:
         deployment.model_key = "m"
         deployment.group = Group()
         deployment.rank_zero_raised = rank_zero_raised
+        # These all describe a request that reached the forward; a request that
+        # never ran has nothing to collect and is covered separately.
+        deployment.committed = True
+        deployment.dispatched = True
+        deployment.stood_down = True
         return deployment
 
     def test_the_group_survives_an_error_every_rank_hit(self):
@@ -269,3 +274,129 @@ class TestShardSettleVerdict:
     def test_a_clean_run_is_settled(self):
         deployment = self._deployment(raised=[], lost=[], rank_zero_raised=False)
         assert deployment._await_shards() is True
+
+
+class TestStandDownProtocol:
+    """A request that never ran must cost the request, not the replica.
+
+    The two-phase protocol exists so a payload that fails to deserialize is
+    reported *before* any rank starts a forward. It didn't deliver that: the
+    shards that had already prepared were left parked, and `cleanup` then asked
+    them for a completion they were never going to send -- so the group timed out
+    and the replica restarted. Every version of "this request could not be built"
+    cost a multi-GPU reload.
+
+    These drive the real `execute`/`_await_shards` against a scripted group, so
+    they cover the state machine rather than the verdict function that reads it.
+    """
+
+    @staticmethod
+    def _deployment(group):
+        from ndif.services.ray.tp.model import TPModelDeployment
+
+        deployment = TPModelDeployment.__new__(TPModelDeployment)
+        deployment.model_key = "m"
+        deployment.group = group
+        deployment.committed = False
+        deployment.dispatched = False
+        deployment.rank_zero_raised = False
+        deployment.stood_down = True
+        deployment.abort = _NullAbort()
+        return deployment
+
+    class Group:
+        """Records what rank 0 asked of the shards."""
+
+        healthy = True
+
+        def __init__(self, prepare_raises=None, release_lost=()):
+            self.prepare_raises = prepare_raises
+            self.release_lost = list(release_lost)
+            self.calls = []
+
+        def prepare(self, *args):
+            self.calls.append("prepare")
+            if self.prepare_raises is not None:
+                raise self.prepare_raises
+
+        def go(self):
+            self.calls.append("go")
+
+        def release(self, *args, **kwargs):
+            self.calls.append("release")
+            return list(self.release_lost)
+
+        def collect(self, timeout):
+            self.calls.append("collect")
+            return [], []
+
+        def stop(self):
+            pass
+
+    def test_a_shard_that_cannot_deserialize_stands_the_others_down(self):
+        # The regression: `prepare` sat outside the try, so a ShardError escaped
+        # without releasing the shards that had already prepared.
+        from ndif.services.ray.tp.host import ShardError
+
+        group = self.Group(prepare_raises=ShardError("rank 2: bad payload"))
+        deployment = self._deployment(group)
+
+        with pytest.raises(ShardError):
+            deployment.execute(_request())
+
+        assert "release" in group.calls, "the prepared shards were left parked"
+
+    def test_a_request_that_never_ran_is_not_collected_from(self):
+        # Released shards go back to idle and send no DONE. Asking for one timed
+        # out and restarted the replica.
+        group = self.Group()
+        deployment = self._deployment(group)
+        deployment.dispatched = True
+        deployment.committed = False
+        deployment.group.release()
+        group.calls.clear()
+
+        assert deployment._await_shards() is True
+        assert "collect" not in group.calls
+
+    def test_a_shard_that_will_not_stand_down_does_cost_the_replica(self):
+        # The one version of "didn't run" that is not survivable: a shard that
+        # was told to stand down and never confirmed is in no known state.
+        group = self.Group(release_lost=["rank 3: timed out"])
+        deployment = self._deployment(group)
+        deployment.dispatched = True
+
+        deployment.execute_raised = None
+        # Drive just the stand-down half of `execute`'s finally.
+        lost = group.release()
+        if lost:
+            deployment.stood_down = False
+
+        assert deployment._await_shards() is False
+
+    def test_a_committed_request_is_still_collected_from(self):
+        group = self.Group()
+        deployment = self._deployment(group)
+        deployment.dispatched = True
+        deployment.committed = True
+
+        assert deployment._await_shards() is True
+        assert "collect" in group.calls
+
+
+class _NullAbort:
+    """`execute`'s finally disarms the abort checkpoint; nothing armed it here."""
+
+    def disarm(self):
+        pass
+
+
+def _request():
+    """The least a request needs to reach `prepare`."""
+
+    class Request:
+        payload = b""
+        compress = False
+        env = {}
+
+    return Request()
