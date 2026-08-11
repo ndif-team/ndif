@@ -128,11 +128,15 @@ class Runner:
     def handle(self, sock):
         connection = Connection(sock)
         # The host sends the request payload; deserialize and run it here (nns.run
-        # reports its own END/EXCEPTION). All stdout from the traced block is
-        # forwarded to the host as PRINT events.
+        # reports its own END/EXCEPTION). All stdout *and stderr* from the traced
+        # block is forwarded to the host as PRINT events — stderr because that is
+        # where `warnings.warn` goes, and a warning only the runner sees is a
+        # warning nobody reads. Separate writers so their partial lines don't
+        # interleave.
         blob, compress = connection.recv()
         with contextlib.redirect_stdout(Writer(connection)):
-            nns.run(connection, blob, compress)
+            with contextlib.redirect_stderr(Writer(connection)):
+                nns.run(connection, blob, compress)
 
 
 if __name__ == "__main__":

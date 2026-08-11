@@ -479,16 +479,29 @@ class BaseModelDeployment:
 
     @contextlib.contextmanager
     def execution_scope(self, request: "BackendRequestModel"):
-        """Context wrapping the raced wait. Captures the run's stdout as LOG updates:
-        sys.stdout is process-global, so redirecting it on this (event-loop) thread
-        covers the worker thread's prints, and the restore runs here — off the thread
-        that gets killed on timeout/cancel."""
-        log_stream = LogStream(request)
+        """Context wrapping the raced wait. Captures the run's stdout *and stderr*
+        as LOG updates: both are process-global, so redirecting them on this
+        (event-loop) thread covers the worker thread, and the restore runs here —
+        off the thread that gets killed on timeout/cancel.
+
+        stderr matters as much as stdout. ``warnings.warn`` writes there, and so
+        does anything a library reports without failing — so without this a
+        warning raised while running a user's block goes to the actor's log and
+        the person who caused it never learns of it. A caveat that only exists
+        server-side is a caveat nobody reads.
+
+        Two streams, not one: each buffers a partial line until its newline, so
+        sharing an instance would interleave half-written output from both.
+        """
+        out_stream = LogStream(request)
+        err_stream = LogStream(request)
         try:
-            with contextlib.redirect_stdout(log_stream):
-                yield
+            with contextlib.redirect_stdout(out_stream):
+                with contextlib.redirect_stderr(err_stream):
+                    yield
         finally:
-            log_stream.flush()
+            out_stream.flush()
+            err_stream.flush()
 
     def interrupt(self) -> None:
         """Interrupt the in-flight execution thread (best-effort; see kill_thread)."""
