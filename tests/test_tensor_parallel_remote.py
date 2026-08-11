@@ -160,3 +160,75 @@ class TestShardedDeterminism:
             runs.append(out)
 
         assert torch.equal(runs[0], runs[1])
+
+
+class TestShardedFailure:
+    """A failed request costs the request, not the replica.
+
+    Every rank runs the block, so a block that raises raises on all of them and
+    every shard reports it. Reading that as a wedged group tore down a healthy
+    four-GPU replica on every user-code bug, and the person who paid was whoever
+    sent the *next* request — it failed to submit while the actor reloaded.
+    """
+
+    def test_the_users_error_reaches_the_client(self, tp_model):
+        with pytest.raises(Exception) as caught:
+            with tp_model.trace(TP_PROMPT, remote=True):
+                tp_model.model.layers[TP_LAYER].mlp.gate_proj.output.save()
+                raise ValueError("deliberate failure inside a traced block")
+
+        assert "deliberate failure inside a traced block" in str(caught.value)
+
+    def test_the_replica_still_serves_the_next_request(self, tp_model):
+        with pytest.raises(Exception):
+            with tp_model.trace(TP_PROMPT, remote=True):
+                raise ValueError("deliberate failure inside a traced block")
+
+        with tp_model.trace(TP_PROMPT, remote=True):
+            gate = tp_model.model.layers[TP_LAYER].mlp.gate_proj.output.save()
+
+        assert gate.shape[-1] == TP_INTERMEDIATE
+
+
+class TestShardedBatching:
+    """Several invokes put the batcher inside the gather bracket.
+
+    Each rank narrows the same rows of the same gathered tensor. A rank
+    disagreeing about which rows belong to which invoke would not fail — it would
+    quietly answer one prompt with another's activations.
+    """
+
+    SECOND_PROMPT = "The capital of Japan is"
+
+    def _batched(self, tp_model):
+        with tp_model.trace(remote=True) as tracer:
+            with tracer.invoke(TP_PROMPT):
+                first = tp_model.lm_head.output.save()
+            with tracer.invoke(self.SECOND_PROMPT):
+                second = tp_model.lm_head.output.save()
+        return first, second
+
+    def test_each_invoke_gets_one_row(self, tp_model):
+        first, second = self._batched(tp_model)
+        assert first.shape[0] == 1 and second.shape[0] == 1
+
+    def test_a_gathered_value_is_whole_in_every_invoke(self, tp_model):
+        with tp_model.trace(remote=True) as tracer:
+            with tracer.invoke(TP_PROMPT):
+                first = tp_model.model.layers[TP_LAYER].mlp.gate_proj.output.save()
+            with tracer.invoke(self.SECOND_PROMPT):
+                second = tp_model.model.layers[TP_LAYER].mlp.gate_proj.output.save()
+
+        assert first.shape[-1] == TP_INTERMEDIATE
+        assert second.shape[-1] == TP_INTERMEDIATE
+
+    def test_neither_invoke_answers_the_others_prompt(self, tp_model):
+        batched_first, batched_second = self._batched(tp_model)
+
+        with tp_model.trace(TP_PROMPT, remote=True):
+            alone_first = tp_model.lm_head.output.save()
+        with tp_model.trace(self.SECOND_PROMPT, remote=True):
+            alone_second = tp_model.lm_head.output.save()
+
+        assert batched_first[0, -1].argmax() == alone_first[0, -1].argmax()
+        assert batched_second[0, -1].argmax() == alone_second[0, -1].argmax()

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from ......common.types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .deployment import Deployment, DeploymentLevel
+from .evaluator import tp_degree
 
 logger = logging.getLogger("ndif.controller")
 
@@ -274,8 +275,14 @@ class Node:
 
         self.gpu_resources.release(deployment.gpus)
 
-        cache_evictions = self.find_cache_evictions(
-            deployment.size_bytes, exclude=exclude
+        # A replica whose actor cannot be parked is removed outright: there is
+        # no point freeing CPU room for weights that will never move there, and
+        # demoting it would leave the controller believing a WARM replica exists
+        # while the actor still holds its GPUs.
+        cache_evictions = (
+            self.find_cache_evictions(deployment.size_bytes, exclude=exclude)
+            if deployment.cacheable
+            else None
         )
 
         if cache_evictions is not None:
@@ -390,19 +397,35 @@ class Node:
         model_size_in_bytes: int,
         pinned: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
+        max_tp: Optional[int] = None,
     ) -> Candidate:
         cached = model_key in self.cache and bool(self.cache[model_key])
 
         # Multi-GPU models are treated as consuming 100% of each GPU they span.
         gpus_needed = self.gpu_resources.required(model_size_in_bytes)
 
+        # A model that will be split across cards has to be split *evenly*, so
+        # round the count up to a degree it actually shards into: one that needs
+        # three cards and shards eight ways takes four. Fitting is what matters
+        # here, not the extra card — an uneven split doesn't run at all.
+        degree = tp_degree(max_tp, gpus_needed)
+        if degree is not None and degree > gpus_needed:
+            logger.debug(
+                f"=> {model_key} needs {gpus_needed} GPU(s) but shards into "
+                f"{degree}; asking for {degree}"
+            )
+            gpus_needed = degree
+
         if gpus_needed > self.gpu_resources.total:
             return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)
 
-        if gpus_needed == 1:
-            per_gpu_bytes = model_size_in_bytes
-        else:
-            per_gpu_bytes = self.gpu_resources.memory_bytes
+        # Each card is charged its share, not all of it. A model spread over
+        # several GPUs holds roughly ``size / n`` on each -- exactly that under
+        # tensor parallelism, and near enough under accelerate, whose imbalance
+        # is one layer's worth and already inside the padding this size carries.
+        # Charging 100% of every card it touches (as this used to) made a
+        # multi-GPU replica block cards it was barely using.
+        per_gpu_bytes = math.ceil(model_size_in_bytes / gpus_needed)
 
         fitting_gpus = self.gpu_resources.fitting(per_gpu_bytes)
 

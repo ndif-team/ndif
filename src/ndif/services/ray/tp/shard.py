@@ -24,7 +24,11 @@ import socket
 import sys
 import traceback
 
-from ..deployments.modeling.nns import execute_traced_block, prepare_traced_block
+from ..deployments.modeling.nns import (
+    block_scope,
+    execute_traced_block,
+    prepare_traced_block,
+)
 from ..deployments.modeling.util import resolve_dtype, set_process_limits
 from .common import (
     AbortController,
@@ -104,39 +108,46 @@ def main() -> int:
 
         _, payload, compress, env, seed = message
 
-        # Phase 1 — apply the request's environment and build the block. No
-        # collective runs here, so a failure is still safe to report: rank 0 has
-        # not started its forward, and the same payload is about to fail there
-        # for the same reason.
-        try:
-            model._remoteable_set_env(env)
-            seed_ranks(seed)
-            tracer, _ = prepare_traced_block(
-                model, payload, compress, RequestModel.deserialize
-            )
-            connection.send(("READY", args.rank))
-        except Exception as exception:
-            connection.send(("ERROR", _format(exception)))
-            continue
+        # Spans both phases, because the block built in phase 1 is the one run in
+        # phase 2. Rank 0 wraps its own request the same way, and it has to: a
+        # shard that kept a previous request's registered source would fail to
+        # find the *next* block in that file and silently leave the forward,
+        # stranding every other rank in a collective until the execution timeout.
+        with block_scope():
+            # Phase 1 — apply the request's environment and build the block. No
+            # collective runs here, so a failure is still safe to report: rank 0
+            # has not started its forward, and the same payload is about to fail
+            # there for the same reason.
+            try:
+                model._remoteable_set_env(env)
+                seed_ranks(seed)
+                tracer, _ = prepare_traced_block(
+                    model, payload, compress, RequestModel.deserialize
+                )
+                connection.send(("READY", args.rank))
+            except Exception as exception:
+                connection.send(("ERROR", _format(exception)))
+                continue
 
-        if not _await_go(connection):
-            continue
+            if not _await_go(connection):
+                continue
 
-        # Phase 2 — run it, in lockstep with every other rank. Whatever the block
-        # saved is dropped: rank 0 computed the same values from the same gathered
-        # tensors, and it is the one that answers the client.
-        abort.arm()
-        try:
-            execute_traced_block(tracer, dtype)
-            connection.send(("DONE",))
-        except AbortedError:
-            # Every rank raised this on the same iteration; the group is intact.
-            connection.send(("DONE",))
-        except Exception as exception:
-            connection.send(("ERROR", _format(exception)))
-        finally:
-            abort.disarm()
-            torch.cuda.synchronize()
+            # Phase 2 — run it, in lockstep with every other rank. Whatever the
+            # block saved is dropped: rank 0 computed the same values from the
+            # same gathered tensors, and it is the one that answers the client.
+            abort.arm()
+            try:
+                execute_traced_block(tracer, dtype)
+                connection.send(("DONE",))
+            except AbortedError:
+                # Every rank raised this on the same iteration; the group is
+                # intact.
+                connection.send(("DONE",))
+            except Exception as exception:
+                connection.send(("ERROR", _format(exception)))
+            finally:
+                abort.disarm()
+                torch.cuda.synchronize()
 
 
 def _await_go(connection: Channel) -> bool:

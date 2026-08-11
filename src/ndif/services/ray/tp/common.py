@@ -24,11 +24,11 @@ from ..sandbox.protocol import decode, encode, recv_frame, send_frame
 
 logger = logging.getLogger("ndif.modeling")
 
-# The tensor-parallel degree, fixed for this branch. A real deployment needs this
-# validated against the architecture (it must divide attention heads, key/value
-# heads and the intermediate size) and carried through DeploymentConfig; until
-# then a TP replica is only correct on a model that shards evenly into 4.
-TP_SIZE = 4
+# The degree is the number of GPUs the controller assigned: it only places a
+# replica tensor-parallel when the model shards evenly into exactly that many
+# (see the evaluator's `tp_degree`), so the allocation *is* the degree. This is
+# the fallback for a caller that has no allocation to go on.
+DEFAULT_TP_SIZE = 2
 
 
 class AbortedError(Exception):
@@ -66,7 +66,7 @@ def rank_env(gpu_ids: List[int], rank: int, master_port: int) -> Dict[str, str]:
 
 
 def load_sharded_model(
-    model_key: str, dtype: Any, tp_size: int = TP_SIZE, **kwargs: Any
+    model_key: str, dtype: Any, tp_size: int = DEFAULT_TP_SIZE, **kwargs: Any
 ) -> Any:
     """Build this rank's shard of ``model_key``.
 

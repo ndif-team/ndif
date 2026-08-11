@@ -59,6 +59,7 @@ class _ControllerActor:
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
         default_padding_bias: int,
+        tp_model_actor_class: str,
         default_dtype: str = "bfloat16",
     ):
         super().__init__()
@@ -80,6 +81,7 @@ class _ControllerActor:
         self.model_cache_percentage = model_cache_percentage
         self.default_padding_factor = default_padding_factor
         self.default_padding_bias = default_padding_bias
+        self.tp_model_actor_class = tp_model_actor_class
         self.default_dtype = default_dtype
         self.runtime_context = ray.get_runtime_context()
 
@@ -93,6 +95,7 @@ class _ControllerActor:
             model_cache_percentage=self.model_cache_percentage,
             default_padding_factor=self.default_padding_factor,
             default_padding_bias=self.default_padding_bias,
+            tp_model_actor_class=self.tp_model_actor_class,
             default_model_actor_class=self.default_model_actor_class,
         )
 
@@ -116,6 +119,7 @@ class _ControllerActor:
             "minimum_deployment_time_seconds": self.minimum_deployment_time_seconds,
             "default_padding_factor": self.default_padding_factor,
             "default_padding_bias": self.default_padding_bias,
+            "tp_model_actor_class": self.tp_model_actor_class,
             "runtime_context": self.runtime_context.get(),
             "datetime": datetime.now().isoformat(),
         }
@@ -496,9 +500,13 @@ class _ControllerActor:
                     "execution_timeout_seconds": deployment.execution_timeout_seconds,
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
-                    "repo_id": entry.config._name_or_path,
+                    "repo_id": getattr(entry.config, "_name_or_path", None),
                     "revision": entry.revision,
-                    "config": entry.config.to_json_string(),
+                    "config": (
+                        entry.config.to_json_string()
+                        if entry.config is not None
+                        else None
+                    ),
                     "n_params": entry.n_params,
                     "size_bytes": deployment.size_bytes,
                     "actor_class": actor_class_repr,
@@ -514,7 +522,7 @@ class _ControllerActor:
                         ),
                     }
 
-                existing_repo_ids.add(entry.config._name_or_path)
+                existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
 
             for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
@@ -529,13 +537,17 @@ class _ControllerActor:
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
                     "replica_id": cached_deployment.replica_id,
-                    "repo_id": entry.config._name_or_path,
+                    "repo_id": getattr(entry.config, "_name_or_path", None),
                     "revision": entry.revision,
-                    "config": entry.config.to_json_string(),
+                    "config": (
+                        entry.config.to_json_string()
+                        if entry.config is not None
+                        else None
+                    ),
                     "n_params": entry.n_params,
                 }
 
-                existing_repo_ids.add(entry.config._name_or_path)
+                existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
 
         # Drop orphaned dead actors. Ray keeps a DEAD record for every actor it
         # has ever run, so each evict/restart leaves one behind forever; the
@@ -613,6 +625,14 @@ class ControllerDeploymentArgs(BaseModel):
             "NDIF_DEFAULT_MODEL_ACTOR_CLASS",
             "ndif.services.ray.deployments.modeling.base.ModelActor",
         ),
+    )
+    # Dotted import path of the actor class a *tensor-parallel* replica gets --
+    # chosen automatically when a model needs more than one GPU and shards
+    # evenly into exactly that many (see the evaluator). Point it at the
+    # ordinary actor to keep every multi-GPU model on accelerate instead.
+    tp_model_actor_class: str = os.environ.get(
+        "NDIF_TP_MODEL_ACTOR_CLASS",
+        "ndif.services.ray.tp.model.TPModelActor",
     )
     # Dotted import path of the controller actor class app() launches. Lets an
     # operator swap in a subclass without editing this module.

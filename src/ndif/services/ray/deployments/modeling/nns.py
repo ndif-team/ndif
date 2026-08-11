@@ -20,13 +20,55 @@ usually fails and the last point where one can fail safely (see
 `run_traced_block`.
 """
 
+import contextlib
+import linecache
 import time
 
 import torch
 
+from nnsight.tracing.globals import BLOCKS, SOURCES
 from nnsight.tracing.tracer import _saves, dec, inc
 
 from .....common.telemetry import elapsed_ms
+
+
+@contextlib.contextmanager
+def block_scope():
+    """Confine one request's source-cache mutations to that request.
+
+    Deserializing a block registers its source in the global ``linecache`` under
+    the *client's* filename, and nnsight memoizes the parsed and compiled block
+    in process-global ``SOURCES``/``BLOCKS``, keyed by filename and line and
+    never re-validated. None of that is cleaned up on its own, so on a long-lived
+    process it accumulates and the next request is the one that pays.
+
+    Two ways it goes wrong, and the second is why this is shared rather than
+    living in the actor:
+
+    * A later request reusing a ``(filename, line)`` trace site runs the *stale*
+      block memoized there.
+    * A client sends only the block's own source, so ``linecache`` ends up
+      holding a fragment of their file. A second trace elsewhere in the same file
+      then parses that fragment, finds no ``with`` at its line, and raises
+      ``WithBlockNotFoundError`` — which on a tensor-parallel replica means the
+      shards drop out of the forward while rank 0 waits in a collective for the
+      execution timeout to fire. Reproduced with two traces in one test file.
+
+    Every process that builds a block needs this, which is both the actor and the
+    shards. Getting it in only one of them is what produced the failure above.
+    """
+    linecache_snapshot = dict(linecache.cache)
+    sources_snapshot = dict(SOURCES)
+    blocks_snapshot = dict(BLOCKS)
+    try:
+        yield
+    finally:
+        linecache.cache.clear()
+        linecache.cache.update(linecache_snapshot)
+        SOURCES.clear()
+        SOURCES.update(sources_snapshot)
+        BLOCKS.clear()
+        BLOCKS.update(blocks_snapshot)
 
 
 def prepare_traced_block(model, payload, compress, deserialize):

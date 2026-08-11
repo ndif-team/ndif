@@ -3,17 +3,30 @@ title: Testing
 one_liner: The single live-server suite — how to bring a stack up and run it, what it covers, and how to force the untrusted sandbox path that local dev never exercises.
 tags: [internals, dev, sandbox]
 related: [docs/developing/contributing.md, docs/developing/repo-layout.md, docs/developing/sandbox-internals.md, docs/concepts/sandbox-execution.md, docs/concepts/auth-and-limits.md, docs/operating/quickstart.md, docs/developing/nnsight-integration.md, docs/runbooks/enable-auth.md]
-sources: [tests/conftest.py, tests/test_nnsight_remote.py, pyproject.toml, justfile, docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/controller/controller.py]
+sources: [tests/conftest.py, tests/test_nnsight_remote.py, tests/test_tensor_parallel_remote.py, tests/test_placement.py, pyproject.toml, justfile, docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/controller/controller.py]
 ---
 
 # Testing
 
 ## What this covers
 
-The honest current state: **there is no CI in this repo, and there is exactly one
-test suite.** It lives in `tests/`, it drives the real `nnsight` client against a
-real running NDIF over HTTP, and it skips itself entirely if nothing answers at
+The honest current state: **there is no CI in this repo, and there is essentially
+one test suite.** It lives in `tests/`, it drives the real `nnsight` client against
+a real running NDIF over HTTP, and it skips itself entirely if nothing answers at
 `http://localhost:8001`. "Bring the stack up, run pytest" is the whole story.
+
+Three files, and only the first needs a server for every test:
+
+| File | Needs | Covers |
+|---|---|---|
+| `test_nnsight_remote.py` | a stack + gpt2 | the remote trace surface, end to end |
+| `test_tensor_parallel_remote.py` | a stack + a **deployed tensor-parallel replica** | a model split across GPUs — see the module docstring for the deploy |
+| `test_placement.py` | nothing (skips without `boto3`) | placement arithmetic and shard-group bookkeeping, over synthetic objects |
+
+`test_tensor_parallel_remote.py` skips itself unless a replica of its model is
+actually HOT, so it costs nothing when you have not set one up. `test_placement.py`
+is the odd one out — pure functions over a fake node, no server, no GPUs — and is
+the only file here that will run in a checkout with nothing else going.
 
 That shape is deliberate rather than accidental: almost everything NDIF does is a
 cross-process, cross-container interaction — a serialized traced block leaving a
@@ -89,6 +102,19 @@ real `with model.trace(..., remote=True):`.
 | `TestRemoteEdit` | `model.edit()` edits ride to the server and apply. |
 | `TestRemoteBatching` | Several `tracer.invoke(...)` blocks in one forward: batched results match solo runs and edits stay scoped to their rows. |
 | `TestRemoteSaving` | Both `nnsight.save(v)` and `v.save()`, including values computed inside the block. |
+
+And in `test_tensor_parallel_remote.py`, against a replica whose weights are split
+across GPUs by `TPModelActor`. None of these traces mention sharding — that is the
+point; they assert the two things a broken shard-and-gather gets wrong, the
+**width** of a value and whether the answer matches an unsharded run:
+
+| Class | What it proves about the server |
+|---|---|
+| `TestShardedWidths` | A value arrives whole — neither a fraction of the real tensor nor, on a tied LM head, a multiple of it. |
+| `TestShardedIntervention` | An edit to a sharded value reaches the model, including one straddling a rank boundary. |
+| `TestShardedDeterminism` | Every rank runs the block, so the replica answers consistently and generation reproduces. |
+| `TestShardedFailure` | A block that raises costs the request, not the replica — every rank raised it, which is a settled group. |
+| `TestShardedBatching` | Several invokes narrow the same gathered tensor identically on every rank, so no invoke answers another's prompt. |
 
 Two classes carry their own guards rather than the server marker: `TestRemotePeft`
 skips unless the *client* has `peft` (it needs it to graft the adapter

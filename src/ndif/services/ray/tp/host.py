@@ -33,9 +33,9 @@ import socket
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from .common import TP_SIZE, Channel, rank_env
+from .common import DEFAULT_TP_SIZE, Channel, rank_env
 
 logger = logging.getLogger("ndif.modeling")
 
@@ -107,7 +107,7 @@ class ShardGroup:
         model_key: str,
         gpu_ids: List[int],
         dtype: str,
-        tp_size: int = TP_SIZE,
+        tp_size: int = DEFAULT_TP_SIZE,
         load_kwargs: Optional[Dict[str, Any]] = None,
         gpu_mem_bytes_by_id: Optional[Dict[int, int]] = None,
     ) -> None:
@@ -285,24 +285,33 @@ class ShardGroup:
             except OSError:
                 logger.warning(f"could not release rank {shard.rank}")
 
-    def collect(self, timeout: float) -> List[str]:
-        """Wait for every shard to finish; return the failures, if any.
+    def collect(self, timeout: float) -> Tuple[List[str], List[str]]:
+        """Wait for every shard to finish; return ``(raised, lost)``.
 
         Rank 0 has already finished its own run by the time this is called — the
         ranks leave the last collective together, so a shard that has not
         answered shortly after is one that died rather than one still working.
+
+        The two lists mean very different things and the caller must not merge
+        them:
+
+        * **raised** — the shard reported an exception and went back to its idle
+          loop. It is alive and reusable. This is the *normal* outcome when the
+          user's block raises: every rank runs that block, so every rank raises.
+        * **lost** — the shard never answered. Whatever state it is in, it is not
+          one this group can start another request from.
         """
-        failures = []
+        raised, lost = [], []
         for shard in self.shards:
             try:
                 message = shard.recv(timeout=timeout)
             except Exception as exception:
-                failures.append(f"rank {shard.rank}: {exception}")
+                lost.append(f"rank {shard.rank}: {exception}")
                 continue
             if isinstance(message, tuple) and message[0] == "DONE":
                 continue
-            failures.append(f"rank {shard.rank}: {self._describe(message)}")
-        return failures
+            raised.append(f"rank {shard.rank}: {self._describe(message)}")
+        return raised, lost
 
     @staticmethod
     def _describe(message: Any) -> str:

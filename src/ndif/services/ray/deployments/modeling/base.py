@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import gc
 import io
-import linecache
 import logging
 import threading
 import time
@@ -27,7 +26,6 @@ from transformers.integrations.accelerate import _get_device_map
 
 from nnsight.modeling.huggingface import HuggingFaceModel
 from nnsight.schema.response import Status
-from nnsight.tracing.globals import BLOCKS, SOURCES
 from nnsight.tracing.util import clean_traceback, filter_traceback
 
 from .....common.errors import RequestError
@@ -41,7 +39,7 @@ from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.ray import CachedActorError
 from .....common.telemetry import elapsed_ms, event
 from .....common.types import MODEL_KEY
-from .nns import execute_traced_block, prepare_traced_block
+from .nns import block_scope, execute_traced_block, prepare_traced_block
 from .util import (
     LogStream,
     build_max_memory,
@@ -106,6 +104,16 @@ class BaseModelDeploymentArgs(BaseModel):
 class BaseModelDeployment:
     """Base model actor. See module docstring."""
 
+    #: Whether a replica of this actor can be parked HOT->WARM rather than torn
+    #: down. True here: the weights move to CPU and back with `to_cache` /
+    #: `from_cache`, which is the cheap way to free a GPU.
+    #:
+    #: An actor sets this False when parking cannot work for it, and the
+    #: controller then evicts its replicas outright instead of caching them.
+    #: Read off the *class*, before any replica exists, because the decision is
+    #: made while choosing what to evict.
+    CACHEABLE: bool = True
+
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -155,24 +163,44 @@ class BaseModelDeployment:
     def load_from_disk(self) -> HuggingFaceModel:
         """Load weights from the local cache and dispatch them onto the GPUs.
 
-        Lets accelerate place the model across the assigned GPUs
-        (``device_map="balanced"``) within the ``max_memory`` map. A CUDA sync
-        ensures every async copy has landed before we verify placement. The
-        model is inference-only, so grads are disabled on every parameter.
+        Across several cards, accelerate places the model within the
+        ``max_memory`` map (``device_map="balanced"``). A CUDA sync ensures every
+        async copy has landed before we verify placement. The model is
+        inference-only, so grads are disabled on every parameter.
+
+        **One card is a different call, not a degenerate case of the same one.**
+        A model loads through ``transformers.pipeline``, and when a device map
+        resolves to a single device the pipeline factory puts the model on
+        ``cuda:0`` — whatever the map said. Measured on transformers 5.15: both
+        ``device_map="balanced", max_memory={2: ...}`` and ``device_map={"": 2}``
+        land every tensor on cuda:0, while the same maps through
+        ``AutoModel.from_pretrained`` land correctly on cuda:2. Only the explicit
+        ``device=`` argument is honored.
+
+        It stays hidden while every model gets card 0. It surfaces the moment one
+        doesn't — a second model on a busy cluster — as this actor refusing to
+        start with "'transformer.wte.weight' is on cuda:0, outside the assigned
+        set [2]", which is `verify_device_placement` doing its job.
         """
         started_at = time.time()
 
         set_default_gpu(self.gpu_mem_bytes_by_id)
         set_process_limits(self.gpu_mem_bytes_by_id)
 
-        max_memory = build_max_memory(self.gpu_mem_bytes_by_id)
+        gpu_ids = sorted(self.gpu_mem_bytes_by_id)
+        if len(gpu_ids) == 1:
+            placement = {"device": gpu_ids[0]}
+        else:
+            placement = {
+                "device_map": "balanced",
+                "max_memory": build_max_memory(self.gpu_mem_bytes_by_id),
+            }
 
         model = HuggingFaceModel.from_model_key(
             self.model_key,
-            device_map="balanced",
-            max_memory=max_memory,
             dispatch=True,
             torch_dtype=self.dtype,
+            **placement,
             **self.kwargs,
         )
 
@@ -280,15 +308,12 @@ class BaseModelDeployment:
         # footprint after it runs.
         baselines = gpu_baselines(self.gpu_mem_bytes_by_id)
 
-        # deserialize registers the block's source in the global linecache and
-        # nnsight memoizes parsed/compiled blocks in process-global SOURCES/BLOCKS
-        # (keyed by filename+line), never re-validated — so on a long-lived actor a
-        # later request reusing a (filename, line) trace-site would run this
-        # request's stale block. Snapshot now and restore after so nothing outlives
-        # it. (A no-op for a subclass that deserializes out-of-process.)
-        linecache_snapshot = dict(linecache.cache)
-        sources_snapshot = dict(SOURCES)
-        blocks_snapshot = dict(BLOCKS)
+        # Confines this request's source-cache mutations to it; see
+        # `nns.block_scope` for what leaks without it. Entered here rather than
+        # wrapping the body so the `finally` below stays the single exit point.
+        # (A no-op for a subclass that deserializes out-of-process.)
+        scope = block_scope()
+        scope.__enter__()
         fatal = False
         url = None
         # Phase timings (ms) for the ExecutionTimeMetric; stay None until measured.
@@ -398,12 +423,7 @@ class BaseModelDeployment:
             # Undo this request's linecache + nnsight SOURCES/BLOCKS mutations so
             # nothing it registered outlives it, then reclaim per-request state — or
             # restart on a fatal, CUDA-context-corrupting error.
-            linecache.cache.clear()
-            linecache.cache.update(linecache_snapshot)
-            SOURCES.clear()
-            SOURCES.update(sources_snapshot)
-            BLOCKS.clear()
-            BLOCKS.update(blocks_snapshot)
+            scope.__exit__(None, None, None)
             if fatal:
                 self.restart()
             else:

@@ -48,7 +48,6 @@ from ....common.types import MODEL_KEY
 from ..deployments.modeling.base import BaseModelDeployment
 from ..deployments.modeling.util import set_process_limits, verify_device_placement
 from .common import (
-    TP_SIZE,
     AbortController,
     AbortedError,
     load_sharded_model,
@@ -79,6 +78,12 @@ SETTLE_TIMEOUT_SECONDS = 30.0
 class TPModelDeployment(BaseModelDeployment):
     """A model actor that is rank 0 of a tensor-parallel group."""
 
+    # A group cannot be parked. Restoring may land on a different set of GPUs,
+    # and every rank's device is fixed when its process starts -- there is no
+    # way to move a live group to other cards. Freeing one means tearing it
+    # down, so the controller evicts these outright rather than caching them.
+    CACHEABLE = False
+
     def __init__(
         self,
         model_key: MODEL_KEY,
@@ -89,14 +94,15 @@ class TPModelDeployment(BaseModelDeployment):
     ) -> None:
         gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
         self.tp_gpu_ids = sorted(gpu_mem_bytes_by_id)
-        self.tp_size = TP_SIZE
+        # The allocation is the degree. The controller only routes a replica here
+        # when the model shards evenly into exactly the cards it assigned, so
+        # there is nothing to choose and nothing to validate against.
+        self.tp_size = len(self.tp_gpu_ids)
 
-        if len(self.tp_gpu_ids) != self.tp_size:
+        if self.tp_size < 2:
             raise ValueError(
-                f"a tensor-parallel replica needs exactly {self.tp_size} GPUs, "
-                f"got {len(self.tp_gpu_ids)} ({self.tp_gpu_ids}). The controller "
-                "sizes a model by how many cards it takes to hold it, which is "
-                "not yet the same question as what degree it shards into."
+                "a tensor-parallel replica needs at least 2 GPUs, got "
+                f"{self.tp_gpu_ids}. One card wants the ordinary actor."
             )
 
         # Before any CUDA call in this process. Safe here because the controller
@@ -113,6 +119,10 @@ class TPModelDeployment(BaseModelDeployment):
 
         self.group: Optional[ShardGroup] = None
         self.abort: Optional[AbortController] = None
+        # Per-request, set in `execute`; here so `cleanup` is safe on a path that
+        # never reached one (a load failure, or a prepare that threw first).
+        self.committed = False
+        self.rank_zero_raised = False
 
         super().__init__(
             model_key,
@@ -210,8 +220,15 @@ class TPModelDeployment(BaseModelDeployment):
         self.group.prepare(request.payload, request.compress, request.env, seed)
         seed_ranks(seed)
         self.committed = False
+        self.rank_zero_raised = False
         try:
             return super().execute(request)
+        except BaseException:
+            # Recorded for :meth:`_await_shards`, which runs after this returns
+            # and has to tell "the user's block raised, on every rank" from "a
+            # shard failed while this rank was fine".
+            self.rank_zero_raised = True
+            raise
         finally:
             self.abort.disarm()
             if not self.committed:
@@ -264,18 +281,44 @@ class TPModelDeployment(BaseModelDeployment):
             self.restart()
 
     def _await_shards(self) -> bool:
-        """Whether every shard reported the request finished."""
+        """Whether the group is back at rest and can serve another request.
+
+        Not the same question as whether the request succeeded. Every rank runs
+        the user's block, so a block that raises raises *everywhere* — each shard
+        reports it and returns to its idle loop, which is a settled group and a
+        perfectly ordinary failed request. Treating that as wedged tore down a
+        healthy multi-GPU replica every time someone had a bug in their code, and
+        the *next* request was the one that failed.
+
+        What is not survivable is the ranks disagreeing: a shard that raised while
+        this rank did not has left the collective stream somewhere this one has
+        not, and there is no way back. Nor is a shard that never answered.
+        """
         if self.group is None:
             return True
         try:
-            failures = self.group.collect(timeout=SETTLE_TIMEOUT_SECONDS)
+            raised, lost = self.group.collect(timeout=SETTLE_TIMEOUT_SECONDS)
         except Exception:
             logger.exception("Failed to collect from the TP shards")
             return False
-        if failures:
-            # The user already has rank 0's answer; this is for the operator.
-            logger.error(f"TP shard failures on {self.model_key}: {failures}")
+
+        if lost:
+            logger.error(f"TP shards did not report on {self.model_key}: {lost}")
             return False
+
+        if raised and not self.rank_zero_raised:
+            logger.error(
+                f"TP shard failures on {self.model_key} that rank 0 did not hit — "
+                f"the ranks have diverged: {raised}"
+            )
+            return False
+
+        if raised:
+            # The user already has the error from rank 0; this is for the
+            # operator, and at debug because it is the expected shape of a
+            # failed request rather than a fault in the deployment.
+            logger.debug(f"TP shards raised with rank 0 on {self.model_key}: {raised}")
+
         return self.group.healthy
 
     def format_error(self, exception: BaseException) -> "tuple[str, bool]":

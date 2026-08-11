@@ -16,7 +16,7 @@ from ......common.schema.controller import (
     ReplicaStates,
 )
 from ......common.types import MODEL_KEY, NODE_ID, REPLICA_ID
-from .evaluator import ModelEvaluator
+from .evaluator import TP_MODEL_ACTOR_CLASS, ModelEvaluator
 from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 
 logger = logging.getLogger("ndif.controller")
@@ -32,6 +32,7 @@ class Cluster:
         model_cache_percentage: float = 0.5,
         default_padding_factor: float = 0.15,
         default_padding_bias: int = 0,
+        tp_model_actor_class: str = TP_MODEL_ACTOR_CLASS,
         default_model_actor_class: str = (
             "ndif.services.ray.deployments.modeling.base.ModelActor"
         ),
@@ -42,7 +43,9 @@ class Cluster:
         self.default_padding_bias = default_padding_bias
         self.default_model_actor_class = default_model_actor_class
         self.evaluator = ModelEvaluator(
-            padding_factor=default_padding_factor, padding_bias=default_padding_bias
+            padding_factor=default_padding_factor,
+            padding_bias=default_padding_bias,
+            tp_model_actor_class=tp_model_actor_class,
         )
 
         self._state = None
@@ -207,6 +210,11 @@ class Cluster:
                         size_in_bytes,
                         pinned=pinned,
                         exclude=all_model_keys,
+                        max_tp=self.evaluator.max_tp(
+                            model_key,
+                            dtype=config.dtype,
+                            trust_remote_code=config.trusted,
+                        ),
                     )
 
                     if best_level is None or candidate.candidate_level < best_level:
@@ -250,7 +258,17 @@ class Cluster:
                     pinned=pinned,
                     exclude=all_model_keys,
                     execution_timeout_seconds=config.execution_timeout_seconds,
-                    actor_class=config.actor_class or self.default_model_actor_class,
+                    # An explicit actor_class wins; otherwise the evaluator
+                    # picks, since whether this replica can run tensor-parallel
+                    # is a property of the model and the cards it just got.
+                    actor_class=config.actor_class
+                    or self.evaluator.actor_class(
+                        model_key,
+                        len(candidate.gpus),
+                        self.default_model_actor_class,
+                        dtype=config.dtype,
+                        trust_remote_code=config.trusted,
+                    ),
                     dtype=config.dtype,
                     trusted=config.trusted,
                 )

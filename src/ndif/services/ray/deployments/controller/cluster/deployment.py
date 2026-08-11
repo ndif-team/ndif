@@ -79,6 +79,24 @@ class Deployment:
         self.trusted = trusted
         self.deployed = time.time()
 
+    @property
+    def cacheable(self) -> bool:
+        """Whether this replica can be parked HOT->WARM rather than torn down.
+
+        Read off the actor class (``CACHEABLE``). Resolving the class can fail
+        for a bad import path, and an unanswerable question here should not stop
+        an eviction — so it falls back to True, the behaviour every actor had
+        before any of them could say otherwise.
+        """
+        try:
+            return bool(getattr(self._resolve_actor_class(), "CACHEABLE", True))
+        except Exception:
+            logger.debug(
+                f"Could not resolve {self.actor_class!r} to ask if it caches",
+                exc_info=True,
+            )
+            return True
+
     def _resolve_actor_class(self) -> type[BaseModelDeployment]:
         """Resolve ``self.actor_class`` to a concrete Ray actor class.
 

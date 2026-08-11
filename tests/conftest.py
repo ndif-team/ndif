@@ -12,9 +12,16 @@ provisions it (a tiny random model failed to provision).
 """
 
 import importlib.util
+import os
+import sys
 import urllib.request
 
 import pytest
+
+# The server package lives under src/ and isn't installed in a dev checkout.
+# The remote tests don't need it -- they drive the server over HTTP -- but a
+# unit test of the controller's own logic does, and gets it from here.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 import nnsight
 

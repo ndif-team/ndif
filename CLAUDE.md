@@ -202,6 +202,20 @@ Read the first two if a behavior seems inexplicable:
   `envoy_class`, `model_key`).
 - **Only `dashboard_data` persists.** Result blobs, metrics, logs, Postgres data and
   downloaded weights all vanish on `just down`.
+- **A single-GPU model must be loaded with `device=`, not a device map.** Models
+  load through `transformers.pipeline`, and when a device map resolves to *one*
+  device the pipeline factory puts the model on `cuda:0` whatever the map said —
+  `device_map="balanced", max_memory={2: ...}` and `device_map={"": 2}` both land
+  every tensor on cuda:0 (measured, transformers 5.15), while the same maps go to
+  cuda:2 through `AutoModel.from_pretrained`. Invisible while every model gets
+  card 0; the moment one doesn't, the actor refuses to start with "is on cuda:0,
+  outside the assigned set [2]". Multi-card `device_map="balanced"` is fine, and
+  so is the WARM restore, which goes through accelerate directly.
+- **Tensor parallelism needs transformers >= 5.15.** Older versions don't shard a
+  tied LM head's weight while still gathering its output, so any model with
+  `tie_word_embeddings=True` serves logits `tp_size` times too wide — with a
+  correct argmax inside the first copy, so only the width gives it away.
+  `requirements.txt` carries the floor and nnsight refuses to shard below it.
 - **Telemetry providers connect at import and own threads** — connect them after
   forking, or you get no formatting and no telemetry, silently.
 
