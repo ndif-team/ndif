@@ -639,7 +639,7 @@ class TestTheTwoExecutorsAreOne:
         assert "dtype" in inspect.signature(nns_run := __import__(
             "ndif.services.ray.sandbox.nns", fromlist=["run"]
         ).run).parameters
-        assert "str(self.dtype)" in inspect.getsource(model.SandboxModelDeployment.execute)
+        assert "str(self.dtype)" in inspect.getsource(model.SandboxHost.run_in_runner)
         assert "dtype" in inspect.getsource(runner.Runner.handle)
 
 
@@ -1061,9 +1061,14 @@ class TestDeterminismAcrossProcesses:
         assert source.index("seed_block(seed)") < source.index("tracer.execute")
 
     def test_an_ordinary_deployment_sends_no_seed(self):
+        # Two identical requests are meant to draw differently; only a group
+        # needs its processes to agree.
+        import inspect
+
         from ndif.services.ray.sandbox.model import SandboxModelDeployment
 
-        assert SandboxModelDeployment.block_seed(None) is None
+        source = inspect.getsource(SandboxModelDeployment.execute)
+        assert "self.run_in_runner(request, None)" in source
 
     def test_the_runner_tolerates_a_host_that_sends_none(self):
         # The wire tuple grew a field; a runner must not require it.
@@ -1080,17 +1085,30 @@ class TestTheSandboxedTensorParallelActor:
 
     The fork is per request, exactly as the single-GPU sandbox actor's is. That is
     what keeps the controller choosing on one axis — how the *weights* are placed
-    — while each actor decides per request where the *code* runs. The alternative
-    was a four-way matrix of actor classes.
+    — while each actor decides per request where the *code* runs.
+
+    Hosting a runner is shared with the single-GPU actor now
+    (`SandboxHost`), so what these check is the part that is genuinely this
+    class's: its dispatch, its two hooks, and an `interrupt` whose order is
+    reversed.
     """
 
-    def test_it_is_a_tensor_parallel_actor(self):
+    def _source(self, name):
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        return inspect.getsource(getattr(SandboxedTPModelDeployment, name))
+
+    def test_it_is_a_tensor_parallel_actor_that_hosts_runners(self):
+        from ndif.services.ray.sandbox.model import SandboxHost
         from ndif.services.ray.tp.model import (
             SandboxedTPModelDeployment,
             TPModelDeployment,
         )
 
         assert issubclass(SandboxedTPModelDeployment, TPModelDeployment)
+        assert issubclass(SandboxedTPModelDeployment, SandboxHost)
 
     def test_a_group_still_cannot_be_cached(self):
         # Inherited, and it must be: the ranks' devices are fixed when their
@@ -1102,56 +1120,79 @@ class TestTheSandboxedTensorParallelActor:
     def test_a_trusted_request_takes_the_in_process_path(self):
         # No runner, no barrier: every rank builds and runs the block, which is
         # what makes the gather decisions agree with nothing sent.
-        import inspect
+        source = self._source("_dispatch")
 
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
-
-        source = inspect.getsource(SandboxedTPModelDeployment._dispatch)
         assert "if request.trusted:" in source
         assert "super()._dispatch(request, seed)" in source
 
-    def test_the_untrusted_path_connects_before_it_tells_the_shards(self):
-        # Load-bearing order: the runner takes its first connection as the one
-        # that sends the payload, so rank 0 must be connected before any shard
-        # knows where to find it.
-        import inspect
-
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
-
-        source = inspect.getsource(SandboxedTPModelDeployment._sandboxed)
-        assert source.index("sandbox.connection()") < source.index("self.group.sandbox(")
-
-    def test_it_commits_the_group_before_anything_runs(self):
-        # `commit` is go() + arm(). A trusted request gets it from the base's
-        # execute; there is no base execute here, so the moment is explicit.
-        import inspect
-
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
-
-        source = inspect.getsource(SandboxedTPModelDeployment._sandboxed)
-        assert source.index("self.commit()") < source.index("driver.pump")
+    def test_an_untrusted_request_goes_to_the_shared_runner(self):
+        assert "self.run_in_runner(request, seed)" in self._source("_dispatch")
 
     def test_its_pool_is_sized_in_groups(self):
         # One runner serves the whole group, so a pool entry holds `tp_size`
         # connections rather than being one process per rank.
-        import inspect
+        assert "peers=self.tp_size" in self._source("__init__")
 
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+    def test_the_shards_are_told_where_the_runner_is(self):
+        assert "self.group.sandbox(sandbox.path" in self._source("before_payload")
 
-        assert "peers=self.tp_size" in inspect.getsource(
-            SandboxedTPModelDeployment.__init__
-        )
+    def test_the_group_is_released_only_after_the_block_is_sent(self):
+        assert "self.commit()" in self._source("after_payload")
 
     def test_interrupt_asks_the_group_first_then_stops_the_runner(self):
         # The flag lets ranks already in a forward unwind together at the shared
         # checkpoint; stopping the runner covers a block stuck in plain Python,
-        # where no checkpoint will fire. One runner, so every rank sees it at once.
+        # where no checkpoint will fire. The single-GPU host does the opposite,
+        # having no collective to strand.
+        source = self._source("interrupt")
+
+        assert source.index("TPModelDeployment.interrupt(self)") < source.index("stop()")
+
+
+class TestTheRunnerIsDrivenTheSameWayByBoth:
+    """The order both hosts depend on, now stated once.
+
+    These used to be asserted against two copies of the same body. The copies
+    drifted exactly once, and it cost a correctness bug.
+    """
+
+    def _body(self):
         import inspect
 
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+        from ndif.services.ray.sandbox.model import SandboxHost
 
-        source = inspect.getsource(SandboxedTPModelDeployment.interrupt)
-        assert source.index("super().interrupt()") < source.index("stop()")
+        return inspect.getsource(SandboxHost.run_in_runner)
+
+    def test_the_host_connects_before_its_hook_runs(self):
+        # Load-bearing for the group: the runner takes its *first* connection as
+        # the one that sends the payload, so rank 0 must be connected before any
+        # shard is told where to find it.
+        body = self._body()
+
+        assert body.index("sandbox.connection()") < body.index("self.before_payload(")
+
+    def test_the_block_is_sent_between_the_two_hooks(self):
+        body = self._body()
+
+        assert body.index("self.before_payload(") < body.index("connection.send(")
+        assert body.index("connection.send(") < body.index("self.after_payload()")
+
+    def test_nothing_runs_until_after_the_second_hook(self):
+        # `after_payload` is where a group releases its shards; the model must not
+        # have started before it.
+        body = self._body()
+
+        assert body.index("self.after_payload()") < body.index("driver.pump")
+
+    def test_a_request_in_flight_is_cancellable(self):
+        # `kill` is gated on execution_ident; without it a cancel or preempt is
+        # silently dropped and the block runs to completion.
+        assert "self.execution_ident = threading.current_thread().ident" in self._body()
+
+    def test_the_connection_is_closed_however_it_ends(self):
+        body = self._body()
+
+        assert "finally:" in body and "connection.close()" in body
 
 
 class TestEveryRankIsSeeded:
@@ -1168,37 +1209,46 @@ class TestEveryRankIsSeeded:
     so every individual file looked right; only the pairing was wrong.
     """
 
-    def _source(self, name):
-        import inspect
-
-        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
-
-        return inspect.getsource(getattr(SandboxedTPModelDeployment, name))
-
     def test_the_trusted_path_seeds_this_rank(self):
-        from ndif.services.ray.tp.model import TPModelDeployment
         import inspect
+
+        from ndif.services.ray.tp.model import TPModelDeployment
 
         assert "seed_ranks(seed)" in inspect.getsource(TPModelDeployment._dispatch)
 
     def test_the_untrusted_path_seeds_this_rank_too(self):
         # The block runs in the runner, but the model still runs here.
-        assert "seed_ranks(seed)" in self._source("_sandboxed")
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        assert "seed_ranks(seed)" in inspect.getsource(
+            SandboxedTPModelDeployment.before_payload
+        )
 
     def test_it_is_seeded_before_anyone_is_released(self):
-        # After this point the ranks are in a collective together; a seed applied
-        # later is applied to a forward that has already started sampling.
-        source = self._source("_sandboxed")
+        # `before_payload` runs before the block is sent and before
+        # `after_payload` commits the group — so seeding lands ahead of any rank
+        # entering a forward, by the shared body's construction.
+        import inspect
 
-        assert source.index("seed_ranks(seed)") < source.index("self.commit()")
+        from ndif.services.ray.sandbox.model import SandboxHost
+
+        body = inspect.getsource(SandboxHost.run_in_runner)
+        assert body.index("self.before_payload(") < body.index("self.after_payload()")
 
     def test_the_runner_gets_the_same_number(self):
-        # Three consumers of one seed: this rank, the shards (via group.sandbox),
-        # and the block itself (shipped in the payload tuple).
-        source = self._source("_sandboxed")
+        # Three consumers of one seed: this rank and the shards (in
+        # `before_payload`), and the block itself, shipped in the payload tuple.
+        import inspect
 
-        assert "self.group.sandbox(sandbox.path, request.env, seed)" in source
-        assert "str(self.dtype), seed" in source
+        from ndif.services.ray.sandbox.model import SandboxHost
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        hook = inspect.getsource(SandboxedTPModelDeployment.before_payload)
+        assert "self.group.sandbox(sandbox.path, request.env, seed)" in hook
+        assert "seed_ranks(seed)" in hook
+        assert "str(self.dtype), seed" in inspect.getsource(SandboxHost.run_in_runner)
 
     def test_both_shard_paths_seed(self):
         # The other half of the pairing, so a future edit to shard.py that drops
