@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+from typing import Tuple
 
 from .protocol import Channel, signature_of, unpack
 
@@ -24,6 +25,54 @@ _SANDBOX_DIR = os.path.dirname(os.path.abspath(__file__))
 _PACKAGE_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(_SANDBOX_DIR)))
 )
+
+
+# What a runner is allowed to inherit from the actor's environment.
+#
+# An allowlist rather than a copy, because the actor's environment is the
+# operator's: measured on a live deployment it carried `HF_TOKEN` and
+# `NDIF_INFLUX_TOKEN`, and a production one would add object-store credentials
+# and `NDIF_POSTGRES_URL`. The runner exists to execute other people's Python,
+# and `os.environ` is the first place to look.
+#
+# Each name here is something a runner genuinely needs:
+#
+# * the loader and locale basics, so python and its extensions start at all;
+# * `CUDA_VISIBLE_DEVICES`, because the block computes on GPU and its device
+#   numbering has to match the host it is driving -- under tensor parallelism a
+#   device index is a position in this list, not a physical card;
+# * cache locations, so a block that touches the Hub or torch.hub finds the
+#   shared cache instead of downloading into the container;
+# * thread-count knobs an operator tuned for the box.
+#
+# What it deliberately drops, beyond the credentials: `RANK`, `LOCAL_RANK`,
+# `WORLD_SIZE`, `MASTER_ADDR` and `MASTER_PORT`. Rank 0 sets those on itself to
+# join the process group, and a runner spawned from it used to inherit them and
+# start life claiming to be rank 0 of a group it is not in -- which accelerate
+# and transformers both read to decide they are in a distributed launch.
+RUNNER_ENV: Tuple[str, ...] = (
+    "PATH",
+    "LD_LIBRARY_PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "CUDA_VISIBLE_DEVICES",
+    "HF_HOME",
+    "HUGGINGFACE_HUB_CACHE",
+    "TRANSFORMERS_CACHE",
+    "TORCH_HOME",
+    "XDG_CACHE_HOME",
+    "OMP_NUM_THREADS",
+    "TOKENIZERS_PARALLELISM",
+)
+
+
+def runner_env() -> dict:
+    """The environment a runner starts with: `RUNNER_ENV`, and nothing else."""
+    return {
+        name: os.environ[name] for name in RUNNER_ENV if name in os.environ
+    }
 
 
 class Connection(Channel):
@@ -110,7 +159,7 @@ def spawn(
     connections before anyone has said anything.
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
-    env = dict(os.environ)
+    env = runner_env()
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
     )

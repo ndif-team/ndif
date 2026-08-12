@@ -1555,3 +1555,82 @@ class TestAReplacementReplicaIsTheSameModel:
 
         unknown = set(DeploymentConfig.STICKY) - set(DeploymentConfig.model_fields)
         assert not unknown, f"STICKY names fields that do not exist: {sorted(unknown)}"
+
+
+class TestARunnerInheritsNothingSensitive:
+    """The runner executes other people's Python, and `os.environ` is the first
+    place to look.
+
+    The actor's environment is the operator's. Measured on a live deployment it
+    carried `HF_TOKEN` and `NDIF_INFLUX_TOKEN`; a production one would add
+    object-store credentials and `NDIF_POSTGRES_URL`. It used to be copied
+    wholesale into every runner.
+    """
+
+    def _env(self, monkeypatch, **values):
+        from ndif.services.ray.sandbox.host import runner_env
+
+        for name, value in values.items():
+            monkeypatch.setenv(name, value)
+        return runner_env()
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "HF_TOKEN",
+            "NDIF_INFLUX_TOKEN",
+            "NDIF_POSTGRES_URL",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "NDIF_OBJECT_STORE_SECRET_KEY",
+        ],
+    )
+    def test_a_credential_does_not_reach_the_runner(self, monkeypatch, name):
+        assert name not in self._env(monkeypatch, **{name: "secret"})
+
+    def test_it_is_an_allowlist_not_a_denylist(self):
+        # A denylist is wrong by construction here: the next credential someone
+        # adds to the actor's environment would be inherited by default.
+        import inspect
+
+        from ndif.services.ray.sandbox import host
+
+        source = inspect.getsource(host.runner_env)
+        assert "RUNNER_ENV" in source
+        assert "os.environ[name]" in source
+
+    def test_an_unknown_variable_is_dropped(self, monkeypatch):
+        assert "SOMETHING_NEW" not in self._env(monkeypatch, SOMETHING_NEW="x")
+
+    @pytest.mark.parametrize(
+        "name,value",
+        [
+            ("CUDA_VISIBLE_DEVICES", "1,3"),
+            ("HF_HOME", "/disk/hf"),
+            ("PATH", "/usr/bin"),
+        ],
+    )
+    def test_what_a_runner_needs_still_arrives(self, monkeypatch, name, value):
+        # Device numbering especially: under tensor parallelism a device index is
+        # a position in this list, not a physical card, so a runner that lost it
+        # would disagree with the host it is driving.
+        assert self._env(monkeypatch, **{name: value})[name] == value
+
+    @pytest.mark.parametrize(
+        "name", ["RANK", "LOCAL_RANK", "WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"]
+    )
+    def test_the_runner_does_not_claim_to_be_a_rank(self, monkeypatch, name):
+        # Rank 0 sets these on itself to join the process group. A runner spawned
+        # from it inherited them and started life claiming to be rank 0 of a group
+        # it is not in -- which accelerate and transformers read to decide they
+        # are in a distributed launch.
+        assert name not in self._env(monkeypatch, **{name: "0"})
+
+    def test_spawn_uses_it(self):
+        import inspect
+
+        from ndif.services.ray.sandbox import host
+
+        source = inspect.getsource(host.spawn)
+        assert "env = runner_env()" in source
+        assert "dict(os.environ)" not in source
