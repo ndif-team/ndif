@@ -209,6 +209,19 @@ class SandboxDriver:
         (echoed as a LOG) — so callers waiting on a specific reply don't have to
         untangle stdout the user code emitted mid-run. An EXCEPTION carries the
         runner's already-formatted traceback text.
+
+        **Every tensor arriving here is moved onto this host's device**, and this
+        is the only place it happens because this is the only place the host reads
+        from the runner. A tensor's device is an absolute index, and one runner
+        serves a whole tensor-parallel group over a `Fanout` that sends identical
+        bytes to every rank — so a value that round-trips through it reaches rank 1
+        still labelled with rank 0's card. The shard then mixes it into its own
+        forward and torch raises "expected all tensors on the same device". That
+        was invisible on one GPU, where the only host *is* cuda:0.
+
+        Doing it at the seam rather than at each use is the point: relocation used
+        to live at two call sites, which is exactly how the paths that lacked it
+        went unnoticed.
         """
         while True:
             values, kwargs = connection.recv()
@@ -218,7 +231,9 @@ class SandboxDriver:
                 continue
             if event == "EXCEPTION":
                 raise RunnerError(rest[0] if rest else "sandbox error")
-            return event, rest, kwargs
+            # END's payload is the saved-values blob -- already bytes, so the walk
+            # finds no tensors and costs one traversal of a two-element list.
+            return event, self._to_device(rest), self._to_device(kwargs)
 
     # -- envoy/device helpers ------------------------------------------------
 
@@ -258,6 +273,9 @@ class SandboxDriver:
         ``hook=False`` calls ``forward`` directly (no hooks, its real place in the
         pass untouched); ``hook=True`` runs the full module so its hooks fire."""
         envoy = self._envoy_at(path)
+        # Redundant since `next_event` relocates everything the runner sends, and
+        # kept only because a same-device `.to()` is a no-op. The seam is the one
+        # that matters; this is a belt on top of it.
         args, kwargs = self._to_device((args, kwargs))
         if hook:
             return envoy(*args, **kwargs)
@@ -291,6 +309,9 @@ class SandboxDriver:
         for inputs, invoke_kwargs in invokes:
             batcher.add(*inputs, **invoke_kwargs)
         args, assembled = batcher.assemble(fn)
+        # Load-bearing, unlike the one in `run_module`: the batcher and tokenizer
+        # run *here*, so these tensors are made on this host and have never been
+        # past `next_event`. Nothing else would put them on the model's card.
         args, kwargs = self._to_device((args, {**assembled, **kwargs}))
         return batcher, args, kwargs
 

@@ -31,7 +31,7 @@ from ..deployments.modeling.nns import (
 )
 from ..deployments.modeling.util import resolve_dtype, set_process_limits
 from ..sandbox.driver import SandboxDriver
-from ..sandbox.host import Connection as RunnerConnection
+from ..sandbox.host import FollowerConnection as RunnerConnection
 from .common import (
     AbortController,
     AbortedError,
@@ -204,6 +204,10 @@ def _sandboxed_request(connection, rank, model, dtype, abort, path, env, seed) -
             # block's own RNG is seeded separately, in the runner, from the same
             # number.
             seed_ranks(seed)
+            # A *follower* connection: this rank has to reach the barrier for
+            # every event, but the runner only ever reads rank 0's payload, so
+            # sending the activation as well would be N-1 copies serialized and
+            # discarded. See FollowerConnection.
             runner = RunnerConnection.open(path)
             connection.send(("READY", rank))
         except Exception as exception:

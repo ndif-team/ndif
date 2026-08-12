@@ -431,3 +431,85 @@ class TestTheRunnerServesAGroup:
         finally:
             process.terminate()
             process.wait(timeout=10)
+
+
+class TestFollowersSendOnlyTheirSignature:
+    """Peers other than 0 arrive at the barrier without carrying a payload.
+
+    `Fanout.recv` returns peer 0's message and drops the rest, so every other
+    rank's activation was serialized, sent, rebuilt and discarded — seven eighths
+    of this leg at degree 8. A follower sends the signature alone, which is the
+    only part of its message anything ever reads.
+    """
+
+    def _follower_bytes(self, value):
+        """What a FollowerConnection puts on the wire for ``value``."""
+        from ndif.services.ray.sandbox.host import FollowerConnection
+
+        ours, theirs = socket.socketpair()
+        FollowerConnection(ours).send(value)
+        return Channel(theirs).recv()
+
+    def test_the_payload_does_not_go_on_the_wire(self):
+        sent = self._follower_bytes(("RESUME", 7, ("a-large-activation",), 3))
+
+        assert sent == ("RESUME",)
+        assert "a-large-activation" not in repr(sent)
+
+    def test_the_signature_still_matches_the_leaders(self):
+        # The barrier's whole check is that peers agree on the event; a follower
+        # has to remain comparable to a leader that sent everything.
+        from ndif.services.ray.sandbox.protocol import signature_of
+
+        leader = ("RESUME", 7, ("value",), 3)
+
+        assert signature_of(self._follower_bytes(leader)) == signature_of(leader)
+
+    def test_a_group_of_one_leader_and_followers_agrees(self):
+        # The real shape: peer 0 sends everything, the rest send signatures, and
+        # the runner still gets peer 0's full message.
+        from ndif.services.ray.sandbox.host import FollowerConnection
+
+        ours, theirs = [], []
+        for index in range(3):
+            a, b = socket.socketpair()
+            ours.append(RunnerEnd(a))
+            end = Channel(b) if index == 0 else FollowerConnection(b)
+            theirs.append(end)
+        fanout = Fanout(ours)
+
+        theirs[0].send(("RESUME", 0, ("the value",), 0))
+        theirs[1].send(("RESUME", 0, ("rank 1's copy",), 0))
+        theirs[2].send(("RESUME", 0, ("rank 2's copy",), 0))
+        message = fanout.recv()
+
+        assert message == ("RESUME", 0, ("the value",), 0), (
+            "the leader's payload must survive intact"
+        )
+
+    def test_a_follower_that_disagrees_is_still_caught(self):
+        # What is given up is comparing payloads, never the barrier itself.
+        from ndif.services.ray.sandbox.host import FollowerConnection
+
+        ours, theirs = [], []
+        for index in range(2):
+            a, b = socket.socketpair()
+            ours.append(RunnerEnd(a))
+            theirs.append(Channel(b) if index == 0 else FollowerConnection(b))
+        fanout = Fanout(ours)
+
+        theirs[0].send(("RESUME", 0, (), 0))
+        theirs[1].send(("DONE", "finished instead"))
+
+        with pytest.raises(RanksDiverged, match="disagree"):
+            fanout.recv()
+
+    def test_every_shard_connects_as_a_follower(self):
+        # Rank 0 is the actor and always the leader, so this needs no rank
+        # plumbing — but it does need the shard to use the right class.
+        import inspect
+
+        from ndif.services.ray.tp import shard
+
+        source = inspect.getsource(shard)
+        assert "FollowerConnection as RunnerConnection" in source

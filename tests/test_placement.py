@@ -223,7 +223,7 @@ class TestShardSettleVerdict:
     """
 
     @staticmethod
-    def _deployment(raised, lost, rank_zero_raised):
+    def _deployment(raised, lost, rank_zero_raised, rank_zero_error=None):
         from ndif.services.ray.tp.model import TPModelDeployment
 
         class Group:
@@ -242,6 +242,10 @@ class TestShardSettleVerdict:
         deployment.model_key = "m"
         deployment.group = Group()
         deployment.rank_zero_raised = rank_zero_raised
+        # What rank 0 hit, not just that it did: a transport failure means a shard
+        # probably died and took the socket with it, which changes whose error is
+        # worth reporting.
+        deployment.rank_zero_error = rank_zero_error
         # These all describe a request that reached the forward; a request that
         # never ran has nothing to collect and is covered separately.
         deployment.committed = True
@@ -1207,3 +1211,151 @@ class TestEveryRankIsSeeded:
         assert source.count("seed_ranks(seed)") >= 2, (
             "a shard must seed on the trusted and the sandboxed path alike"
         )
+
+
+class TestValuesFromTheRunnerLandOnThisHost:
+    """A tensor's device is absolute, and one runner serves a whole group.
+
+    `Fanout` sends identical bytes to every rank, so a value that round-trips
+    through the runner reaches rank 1 still labelled with rank 0's card. The shard
+    mixes it into its own forward and torch raises "expected all tensors to be on
+    the same device, but found cuda:1 and cuda:0" -- which is exactly what the
+    untrusted tensor-parallel path did. Invisible on one GPU, where the only host
+    *is* cuda:0.
+    """
+
+    def _driver_source(self, name):
+        import inspect
+
+        from ndif.services.ray.sandbox.driver import SandboxDriver
+
+        return inspect.getsource(getattr(SandboxDriver, name))
+
+    def test_the_host_reads_the_runner_in_exactly_one_place(self):
+        # The premise the fix rests on: relocating at `next_event` covers
+        # everything only while that is the sole recv. If a second one appears,
+        # this fails and the seam has to be reconsidered.
+        import inspect
+
+        from ndif.services.ray.sandbox import driver
+
+        source = inspect.getsource(driver)
+        assert source.count("connection.recv()") == 1, (
+            "a second read from the runner would bypass the relocation seam"
+        )
+
+    def test_everything_arriving_is_relocated(self):
+        source = self._driver_source("next_event")
+
+        assert "self._to_device(rest)" in source
+        assert "self._to_device(kwargs)" in source
+
+    def test_prints_and_exceptions_are_handled_before_relocation(self):
+        # Both carry text, not tensors; walking them would be waste.
+        source = self._driver_source("next_event")
+
+        assert source.index('event == "PRINT"') < source.index("self._to_device(rest)")
+        assert source.index('event == "EXCEPTION"') < source.index("self._to_device(rest)")
+
+    def test_the_assembly_relocation_is_kept(self):
+        # Not redundant with the seam: the batcher and tokenizer run on the host,
+        # so those tensors are made here and have never been past `next_event`.
+        assert "self._to_device(" in self._driver_source("_assemble")
+
+
+class TestAShardFailureIsNotReportedAsABrokenPipe:
+    """Whose error the operator is shown when a shard dies mid-request.
+
+    A shard that raises closes the shared runner's connection, so rank 0's own
+    failure is a broken pipe -- true, and useless. The cause is in the shards'
+    reports, which are logged at debug because normally the user already has the
+    same error from rank 0. When rank 0 only saw the socket, that reasoning
+    inverts.
+    """
+
+    def test_rank_zeros_exception_is_kept_not_just_a_flag(self):
+        import inspect
+
+        from ndif.services.ray.tp.model import TPModelDeployment
+
+        source = inspect.getsource(TPModelDeployment.execute)
+        assert "self.rank_zero_error = exception" in source
+
+    def test_a_transport_failure_promotes_the_shard_error(self):
+        import inspect
+
+        from ndif.services.ray.tp.model import TPModelDeployment
+
+        source = inspect.getsource(TPModelDeployment._await_shards)
+        assert "BrokenPipeError, ConnectionError" in source
+        assert source.index("logger.error") < source.index("logger.debug")
+
+    def test_an_ordinary_failure_stays_quiet(self):
+        # The common case is the user's own error, raised identically on every
+        # rank; logging every shard's copy at error would bury the real ones.
+        import inspect
+
+        from ndif.services.ray.tp.model import TPModelDeployment
+
+        assert "logger.debug" in inspect.getsource(TPModelDeployment._await_shards)
+
+
+class TestRunnerDiagnosticsSurvive:
+    def test_stderr_is_never_discarded(self):
+        # The block's output goes back as PRINT events, so anything on the
+        # runner's real stderr is the process failing on its own account --
+        # including `serve`'s handler, the only report of a request it could not
+        # finish. DEVNULL made a dead runner look like a hung one.
+        import inspect
+
+        from ndif.services.ray.sandbox import host
+
+        source = inspect.getsource(host.spawn)
+        assert "stderr=None" in source
+        assert "stderr=output" not in source
+
+
+class TestWhoseErrorTheOperatorSees:
+    """A shard that dies takes the shared runner's socket with it.
+
+    Rank 0 then reports a broken pipe — true, and a description of the symptom.
+    The cause is in the shards' reports, which are normally debug-level because
+    the user already has the same error from rank 0. When rank 0 only saw the
+    socket, that reasoning inverts and the shard's error is all there is.
+    """
+
+    def _verdict(self, rank_zero_error, caplog):
+        import logging
+
+        deployment = TestShardSettleVerdict._deployment(
+            raised=["rank 1: RuntimeError: expected all tensors on the same device"],
+            lost=[],
+            rank_zero_raised=True,
+            rank_zero_error=rank_zero_error,
+        )
+        with caplog.at_level(logging.DEBUG, logger="ndif.modeling"):
+            deployment._await_shards()
+        return caplog.records
+
+    def test_a_broken_pipe_promotes_the_shard_error(self, caplog):
+        records = self._verdict(BrokenPipeError(32, "Broken pipe"), caplog)
+        errors = [r for r in records if r.levelname == "ERROR"]
+
+        assert errors, "the only account of what happened was left at debug"
+        assert "same device" in errors[0].getMessage()
+
+    def test_an_ordinary_failure_stays_at_debug(self, caplog):
+        records = self._verdict(ValueError("the user's own bug"), caplog)
+
+        assert not [r for r in records if r.levelname == "ERROR"]
+        assert [r for r in records if r.levelname == "DEBUG"]
+
+    def test_it_still_returns_the_group_healthy_either_way(self, caplog):
+        # Promotion is a logging decision, not a verdict: a block that raised on
+        # every rank must not cost the replica.
+        for error in (BrokenPipeError(32, "Broken pipe"), ValueError("bug")):
+            deployment = TestShardSettleVerdict._deployment(
+                raised=["rank 1: boom"], lost=[], rank_zero_raised=True,
+                rank_zero_error=error,
+            )
+            assert deployment._await_shards() is True

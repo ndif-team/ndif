@@ -130,6 +130,7 @@ class TPModelDeployment(BaseModelDeployment):
         # never reached one (a load failure, or a prepare that threw first).
         self.committed = False
         self.rank_zero_raised = False
+        self.rank_zero_error: Optional[BaseException] = None
         self.dispatched = False
         # Whether the shards confirmed they went back to idle after a request
         # that never ran. False means one didn't answer, which is the only
@@ -231,6 +232,7 @@ class TPModelDeployment(BaseModelDeployment):
 
         self.committed = False
         self.rank_zero_raised = False
+        self.rank_zero_error = None
         self.dispatched = False
         self.stood_down = True
         try:
@@ -241,11 +243,15 @@ class TPModelDeployment(BaseModelDeployment):
             # and it is true from here on.
             self.dispatched = True
             return self._dispatch(request, seed)
-        except BaseException:
+        except BaseException as exception:
             # Recorded for :meth:`_await_shards`, which runs after this returns
             # and has to tell "the user's block raised, on every rank" from "a
-            # shard failed while this rank was fine".
+            # shard failed while this rank was fine". The exception itself is kept
+            # too: a transport failure here usually means a *shard* died and took
+            # the socket with it, so which one it is decides whose error is worth
+            # reporting.
             self.rank_zero_raised = True
+            self.rank_zero_error = exception
             raise
         finally:
             self.abort.disarm()
@@ -369,10 +375,24 @@ class TPModelDeployment(BaseModelDeployment):
             return False
 
         if raised:
-            # The user already has the error from rank 0; this is for the
-            # operator, and at debug because it is the expected shape of a
-            # failed request rather than a fault in the deployment.
-            logger.debug(f"TP shards raised with rank 0 on {self.model_key}: {raised}")
+            # Normally the user already has this error from rank 0, so it is an
+            # operator detail and belongs at debug -- the expected shape of a
+            # failed request, not a fault in the deployment.
+            #
+            # Unless rank 0's own failure was the *socket*. A shard that dies
+            # takes the shared runner's connection with it, and what rank 0 then
+            # reports is a broken pipe: a true statement about a symptom, with the
+            # cause sitting in `raised` where nobody looks. Say it loudly in that
+            # case, because it is the only description of what actually happened.
+            if isinstance(self.rank_zero_error, (BrokenPipeError, ConnectionError)):
+                logger.error(
+                    f"TP shard failures on {self.model_key} are the likely cause of "
+                    f"rank 0's {type(self.rank_zero_error).__name__}: {raised}"
+                )
+            else:
+                logger.debug(
+                    f"TP shards raised with rank 0 on {self.model_key}: {raised}"
+                )
 
         return self.group.healthy
 

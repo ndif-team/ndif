@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-from .protocol import Channel, unpack
+from .protocol import Channel, signature_of, unpack
 
 # The dir containing the top-level ``ndif`` package, so the runner (which runs as
 # ndif.services.ray.sandbox.runner) can import ndif.* and reuse its helpers.
@@ -45,6 +45,31 @@ class Connection(Channel):
     def recv(self, timeout=None):
         """Receive a runner message as ``(values, kwargs)``."""
         return unpack(self.recv_raw(timeout))
+
+
+class FollowerConnection(Connection):
+    """A host whose turn at the barrier matters but whose payload never does.
+
+    [`Fanout`][ndif.services.ray.sandbox.protocol.Fanout] waits for every peer,
+    compares signatures, and returns **peer 0's** message — so every other peer's
+    payload is deserialized and dropped. Under tensor parallelism those payloads
+    are whole activations, identical on every rank because the gather already made
+    them whole, so at degree 8 seven eighths of this leg was tensors serialized,
+    sent, rebuilt and discarded.
+
+    This sends the signature alone. The barrier is untouched: still one message per
+    event per peer, in the same order, so a peer that resumed a worker while
+    another finished is still caught. What is given up is the *option* of ever
+    comparing payloads across ranks — which was never taken, since the signature
+    defaults to the event name and comparing whole tensors at every location would
+    cost more than the interleave it guards.
+
+    Every tensor-parallel shard is a follower by construction; rank 0 is the actor
+    and always the leader, which is why this needs no rank plumbing.
+    """
+
+    def send(self, value) -> None:
+        super().send((signature_of(value),))
 
 
 class Sandbox:
@@ -94,13 +119,18 @@ def spawn(
     # host's, and — under tensor parallelism, where every rank hosts the same runner — from
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
-    output = subprocess.DEVNULL if quiet else None
+    # `quiet` silences stdout only. **stderr is never discarded**: the block's own
+    # output is forwarded as PRINT events (see nns.Writer), so anything reaching
+    # this stderr is the runner process failing on its own account -- including
+    # `serve`'s "runner: ..." handler, which is the only report of a request the
+    # runner could not finish. Sending it to DEVNULL made a runner that died
+    # mid-request indistinguishable from one that hung, and cost hours.
     process = subprocess.Popen(
         [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)],
         env=env,
         stdin=subprocess.DEVNULL,
-        stdout=output,
-        stderr=output,
+        stdout=subprocess.DEVNULL if quiet else None,
+        stderr=None,
     )
 
     deadline = time.time() + timeout

@@ -233,7 +233,7 @@ class Fanout:
 
     def __init__(self, channels, signature=None, timeout: float = 300.0) -> None:
         self.channels = list(channels)
-        self._signature = signature or (lambda message: _event_of(message))
+        self._signature = signature or signature_of
         self.timeout = timeout
 
     def send(self, *args, **kwargs) -> None:
@@ -282,7 +282,7 @@ class Fanout:
             channel.close()
 
 
-def _event_of(message):
+def signature_of(message):
     """The event name in a received message, whichever codec produced it.
 
     `unpack` yields ``(values, kwargs)`` and `decode` yields the value itself, so
