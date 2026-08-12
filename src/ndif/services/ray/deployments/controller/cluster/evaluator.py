@@ -252,14 +252,17 @@ class ModelEvaluator:
         trace — indistinguishable, in the logs of a cluster that is running
         fine, from a model that really is unshardable.
         """
-        if override is not None:
-            # 0 is "do not place this tensor-parallel", spelled as a number so a
+        if override == 0:
+            # "Do not place this tensor-parallel", spelled as a number so a
             # config can say it; None means "nobody said, ask the checkpoint".
-            return override or None
+            return None
 
         try:
-            return self._entry(model_key, dtype, trust_remote_code).max_tp
+            limit = self._entry(model_key, dtype, trust_remote_code).max_tp
         except CheckpointUnreachable as unreachable:
+            if override is not None:
+                # Nothing to check against, and the operator said a number.
+                return override
             logger.warning(
                 f"=> Could not reach the Hub to describe {model_key}: {unreachable}. "
                 "Placing it without tensor parallelism; this is a network result, "
@@ -268,7 +271,32 @@ class ModelEvaluator:
             return None
         except Exception:
             logger.debug(f"Could not determine a TP degree for {model_key}", exc_info=True)
-            return None
+            return override
+
+        if override is None:
+            return limit
+
+        if limit is None:
+            # The checkpoint says it cannot be split. An override is an explicit
+            # instruction, so it still wins — but say so, because if it is wrong
+            # the failure lands at load with the cards already reserved.
+            logger.warning(
+                f"=> {model_key} reports no tensor-parallel plan, but max_tp="
+                f"{override} was configured; taking the configured value"
+            )
+            return override
+
+        # A cap, not a widening. Asking for more ways than the weights actually
+        # divide into passes every check here — the degree looks workable and the
+        # GPU count looks even — and then transformers refuses at load, after the
+        # cards are reserved and the weights read across them. That is the
+        # sequence this whole path exists to move earlier.
+        if override > limit:
+            logger.warning(
+                f"=> {model_key} was configured max_tp={override} but its weights "
+                f"divide at most {limit} ways; using {limit}"
+            )
+        return min(override, limit)
 
     def prefetch(
         self,

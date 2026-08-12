@@ -83,6 +83,10 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
                 default_trusted=trusted,
                 default_dtype=dtype,
                 default_padding_factor=padding_factor,
+                default_padding_bias=padding_bias,
+                default_size_bytes=size_bytes,
+                default_gpus=gpus,
+                default_max_tp=max_tp,
             )
         except (FileNotFoundError, ValueError) as e:
             raise click.ClickException(str(e))

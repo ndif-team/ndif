@@ -10,6 +10,8 @@ in a replica that isn't there.
 from __future__ import annotations
 
 import math
+import threading
+import time
 
 import pytest
 
@@ -656,3 +658,221 @@ class TestDtypeResolution:
 
         with pytest.raises(ValueError, match="Unknown torch dtype"):
             resolve_dtype("float3")
+
+
+class TestDrainingTheGroup:
+    """Reading the shards' replies must wait on all of them at once.
+
+    Serializing with a shrinking per-shard timeout looks equivalent and is not:
+    the ranks leave a collective together, so a budget spent on the first shard
+    left the rest with a timeout of *zero* -- which is non-blocking mode, not "no
+    wait", so they raised BlockingIOError and were reported lost. A lost shard
+    restarts the replica, so a slow first reply cost four GPUs.
+
+    These use real socket pairs, because the bug was in what a real socket does
+    with `settimeout(0.0)` and no stub would have reproduced it.
+    """
+
+    @staticmethod
+    def _group(count=3):
+        import socket
+
+        from ndif.services.ray.tp.common import encode, send_frame
+        from ndif.services.ray.tp.host import Shard, ShardGroup
+
+        group = ShardGroup(model_key="m", gpu_ids=list(range(count + 1)), dtype="bfloat16")
+        ends = []
+        for rank in range(1, count + 1):
+            ours, theirs = socket.socketpair()
+            shard = Shard(rank=rank, process=None, sock=ours)
+            group.shards.append(shard)
+            ends.append(theirs)
+
+        def answer(index, value, after=0.0):
+            def send():
+                send_frame(ends[index], encode(value))
+
+            if after:
+                threading.Timer(after, send).start()
+            else:
+                send()
+
+        return group, answer
+
+    def test_a_slow_first_reply_does_not_lose_the_others(self):
+        # The regression, exactly: rank 1 answers late enough to eat the budget,
+        # and ranks 2 and 3 answered long ago.
+        group, answer = self._group()
+        answer(1, ("DONE",))
+        answer(2, ("DONE",))
+        answer(0, ("DONE",), after=0.3)
+
+        raised, lost = group.collect(timeout=5.0)
+
+        assert lost == [], f"live shards reported lost: {lost}"
+        assert raised == []
+
+    def test_a_shard_that_never_answers_is_lost(self):
+        group, answer = self._group()
+        answer(0, ("DONE",))
+        answer(1, ("DONE",))
+
+        raised, lost = group.collect(timeout=0.5)
+
+        assert len(lost) == 1 and "rank 3" in lost[0]
+
+    def test_an_error_is_raised_not_lost(self):
+        group, answer = self._group()
+        answer(0, ("ERROR", "boom"))
+        answer(1, ("DONE",))
+        answer(2, ("DONE",))
+
+        raised, lost = group.collect(timeout=5.0)
+
+        assert lost == []
+        assert len(raised) == 1 and "boom" in raised[0]
+
+    def test_release_accepts_acknowledgements_in_any_order(self):
+        group, answer = self._group()
+        answer(2, ("IDLE", 3))
+        answer(0, ("IDLE", 1), after=0.2)
+        answer(1, ("IDLE", 2))
+
+        assert group.release(timeout=5.0) == []
+
+    def test_release_reports_a_shard_that_will_not_stand_down(self):
+        group, answer = self._group()
+        answer(0, ("IDLE", 1))
+        answer(1, ("DONE",))  # wrong message: not an acknowledgement
+        answer(2, ("IDLE", 3))
+
+        lost = group.release(timeout=1.0)
+
+        assert len(lost) == 1 and "rank 2" in lost[0]
+
+    def test_the_deadline_is_for_the_group_not_each_shard(self):
+        # The bound the caller was promised: `cleanup` runs on the actor's event
+        # loop, so `timeout * (tp - 1)` would stall every other call into it.
+        group, answer = self._group(count=3)
+        started = time.time()
+
+        group.collect(timeout=0.5)
+
+        assert time.time() - started < 1.5
+
+
+class TestMaxTpOverrideIsACap:
+    """A configured degree may narrow what the checkpoint supports, not widen it.
+
+    Asking for more ways than the weights divide into passes every check on this
+    path -- the degree looks workable, the GPU count looks even -- and then
+    transformers refuses at load, with the cards already reserved and the weights
+    read across them. Moving that refusal earlier is the whole point of the path.
+    """
+
+    @staticmethod
+    def _evaluator(limit):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = mod.ModelEvaluator()
+
+        class Entry:
+            max_tp = limit
+
+        evaluator._entry = lambda *a, **k: Entry()
+        return evaluator
+
+    def test_an_override_above_the_real_limit_is_clamped(self):
+        assert self._evaluator(limit=2).max_tp("k", override=8) == 2
+
+    def test_an_override_below_it_is_taken(self):
+        assert self._evaluator(limit=8).max_tp("k", override=2) == 2
+
+    def test_zero_still_means_never(self):
+        assert self._evaluator(limit=8).max_tp("k", override=0) is None
+
+    def test_no_override_still_asks_the_checkpoint(self):
+        assert self._evaluator(limit=8).max_tp("k") == 8
+
+    def test_a_clamped_degree_no_longer_matches_the_gpu_count(self):
+        # The end the clamp exists for: `gpus: 8` on a model that halves used to
+        # produce max_tp=8, which made 8 a workable degree and reserved 8 cards.
+        from ndif.services.ray.deployments.controller.cluster.node import CandidateLevel
+
+        limit = self._evaluator(limit=2).max_tp("k", override=8)
+        node = make_node()
+        candidate = node.evaluate("m", 10_000_000_000, gpus=8, max_tp=limit)
+
+        assert candidate.candidate_level == CandidateLevel.CANT_ACCOMMODATE
+
+    def test_an_override_wins_when_the_checkpoint_says_nothing(self):
+        # No plan to read: the operator's number is the only information there is,
+        # and refusing it would make the field useless for exactly the models that
+        # need it.
+        assert self._evaluator(limit=None).max_tp("k", override=4) == 4
+
+
+class TestFileEntriesSeeTheCliFlags:
+    """`ndif deploy -f models.yaml --gpus 4` must not silently drop `--gpus`.
+
+    Click accepted the flag and the file branch hardcoded None, so the deploy
+    went out with the count the size implied and nothing said otherwise.
+    """
+
+    @staticmethod
+    def _load(text, **defaults):
+        import tempfile
+        from pathlib import Path
+
+        from ndif.cli.lib.model_config import load_model_config
+
+        path = Path(tempfile.mkdtemp()) / "models.yaml"
+        path.write_text(text)
+        return load_model_config(path, **defaults)
+
+    def test_a_flag_reaches_a_bare_checkpoint_entry(self):
+        specs = self._load("models:\n  - gpt2\n", default_gpus=4, default_max_tp=8)
+
+        assert specs[0]["gpus"] == 4 and specs[0]["max_tp"] == 8
+
+    def test_a_flag_reaches_a_dict_entry(self):
+        specs = self._load(
+            "models:\n  - checkpoint: gpt2\n", default_size_bytes=123, default_padding_bias=7
+        )
+
+        assert specs[0]["size_bytes"] == 123 and specs[0]["padding_bias"] == 7
+
+    def test_the_file_wins_over_the_flag(self):
+        specs = self._load("models:\n  - checkpoint: gpt2\n    gpus: 2\n", default_gpus=4)
+
+        assert specs[0]["gpus"] == 2
+
+    def test_every_flag_with_a_default_is_wired_to_it(self):
+        # The bug was one missing keyword argument. The invariant that catches
+        # the whole class: if a CLI option has a matching `default_<name>` on
+        # `load_model_config`, the command must pass it — otherwise the flag is
+        # accepted and dropped for `-f` deploys.
+        #
+        # Not "every default is passed": `execution_timeout_seconds` and
+        # `envoy_class` are settable in the file only, and have no flag.
+        import inspect
+
+        from ndif.cli.commands import deploy as command
+        from ndif.cli.lib.model_config import load_model_config
+
+        source = inspect.getsource(command.deploy.callback)
+        defaults = {
+            name
+            for name in inspect.signature(load_model_config).parameters
+            if name.startswith("default_")
+        }
+        flags = {
+            parameter.name for parameter in command.deploy.params
+        }
+
+        unwired = [
+            f"default_{flag}"
+            for flag in flags
+            if f"default_{flag}" in defaults and f"default_{flag}=" not in source
+        ]
+        assert not unwired, f"accepted as flags but never passed: {unwired}"

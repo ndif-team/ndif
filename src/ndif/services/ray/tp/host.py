@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import select
 import socket
 import subprocess
 import sys
@@ -295,17 +296,60 @@ class ShardGroup:
             except OSError:
                 logger.warning(f"could not release rank {shard.rank}")
 
-        lost = []
-        deadline = time.time() + timeout
-        for shard in self.shards:
-            try:
-                message = shard.recv(timeout=max(0.0, deadline - time.time()))
-            except Exception as exception:
-                lost.append(f"rank {shard.rank}: {exception}")
-                continue
-            if not (isinstance(message, tuple) and message[0] == "IDLE"):
-                lost.append(f"rank {shard.rank}: {self._describe(message)}")
+        received, lost = self._drain(time.time() + timeout)
+        lost.extend(
+            f"rank {rank}: {self._describe(message)}"
+            for rank, message in sorted(received.items())
+            if not (isinstance(message, tuple) and message[0] == "IDLE")
+        )
         return lost
+
+    # How long a shard gets to finish a frame it has already started. Small and
+    # fixed: `select` said the socket was readable, so the header is there and the
+    # body is a memcpy behind it. Never zero — `socket.settimeout(0.0)` is
+    # *non-blocking mode*, not "no wait", so a body not yet in the buffer would
+    # raise BlockingIOError and the shard would be called lost.
+    FRAME_TIMEOUT_SECONDS = 5.0
+
+    def _drain(self, deadline: float) -> "Tuple[Dict[int, Any], List[str]]":
+        """One message from every shard, or as many as arrive before ``deadline``.
+
+        Waits on all the sockets at once rather than each in turn. Serializing
+        them with a shrinking per-shard timeout looks equivalent and is not: the
+        ranks leave a collective together, so their replies land together, and a
+        budget spent on the first shard left the rest with a timeout of zero —
+        which is non-blocking mode, so they raised immediately and were reported
+        *lost*. That reads as a wedged group and restarts the replica, which is
+        the opposite of what a deadline was added to do.
+
+        Returns ``({rank: message}, [descriptions of the ones that never
+        answered])``.
+        """
+        waiting = {shard.sock.fileno(): shard for shard in self.shards}
+        received: Dict[int, Any] = {}
+        lost: List[str] = []
+
+        while waiting:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select(list(waiting), [], [], remaining)
+            if not ready:
+                break
+            for fileno in ready:
+                shard = waiting.pop(fileno)
+                try:
+                    received[shard.rank] = shard.recv(
+                        timeout=self.FRAME_TIMEOUT_SECONDS
+                    )
+                except Exception as exception:
+                    lost.append(f"rank {shard.rank}: {exception}")
+
+        lost.extend(
+            f"rank {shard.rank}: no answer within the deadline"
+            for shard in waiting.values()
+        )
+        return received, lost
 
     def collect(self, timeout: float) -> Tuple[List[str], List[str]]:
         """Wait for every shard to finish; return ``(raised, lost)``.
@@ -323,22 +367,18 @@ class ShardGroup:
         * **lost** — the shard never answered. Whatever state it is in, it is not
           one this group can start another request from.
         """
-        raised, lost = [], []
         # One deadline for the whole group, not `timeout` each. The ranks leave
         # the last collective together, so they answer together; charging the
         # full timeout per shard would make the real bound `timeout * (tp - 1)`
         # -- 210s at degree 8 against a 30s constant that was chosen precisely
         # because this runs on the actor's event loop.
-        deadline = time.time() + timeout
-        for shard in self.shards:
-            try:
-                message = shard.recv(timeout=max(0.0, deadline - time.time()))
-            except Exception as exception:
-                lost.append(f"rank {shard.rank}: {exception}")
-                continue
-            if isinstance(message, tuple) and message[0] == "DONE":
-                continue
-            raised.append(f"rank {shard.rank}: {self._describe(message)}")
+        received, lost = self._drain(time.time() + timeout)
+
+        raised = [
+            f"rank {rank}: {self._describe(message)}"
+            for rank, message in sorted(received.items())
+            if not (isinstance(message, tuple) and message[0] == "DONE")
+        ]
         return raised, lost
 
     @staticmethod
