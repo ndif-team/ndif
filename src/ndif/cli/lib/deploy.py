@@ -41,6 +41,7 @@ def deploy(
         specs: model spec dicts. Required: ``checkpoint``. Optional: ``revision``,
             ``pinned``, ``replicas`` (default 1), ``trusted`` (default False),
             ``dtype``, ``actor_class``, ``envoy_class``, ``padding_factor``,
+            ``size_bytes``, ``padding_bias``, ``gpus``, ``max_tp``,
             ``execution_timeout_seconds``, ``model_key``.
         sync: reconcile the cluster to match ``specs`` exactly (evict extras,
             trim/grow per model). Without it, each call is purely additive.
@@ -119,6 +120,10 @@ def deploy(
                 dtype=model_keys_map[mk].get("dtype"),
                 actor_class=model_keys_map[mk]["actor_class"],
                 padding_factor=model_keys_map[mk]["padding_factor"],
+                size_bytes=model_keys_map[mk].get("size_bytes"),
+                padding_bias=model_keys_map[mk].get("padding_bias"),
+                gpus=model_keys_map[mk].get("gpus"),
+                max_tp=model_keys_map[mk].get("max_tp"),
                 execution_timeout_seconds=model_keys_map[mk]["execution_timeout_seconds"],
             )
             for mk in batch_keys

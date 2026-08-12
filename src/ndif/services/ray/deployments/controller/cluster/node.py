@@ -34,8 +34,14 @@ class Candidate:
         candidate_level: CandidateLevel,
         gpus: Optional[Dict[int, int]] = None,
         evictions: Optional[List[Tuple[MODEL_KEY, REPLICA_ID]]] = None,
+        reason: Optional[str] = None,
     ):
         self.candidate_level = candidate_level
+        # Why this node can't take the replica, when that isn't "no room" —
+        # a request for a GPU count the model cannot split into, say. Surfaced
+        # to whoever asked, because the default message ("the cluster ran out of
+        # room") sends them looking at the wrong thing entirely.
+        self.reason = reason
         self.gpus = gpus if gpus else {}
         self.evictions: List[Tuple[MODEL_KEY, REPLICA_ID]] = (
             evictions if evictions else []
@@ -398,23 +404,43 @@ class Node:
         pinned: bool = False,
         exclude: Optional[Set[MODEL_KEY]] = None,
         max_tp: Optional[int] = None,
+        gpus: Optional[int] = None,
+        per_gpu_bytes: Optional[int] = None,
     ) -> Candidate:
         cached = model_key in self.cache and bool(self.cache[model_key])
 
-        # Multi-GPU models are treated as consuming 100% of each GPU they span.
-        gpus_needed = self.gpu_resources.required(model_size_in_bytes)
+        if gpus is not None:
+            # Asked for outright. Still has to be a count the model shards into:
+            # transformers will not run an uneven split, so a request for three
+            # cards on a model that halves is refused here rather than failing at
+            # load, after the cards have been reserved and the weights read.
+            if max_tp is not None and gpus > 1 and tp_degree(max_tp, gpus) != gpus:
+                reason = (
+                    f"asked for {gpus} GPUs, but this model shards at most "
+                    f"{max_tp} ways and {gpus} is not one of those — "
+                    "tensor parallelism needs an even split. Pick a divisor of "
+                    f"{max_tp}, or set max_tp: 0 to spread it layer-by-layer "
+                    "instead."
+                )
+                logger.error(f"=> {model_key} {reason}")
+                return Candidate(
+                    candidate_level=CandidateLevel.CANT_ACCOMMODATE, reason=reason
+                )
+            gpus_needed = gpus
+        else:
+            gpus_needed = self.gpu_resources.required(model_size_in_bytes)
 
-        # A model that will be split across cards has to be split *evenly*, so
-        # round the count up to a degree it actually shards into: one that needs
-        # three cards and shards eight ways takes four. Fitting is what matters
-        # here, not the extra card — an uneven split doesn't run at all.
-        degree = tp_degree(max_tp, gpus_needed)
-        if degree is not None and degree > gpus_needed:
-            logger.debug(
-                f"=> {model_key} needs {gpus_needed} GPU(s) but shards into "
-                f"{degree}; asking for {degree}"
-            )
-            gpus_needed = degree
+            # A model that will be split across cards has to be split *evenly*,
+            # so round the count up to a degree it actually shards into: one that
+            # needs three cards and shards eight ways takes four. Fitting is what
+            # matters here, not the extra card — an uneven split doesn't run.
+            degree = tp_degree(max_tp, gpus_needed)
+            if degree is not None and degree > gpus_needed:
+                logger.debug(
+                    f"=> {model_key} needs {gpus_needed} GPU(s) but shards into "
+                    f"{degree}; asking for {degree}"
+                )
+                gpus_needed = degree
 
         if gpus_needed > self.gpu_resources.total:
             return Candidate(candidate_level=CandidateLevel.CANT_ACCOMMODATE)
@@ -425,7 +451,11 @@ class Node:
         # is one layer's worth and already inside the padding this size carries.
         # Charging 100% of every card it touches (as this used to) made a
         # multi-GPU replica block cards it was barely using.
-        per_gpu_bytes = math.ceil(model_size_in_bytes / gpus_needed)
+        # An even share unless told otherwise. Worth being able to say otherwise:
+        # accelerate's split is only near-even, and a caller who knows what its
+        # layers weigh can book the truth rather than the average.
+        if per_gpu_bytes is None:
+            per_gpu_bytes = math.ceil(model_size_in_bytes / gpus_needed)
 
         fitting_gpus = self.gpu_resources.fitting(per_gpu_bytes)
 

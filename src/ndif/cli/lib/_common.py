@@ -61,6 +61,10 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 "actor_class": spec.get("actor_class"),
                 "envoy_class": spec.get("envoy_class"),
                 "padding_factor": spec.get("padding_factor"),
+                "size_bytes": spec.get("size_bytes"),
+                "padding_bias": spec.get("padding_bias"),
+                "gpus": spec.get("gpus"),
+                "max_tp": spec.get("max_tp"),
                 "execution_timeout_seconds": spec.get("execution_timeout_seconds"),
                 # Whether the deployment may run the model's own repo code (HF
                 # trust_remote_code) and skip the execution sandbox. Off unless the

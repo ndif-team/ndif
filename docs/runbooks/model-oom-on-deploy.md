@@ -74,10 +74,10 @@ per_gpu_bytes = model_size_in_bytes if gpus_needed == 1 else self.gpu_resources.
 
 Two consequences worth internalizing:
 
-- **A multi-GPU model claims 100% of every GPU it spans.** If the padded size is
-  1.01× a card, `gpus_needed` is 2 and the ledger reserves both cards entirely —
-  no sharing, ~half the memory wasted. Sitting just over the boundary is the most
-  expensive place to be.
+- **A multi-GPU model is charged its share of each card**, `ceil(size / count)`,
+  not all of it — so a model 1.01× a card takes two cards at ~half each and the
+  rest stays usable by other models. It used to reserve both entirely; if you are
+  reading older notes about a "multi-GPU cliff", that is what they mean.
 - **`per_gpu_memory` is `cuda_memory_bytes // total_gpus`** (`cluster.py:104`),
   computed once when the node first appears, from `torch.cuda.mem_get_info`'s
   *total* (`resources.py:27-34`). Nodes with mixed card sizes are mis-accounted.

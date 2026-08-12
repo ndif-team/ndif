@@ -197,7 +197,43 @@ class _ControllerActor:
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
         ],
     ) -> DeployResponse:
+        await self._describe(deployments)
         return self._deploy(deployments)
+
+    async def _describe(
+        self,
+        deployments: Union[
+            MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
+        ],
+    ) -> None:
+        """Warm the evaluator's cache for these models, off the event loop.
+
+        Sizing a model reaches the Hub, and placement is synchronous on this
+        loop — so without this, deploying a model the evaluator has not seen
+        parks `check_nodes`, every in-flight `_monitor_deployment` and every
+        other RPC for as long as the network takes. Bounded now (nnsight gives up
+        on a slow Hub), but bounded is not the same as not blocking.
+
+        Deliberately *only* the reads. The placement that follows still runs on
+        the loop, one deploy at a time, exactly as before — moving that to a
+        thread would let it interleave with `check_nodes` over the same cluster
+        state, which is a much larger change than this problem is worth.
+        """
+        configs = DeploymentConfig.normalize(deployments)
+        if not configs:
+            return
+
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    self.cluster.evaluator.prefetch,
+                    model_key,
+                    config.dtype or self.default_dtype,
+                    config.trusted,
+                )
+                for model_key, config in configs.items()
+            )
+        )
 
     def evict(
         self,

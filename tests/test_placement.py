@@ -400,3 +400,259 @@ def _request():
         env = {}
 
     return Request()
+
+
+class TestPlacementOverrides:
+    """An operator can supply any part of the derivation and have the rest filled in.
+
+    Everything about where a replica goes comes from one number -- the model's
+    padded size -- so with only `padding_factor` exposed, "give this model four
+    cards" had to be expressed as a fudge factor computed backwards against the
+    cluster's card size. These name the thing wanted instead.
+    """
+
+    def test_an_explicit_gpu_count_is_taken(self):
+        node = make_node()
+        # A model that would otherwise fit on one card.
+        candidate = node.evaluate("m", 10_000_000_000, gpus=4, max_tp=8)
+
+        assert len(candidate.gpus) == 4
+
+    def test_a_count_the_model_cannot_split_into_is_refused(self):
+        # Better here than at load, after the cards are reserved and the weights
+        # read: transformers will not run an uneven split at all.
+        from ndif.services.ray.deployments.controller.cluster.node import CandidateLevel
+
+        node = make_node()
+        candidate = node.evaluate("m", 10_000_000_000, gpus=3, max_tp=8)
+
+        assert candidate.candidate_level == CandidateLevel.CANT_ACCOMMODATE
+
+    def test_the_refusal_says_why(self):
+        # Not "the cluster ran out of room", which is what every other refusal
+        # says and would send someone to look at the wrong thing entirely.
+        node = make_node()
+        candidate = node.evaluate("m", 10_000_000_000, gpus=3, max_tp=8)
+
+        assert candidate.reason and "even split" in candidate.reason
+
+    def test_an_ordinary_refusal_names_no_reason(self):
+        # Leaving it None is what lets the caller fall back to the generic
+        # message rather than inventing one.
+        node = make_node(cards=1)
+        candidate = node.evaluate("m", 10_000_000_000_000)
+
+        assert candidate.reason is None
+
+    def test_a_count_is_still_allowed_for_a_model_that_cannot_shard(self):
+        # No sharding plan means accelerate spreads it layer-by-layer, and any
+        # count works.
+        node = make_node()
+        candidate = node.evaluate("m", 10_000_000_000, gpus=3, max_tp=None)
+
+        assert len(candidate.gpus) == 3
+
+    def test_one_gpu_is_never_refused(self):
+        node = make_node()
+        assert len(node.evaluate("m", 10_000_000_000, gpus=1, max_tp=2).gpus) == 1
+
+    def test_an_explicit_share_overrides_the_even_split(self):
+        node = make_node()
+        candidate = node.evaluate(
+            "m", 40_000_000_000, gpus=2, per_gpu_bytes=30_000_000_000
+        )
+
+        assert set(candidate.gpus.values()) == {30_000_000_000}
+
+    def test_without_an_override_the_count_is_still_derived(self):
+        node = make_node()
+        size = 226_700_000_000
+
+        assert len(node.evaluate("m", size, max_tp=8).gpus) == 4
+
+
+class TestEvaluatorOverrides:
+    """Sizing inputs the caller can supply instead of having them worked out."""
+
+    @staticmethod
+    def _evaluator(**kwargs):
+        from ndif.services.ray.deployments.controller.cluster.evaluator import (
+            ModelEvaluator,
+        )
+
+        return ModelEvaluator(**kwargs)
+
+    def test_a_given_size_skips_the_estimate(self, monkeypatch):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator(padding_factor=0.0, padding_bias=0)
+        monkeypatch.setattr(
+            mod.ModelEvaluator,
+            "_entry",
+            lambda self, *a: (_ for _ in ()).throw(AssertionError("estimated anyway")),
+        )
+
+        # The description still runs and is allowed to fail; the size does not.
+        assert evaluator("k", size_bytes=1_000) == 1_000
+
+    def test_a_given_size_survives_an_unreachable_hub(self, monkeypatch):
+        # The point of measuring it yourself: a deploy that names its own size
+        # needs no network, where an estimated one cannot be placed at all.
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator(padding_factor=0.0, padding_bias=0)
+        monkeypatch.setattr(
+            mod.ModelEvaluator,
+            "_entry",
+            lambda self, *a: (_ for _ in ()).throw(RuntimeError("hub down")),
+        )
+
+        assert evaluator("k", size_bytes=2_000) == 2_000
+
+    def test_an_estimated_size_still_fails_when_the_hub_is_down(self, monkeypatch):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator()
+        monkeypatch.setattr(
+            mod.ModelEvaluator,
+            "_entry",
+            lambda self, *a: (_ for _ in ()).throw(RuntimeError("hub down")),
+        )
+
+        assert isinstance(evaluator("k"), Exception)
+
+    def test_padding_bias_can_be_overridden_per_model(self, monkeypatch):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator(padding_factor=0.0, padding_bias=500)
+        monkeypatch.setattr(mod.ModelEvaluator, "_entry", lambda self, *a: None)
+
+        assert evaluator("k", size_bytes=1_000) == 1_500
+        assert evaluator("k", size_bytes=1_000, padding_bias=0) == 1_000
+
+    def test_max_tp_can_be_supplied_without_asking_the_checkpoint(self, monkeypatch):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator()
+        monkeypatch.setattr(
+            mod.ModelEvaluator,
+            "_entry",
+            lambda self, *a: (_ for _ in ()).throw(AssertionError("asked anyway")),
+        )
+
+        assert evaluator.max_tp("k", override=8) == 8
+
+    def test_zero_max_tp_means_never_tensor_parallel(self, monkeypatch):
+        # Spelled as a number so a config can say it; None means "nobody said".
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = self._evaluator()
+        monkeypatch.setattr(mod.ModelEvaluator, "_entry", lambda self, *a: None)
+
+        assert evaluator.max_tp("k", override=0) is None
+        assert evaluator.actor_class("k", 4, "default.Actor", max_tp_override=0) == (
+            "default.Actor"
+        )
+
+
+class TestTheTwoExecutorsAreOne:
+    """Trusted and untrusted requests run the block the same way.
+
+    The sandbox grew its own copy of the block executor before the shared one
+    existed, and the copy drifted: it lost the autocast bracket, so the identical
+    script computed at different numerics depending on whether the request was
+    trusted -- and it never picked up the `cache_enabled=False` fix that made
+    remote training work at all. Nothing failed; the numbers were just different.
+    """
+
+    def test_the_runner_calls_the_shared_executor(self):
+        import inspect
+
+        from ndif.services.ray.sandbox import nns
+
+        source = inspect.getsource(nns)
+        assert "execute_traced_block" in source
+
+    def test_the_runner_does_not_reimplement_the_trace_scope(self):
+        # inc()/dec() around tracer.execute is exactly what it used to duplicate.
+        import inspect
+
+        from ndif.services.ray.sandbox import nns
+
+        source = inspect.getsource(nns._run)
+        assert "inc()" not in source and "dec()" not in source
+
+    def test_the_runner_applies_the_source_cache_scope(self):
+        import inspect
+
+        from ndif.services.ray.sandbox import nns
+
+        assert "block_scope" in inspect.getsource(nns.run)
+
+    def test_the_host_brackets_the_forward_it_drives(self):
+        # The half that is easy to miss and was: the runner brackets its own
+        # work, but under the sandbox the model's *forward* runs in the host
+        # process, driven over a socket. Without the same region there, the
+        # model's own arithmetic ran outside autocast and an untrusted request
+        # came back with different numbers than the identical trusted one --
+        # measured on gpt2 as identical token ids and embeddings diverging
+        # inside the first transformer block.
+        import inspect
+
+        from ndif.services.ray.sandbox import model
+
+        source = inspect.getsource(model.SandboxModelDeployment.interleave)
+        assert "request_dtype" in source
+
+    def test_there_is_one_definition_of_the_region(self):
+        import inspect
+
+        from ndif.services.ray.deployments.modeling import nns
+        from ndif.services.ray.sandbox import model
+        from ndif.services.ray.sandbox import nns as sandbox_nns
+
+        # Nobody builds their own torch.autocast; they all call the one function.
+        for module in (sandbox_nns, model):
+            assert "torch.autocast" not in inspect.getsource(module)
+        assert inspect.getsource(nns).count("torch.autocast") == 1
+
+    def test_the_dtype_reaches_the_runner(self):
+        # It has no model to ask, so the host has to ship it -- without which
+        # `execute_traced_block` would autocast to the wrong thing, or nothing.
+        import inspect
+
+        from ndif.services.ray.sandbox import model, runner
+
+        assert "dtype" in inspect.signature(nns_run := __import__(
+            "ndif.services.ray.sandbox.nns", fromlist=["run"]
+        ).run).parameters
+        assert "str(self.dtype)" in inspect.getsource(model.SandboxModelDeployment.execute)
+        assert "dtype" in inspect.getsource(runner.Runner.handle)
+
+
+class TestDtypeResolution:
+    """The dtype crosses a socket and a command line as a string."""
+
+    @pytest.mark.parametrize("given", ["bfloat16", "torch.bfloat16"])
+    def test_both_spellings_resolve(self, given):
+        import torch
+
+        from ndif.services.ray.deployments.modeling.util import resolve_dtype
+
+        assert resolve_dtype(given) is torch.bfloat16
+
+    def test_a_torch_dtype_round_trips_through_str(self):
+        # The trap this exists for: `str(torch.bfloat16)` is "torch.bfloat16",
+        # which the obvious `getattr(torch, name)` cannot resolve.
+        import torch
+
+        from ndif.services.ray.deployments.modeling.util import resolve_dtype
+
+        for dtype in (torch.bfloat16, torch.float16, torch.float32):
+            assert resolve_dtype(str(dtype)) is dtype
+
+    def test_nonsense_is_refused(self):
+        from ndif.services.ray.deployments.modeling.util import resolve_dtype
+
+        with pytest.raises(ValueError, match="Unknown torch dtype"):
+            resolve_dtype("float3")

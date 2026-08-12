@@ -11,6 +11,12 @@ File format::
         trusted: false
         dtype: bfloat16
         padding_factor: 0.15
+        # Placement overrides -- any of these replaces a step the controller
+        # would otherwise derive; anything left out is still worked out for you.
+        size_bytes: 6425499648   # measured weights; skips the Hub estimate
+        padding_bias: 2000000000 # per-model flat headroom
+        gpus: 4                  # place on exactly this many cards
+        max_tp: 8                # cap/supply the sharding degree (0 = never TP)
         execution_timeout_seconds: 3600
         envoy_class: ndif.services.ray.deployments.modeling.base.ModelActor
         actor_class: ndif.services.ray.deployments.modeling.base.ModelActor
@@ -72,6 +78,10 @@ def load_model_config(
                 "trusted": default_trusted,
                 "dtype": default_dtype,
                 "padding_factor": default_padding_factor,
+                "size_bytes": None,
+                "padding_bias": None,
+                "gpus": None,
+                "max_tp": None,
                 "execution_timeout_seconds": default_execution_timeout_seconds,
                 "envoy_class": default_envoy_class,
                 "model_key": None,
@@ -88,6 +98,10 @@ def load_model_config(
                 "trusted": item.get("trusted", default_trusted),
                 "dtype": item.get("dtype", default_dtype),
                 "padding_factor": item.get("padding_factor", default_padding_factor),
+                "size_bytes": item.get("size_bytes"),
+                "padding_bias": item.get("padding_bias"),
+                "gpus": item.get("gpus"),
+                "max_tp": item.get("max_tp"),
                 "execution_timeout_seconds": item.get(
                     "execution_timeout_seconds", default_execution_timeout_seconds
                 ),

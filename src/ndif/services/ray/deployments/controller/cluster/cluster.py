@@ -170,6 +170,8 @@ class Cluster:
                 padding_factor=config.padding_factor,
                 dtype=config.dtype,
                 trust_remote_code=config.trusted,
+                size_bytes=config.size_bytes,
+                padding_bias=config.padding_bias,
             )
             if isinstance(size_in_bytes, Exception):
                 tb = "".join(
@@ -204,17 +206,23 @@ class Cluster:
                 candidates: Dict[NODE_ID, Any] = {}
                 best_level: Optional[CandidateLevel] = None
 
+                # Asked once per replica rather than per node: it is a
+                # property of the model, and on a cold entry it reaches the Hub.
+                max_tp = self.evaluator.max_tp(
+                    model_key,
+                    dtype=config.dtype,
+                    trust_remote_code=config.trusted,
+                    override=config.max_tp,
+                )
+
                 for node in self.nodes.values():
                     candidate = node.evaluate(
                         model_key,
                         size_in_bytes,
                         pinned=pinned,
                         exclude=all_model_keys,
-                        max_tp=self.evaluator.max_tp(
-                            model_key,
-                            dtype=config.dtype,
-                            trust_remote_code=config.trusted,
-                        ),
+                        max_tp=max_tp,
+                        gpus=config.gpus,
                     )
 
                     if best_level is None or candidate.candidate_level < best_level:
@@ -237,7 +245,14 @@ class Cluster:
                         f"{config.replicas}) cannot be deployed on any node — "
                         f"stopping further attempts for this model"
                     )
-                    model_result.error = (
+                    # A node that refused for a *nameable* reason says so; the
+                    # rest really is "no room", and saying that when the model
+                    # was simply asked for a count it cannot split into sends
+                    # people to look at the cluster instead of their config.
+                    stated = next(
+                        (c.reason for c in candidates.values() if c.reason), None
+                    )
+                    model_result.error = stated or (
                         f"CANT_ACCOMMODATE: placed {len(model_result.replicas)} of "
                         f"{config.replicas} new replicas before the cluster ran out "
                         f"of room."
@@ -268,6 +283,7 @@ class Cluster:
                         self.default_model_actor_class,
                         dtype=config.dtype,
                         trust_remote_code=config.trusted,
+                        max_tp_override=config.max_tp,
                     ),
                     dtype=config.dtype,
                     trusted=config.trusted,

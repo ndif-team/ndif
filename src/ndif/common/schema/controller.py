@@ -34,7 +34,33 @@ class DeploymentConfig(BaseModel):
     # kicked off the deployment; the controller threads it into the evaluator's
     # size estimate and the actor's model load, which must agree.
     trusted: bool = False
+    # --- placement overrides -------------------------------------------------
+    # Everything about where a replica goes is derived from one number: the
+    # model's padded size. These let an operator supply any part of that
+    # derivation directly and have the rest filled in as usual, rather than
+    # working backwards through it. Without them the only lever is
+    # padding_factor, which means expressing "give this model four cards" as a
+    # fudge factor computed against the cluster's card size -- backwards, and
+    # wrong the moment the hardware changes.
+    #
+    # The model's own weights in bytes, measured rather than estimated. Skips
+    # the Hub round-trip that sizes a checkpoint, so a deploy still works with
+    # the Hub unreachable. Padding still applies on top.
+    size_bytes: Optional[int] = None
     padding_factor: Optional[float] = None
+    # Per-model override of NDIF_DEFAULT_PADDING_BIAS -- the flat term for
+    # per-process overhead (CUDA context, NCCL buffers, the runner pool), which
+    # is genuinely per-deployment rather than a property of the cluster.
+    padding_bias: Optional[int] = None
+    # Place on exactly this many GPUs, instead of deriving the count from the
+    # padded size. Still checked against what the model can actually shard into:
+    # a count no tensor-parallel degree divides is refused rather than run
+    # unevenly, because transformers will not run it.
+    gpus: Optional[int] = None
+    # Cap (or supply) the largest tensor-parallel degree, overriding what
+    # nnsight reads from the checkpoint's config. `0` forces a model to be
+    # placed without tensor parallelism at all.
+    max_tp: Optional[int] = None
     execution_timeout_seconds: Optional[float] = None
     # torch dtype name (e.g. "bfloat16") to load the model in and estimate its
     # size with. None -> the controller's default_dtype.

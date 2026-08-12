@@ -68,16 +68,18 @@ that event-loop thread and never interleave.
 
 ## Sizing a model
 
-Placement needs bytes, so `ModelEvaluator.__call__` (`evaluator.py:67`) builds the architecture on
-the meta device — `Remotable.from_model_key(..., dispatch=False)`, via nnsight, no weights read —
-counts parameters and buffers, then pads: `ceil(base + base * padding_factor + padding_bias)`
-(`evaluator.py:134`).
+Placement needs bytes, so `ModelEvaluator.__call__` asks nnsight to describe the checkpoint —
+`Remotable.describe_checkpoint`, one call returning its size, parameter count, config and revision,
+read from the Hub's published parameter count and falling back to building the architecture on the
+meta device for a repo that publishes none — then pads:
+`ceil(base + base * padding_factor + padding_bias)`. `DeploymentConfig.size_bytes` replaces the
+estimate outright, which also makes it the one placement input needing no network.
 
 Both terms exist because overhead has two shapes. The **bias** (default 500 MiB) covers the
 roughly-constant per-actor cost — CUDA context, workspace, allocator floor — which a pure percentage
 badly underestimates for a small model. The **factor** (default 0.15) covers activation and
 workspace memory that scales with model size, which a pure constant underestimates for a large one.
-`padding_factor` is overridable per deploy via `DeploymentConfig.padding_factor`; `padding_bias` is
+Both are overridable per deploy (`DeploymentConfig.padding_factor` / `.padding_bias`); the bias also has a cluster default, which is
 controller-wide only.
 
 The estimate is cached by `model_key` and recomputed when the request's `dtype` or
@@ -129,10 +131,11 @@ process — process-based isolation, still in progress; see
 
 ## Placing a replica
 
-`Node.evaluate` (`node.py:387`) grades one node. It computes `gpus_needed = ceil(size /
-per_gpu_memory)`; more than the node has is an immediate `CANT_ACCOMMODATE`. A model fitting on one
-GPU reserves exactly its padded size there; one needing several is modelled as consuming **100% of
-every GPU it spans** — sharded models never share a card. `GPUResources.fitting` (`node.py:76`)
+`Node.evaluate` grades one node. It computes `gpus_needed = ceil(size / per_gpu_memory)` — or takes
+`DeploymentConfig.gpus` if given — and more than the node has is an immediate `CANT_ACCOMMODATE`. A
+model that will be tensor-parallel has its count rounded **up** to a degree it actually shards into,
+because an uneven split does not run at all. Each card is then charged `ceil(size / gpus_needed)`:
+its share, not all of it. `GPUResources.fitting` (`node.py:76`)
 returns the GPUs with room sorted by *least* free memory first: best-fit, so small models pack into
 partly-used cards rather than fragmenting empty ones.
 

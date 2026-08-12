@@ -201,7 +201,7 @@ with `Cannot connect to Ray at <url>`.
 
 ### `ndif deploy`
 
-`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--pinned] [--replicas N] [--actor-class PATH] [--trusted] [--dtype DTYPE] [--ray-address ADDR] [--redis-url URL]`
+`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--pinned] [--replicas N] [--actor-class PATH] [--trusted] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -214,6 +214,11 @@ with `Cannot connect to Ray at <url>`.
 | `--actor-class` | dotted path, default `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Ray actor class serving the deployment |
 | `--trusted` | flag, off | load with `trust_remote_code=True`; see below |
 | `--dtype` | str, unset | dtype to load and size the model in; defaults to the controller's `NDIF_DEFAULT_DTYPE` |
+| `--gpus` | int, unset | place on exactly this many cards instead of deriving the count from the size |
+| `--size-bytes` | int, unset | the model's weights, measured; skips the Hub estimate |
+| `--padding-factor` | float, unset | headroom as a fraction of the model's size |
+| `--padding-bias` | int, unset | flat headroom, per model |
+| `--max-tp` | int, unset | largest tensor-parallel degree; `0` never places it tensor-parallel |
 | `--ray-address` / `--redis-url` | `NDIF_RAY_ADDRESS` / `NDIF_REDIS_URL` | Redis is only for the post-deploy nudge |
 
 **Deploy is additive.** Each call asks the controller for `--replicas` *more* replicas
@@ -268,6 +273,8 @@ models:
     trusted: false
     dtype: bfloat16
     padding_factor: 0.15
+    gpus: 4
+    max_tp: 8
     execution_timeout_seconds: 3600
     envoy_class: ndif.services.ray.deployments.modeling.base.ModelActor
     actor_class: ndif.services.ray.deployments.modeling.base.ModelActor
@@ -276,7 +283,8 @@ models:
 
 The loader passes through every field the deploy path understands
 (`cli/lib/model_config.py`): `checkpoint`, `revision`, `pinned`, `replicas`,
-`actor_class`, `trusted`, `dtype`, `padding_factor`, `execution_timeout_seconds`,
+`actor_class`, `trusted`, `dtype`, `padding_factor`, `padding_bias`, `size_bytes`,
+`gpus`, `max_tp`, `execution_timeout_seconds`,
 `envoy_class`, and a precomputed `model_key`. A per-model value overrides the
 matching CLI flag default (`--revision`, `--pinned`, `--replicas`, `--actor-class`,
 `--trusted`, `--dtype`) for entries that omit it. A missing `models:` key or a

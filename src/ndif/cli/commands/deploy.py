@@ -24,10 +24,21 @@ from ..lib.model_config import load_model_config
               help="Run the model's own repo code (HF trust_remote_code) and skip the sandbox.")
 @click.option("--dtype", default=None,
               help="Torch dtype to load and size the model in (default: controller's).")
+@click.option("--gpus", type=int, default=None,
+              help="Place on exactly this many GPUs, instead of deriving the count from the model's size.")
+@click.option("--size-bytes", "size_bytes", type=int, default=None,
+              help="The model's weights in bytes, measured. Skips the Hub estimate; padding still applies.")
+@click.option("--padding-factor", "padding_factor", type=float, default=None,
+              help="Fraction of the model's size to add as headroom (default: controller's).")
+@click.option("--padding-bias", "padding_bias", type=int, default=None,
+              help="Flat bytes of headroom to add (default: controller's).")
+@click.option("--max-tp", "max_tp", type=int, default=None,
+              help="Largest tensor-parallel degree to use; 0 to never place this model tensor-parallel.")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
 @click.option("--redis-url", default=None, help="Redis URL for dispatcher reconcile (default: NDIF_REDIS_URL).")
 def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_class,
-           trusted, dtype, ray_address, redis_url):
+           trusted, dtype, gpus, size_bytes, padding_factor, padding_bias, max_tp,
+           ray_address, redis_url):
     """Deploy one or more models.
 
     CHECKPOINTS: model checkpoints (e.g. "gpt2", "meta-llama/Llama-3.1-8B").
@@ -43,6 +54,8 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
         ndif deploy gpt2 --pinned
         ndif deploy -f models.yaml
         ndif deploy -f models.yaml --sync
+        ndif deploy meta-llama/Llama-3.2-3B --gpus 4
+        ndif deploy big-model --size-bytes 140000000000 --padding-bias 4000000000
     """
     if not checkpoints and not config_file:
         raise click.ClickException("Must specify either CHECKPOINTS or --file/-f")
@@ -52,6 +65,12 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
         raise click.ClickException("--sync cannot be used with checkpoint arguments")
     if replicas < 1:
         raise click.ClickException("--replicas must be >= 1")
+    if gpus is not None and gpus < 1:
+        raise click.ClickException("--gpus must be >= 1")
+    if size_bytes is not None and size_bytes < 1:
+        raise click.ClickException("--size-bytes must be >= 1")
+    if max_tp is not None and max_tp < 0:
+        raise click.ClickException("--max-tp must be >= 0 (0 disables tensor parallelism)")
 
     if config_file:
         try:
@@ -63,6 +82,7 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
                 default_model_actor_class=actor_class,
                 default_trusted=trusted,
                 default_dtype=dtype,
+                default_padding_factor=padding_factor,
             )
         except (FileNotFoundError, ValueError) as e:
             raise click.ClickException(str(e))
@@ -71,7 +91,9 @@ def deploy(checkpoints, config_file, sync, revision, pinned, replicas, actor_cla
         specs = [
             {"checkpoint": cp, "revision": revision, "pinned": pinned,
              "replicas": replicas, "actor_class": actor_class,
-             "trusted": trusted, "dtype": dtype}
+             "trusted": trusted, "dtype": dtype, "gpus": gpus,
+             "size_bytes": size_bytes, "padding_factor": padding_factor,
+             "padding_bias": padding_bias, "max_tp": max_tp}
             for cp in checkpoints
         ]
 

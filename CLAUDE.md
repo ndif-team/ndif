@@ -211,6 +211,10 @@ Read the first two if a behavior seems inexplicable:
   card 0; the moment one doesn't, the actor refuses to start with "is on cuda:0,
   outside the assigned set [2]". Multi-card `device_map="balanced"` is fine, and
   so is the WARM restore, which goes through accelerate directly.
+- **A tensor-parallel replica cannot be cached and is not sandboxed.** Its ranks'
+  devices are fixed when their processes start, so HOT→WARM is impossible and the
+  controller evicts it outright (`CACHEABLE = False`); and a TP placement replaces
+  the actor class, so untrusted code on a TP model runs in-process.
 - **Tensor parallelism needs transformers >= 5.15.** Older versions don't shard a
   tied LM head's weight while still gathering its output, so any model with
   `tie_word_embeddings=True` serves logits `tp_size` times too wide — with a

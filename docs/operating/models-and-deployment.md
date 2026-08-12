@@ -89,6 +89,11 @@ models:
     dtype: bfloat16
     padding_factor: 0.15
     execution_timeout_seconds: 3600
+    # Placement overrides — each replaces one step the controller would derive.
+    gpus: 4
+    size_bytes: 6425499648
+    padding_bias: 2000000000
+    max_tp: 8
     envoy_class: ndif.services.ray.deployments.modeling.base.ModelActor
     actor_class: ndif.services.ray.deployments.modeling.base.ModelActor
     model_key: null
@@ -96,8 +101,9 @@ models:
 
 `load_model_config` passes through every field the deploy path understands —
 `checkpoint`, `revision`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
-`padding_factor`, `execution_timeout_seconds`, `envoy_class`, `model_key`; any
-other key is silently dropped. `--sync` reconciles instead of adding:
+`padding_factor`, `padding_bias`, `size_bytes`, `gpus`, `max_tp`,
+`execution_timeout_seconds`, `envoy_class`, `model_key`; any other key is
+silently dropped. `--sync` reconciles instead of adding:
 `_sync_reconcile` (`cli/lib/deploy.py:196`) evicts every HOT model key not in the
 file, trims replicas above the requested count, and reduces each remaining spec
 to the shortfall so the additive deploy that follows adds only what's missing.
@@ -117,6 +123,16 @@ model key.
 | `execution_timeout_seconds` | `None` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, itself unset by default (no cap) | Per-request wall clock on the actor; on expiry the user gets `ERROR` (`modeling/base.py:322`). Set it per model, or via the env var, on a shared deployment. | yaml, dashboard, `lib.deploy` API |
 | `dtype` | `None` | `NDIF_DEFAULT_DTYPE` = `bfloat16` | The dtype weights load in **and** the dtype the size estimate assumes. | CLI `--dtype`, yaml, dashboard, `lib.deploy` API |
 | `actor_class` | `None` | `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Dotted path of the Ray actor class serving the replica. | CLI `--actor-class`, yaml, dashboard |
+| `size_bytes` | `None` | estimated from the checkpoint | The model's own weights, measured. Skips the Hub round-trip, so a deploy that names its size places with the Hub unreachable. Padding still applies on top. | CLI `--size-bytes`, yaml |
+| `padding_bias` | `None` | `NDIF_DEFAULT_PADDING_BIAS` = 500 MiB | Flat headroom, per model rather than per cluster. | CLI `--padding-bias`, yaml |
+| `gpus` | `None` | derived from the padded size | Place on exactly this many cards. Refused if the model cannot split into that many (see `max_tp`). | CLI `--gpus`, yaml |
+| `max_tp` | `None` | read from the checkpoint's config | Largest tensor-parallel degree. `0` places the model without tensor parallelism at all. | CLI `--max-tp`, yaml |
+
+**These are overrides, not requirements.** Supply any part of the derivation and
+the rest is still worked out. Without them the only lever is `padding_factor`,
+which means saying "give this model four cards" as a fudge factor computed
+backwards against the cluster's card size — and wrong the moment the hardware
+changes.
 
 Two more cluster-wide knobs shape every deploy: `NDIF_DEFAULT_PADDING_BIAS`
 (`524288000` = 500 MiB, flat, on every estimate) and
@@ -174,19 +190,23 @@ flowchart TB
     I --> J["controller.apply(): create detached actor, await __ray_ready__"]
 ```
 
-**Sizing.** `ModelEvaluator` builds the model on the meta device
-(`Remotable.from_model_key(model_key, dispatch=False, torch_dtype=..., trust_remote_code=...)`,
-`cluster/evaluator.py:97`), sums `nelement() * element_size()` over every
-parameter and buffer, then pads:
-`ceil(base + base * padding_factor + padding_bias)` (`:134`) — by default weights
-+ 15% + 500 MiB, standing in for the CUDA context, activations, and KV cache. A
-heuristic, not a measurement: a model with unusually large activations for its
-weight count can still OOM at run time, and nothing here reads live GPU memory.
+**Sizing.** `ModelEvaluator` asks nnsight to describe the checkpoint
+(`Remotable.describe_checkpoint`) — one call for its size, parameter count,
+config and revision, answered from the Hub's published parameter count rather
+than by building the architecture to count it, and falling back to that build for
+a repo that publishes none. Then it pads:
+`ceil(base + base * padding_factor + padding_bias)` — by default weights + 15% +
+500 MiB, standing in for the CUDA context, activations, and KV cache. A heuristic,
+not a measurement: a model with unusually large activations for its weight count
+can still OOM at run time, and nothing here reads live GPU memory. Supply
+`size_bytes` to replace the estimate with a measurement.
 
-**Placement.** `Node.evaluate` (`cluster/node.py:387`) computes
-`gpus_needed = ceil(size / per_gpu_memory)`. If one GPU is enough the replica
-reserves exactly `size` bytes on one card, so several models share a GPU;
-otherwise it takes 100% of each of `gpus_needed` cards. The node scores itself
+**Placement.** `Node.evaluate` computes `gpus_needed = ceil(size / per_gpu_memory)`
+(or takes `gpus` if given), rounds it up to a degree the model actually shards
+into when it will be tensor-parallel, and charges each card `ceil(size /
+gpus_needed)` — its **share**, not all of it. So a replica spanning four cards and
+using a third of each leaves the rest usable, and several models share a GPU
+whether or not any of them is multi-card. The node scores itself
 with a `CandidateLevel` (`cluster/node.py:19`), lower better: `CACHED_AND_FREE`
 (1, WARM here *and* free GPU room) < `FREE` (2) < `CACHED_AND_FULL` (3, WARM but
 something must be evicted) < `FULL` (4) < `CANT_ACCOMMODATE` (5, won't fit even
@@ -202,6 +222,38 @@ are separate budgets**: GPU memory holds the resident (HOT) weights, while
 `NDIF_MODEL_CACHE_PERCENTAGE` (`0.9`) scales the node's *CPU RAM*
 (`cpu_memory_bytes`) into the WARM cache budget (`cluster/cluster.py:107`), the
 pool that lets an evicted model's weights sit in host RAM so a reload skips disk.
+
+## Tensor parallelism
+
+A multi-GPU replica is served one of two ways, and the controller chooses without
+being asked.
+
+**Tensor-parallel** (`ndif.services.ray.tp.model.TPModelActor`) splits each layer's
+weights across the cards, so they all work on the same layer at once. Chosen when
+the replica got more than one GPU *and* the model shards evenly into exactly that
+many — nnsight reads the largest degree off the checkpoint's config, and the
+workable counts are its divisors. A model needing three cards and shardable eight
+ways is given four, because an uneven split does not run at all.
+
+**Everything else** gets the default actor, which spreads whole layers over the
+cards with accelerate: one card computes at a time, but any count works.
+
+Three things to know before relying on it:
+
+- **A TP replica is never cached.** Every rank's device is fixed when its process
+  starts, so it cannot be parked (HOT→WARM) and restored elsewhere. The controller
+  evicts these outright. Pin one you want to keep.
+- **A TP placement replaces the actor class**, so it is not sandboxed — an
+  untrusted request on a TP model runs in-process.
+- **transformers >= 5.15** is required; below it a tied LM head returns logits
+  `tp_size` times too wide, with a plausible argmax.
+
+Set `max_tp: 0` on a deployment to opt out, or `gpus:` to choose the count
+yourself. `NDIF_TP_MODEL_ACTOR_CLASS` points the choice somewhere else
+cluster-wide, including back at the ordinary actor to disable the feature.
+
+For how the group actually runs — the rank-0 actor, the shard processes, the
+two-phase request — see `src/ndif/services/ray/tp/ARCHITECTURE.md`.
 
 ## Pinning, eviction, and the minimum-deployment-time rule
 

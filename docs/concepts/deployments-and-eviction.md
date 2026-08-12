@@ -88,10 +88,11 @@ ties are broken by `random.choice`:
 (`CandidateLevel.DEPLOYED = 0` exists in the enum but `Node.evaluate` never
 returns it.)
 
-GPU count is `ceil(size / per_gpu_memory)`. A model that fits on one GPU
-reserves exactly its padded size there, so several models can share a GPU; a
-model that needs more than one reserves **100% of every GPU it spans**
-(`node.py:402`). Among GPUs that fit, `fitting()` sorts least-available-first —
+GPU count is `ceil(size / per_gpu_memory)`, or whatever `DeploymentConfig.gpus`
+asked for. Each card it lands on is charged its **share** — `ceil(size / count)` —
+not all of it, so a replica spanning four cards and using a third of each leaves
+the rest usable, and several models can share a GPU whether or not any of them is
+multi-card. Among GPUs that fit, `fitting()` sorts least-available-first —
 best-fit packing, so small models land on already-partly-used GPUs and leave
 whole GPUs free for large ones.
 

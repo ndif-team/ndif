@@ -164,17 +164,17 @@ Things that consume real GPU memory and are **absent from the ledger**:
 > node-global indices — but nothing stops user code inside the block from
 > touching a card the replica was not assigned.
 
-### The multi-GPU cliff
+### Crossing a card boundary
 
-`gpus_needed = ceil(size / per_gpu_memory)` (`.../cluster/node.py:397`). A model
-that needs one GPU reserves exactly its padded size there, so several models can
-share a card. A model that needs **more than one reserves 100% of every GPU it
-spans** (`node.py:402-405`).
+`gpus_needed = ceil(size / per_gpu_memory)`, and each card the replica lands on is
+charged `ceil(size / gpus_needed)` — its share. So a model 1% over a card's
+capacity takes two cards at about half each, and the other half of both stays
+usable. It is still a step (you now occupy two cards, and a tensor-parallel model
+rounds up again to a degree it splits into evenly), but it is no longer a cliff:
+this used to reserve **100%** of every GPU spanned, wasting half the memory.
 
-Sitting 1% over a card's capacity is the most expensive place in the system to
-be: you pay two whole GPUs and waste half of them. Lowering padding to squeeze
-under the boundary is a real optimization — and raising padding can accidentally
-push a model over it.
+Set `gpus` on the deployment if you want a specific count rather than whatever the
+padded size implies.
 
 `per_gpu_memory` is `cuda_memory_bytes // total_gpus` (`cluster.py:103-105`),
 computed once when the node first appears. **Nodes with mixed card sizes are
