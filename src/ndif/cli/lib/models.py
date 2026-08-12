@@ -74,24 +74,40 @@ def get_current_deployments(level: str | None = "HOT") -> list[dict]:
     return list(deployments.values())
 
 
-def wait_for_replica_ready(model_key: str, replica_id: str, timeout: int = 300) -> bool:
-    """Poll a replica's actor ``__ray_ready__`` until ready or ``timeout``.
+def wait_for_replica_ready(model_key: str, replica_id: str) -> None:
+    """Block until a replica's actor is ready to serve.
 
-    Transient states are tolerated (keep polling): ``ValueError`` (actor not
-    registered yet) and ``RayActorError`` (actor mid-respawn under
-    ``max_restarts=-1``).
+    Two failures mean "not yet" and are polled through:
+
+      - ``ValueError``: the controller creates the actor asynchronously after
+        ``deploy`` returns, so the lookup hasn't resolved yet.
+      - ``ActorUnavailableError``: the actor exists but is restarting.
+
+    **Anything else propagates**, which is the whole point. ``ActorDiedError``
+    is what a constructor that raised looks like from here, and it carries that
+    exception's traceback — so letting it out is how the caller learns a model
+    refused to load rather than merely being slow. Catching its parent
+    ``RayActorError`` instead swallows it, and since ``max_restarts=-1`` respawns
+    the actor to raise the identical error again, a permanent failure then looks
+    exactly like a slow start forever.
+
+    That is why there is no timeout. A deadline here cannot tell the two apart
+    either: it reports "timed out" for both, which is right for neither — a
+    genuinely slow load is cut off, and a deterministic failure is described by
+    how long it was polled rather than by what went wrong. Loading a large model
+    across many GPUs has no sensible upper bound; a failure has a cause, and now
+    that the cause escapes, waiting indefinitely is only waiting for something
+    that is actually going to happen.
     """
     import ray
-    import ray.exceptions
+    from ray.exceptions import ActorUnavailableError
 
     from ...common.providers.ray import get_model_actor_handle
 
-    start = time.time()
-    while time.time() - start < timeout:
+    while True:
         try:
             handle = get_model_actor_handle(model_key, replica_id)
             ray.get(handle.__ray_ready__.remote())
-            return True
-        except (ray.exceptions.RayActorError, ValueError):
+            return
+        except (ActorUnavailableError, ValueError):
             time.sleep(2)
-    return False

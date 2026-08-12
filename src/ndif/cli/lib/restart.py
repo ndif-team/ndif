@@ -16,7 +16,6 @@ def restart(
     model_key: Optional[str] = None,
     replica: Optional[str] = None,
     ray_address: Optional[str] = None,
-    timeout: int = 300,
     on_message: OnMessage = None,
 ) -> dict:
     """Restart replicas of a model by killing and awaiting respawn.
@@ -62,12 +61,11 @@ def restart(
 
     emit(on_message, f"Restarting {len(replica_ids)} replica(s) of {model_key}...")
 
-    out = [_restart_one(model_key, rid, timeout, on_message) for rid in replica_ids]
+    out = [_restart_one(model_key, rid, on_message) for rid in replica_ids]
     return {"model_key": model_key, "replicas": out}
 
 
-def _restart_one(model_key: str, replica_id: str, timeout: int,
-                 on_message: OnMessage) -> dict:
+def _restart_one(model_key: str, replica_id: str, on_message: OnMessage) -> dict:
     """Kill + respawn one replica, then wait for it to come back up."""
     import ray
 
@@ -88,12 +86,10 @@ def _restart_one(model_key: str, replica_id: str, timeout: int,
         return {"replica_id": replica_id, "status": "error", "error": str(e)}
 
     try:
-        if wait_for_replica_ready(model_key, replica_id, timeout=timeout):
-            emit(on_message, f"  ✓ [{replica_id}] restarted")
-            return {"replica_id": replica_id, "status": "restarted"}
-        emit(on_message, f"  ✗ [{replica_id}] timed out after {timeout}s")
-        return {"replica_id": replica_id, "status": "timeout",
-                "error": f"actor did not become ready within {timeout}s"}
+        # Blocks until the respawned actor serves, or raises why it cannot.
+        wait_for_replica_ready(model_key, replica_id)
+        emit(on_message, f"  ✓ [{replica_id}] restarted")
+        return {"replica_id": replica_id, "status": "restarted"}
     except Exception as e:
         emit(on_message, f"  ✗ [{replica_id}] failed: {e}")
         return {"replica_id": replica_id, "status": "error", "error": str(e)}

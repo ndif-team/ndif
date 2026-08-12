@@ -124,8 +124,8 @@ def add_from_deploy_result(
 
     ``error is None`` is the success criterion — i.e. ``status == "READY"``
     with every replica initialized. Anything with an error attached
-    (``"PARTIAL"`` ready-but-not-all, ``"ERROR"`` for placement failure,
-    timeouts during ``wait_for_replica_ready``, …) is silently skipped.
+    (``"PARTIAL"`` ready-but-not-all, ``"ERROR"`` for placement failure or for
+    an actor that raised while loading, …) is silently skipped.
     """
     # Lazy import — keeps the cache module free of cli dependency.
     from ....cli.lib.models import extract_repo_id_from_model_key

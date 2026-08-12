@@ -171,12 +171,12 @@ def deploy(
             ready, failed = [], []
             for rid in entry["replicas"]:
                 try:
-                    if wait_for_replica_ready(entry["model_key"], rid):
-                        emit(on_message, f"  ✓ {entry['model_key']} [{rid}]: ready")
-                        ready.append(rid)
-                    else:
-                        emit(on_message, f"  ✗ {entry['model_key']} [{rid}]: initialization timed out")
-                        failed.append((rid, "initialization timed out"))
+                    # Blocks until the actor is serving or raises the reason it
+                    # never will. A load that simply takes a long time is not a
+                    # failure and no longer reported as one.
+                    wait_for_replica_ready(entry["model_key"], rid)
+                    emit(on_message, f"  ✓ {entry['model_key']} [{rid}]: ready")
+                    ready.append(rid)
                 except Exception as e:
                     emit(on_message, f"  ✗ {entry['model_key']} [{rid}]: initialization failed - {e}")
                     failed.append((rid, str(e)))
