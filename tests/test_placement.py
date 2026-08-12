@@ -558,13 +558,15 @@ class TestEvaluatorOverrides:
 
 
 class TestTheTwoExecutorsAreOne:
-    """Trusted and untrusted requests run the block the same way.
+    """The sandbox calls the shared executor rather than keeping its own copy.
 
-    The sandbox grew its own copy of the block executor before the shared one
-    existed, and the copy drifted: it lost the autocast bracket, so the identical
-    script computed at different numerics depending on whether the request was
-    trusted -- and it never picked up the `cache_enabled=False` fix that made
-    remote training work at all. Nothing failed; the numbers were just different.
+    Structural only, and deliberately so: these catch the *shape* that let the
+    two paths drift -- a second implementation of the block executor -- and they
+    cannot tell you whether the numbers agree. That is
+    `test_sandbox_conformance.py`, which measures it against a live server. Do
+    not add assertions here that sound numeric; they would pass whether or not
+    the two paths compute the same thing, which is exactly how the divergence
+    went unnoticed the first time.
     """
 
     def test_the_runner_calls_the_shared_executor(self):
@@ -592,13 +594,10 @@ class TestTheTwoExecutorsAreOne:
         assert "block_scope" in inspect.getsource(nns.run)
 
     def test_the_host_brackets_the_forward_it_drives(self):
-        # The half that is easy to miss and was: the runner brackets its own
-        # work, but under the sandbox the model's *forward* runs in the host
-        # process, driven over a socket. Without the same region there, the
-        # model's own arithmetic ran outside autocast and an untrusted request
-        # came back with different numbers than the identical trusted one --
-        # measured on gpt2 as identical token ids and embeddings diverging
-        # inside the first transformer block.
+        # The half that is easy to miss: the runner brackets its own work, but
+        # under the sandbox the model's *forward* runs in the host process,
+        # driven over a socket, so it needs the region too. Whether that region
+        # is the *right* one is measured in test_sandbox_conformance.py.
         import inspect
 
         from ndif.services.ray.sandbox import model
@@ -606,17 +605,23 @@ class TestTheTwoExecutorsAreOne:
         source = inspect.getsource(model.SandboxModelDeployment.interleave)
         assert "request_dtype" in source
 
-    def test_there_is_one_definition_of_the_region(self):
+    def test_no_execution_path_builds_its_own_region(self):
+        # Not "there is exactly one torch.autocast in the tree" -- that breaks on
+        # the first legitimate unrelated use. The property is that the three
+        # places running a request all reach for the shared one.
         import inspect
 
-        from ndif.services.ray.deployments.modeling import nns
+        from ndif.services.ray.deployments.modeling import base, nns
         from ndif.services.ray.sandbox import model
         from ndif.services.ray.sandbox import nns as sandbox_nns
 
-        # Nobody builds their own torch.autocast; they all call the one function.
-        for module in (sandbox_nns, model):
-            assert "torch.autocast" not in inspect.getsource(module)
-        assert inspect.getsource(nns).count("torch.autocast") == 1
+        for module in (sandbox_nns, model, base):
+            source = inspect.getsource(module)
+            assert "torch.autocast" not in source, (
+                f"{module.__name__} builds its own autocast region instead of "
+                "calling nns.request_dtype"
+            )
+        assert "torch.autocast" in inspect.getsource(nns.request_dtype)
 
     def test_the_dtype_reaches_the_runner(self):
         # It has no model to ask, so the host has to ship it -- without which
