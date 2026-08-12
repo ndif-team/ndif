@@ -150,11 +150,13 @@ their code, and the person who paid was whoever sent the next request.
 - **No HOT↔WARM caching.** A group cannot be parked: every rank's device is fixed
   when its process starts, and restoring may land on different cards. The actor
   sets `CACHEABLE = False` and the controller evicts these outright.
-- **The sandbox is wired but not selectable.** A shard can now serve an
-  untrusted request as a *host* to one runner shared by the whole group
-  (`SANDBOX` below), but nothing chooses that path yet: the controller returns
-  one actor class, so "sharded" and "sandboxed" are still mutually exclusive by
-  construction. See `docs/developing/sandboxed-tensor-parallel-proposal.md`.
+- **Sandboxing is opt-in, per cluster.** `TPModelActor` runs untrusted code
+  in-process; `SandboxedTPModelActor` forks per request and sends an untrusted
+  block to one runner the whole group hosts (`SANDBOX` below). Both are valid
+  values for `NDIF_TP_MODEL_ACTOR_CLASS`, and a cluster taking untrusted traffic
+  wants the second. Keeping it a per-request fork rather than a second axis is
+  why the controller still picks one actor class: it chooses by how the
+  *weights* are placed, and the actor decides where the *code* runs.
 - **Dense models only.** Expert-parallel styles that slice by expert rather than
   along the last dim are refused at load; nnsight's `SHARDED_SIDES` is the list.
 - **Rank 0's metrics only.** Its peak memory is representative under TP.
