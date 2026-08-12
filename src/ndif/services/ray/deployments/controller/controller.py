@@ -85,12 +85,6 @@ class _ControllerActor:
         self.default_dtype = default_dtype
         self.runtime_context = ray.get_runtime_context()
 
-        # How each model is served, remembered from the deploy that said so, so a
-        # replacement replica is the same model as the one it replaces. See
-        # `_remember`. Not persisted: a controller restart forgets, and the first
-        # deploy after it re-establishes whatever it is told.
-        self.deployment_configs: dict[MODEL_KEY, DeploymentConfig] = {}
-
         # Keyed by (node_id, model_key, replica_id). Each replica is tracked
         # independently so the build()/apply() diff can fire create/delete/
         # cache/from_cache per replica without confusing siblings.
@@ -178,12 +172,6 @@ class _ControllerActor:
     ) -> DeployResponse:
         configs = DeploymentConfig.normalize(deployments)
 
-        # Reapply how this model is already being served before anything else
-        # reads the config -- a replacement replica has to be the same model as
-        # the one it replaces.
-        for model_key, config in configs.items():
-            self._remember(model_key, config)
-
         # Pin each config's dtype to a concrete value now, so the evaluator's
         # size estimate and the actor's load use the *same* dtype (the memory
         # accounting that places a replica must match what it actually loads).
@@ -202,33 +190,6 @@ class _ControllerActor:
             self.apply()
 
         return response
-
-    def _remember(self, model_key: MODEL_KEY, config: DeploymentConfig) -> None:
-        """Fill this config's unset placement fields from how the model is served,
-        then record whatever it now says.
-
-        The queue provisions a replacement replica with a bare
-        ``DeploymentConfig(replicas=1, trusted=...)`` -- it has no idea how the
-        model was deployed, and shouldn't. Without this, a model an operator
-        placed tensor-parallel comes back on the default single-GPU actor under
-        the same model key, and answers with different numbers while nothing says
-        the model is no longer sharded. `dtype` is the same hazard without the
-        sharding: a model deployed float32 would return as bfloat16.
-
-        Only `DeploymentConfig.STICKY` carries over. `replicas` is additive per
-        call, and `trusted` belongs to the request that triggered the deploy.
-
-        An explicit value always wins, so an operator redeploying with new
-        settings changes them -- and the new ones are what is remembered from
-        then on.
-        """
-        known = self.deployment_configs.get(model_key)
-        if known is not None:
-            for field in DeploymentConfig.STICKY:
-                if getattr(config, field, None) is None:
-                    setattr(config, field, getattr(known, field, None))
-
-        self.deployment_configs[model_key] = config.model_copy(deep=True)
 
     async def deploy(
         self,
