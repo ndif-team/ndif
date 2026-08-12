@@ -35,6 +35,7 @@ import gc
 import logging
 import os
 import random
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -42,11 +43,11 @@ import ray
 import torch
 
 from nnsight.modeling.huggingface import HuggingFaceModel
+from nnsight.schema.response import Status
 
 from ....common.metrics import ModelLoadTimeMetric
 from ....common.telemetry import elapsed_ms
 from ....common.types import MODEL_KEY
-from nnsight.schema.response import Status
 
 from ..deployments.modeling.base import BaseModelDeployment
 from ..sandbox.driver import RunnerError, SandboxDriver
@@ -461,6 +462,11 @@ class SandboxedTPModelDeployment(TPModelDeployment):
         payload. Only then are the shards told where to find it, and only once
         they have answered does the group commit to a forward.
         """
+        # `kill` is gated on this being set -- it is how the actor knows a request
+        # is in flight at all. The trusted path gets it from the base's `execute`;
+        # there is no base `execute` here, so without this line a cancel or a
+        # preempt is silently dropped and the block runs to completion.
+        self.execution_ident = threading.current_thread().ident
         sandbox = self.pool.acquire()
         self.execution_sandbox = sandbox
         connection = sandbox.connection()
