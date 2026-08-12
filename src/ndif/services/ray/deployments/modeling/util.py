@@ -257,7 +257,10 @@ def resolve_dtype(dtype: "str | Any | None") -> Any:
         return torch.bfloat16
     if isinstance(dtype, torch.dtype):
         return dtype
-    resolved = getattr(torch, dtype, None)
+    # Accepts its own inverse: `str(torch.bfloat16)` is "torch.bfloat16", and a
+    # caller shipping a dtype over a socket or a command line reaches for `str`
+    # long before it reaches for a prefix strip.
+    resolved = getattr(torch, str(dtype).removeprefix("torch."), None)
     if not isinstance(resolved, torch.dtype):
         raise ValueError(f"Unknown torch dtype: {dtype!r}")
     return resolved

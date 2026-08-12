@@ -71,6 +71,43 @@ def block_scope():
         BLOCKS.update(blocks_snapshot)
 
 
+def request_dtype(dtype):
+    """The autocast region a request's work runs inside.
+
+    Autocasts tensors the user's code creates to the model's dtype, matching how
+    the weights were loaded. Only meaningful for half precision; a no-op
+    (``enabled=False``) otherwise, and when there is no CUDA device.
+
+    ``cache_enabled=False`` because this region spans the *whole* request, not
+    one forward pass. Autocast's cache keeps the half-precision copy it made of
+    each fp32 leaf that requires grad and reuses it for the rest of the region —
+    correct for a single forward, and silently wrong for a session that trains. A
+    block that creates parameters and steps an optimizer (the LoRA tutorial) then
+    runs every forward after the first against the snapshot taken before the
+    first ``optimizer.step()``: the gradients are real and the weights do move,
+    but the model never sees the new values, so the loss doesn't respond and
+    nothing appears to train. Disabling the cache costs nothing here — the served
+    weights are already loaded in ``dtype``, so there is no weight cast to reuse.
+
+    Its own function because **three** places need the identical region and they
+    are in different processes: the in-process actor, a tensor-parallel shard,
+    and — separately — the sandbox host, which runs the *forward* on behalf of a
+    runner whose own bracket is in another process entirely. Miss one and the
+    same script computes different numbers depending on where it happened to be
+    scheduled, which is exactly what happened.
+    """
+    autocast_enabled = torch.cuda.is_available() and dtype in (
+        torch.float16,
+        torch.bfloat16,
+    )
+    return torch.autocast(
+        device_type="cuda",
+        dtype=dtype,
+        enabled=autocast_enabled,
+        cache_enabled=False,
+    )
+
+
 def prepare_traced_block(model, payload, compress, deserialize):
     """Rebuild a request's tracer against this process's live model.
 
@@ -104,30 +141,7 @@ def execute_traced_block(tracer, dtype):
     in particular, since a mismatch would have the ranks reduce tensors of
     different dtypes. Two copies of this would be two chances to drift.
     """
-    # Autocast tensors the user's code creates to the model's dtype, matching how
-    # the weights were loaded. Only meaningful for half precision; a no-op
-    # (enabled=False) otherwise, and when there's no CUDA device.
-    autocast_enabled = torch.cuda.is_available() and dtype in (
-        torch.float16,
-        torch.bfloat16,
-    )
-    # cache_enabled=False because this region spans the *whole* request, not
-    # one forward pass. Autocast's cache keeps the half-precision copy it made
-    # of each fp32 leaf that requires grad and reuses it for the rest of the
-    # region -- which is correct for a single forward, and silently wrong for a
-    # session that trains. A block that creates parameters and steps an
-    # optimizer (the LoRA tutorial) then runs every forward after the first
-    # against the snapshot taken before the first `optimizer.step()`: the
-    # gradients are real and the weights do move, but the model never sees the
-    # new values, so the loss doesn't respond and nothing appears to train.
-    # Disabling the cache costs nothing here -- the served weights are already
-    # loaded in `dtype`, so there is no weight cast to reuse.
-    with torch.autocast(
-        device_type="cuda",
-        dtype=dtype,
-        enabled=autocast_enabled,
-        cache_enabled=False,
-    ):
+    with request_dtype(dtype):
         # Bracket execution in a trace scope (inc/dec), the way the client's
         # Tracer.__exit__ does, so nnsight's save() records into this thread's
         # save set and it's cleared afterward, then collect the values the block

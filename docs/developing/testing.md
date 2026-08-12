@@ -171,19 +171,41 @@ process rather than in the model actor:
    a hand-rolled `ndif start ray` that sets neither gets the base actor, where
    `trusted` is irrelevant because there is no sandbox to skip.
 
-So: with compose you already have condition 2. Condition 1 is now a one-line change
-to the **request**, not the server — set `trusted=False` in the trace's request
-envelope and rerun the identical suite:
+So: with compose you already have condition 2. Condition 1 is a change to the
+**request**, not the server — but note that nnsight's `RequestModel` has no
+`trusted` field (the server reads it from the request body, where an API key
+would normally stamp it), so a client cannot set it through the nnsight API. It
+has to be injected into the envelope. `tests/conftest_untrusted.py` does exactly
+that, in about ten lines:
 
 ```bash
-# in the test client, on the request: trusted=False
-pytest tests/        # same tests, now every one through a runner process
+PYTHONPATH=tests pytest tests/test_nnsight_remote.py -p conftest_untrusted
 ```
 
-Every test must produce the same result as the trusted run. That invariant — the
-two paths are observationally identical — is the whole reason the sandbox is
-shaped the way it is, so the suite doubles as the sandbox's conformance test. Any
-divergence is a sandbox bug (or a new xfail), and
+Every test must produce the same result as the trusted run, and as of the
+autocast fix below they do — bar `TestRemoteGradients`, which is a real sandbox
+limitation (see `sandbox/ARCHITECTURE.md`). **46 passed, 2 failed, 2 skipped**
+through runner processes.
+
+Worth knowing what "the same result" turned out to mean. The two paths were not
+observationally identical, in two compounding ways, and neither failed anything —
+the numbers were just different:
+
+* the runner had no autocast region, so a tensor the *block* made came back
+  `float32` untrusted and `bfloat16` in-process;
+* and the host had none around the forward it drives on the runner's behalf, so
+  the *model's own* arithmetic ran uncast. Measured on gpt2: identical token ids
+  and identical embeddings, diverging inside the first transformer block, ending
+  at a relative difference of 6.5e-3 in the logits.
+
+Both now use one `request_dtype` bracket and the paths are bit-identical. If you
+are checking this yourself, run the same path twice first — trusted against
+trusted is bit-exact, which is what makes a trusted-vs-untrusted difference mean
+anything.
+
+That invariant — the two paths are observationally identical — is the whole
+reason the sandbox is shaped the way it is, so the suite doubles as the sandbox's
+conformance test. Any divergence is a sandbox bug (or a new xfail), and
 `src/ndif/services/ray/sandbox/ARCHITECTURE.md`'s "Current simplifications"
 section is where the deliberate ones are listed. Read that list against the code
 before believing it: `tracer.cache()` is listed as unsupported but is in fact

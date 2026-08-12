@@ -28,6 +28,8 @@ import torch
 from nnsight.intervention.batching import Batcher
 from nnsight.intervention.cache import Cache
 from nnsight.intervention.interleaver import EarlyStopException, Mediator
+
+from ..deployments.modeling.nns import request_dtype
 from nnsight.schema.response import Status
 from nnsight.util import apply
 
@@ -269,7 +271,11 @@ class SandboxModelDeployment(BaseModelDeployment):
         self.execution_sandbox = sandbox
         connection = sandbox.connection()
         try:
-            connection.send((request.payload, request.compress))
+            # The dtype rides along because the runner has no model to ask, and
+            # runs the block under the same autocast bracket this actor would.
+            connection.send(
+                (request.payload, request.compress, str(self.dtype))
+            )
             while True:
                 name, rest, kwargs = self.next_event(connection, request)
                 if name == "INTERLEAVE":
@@ -373,7 +379,14 @@ class SandboxModelDeployment(BaseModelDeployment):
         interleaver.mediators = proxies
         result = None
         try:
-            with interleaver:
+            # The same autocast region the in-process path runs a request in.
+            # It has to be *here*: the runner brackets its own work, but the
+            # forward happens in this process, so without this the model's own
+            # arithmetic ran outside autocast and an untrusted request came back
+            # with different numbers than the identical trusted one. Measured on
+            # gpt2: identical token ids and embeddings, diverging inside the
+            # first block.
+            with request_dtype(self.dtype), interleaver:
                 fn = getattr(self.model, fn_name)
                 interleaver.batcher, call_args, call_kwargs = self._assemble(
                     fn, invokes, kwargs

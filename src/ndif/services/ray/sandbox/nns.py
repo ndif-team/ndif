@@ -47,11 +47,11 @@ from nnsight.intervention.interleaver import (
 from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.intervention.source import SourceEnvoy
 from nnsight.intervention.tracer import InterleavingTracer
-from nnsight.tracing.tracer import _saves, dec, inc
 
 from ....common.errors import RequestError
 from ....common.schema.request import BackendRequestModel
-from ..deployments.modeling.util import cpu_pickle_module
+from ..deployments.modeling.nns import block_scope, execute_traced_block
+from ..deployments.modeling.util import cpu_pickle_module, resolve_dtype
 
 # The runner's connection to the host, for the request currently executing. The
 # runner handles one request at a time, so a module global is enough.
@@ -329,7 +329,7 @@ _original_cache = InterleavingTracer.cache
 InterleavingTracer.cache = ipc_cache
 
 
-def run(conn, blob: bytes, compress: bool = False) -> None:
+def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32") -> None:
     """Deserialize the request in this process and execute it; interleave over IPC.
 
     Runs as the runner's user code: ``conn`` is the socket to the host. Model calls
@@ -337,8 +337,12 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
     On success ``END`` carries the ``torch.save`` blob of the block's
     ``nnsight.save()``-marked values (ready for the host to upload as-is, no pickle
     round-trip) plus ``deserialize_ms`` — deserialize happens here, so the host
-    can't time that phase itself. Values are collected as in
-    ``BaseModelDeployment.execute``.
+    can't time that phase itself.
+
+    ``dtype`` is the model's, shipped from the host because this process has no
+    model to ask. It matters: the block runs under the same autocast bracket the
+    in-process path uses, and without it an untrusted submission computed at
+    different numerics from the identical trusted one.
     """
     global connection
     connection = conn
@@ -348,6 +352,15 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
     # sending. Sharing one `except` meant a corrupt payload came back dressed as
     # a user-code failure: NDIF's own frames, this file's path, and a
     # `ZstdError` the caller could do nothing with.
+    # The same per-request source-cache hygiene the model actor applies. A fresh
+    # runner per request makes it redundant today; it is here so that stops being
+    # load-bearing, because the failure it prevents is a block silently running
+    # the *previous* request's code (see nns.block_scope).
+    with block_scope():
+        _run(conn, blob, compress, dtype)
+
+
+def _run(conn, blob: bytes, compress: bool, dtype: str) -> None:
     try:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
@@ -364,19 +377,11 @@ def run(conn, blob: bytes, compress: bool = False) -> None:
         terminal = ("EXCEPTION", str(error))
     else:
         try:
-            # Bracket execution in a trace scope so nnsight.save() records into this
-            # thread's save set, then collect the marked values (by identity) by name.
-            inc()
-            try:
-                tracer.execute(tracer.info.code)
-                saves = _saves()
-                saved = {
-                    name: value
-                    for name, value in tracer.info.frame.f_locals.items()
-                    if id(value) in saves
-                }
-            finally:
-                dec()
+            # The shared executor, not a copy of it: the autocast bracket and the
+            # save collection have to be identical to the in-process path, or the
+            # same block returns different numbers depending on whether the
+            # request was trusted.
+            saved = execute_traced_block(tracer, resolve_dtype(dtype))
             buffer = io.BytesIO()
             torch.save(saved, buffer, pickle_module=cpu_pickle_module())
         except Exception as error:

@@ -231,8 +231,10 @@ These are deliberately deferred (correctness-first, optimize later):
 - **Device placement is host-side only** — assembled inputs and ad-hoc `CALL` args
   are moved onto the model's device on the host; activations otherwise cross as-is,
   which assumes the runner shares the host's GPU (true on a single box).
-- **No autocast** — the base path wraps execution in `torch.autocast(model dtype)`;
-  the runner doesn't know the model dtype yet.
+- **Gradients** — `.grad` locations raise `OutOfOrderError` over IPC: the backward
+  runs on the host after the forward, and the runner's worker is parked on a
+  location the model has already gone past. `TestRemoteGradients` fails under
+  `-p conftest_untrusted`; it is the only part of the suite that does.
 - **exec_ms spans the whole run** — `ExecutionTimeMetric` / `GPUMemMetric` /
   `RequestResponseSizeMetric`, the structured `event()` logs, and the
   `deserialize_ms` / `upload_ms` split are all emitted. After the template
@@ -248,5 +250,5 @@ The authoritative message catalog (both directions, payload shapes, and the
 runner→host `pack` vs host→runner single-`encode` asymmetry) lives in the
 [`protocol.py`](protocol.py) module docstring. In brief:
 
-- **host → runner:** `(blob, compress)`, `RESUME`, `THROW`, `DONE`
+- **host → runner:** `(blob, compress, dtype)`, `RESUME`, `THROW`, `DONE`
 - **runner → host:** `INTERLEAVE`, `PARK`, `STOP`, `PRINT`, `END`, `EXCEPTION`
