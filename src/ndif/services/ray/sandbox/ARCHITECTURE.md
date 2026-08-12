@@ -40,7 +40,6 @@ across a process boundary.
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the transport `Connection`. |
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
 | [`nns.py`](nns.py) | The nnsight glue that runs **inside the runner**: deserialize the tracer, execute the block, and host the **worker side** of the interleaver (`IPCInterleaver`, patched `Mediator.event`, `IPCEnvoy`). |
-| [`protocol.py`](protocol.py) | The wire contract: framing, a type-tagged codec, and the authoritative **message catalog**. |
 
 ```
         ┌──────────────── model actor process (host) ─────────────────┐
@@ -230,10 +229,13 @@ every envoy shares.
 
 `Fanout` (in [`protocol.py`](protocol.py)) presents `send`/`recv` over *several*
 peers: send goes to all of them, recv waits for all of them, checks they are asking
-the same thing, and returns one answer. Nothing uses it yet.
+the same thing, and returns one answer. `runner.py`'s `serve` builds one
+whenever a runner was given more than one peer.
 
 It exists for the tensor-parallel case, where the peers are ranks of one model
-rather than independent callers. Two consequences follow from that and are the
+rather than independent callers — `SandboxedTPModelActor` gives the whole group a
+single runner, and this is the barrier that makes it serve each worker once for
+the group rather than once per rank (see [`../tp/ARCHITECTURE.md`](../tp/ARCHITECTURE.md)). Two consequences follow from that and are the
 whole reason it is not just a loop:
 
 - **A worker is served once per serve, not once per rank.** The runner holds one

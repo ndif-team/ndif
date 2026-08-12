@@ -16,8 +16,8 @@ Building the block and running it are separate calls because a tensor-parallel
 group needs to get between them: every rank proves it can *build* the block
 before any rank starts a forward pass, since deserializing is where a request
 usually fails and the last point where one can fail safely (see
-`ray/tp/host.py`). A single-process actor just calls both, which is
-`run_traced_block`.
+`ray/tp/host.py`). Every caller makes both calls, single-process ones included:
+the base actor's `commit()` sits between them.
 """
 
 import contextlib
@@ -192,13 +192,3 @@ def execute_traced_block(tracer, dtype, seed: Optional[int] = None):
 
     return saved
 
-
-def run_traced_block(model, payload, compress, dtype, deserialize, seed=None):
-    """Build a request's block and run it: the whole body of a request.
-
-    Returns ``(saved_values, deserialize_ms)``.
-    """
-    tracer, deserialize_ms = prepare_traced_block(
-        model, payload, compress, deserialize
-    )
-    return execute_traced_block(tracer, dtype, seed), deserialize_ms

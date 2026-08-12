@@ -476,6 +476,13 @@ class SandboxedTPModelDeployment(TPModelDeployment):
             # entered a collective yet, so a shard that cannot get there is still a
             # failure this rank can report without leaving anyone blocked.
             self.group.sandbox(sandbox.path, request.env, seed)
+            # This rank's own RNG, from the same number the shards and the runner
+            # get. The block runs in the runner, but the *model* still runs here,
+            # and its sampling draws from this process — so rank 0 has to be
+            # seeded for the same reason every shard does (see shard.py's SANDBOX
+            # branch). Missing it leaves rank 0 sampling a different token from
+            # the ranks it is about to all-reduce with.
+            seed_ranks(seed)
             connection.send(
                 (request.payload, request.compress, str(self.dtype), seed)
             )

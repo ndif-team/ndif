@@ -1148,3 +1148,62 @@ class TestTheSandboxedTensorParallelActor:
 
         source = inspect.getsource(SandboxedTPModelDeployment.interrupt)
         assert source.index("super().interrupt()") < source.index("stop()")
+
+
+class TestEveryRankIsSeeded:
+    """Every process that runs the model must draw the same numbers.
+
+    Not hygiene: ranks that sample differently generate different tokens, and the
+    model's own all-reduces then sum activations computed from different
+    sequences — wrong on every rank rather than merely inconsistent. Many
+    checkpoints ship ``do_sample: true``, so it reaches requests that never asked
+    to sample.
+
+    The untrusted path shipped without rank 0 seeding itself. It was invisible
+    because the *shards* seed on both paths and rank 0 seeds on the trusted one,
+    so every individual file looked right; only the pairing was wrong.
+    """
+
+    def _source(self, name):
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        return inspect.getsource(getattr(SandboxedTPModelDeployment, name))
+
+    def test_the_trusted_path_seeds_this_rank(self):
+        from ndif.services.ray.tp.model import TPModelDeployment
+        import inspect
+
+        assert "seed_ranks(seed)" in inspect.getsource(TPModelDeployment._dispatch)
+
+    def test_the_untrusted_path_seeds_this_rank_too(self):
+        # The block runs in the runner, but the model still runs here.
+        assert "seed_ranks(seed)" in self._source("_sandboxed")
+
+    def test_it_is_seeded_before_anyone_is_released(self):
+        # After this point the ranks are in a collective together; a seed applied
+        # later is applied to a forward that has already started sampling.
+        source = self._source("_sandboxed")
+
+        assert source.index("seed_ranks(seed)") < source.index("self.commit()")
+
+    def test_the_runner_gets_the_same_number(self):
+        # Three consumers of one seed: this rank, the shards (via group.sandbox),
+        # and the block itself (shipped in the payload tuple).
+        source = self._source("_sandboxed")
+
+        assert "self.group.sandbox(sandbox.path, request.env, seed)" in source
+        assert "str(self.dtype), seed" in source
+
+    def test_both_shard_paths_seed(self):
+        # The other half of the pairing, so a future edit to shard.py that drops
+        # one is caught here rather than by a hung group.
+        import inspect
+
+        from ndif.services.ray.tp import shard
+
+        source = inspect.getsource(shard)
+        assert source.count("seed_ranks(seed)") >= 2, (
+            "a shard must seed on the trusted and the sandboxed path alike"
+        )

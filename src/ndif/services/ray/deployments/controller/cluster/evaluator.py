@@ -247,10 +247,11 @@ class ModelEvaluator:
     def tp_enabled(self) -> bool:
         """Whether this cluster serves tensor-parallel replicas at all.
 
-        Off unless an operator named the actor class that serves one. That is a
-        deliberate opt-in rather than a default: a tensor-parallel replica cannot
-        be cached, is not sandboxed, and needs a transformers new enough to shard
-        correctly, so a cluster should get one because somebody asked for it.
+        Off unless an operator named the actor class that serves one -- either
+        ``TPModelActor`` or ``SandboxedTPModelActor``. That is a deliberate
+        opt-in rather than a default: a tensor-parallel replica cannot be cached
+        and needs a transformers new enough to shard correctly, so a cluster
+        should get one because somebody asked for it.
         """
         return self.tp_model_actor_class is not None
 

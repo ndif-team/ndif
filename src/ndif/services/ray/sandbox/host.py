@@ -91,7 +91,7 @@ def spawn(
     )
     # See the note in tp/common.rank_env: a runner is another process whose hash
     # randomization would make a block's set/dict iteration order differ from the
-    # host's, and — once a tensor-parallel group runs one runner per rank — from
+    # host's, and — under tensor parallelism, where every rank hosts the same runner — from
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
     output = subprocess.DEVNULL if quiet else None

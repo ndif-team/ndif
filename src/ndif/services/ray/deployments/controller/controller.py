@@ -669,9 +669,10 @@ class ControllerDeploymentArgs(BaseModel):
     # **Unset means tensor parallelism is off**, not "use the built-in one": no
     # degree is worked out, no GPU count is rounded up to a shardable one, and
     # every multi-GPU model is spread layer-by-layer with accelerate. Set it to
-    # `ndif.services.ray.tp.model.TPModelActor` to turn the feature on. Opt-in
-    # because a sharded replica cannot be cached, is not sandboxed, and needs
-    # transformers >= 5.15 to shard correctly.
+    # `ndif.services.ray.tp.model.TPModelActor` to turn the feature on, or to
+    # `ndif.services.ray.tp.model.SandboxedTPModelActor` on a cluster that also
+    # takes untrusted traffic. Opt-in because a sharded replica cannot be
+    # cached and needs transformers >= 5.15 to shard correctly.
     tp_model_actor_class: Optional[str] = os.environ.get(
         "NDIF_TP_MODEL_ACTOR_CLASS"
     ) or None
