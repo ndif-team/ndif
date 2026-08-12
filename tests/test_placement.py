@@ -532,14 +532,16 @@ class TestEvaluatorOverrides:
         assert evaluator("k", size_bytes=1_000) == 1_500
         assert evaluator("k", size_bytes=1_000, padding_bias=0) == 1_000
 
-    def test_max_tp_can_be_supplied_without_asking_the_checkpoint(self, monkeypatch):
+    def test_max_tp_can_be_supplied_when_the_checkpoint_cannot_be_read(self, monkeypatch):
         from ndif.services.ray.deployments.controller.cluster import evaluator as mod
 
-        evaluator = self._evaluator()
+        # Needs a cluster with tensor parallelism on; a disabled one answers None
+        # whatever the config says (see TestTensorParallelIsOptIn).
+        evaluator = self._evaluator(tp_model_actor_class="pkg.TPActor")
         monkeypatch.setattr(
             mod.ModelEvaluator,
             "_entry",
-            lambda self, *a: (_ for _ in ()).throw(AssertionError("asked anyway")),
+            lambda self, *a: (_ for _ in ()).throw(RuntimeError("hub down")),
         )
 
         assert evaluator.max_tp("k", override=8) == 8
@@ -548,7 +550,7 @@ class TestEvaluatorOverrides:
         # Spelled as a number so a config can say it; None means "nobody said".
         from ndif.services.ray.deployments.controller.cluster import evaluator as mod
 
-        evaluator = self._evaluator()
+        evaluator = self._evaluator(tp_model_actor_class="pkg.TPActor")
         monkeypatch.setattr(mod.ModelEvaluator, "_entry", lambda self, *a: None)
 
         assert evaluator.max_tp("k", override=0) is None
@@ -779,7 +781,9 @@ class TestMaxTpOverrideIsACap:
     def _evaluator(limit):
         from ndif.services.ray.deployments.controller.cluster import evaluator as mod
 
-        evaluator = mod.ModelEvaluator()
+        # A cluster with tensor parallelism switched on -- capping a degree is
+        # only a question for one that does (see TestTensorParallelIsOptIn).
+        evaluator = mod.ModelEvaluator(tp_model_actor_class="pkg.TPActor")
 
         class Entry:
             max_tp = limit
@@ -881,3 +885,101 @@ class TestFileEntriesSeeTheCliFlags:
             if f"default_{flag}" in defaults and f"default_{flag}=" not in source
         ]
         assert not unwired, f"accepted as flags but never passed: {unwired}"
+
+
+class TestTensorParallelIsOptIn:
+    """Tensor parallelism is off unless a cluster names the actor that serves it.
+
+    `NDIF_TP_MODEL_ACTOR_CLASS` unset means *off*, not "use the built-in one". A
+    sharded replica cannot be cached, is not sandboxed, and needs a transformers
+    new enough to shard correctly, so a cluster should get one because somebody
+    asked for it -- not because it deployed a model that happened to be
+    divisible.
+    """
+
+    @staticmethod
+    def _evaluator(actor_class=None, limit=8):
+        from ndif.services.ray.deployments.controller.cluster import evaluator as mod
+
+        evaluator = mod.ModelEvaluator(tp_model_actor_class=actor_class)
+
+        class Entry:
+            max_tp = limit
+
+        evaluator._entry = lambda *a, **k: Entry()
+        return evaluator
+
+    def test_off_by_default(self):
+        assert self._evaluator().tp_enabled is False
+
+    def test_on_when_an_actor_is_named(self):
+        assert self._evaluator("pkg.TPActor").tp_enabled is True
+
+    def test_a_disabled_cluster_reports_no_degree(self):
+        # Not just "doesn't route to the TP actor": no degree at all, so the
+        # placement that follows never rounds a GPU count up to a shardable one.
+        assert self._evaluator().max_tp("k") is None
+
+    def test_a_disabled_cluster_ignores_a_configured_degree(self):
+        # A per-model `max_tp` cannot switch the feature on for a cluster that
+        # never opted in.
+        assert self._evaluator().max_tp("k", override=8) is None
+
+    def test_a_disabled_cluster_never_routes_to_the_tp_actor(self):
+        assert self._evaluator().actor_class("k", 4, "default.Actor") == "default.Actor"
+
+    def test_an_enabled_cluster_still_does(self):
+        evaluator = self._evaluator("pkg.TPActor")
+
+        assert evaluator.actor_class("k", 4, "default.Actor") == "pkg.TPActor"
+
+    def test_a_disabled_cluster_does_not_round_the_gpu_count_up(self):
+        # The knock-on that matters: with TP on, a model needing three cards and
+        # shardable eight ways is given four, because an uneven split will not
+        # run. With TP off there is nothing to split, so three cards is three.
+        node = make_node()
+        size = 226_700_000_000
+
+        assert len(node.evaluate("m", size, max_tp=self._evaluator().max_tp("m")).gpus) == 3
+
+    def test_an_enabled_cluster_still_rounds_it(self):
+        node = make_node()
+        size = 226_700_000_000
+        limit = self._evaluator("pkg.TPActor").max_tp("m")
+
+        assert len(node.evaluate("m", size, max_tp=limit).gpus) == 4
+
+
+class TestTheEnvVarIsTheSwitch:
+    def test_unset_leaves_it_off(self, monkeypatch):
+        import importlib
+
+        monkeypatch.delenv("NDIF_TP_MODEL_ACTOR_CLASS", raising=False)
+        from ndif.services.ray.deployments.controller import controller as mod
+
+        importlib.reload(mod)
+        assert mod.ControllerDeploymentArgs().tp_model_actor_class is None
+
+    def test_empty_is_treated_as_unset(self, monkeypatch):
+        # An operator clearing the variable in a compose file leaves "" behind,
+        # which must not resolve to an actor class named "".
+        import importlib
+
+        monkeypatch.setenv("NDIF_TP_MODEL_ACTOR_CLASS", "")
+        from ndif.services.ray.deployments.controller import controller as mod
+
+        importlib.reload(mod)
+        assert mod.ControllerDeploymentArgs().tp_model_actor_class is None
+
+    def test_setting_it_turns_the_feature_on(self, monkeypatch):
+        import importlib
+
+        from ndif.services.ray.deployments.controller.cluster.evaluator import (
+            TP_MODEL_ACTOR_CLASS,
+        )
+
+        monkeypatch.setenv("NDIF_TP_MODEL_ACTOR_CLASS", TP_MODEL_ACTOR_CLASS)
+        from ndif.services.ray.deployments.controller import controller as mod
+
+        importlib.reload(mod)
+        assert mod.ControllerDeploymentArgs().tp_model_actor_class == TP_MODEL_ACTOR_CLASS

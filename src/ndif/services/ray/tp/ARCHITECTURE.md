@@ -1,5 +1,10 @@
 # Tensor-parallel model serving
 
+> **Opt-in.** None of this runs unless `NDIF_TP_MODEL_ACTOR_CLASS` is set to
+> `ndif.services.ray.tp.model.TPModelActor`. Unset, the controller works out no
+> sharding degree, rounds no GPU count up, and places every multi-GPU model with
+> accelerate instead.
+
 Serves a model whose **weights are split across GPUs within each layer**, rather
 than spread layer-by-layer over them. The GPUs work on the same layer at once,
 which needs one process per GPU — and the Ray actor **is rank 0** of that group,

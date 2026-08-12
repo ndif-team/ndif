@@ -26,11 +26,10 @@ from ......common.types import MODEL_KEY
 
 logger = logging.getLogger("ndif.controller")
 
-# The actor class a multi-GPU replica gets when its model can be split. Anything
-# else multi-GPU falls back to the controller's default, which spreads whole
-# layers over the cards with accelerate instead. Overridable per cluster
-# (NDIF_TP_MODEL_ACTOR_CLASS) so an operator can point it at a subclass, or at
-# the ordinary actor to turn tensor parallelism off entirely.
+# The actor class a multi-GPU replica gets when its model can be split, for a
+# cluster that wants tensor parallelism. Not a default: it is the value to *set*
+# NDIF_TP_MODEL_ACTOR_CLASS to. Leaving that unset disables tensor parallelism
+# outright -- see `ModelEvaluator.tp_enabled`.
 TP_MODEL_ACTOR_CLASS = "ndif.services.ray.tp.model.TPModelActor"
 
 
@@ -93,10 +92,14 @@ class ModelEvaluator:
         self,
         padding_factor: float = 0.15,
         padding_bias: int = 0,
-        tp_model_actor_class: str = TP_MODEL_ACTOR_CLASS,
+        tp_model_actor_class: Optional[str] = None,
     ):
         self.padding_factor = padding_factor
         self.padding_bias = padding_bias
+        # None disables tensor parallelism entirely: no degree is worked out,
+        # no GPU count is rounded up to one, and no replica is routed to the TP
+        # actor. A cluster that has not said which actor serves a sharded model
+        # has not opted in, and shouldn't be handed one.
         self.tp_model_actor_class = tp_model_actor_class
 
         self.cache: Dict[MODEL_KEY, CacheEntry] = {}
@@ -233,6 +236,17 @@ class ModelEvaluator:
 
         return padded_size
 
+    @property
+    def tp_enabled(self) -> bool:
+        """Whether this cluster serves tensor-parallel replicas at all.
+
+        Off unless an operator named the actor class that serves one. That is a
+        deliberate opt-in rather than a default: a tensor-parallel replica cannot
+        be cached, is not sandboxed, and needs a transformers new enough to shard
+        correctly, so a cluster should get one because somebody asked for it.
+        """
+        return self.tp_model_actor_class is not None
+
     def max_tp(
         self,
         model_key: MODEL_KEY,
@@ -241,6 +255,10 @@ class ModelEvaluator:
         override: Optional[int] = None,
     ) -> Optional[int]:
         """The largest tensor-parallel degree this model supports, or None.
+
+        ``None`` whenever this cluster has tensor parallelism switched off, so
+        the placement that follows never rounds a GPU count up to a shardable
+        degree — a model simply gets the cards its size needs.
 
         Best-effort: a model whose split can't be worked out is simply one that
         won't be placed tensor-parallel, which is the safe direction.
@@ -252,6 +270,9 @@ class ModelEvaluator:
         trace — indistinguishable, in the logs of a cluster that is running
         fine, from a model that really is unshardable.
         """
+        if not self.tp_enabled:
+            return None
+
         if override == 0:
             # "Do not place this tensor-parallel", spelled as a number so a
             # config can say it; None means "nobody said, ask the checkpoint".
@@ -339,7 +360,7 @@ class ModelEvaluator:
         model with no sharding plan, a model whose degree doesn't reach the count
         it needs — gets the default, which spreads whole layers with accelerate.
         """
-        if gpus < 2:
+        if not self.tp_enabled or gpus < 2:
             return default
 
         limit = self.max_tp(model_key, dtype, trust_remote_code, max_tp_override)

@@ -59,7 +59,7 @@ class _ControllerActor:
         minimum_deployment_time_seconds: float,
         default_padding_factor: float,
         default_padding_bias: int,
-        tp_model_actor_class: str,
+        tp_model_actor_class: Optional[str] = None,
         default_dtype: str = "bfloat16",
     ):
         super().__init__()
@@ -663,13 +663,18 @@ class ControllerDeploymentArgs(BaseModel):
         ),
     )
     # Dotted import path of the actor class a *tensor-parallel* replica gets --
-    # chosen automatically when a model needs more than one GPU and shards
-    # evenly into exactly that many (see the evaluator). Point it at the
-    # ordinary actor to keep every multi-GPU model on accelerate instead.
-    tp_model_actor_class: str = os.environ.get(
-        "NDIF_TP_MODEL_ACTOR_CLASS",
-        "ndif.services.ray.tp.model.TPModelActor",
-    )
+    # chosen automatically when a model needs more than one GPU and shards evenly
+    # into exactly that many (see the evaluator).
+    #
+    # **Unset means tensor parallelism is off**, not "use the built-in one": no
+    # degree is worked out, no GPU count is rounded up to a shardable one, and
+    # every multi-GPU model is spread layer-by-layer with accelerate. Set it to
+    # `ndif.services.ray.tp.model.TPModelActor` to turn the feature on. Opt-in
+    # because a sharded replica cannot be cached, is not sandboxed, and needs
+    # transformers >= 5.15 to shard correctly.
+    tp_model_actor_class: Optional[str] = os.environ.get(
+        "NDIF_TP_MODEL_ACTOR_CLASS"
+    ) or None
     # Dotted import path of the controller actor class app() launches. Lets an
     # operator swap in a subclass without editing this module.
     controller_import_path: str = os.environ.get(

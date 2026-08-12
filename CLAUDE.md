@@ -211,6 +211,10 @@ Read the first two if a behavior seems inexplicable:
   card 0; the moment one doesn't, the actor refuses to start with "is on cuda:0,
   outside the assigned set [2]". Multi-card `device_map="balanced"` is fine, and
   so is the WARM restore, which goes through accelerate directly.
+- **Tensor parallelism is off unless `NDIF_TP_MODEL_ACTOR_CLASS` is set.**
+  Unset means no TP path at all — no degree worked out, no GPU count rounded
+  up, per-model `max_tp` inert. Set it to
+  `ndif.services.ray.tp.model.TPModelActor` to enable it.
 - **A tensor-parallel replica cannot be cached and is not sandboxed.** Its ranks'
   devices are fixed when their processes start, so HOT→WARM is impossible and the
   controller evicts it outright (`CACHEABLE = False`); and a TP placement replaces

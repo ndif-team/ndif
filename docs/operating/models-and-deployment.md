@@ -225,8 +225,15 @@ pool that lets an evicted model's weights sit in host RAM so a reload skips disk
 
 ## Tensor parallelism
 
-A multi-GPU replica is served one of two ways, and the controller chooses without
-being asked.
+**Off unless you turn it on.** Set `NDIF_TP_MODEL_ACTOR_CLASS` to
+`ndif.services.ray.tp.model.TPModelActor` to enable it. Unset — the default —
+means no replica is ever placed tensor-parallel, no GPU count is rounded up to a
+shardable degree, and a per-model `max_tp` does nothing. It is opt-in because a
+sharded replica cannot be cached, is not sandboxed, and needs transformers >=
+5.15 to shard correctly.
+
+With it on, a multi-GPU replica is served one of two ways and the controller
+chooses without being asked.
 
 **Tensor-parallel** (`ndif.services.ray.tp.model.TPModelActor`) splits each layer's
 weights across the cards, so they all work on the same layer at once. Chosen when
@@ -248,9 +255,9 @@ Three things to know before relying on it:
 - **transformers >= 5.15** is required; below it a tied LM head returns logits
   `tp_size` times too wide, with a plausible argmax.
 
-Set `max_tp: 0` on a deployment to opt out, or `gpus:` to choose the count
-yourself. `NDIF_TP_MODEL_ACTOR_CLASS` points the choice somewhere else
-cluster-wide, including back at the ordinary actor to disable the feature.
+Set `max_tp: 0` on a single deployment to keep that one off it, or `gpus:` to
+choose the count yourself. `NDIF_TP_MODEL_ACTOR_CLASS` can also point at a
+subclass of the actor rather than the built-in one.
 
 For how the group actually runs — the rank-0 actor, the shard processes, the
 two-phase request — see `src/ndif/services/ray/tp/ARCHITECTURE.md`.

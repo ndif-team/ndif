@@ -16,7 +16,7 @@ from ......common.schema.controller import (
     ReplicaStates,
 )
 from ......common.types import MODEL_KEY, NODE_ID, REPLICA_ID
-from .evaluator import TP_MODEL_ACTOR_CLASS, ModelEvaluator
+from .evaluator import ModelEvaluator
 from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 
 logger = logging.getLogger("ndif.controller")
@@ -32,7 +32,7 @@ class Cluster:
         model_cache_percentage: float = 0.5,
         default_padding_factor: float = 0.15,
         default_padding_bias: int = 0,
-        tp_model_actor_class: str = TP_MODEL_ACTOR_CLASS,
+        tp_model_actor_class: Optional[str] = None,
         default_model_actor_class: str = (
             "ndif.services.ray.deployments.modeling.base.ModelActor"
         ),
