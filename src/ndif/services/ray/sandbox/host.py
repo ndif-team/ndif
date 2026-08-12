@@ -43,8 +43,8 @@ class Connection(Channel):
         return cls(sock)
 
     def recv(self, timeout=None):
-        """Receive a runner message as ``(values, kwargs)``."""
-        return unpack(self.recv_raw(timeout))
+        """Receive a runner message as ``(values, kwargs)``, on this host's device."""
+        return unpack(self.recv_raw(timeout), self.map_location)
 
 
 class FollowerConnection(Connection):

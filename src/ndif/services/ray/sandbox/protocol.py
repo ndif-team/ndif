@@ -2,14 +2,15 @@
 message catalog both ends speak.
 
 Imported by both ends of the socket (the host and the runner process). Keep it
-dependency-light: standard library plus cloudpickle only. The framing and codec
+dependency-light: standard library plus torch. The framing and codec
 are transport-agnostic — they assume only an ordered byte stream — while the
 message set below is specific to the sandbox's interleaving flow.
 
 Framing: every message is length-prefixed (``send_frame`` / ``recv_frame``). The
 codec is type-tagged (``encode`` / ``decode``): ``str`` and ``bytes`` pass through
-raw (a 1-byte tag), everything else cloudpickles — so a ``torch.save`` blob or a
-tensor rides without a second pickle pass.
+raw (a 1-byte tag), everything else goes through ``torch.save``/``torch.load`` —
+so a receiver can say where the tensors in a message should land as they are
+rebuilt, and an already-serialized blob rides without a second pickle pass.
 
 The two directions are not symmetric:
 
@@ -54,11 +55,12 @@ runner -> host
   ("EXCEPTION", error)        the block raised ``error``
 """
 
+import io
 import select
 import struct
 import time
 
-import cloudpickle
+import torch
 
 
 # -- length-prefixed framing -------------------------------------------------
@@ -82,23 +84,47 @@ def recvn(sock, n: int) -> bytes:
     return bytes(buffer)
 
 
-# -- type-tagged codec: str/bytes pass through, everything else cloudpickles --
+# -- type-tagged codec: str/bytes pass through, everything else via torch --
+#
+# `torch.save`/`torch.load` rather than a plain pickler for one reason: `load`
+# takes a `map_location`, so a receiver decides where the tensors in a message
+# land *as they are rebuilt*. A tensor's device is an absolute index, and the
+# processes on this wire do not share one -- a tensor rebuilt from rank 0's bytes
+# on a shard would otherwise arrive labelled `cuda:0` and be mixed into a `cuda:1`
+# forward. Relocating after the fact also works, but allocates on the wrong card
+# first, which under tensor parallelism is another rank's memory budget.
 
 def encode(value) -> bytes:
     if isinstance(value, bytes):
         return b"\x01" + value
     if isinstance(value, str):
         return b"\x02" + value.encode()
-    return b"\x00" + cloudpickle.dumps(value)
+    buffer = io.BytesIO()
+    torch.save(value, buffer)
+    return b"\x03" + buffer.getvalue()
 
 
-def decode(blob: bytes):
+def decode(blob: bytes, map_location=None):
+    """One value. ``map_location`` is torch's: where this process wants tensors.
+
+    ``None`` leaves them where the sender had them, which is what the runner
+    wants — the block runs on GPU, and reading an activation onto the CPU would
+    quietly move the user's arithmetic there and stop matching the in-process
+    path.
+    """
     tag, payload = blob[:1], blob[1:]
     if tag == b"\x01":
         return payload
     if tag == b"\x02":
         return payload.decode()
-    return cloudpickle.loads(payload)
+    if tag == b"\x03":
+        # weights_only=False: these messages carry parks and call arguments, not
+        # just tensors. It is not a trust boundary either way — the runner already
+        # runs the user's code, and the host already ran whatever it sent back.
+        return torch.load(io.BytesIO(payload), map_location=map_location, weights_only=False)
+    raise ValueError(
+        f"unknown wire tag {tag!r} — the two ends of this socket are different builds"
+    )
 
 
 def pack(values, kwargs=None) -> bytes:
@@ -117,8 +143,11 @@ def pack(values, kwargs=None) -> bytes:
     return out
 
 
-def unpack(blob: bytes):
-    """Inverse of pack: returns ``(values, kwargs)``."""
+def unpack(blob: bytes, map_location=None):
+    """Inverse of pack: returns ``(values, kwargs)``.
+
+    ``map_location`` is handed to every value's `decode` — see there.
+    """
     offset = 0
 
     def take():
@@ -131,13 +160,13 @@ def unpack(blob: bytes):
 
     (count,) = struct.unpack(">I", blob[offset : offset + 4])
     offset += 4
-    values = [decode(take()) for _ in range(count)]
+    values = [decode(take(), map_location) for _ in range(count)]
 
     kwargs = {}
     if offset < len(blob):
         (kcount,) = struct.unpack(">I", blob[offset : offset + 4])
         offset += 4
-        kwargs = {take().decode(): decode(take()) for _ in range(kcount)}
+        kwargs = {take().decode(): decode(take(), map_location) for _ in range(kcount)}
 
     return values, kwargs
 
@@ -160,6 +189,11 @@ class Channel:
 
     def __init__(self, sock) -> None:
         self.sock = sock
+        #: Where this end wants arriving tensors, as torch's ``map_location``.
+        #: ``None`` leaves them on the device their sender named. The host sets it
+        #: to its own model's device before it drives a request; the runner leaves
+        #: it alone, because the block is meant to compute on GPU.
+        self.map_location = None
 
     def send_raw(self, data: bytes) -> None:
         send_frame(self.sock, data)
@@ -174,7 +208,7 @@ class Channel:
             self.sock.settimeout(None)
 
     def send(self, value) -> None:
-        """One value, cloudpickled unless it is already str/bytes."""
+        """One value, torch-serialized unless it is already str/bytes."""
         self.send_raw(encode(value))
 
     def recv(self, timeout=None):

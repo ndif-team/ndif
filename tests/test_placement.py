@@ -1222,45 +1222,77 @@ class TestValuesFromTheRunnerLandOnThisHost:
     the same device, but found cuda:1 and cuda:0" -- which is exactly what the
     untrusted tensor-parallel path did. Invisible on one GPU, where the only host
     *is* cuda:0.
+
+    The policy lives in the deserializer (`torch.load`'s ``map_location``) rather
+    than in a walk over each message afterwards: relocating after the fact rebuilds
+    the tensor on the sender's card first, which under tensor parallelism is
+    another rank's memory budget.
     """
 
-    def _driver_source(self, name):
-        import inspect
-
-        from ndif.services.ray.sandbox.driver import SandboxDriver
-
-        return inspect.getsource(getattr(SandboxDriver, name))
-
     def test_the_host_reads_the_runner_in_exactly_one_place(self):
-        # The premise the fix rests on: relocating at `next_event` covers
-        # everything only while that is the sole recv. If a second one appears,
-        # this fails and the seam has to be reconsidered.
+        # The premise the seam rests on: setting `map_location` on the connection
+        # covers everything only while that connection is the sole reader.
         import inspect
 
         from ndif.services.ray.sandbox import driver
 
         source = inspect.getsource(driver)
         assert source.count("connection.recv()") == 1, (
-            "a second read from the runner would bypass the relocation seam"
+            "a second read from the runner would bypass the device policy"
         )
 
-    def test_everything_arriving_is_relocated(self):
-        source = self._driver_source("next_event")
+    def test_the_host_declares_where_tensors_land(self):
+        import inspect
 
-        assert "self._to_device(rest)" in source
-        assert "self._to_device(kwargs)" in source
+        from ndif.services.ray.sandbox.driver import SandboxDriver
 
-    def test_prints_and_exceptions_are_handled_before_relocation(self):
-        # Both carry text, not tensors; walking them would be waste.
-        source = self._driver_source("next_event")
+        source = inspect.getsource(SandboxDriver.pump)
+        assert "connection.map_location = self.model.device" in source
 
-        assert source.index('event == "PRINT"') < source.index("self._to_device(rest)")
-        assert source.index('event == "EXCEPTION"') < source.index("self._to_device(rest)")
+    def test_it_is_set_before_anything_is_read(self):
+        import inspect
+
+        from ndif.services.ray.sandbox.driver import SandboxDriver
+
+        source = inspect.getsource(SandboxDriver.pump)
+        assert source.index("map_location") < source.index("next_event")
+
+    def test_the_deserializer_honours_it(self):
+        import inspect
+
+        from ndif.services.ray.sandbox.protocol import decode
+
+        source = inspect.getsource(decode)
+        assert "map_location=map_location" in source
+
+    def test_a_message_lands_where_the_receiver_asked(self):
+        # The behaviour itself, not its wiring. CPU-only, so it runs anywhere:
+        # "somewhere else" is expressed as an explicit map_location.
+        import torch
+
+        from ndif.services.ray.sandbox.protocol import decode, encode
+
+        blob = encode(("RESUME", 0, (torch.ones(4),), None))
+
+        assert decode(blob)[2][0].device.type == "cpu"
+        assert decode(blob, map_location="cpu")[2][0].device.type == "cpu"
+
+    def test_the_runner_leaves_tensors_where_they_are(self):
+        # None is the runner's setting: the block is meant to compute on GPU, and
+        # pulling activations to the CPU would move the user's arithmetic there and
+        # stop matching the in-process path.
+        from ndif.services.ray.sandbox.protocol import Channel
+
+        assert Channel(None).map_location is None
 
     def test_the_assembly_relocation_is_kept(self):
-        # Not redundant with the seam: the batcher and tokenizer run on the host,
-        # so those tensors are made here and have never been past `next_event`.
-        assert "self._to_device(" in self._driver_source("_assemble")
+        # Not redundant with map_location: the batcher and tokenizer run on the
+        # host, so those tensors are made here and never crossed the wire.
+        import inspect
+
+        from ndif.services.ray.sandbox.driver import SandboxDriver
+
+        assert "self._to_device(" in inspect.getsource(SandboxDriver._assemble)
 
 
 class TestAShardFailureIsNotReportedAsABrokenPipe:

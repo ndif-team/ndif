@@ -190,8 +190,15 @@ class SandboxDriver:
 
         Raises:
             RunnerError: the block failed, carrying the traceback the runner
-                formatted (tracebacks don't survive cloudpickle).
+                formatted (tracebacks don't survive serialization).
         """
+        # Set once, here, because this is where a host takes charge of a runner:
+        # every tensor the runner sends is then rebuilt straight onto this host's
+        # card. It matters because the processes on this socket do not share a
+        # device -- one runner serves a whole tensor-parallel group, so a tensor
+        # rebuilt from its bytes would otherwise arrive on the sender's card and be
+        # mixed into a different rank's forward.
+        connection.map_location = self.model.device
         while True:
             name, rest, kwargs = self.next_event(connection)
             if name == "INTERLEAVE":
@@ -210,18 +217,11 @@ class SandboxDriver:
         untangle stdout the user code emitted mid-run. An EXCEPTION carries the
         runner's already-formatted traceback text.
 
-        **Every tensor arriving here is moved onto this host's device**, and this
-        is the only place it happens because this is the only place the host reads
-        from the runner. A tensor's device is an absolute index, and one runner
-        serves a whole tensor-parallel group over a `Fanout` that sends identical
-        bytes to every rank — so a value that round-trips through it reaches rank 1
-        still labelled with rank 0's card. The shard then mixes it into its own
-        forward and torch raises "expected all tensors on the same device". That
-        was invisible on one GPU, where the only host *is* cuda:0.
-
-        Doing it at the seam rather than at each use is the point: relocation used
-        to live at two call sites, which is exactly how the paths that lacked it
-        went unnoticed.
+        Tensors arrive already on this host's device: `pump` sets the connection's
+        ``map_location``, so they are rebuilt there rather than relocated after the
+        fact. That is worth doing in the deserializer instead of here — a walk over
+        the message afterwards allocates on the sender's card first, which under
+        tensor parallelism is another rank's memory budget.
         """
         while True:
             values, kwargs = connection.recv()
@@ -231,9 +231,7 @@ class SandboxDriver:
                 continue
             if event == "EXCEPTION":
                 raise RunnerError(rest[0] if rest else "sandbox error")
-            # END's payload is the saved-values blob -- already bytes, so the walk
-            # finds no tensors and costs one traversal of a two-element list.
-            return event, self._to_device(rest), self._to_device(kwargs)
+            return event, rest, kwargs
 
     # -- envoy/device helpers ------------------------------------------------
 
@@ -273,10 +271,6 @@ class SandboxDriver:
         ``hook=False`` calls ``forward`` directly (no hooks, its real place in the
         pass untouched); ``hook=True`` runs the full module so its hooks fire."""
         envoy = self._envoy_at(path)
-        # Redundant since `next_event` relocates everything the runner sends, and
-        # kept only because a same-device `.to()` is a no-op. The seam is the one
-        # that matters; this is a belt on top of it.
-        args, kwargs = self._to_device((args, kwargs))
         if hook:
             return envoy(*args, **kwargs)
         return envoy._module.forward(*args, **kwargs)
@@ -309,9 +303,9 @@ class SandboxDriver:
         for inputs, invoke_kwargs in invokes:
             batcher.add(*inputs, **invoke_kwargs)
         args, assembled = batcher.assemble(fn)
-        # Load-bearing, unlike the one in `run_module`: the batcher and tokenizer
-        # run *here*, so these tensors are made on this host and have never been
-        # past `next_event`. Nothing else would put them on the model's card.
+        # Still needed with `map_location` doing the rest: the batcher and tokenizer
+        # run *here*, so these tensors are made on this host and never crossed the
+        # wire. Nothing else would put them on the model's card.
         args, kwargs = self._to_device((args, {**assembled, **kwargs}))
         return batcher, args, kwargs
 
