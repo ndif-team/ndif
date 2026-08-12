@@ -1069,3 +1069,82 @@ class TestDeterminismAcrossProcesses:
 
         source = inspect.getsource(runner.Runner.handle)
         assert "*rest" in source and "rest[0] if rest else None" in source
+
+
+class TestTheSandboxedTensorParallelActor:
+    """One actor serving trusted and untrusted requests on a sharded model.
+
+    The fork is per request, exactly as the single-GPU sandbox actor's is. That is
+    what keeps the controller choosing on one axis — how the *weights* are placed
+    — while each actor decides per request where the *code* runs. The alternative
+    was a four-way matrix of actor classes.
+    """
+
+    def test_it_is_a_tensor_parallel_actor(self):
+        from ndif.services.ray.tp.model import (
+            SandboxedTPModelDeployment,
+            TPModelDeployment,
+        )
+
+        assert issubclass(SandboxedTPModelDeployment, TPModelDeployment)
+
+    def test_a_group_still_cannot_be_cached(self):
+        # Inherited, and it must be: the ranks' devices are fixed when their
+        # processes start whether or not the block is sandboxed.
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        assert SandboxedTPModelDeployment.CACHEABLE is False
+
+    def test_a_trusted_request_takes_the_in_process_path(self):
+        # No runner, no barrier: every rank builds and runs the block, which is
+        # what makes the gather decisions agree with nothing sent.
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        source = inspect.getsource(SandboxedTPModelDeployment._dispatch)
+        assert "if request.trusted:" in source
+        assert "super()._dispatch(request, seed)" in source
+
+    def test_the_untrusted_path_connects_before_it_tells_the_shards(self):
+        # Load-bearing order: the runner takes its first connection as the one
+        # that sends the payload, so rank 0 must be connected before any shard
+        # knows where to find it.
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        source = inspect.getsource(SandboxedTPModelDeployment._sandboxed)
+        assert source.index("sandbox.connection()") < source.index("self.group.sandbox(")
+
+    def test_it_commits_the_group_before_anything_runs(self):
+        # `commit` is go() + arm(). A trusted request gets it from the base's
+        # execute; there is no base execute here, so the moment is explicit.
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        source = inspect.getsource(SandboxedTPModelDeployment._sandboxed)
+        assert source.index("self.commit()") < source.index("driver.pump")
+
+    def test_its_pool_is_sized_in_groups(self):
+        # One runner serves the whole group, so a pool entry holds `tp_size`
+        # connections rather than being one process per rank.
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        assert "peers=self.tp_size" in inspect.getsource(
+            SandboxedTPModelDeployment.__init__
+        )
+
+    def test_interrupt_asks_the_group_first_then_stops_the_runner(self):
+        # The flag lets ranks already in a forward unwind together at the shared
+        # checkpoint; stopping the runner covers a block stuck in plain Python,
+        # where no checkpoint will fire. One runner, so every rank sees it at once.
+        import inspect
+
+        from ndif.services.ray.tp.model import SandboxedTPModelDeployment
+
+        source = inspect.getsource(SandboxedTPModelDeployment.interrupt)
+        assert source.index("super().interrupt()") < source.index("stop()")

@@ -229,8 +229,8 @@ pool that lets an evicted model's weights sit in host RAM so a reload skips disk
 `ndif.services.ray.tp.model.TPModelActor` to enable it. Unset — the default —
 means no replica is ever placed tensor-parallel, no GPU count is rounded up to a
 shardable degree, and a per-model `max_tp` does nothing. It is opt-in because a
-sharded replica cannot be cached, is not sandboxed, and needs transformers >=
-5.15 to shard correctly.
+sharded replica cannot be cached and needs transformers >= 5.15 to shard
+correctly.
 
 With it on, a multi-GPU replica is served one of two ways and the controller
 chooses without being asked.
@@ -250,8 +250,11 @@ Three things to know before relying on it:
 - **A TP replica is never cached.** Every rank's device is fixed when its process
   starts, so it cannot be parked (HOT→WARM) and restored elsewhere. The controller
   evicts these outright. Pin one you want to keep.
-- **A TP placement replaces the actor class**, so it is not sandboxed — an
-  untrusted request on a TP model runs in-process.
+- **A TP placement replaces the actor class**, so `TPModelActor` runs untrusted
+  code in-process. Set `NDIF_TP_MODEL_ACTOR_CLASS` to
+  `ndif.services.ray.tp.model.SandboxedTPModelActor` if the cluster takes
+  untrusted traffic: it serves trusted requests the same way and runs untrusted
+  ones in a single runner process that every rank is a host to.
 - **transformers >= 5.15** is required; below it a tied LM head returns logits
   `tp_size` times too wide, with a plausible argmax.
 

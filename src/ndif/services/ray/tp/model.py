@@ -30,6 +30,7 @@ HOT<->WARM caching is not supported yet — see ``to_cache``.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import os
@@ -45,7 +46,12 @@ from nnsight.modeling.huggingface import HuggingFaceModel
 from ....common.metrics import ModelLoadTimeMetric
 from ....common.telemetry import elapsed_ms
 from ....common.types import MODEL_KEY
+from nnsight.schema.response import Status
+
 from ..deployments.modeling.base import BaseModelDeployment
+from ..sandbox.driver import RunnerError, SandboxDriver
+from ..sandbox.host import Pool
+from ..sandbox.model import DEFAULT_POOL_SIZE
 from ..deployments.modeling.util import set_process_limits, verify_device_placement
 from .common import (
     AbortController,
@@ -233,9 +239,7 @@ class TPModelDeployment(BaseModelDeployment):
             # this request" is the question the stand-down below has to answer,
             # and it is true from here on.
             self.dispatched = True
-            self.group.prepare(request.payload, request.compress, request.env, seed)
-            seed_ranks(seed)
-            return super().execute(request)
+            return self._dispatch(request, seed)
         except BaseException:
             # Recorded for :meth:`_await_shards`, which runs after this returns
             # and has to tell "the user's block raised, on every rank" from "a
@@ -262,6 +266,21 @@ class TPModelDeployment(BaseModelDeployment):
                         f"TP shards did not stand down on {self.model_key}: {lost}"
                     )
                     self.stood_down = False
+
+    def _dispatch(self, request: "BackendRequestModel", seed: int) -> "tuple[bytes, float]":
+        """Hand this request to the group and run it.
+
+        The seam a sandboxed subclass replaces. Everything around it in
+        :meth:`execute` — the seed, the stand-down bookkeeping, telling a shard
+        failure from a block that raised on every rank — is the same whoever runs
+        the block, so it stays there.
+
+        Here: every rank builds and runs the block itself, which is what makes the
+        gather decisions agree without anything being sent.
+        """
+        self.group.prepare(request.payload, request.compress, request.env, seed)
+        seed_ranks(seed)
+        return super().execute(request)
 
     def commit(self) -> None:
         """Release the other ranks into the forward, and arm the abort checkpoint.
@@ -392,6 +411,129 @@ class TPModelDeployment(BaseModelDeployment):
     def __del__(self) -> None:
         if getattr(self, "group", None) is not None:
             self.group.stop()
+
+
+class SandboxedTPModelDeployment(TPModelDeployment):
+    """A tensor-parallel actor that serves trusted *and* untrusted requests.
+
+    The fork is per request, exactly as the single-GPU sandbox actor's is: a
+    trusted block runs on every rank in-process, an untrusted one runs once in a
+    runner that every rank is a host to. That is why "sharded" and "sandboxed"
+    stay one axis for the controller rather than a four-way matrix — it picks an
+    actor by how the *weights* are placed, and each actor decides per request
+    where the *code* runs.
+
+    The untrusted path is the cheaper one to reason about, which is worth saying
+    because it looks like the exotic one. Every rank keeps its own mirror of where
+    the workers are parked, so each answers "is anyone waiting here?" locally and
+    the ranks agree about gathering without sending anything. What the runner adds
+    is a barrier: it serves each worker once for the whole group rather than once
+    per rank (see [`Fanout`][ndif.services.ray.sandbox.protocol.Fanout]).
+    """
+
+    def __init__(self, *args: Any, pool_size: Optional[int] = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # One runner serves the whole group, so each holds `tp_size` connections
+        # and the pool is sized in *groups*, not processes.
+        self.pool = Pool(
+            size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
+            peers=self.tp_size,
+        )
+        self.execution_sandbox = None
+
+    def execution_scope(self, request: "BackendRequestModel"):
+        # A trusted request runs in-process, so use the base's stdout capture. An
+        # untrusted one forwards stdout as PRINT events instead.
+        if request.trusted:
+            return super().execution_scope(request)
+        return contextlib.nullcontext()
+
+    def _dispatch(self, request: "BackendRequestModel", seed: int) -> "tuple[bytes, float]":
+        if request.trusted:
+            return super()._dispatch(request, seed)
+        return self._sandboxed(request, seed)
+
+    def _sandboxed(self, request: "BackendRequestModel", seed: int) -> "tuple[bytes, float]":
+        """Run an untrusted block once, in a runner every rank is a host to.
+
+        The order here is load-bearing. This rank connects to the runner *first*,
+        because the runner takes its first connection as the one that sends the
+        payload. Only then are the shards told where to find it, and only once
+        they have answered does the group commit to a forward.
+        """
+        sandbox = self.pool.acquire()
+        self.execution_sandbox = sandbox
+        connection = sandbox.connection()
+        try:
+            # Shards connect and answer READY, which for an untrusted request means
+            # "the environment is applied and I can reach the runner". Nothing has
+            # entered a collective yet, so a shard that cannot get there is still a
+            # failure this rank can report without leaving anyone blocked.
+            self.group.sandbox(sandbox.path, request.env, seed)
+            connection.send(
+                (request.payload, request.compress, str(self.dtype), seed)
+            )
+            # Releases the shards into the forward and arms the abort checkpoint.
+            # The base calls this for a trusted request; here there is no base
+            # `execute` to do it, so the moment has to be chosen explicitly — and
+            # this is it, the last point before any rank runs anything.
+            self.commit()
+            driver = SandboxDriver(
+                self.model,
+                self.dtype,
+                on_log=lambda text: request.respond(Status.LOG, text),
+            )
+            return driver.pump(connection)
+        finally:
+            connection.close()
+
+    def format_error(self, exception: BaseException) -> "tuple[str, bool]":
+        # A user-block failure arrives as RunnerError with its traceback already
+        # formatted in the runner; it is user code, so never fatal.
+        if isinstance(exception, RunnerError):
+            return str(exception), False
+        return super().format_error(exception)
+
+    def interrupt(self) -> None:
+        """Stop the group, then the runner holding its block.
+
+        The flag first, so ranks already inside a forward unwind together at the
+        shared checkpoint. Then the runner, which covers the case the flag cannot:
+        a block stuck in plain Python, where no rank is in a forward and no
+        checkpoint will fire.
+
+        Stopping the runner is safe here in a way it would not be with one runner
+        per rank — there is a single one, so every rank's socket closes at the same
+        moment and they unwind symmetrically rather than one diverging.
+        """
+        super().interrupt()
+        if self.execution_sandbox is not None:
+            self.execution_sandbox.stop()
+
+    def cleanup(self) -> None:
+        # Fresh process per request, as on the single-GPU path.
+        self.discard_sandbox()
+        super().cleanup()
+
+    def discard_sandbox(self) -> None:
+        """Stop the request's runner (idempotent — ``stop`` checks the process)."""
+        if self.execution_sandbox is not None:
+            self.execution_sandbox.stop()
+            self.execution_sandbox = None
+
+    def restart(self) -> None:
+        self.discard_sandbox()
+        super().restart()
+
+    def close(self) -> None:
+        self.pool.close()
+
+
+@ray.remote(num_cpus=1, max_restarts=-1)
+class SandboxedTPModelActor(SandboxedTPModelDeployment):
+    """The deployable tensor-parallel actor that also sandboxes untrusted code."""
+
+    pass
 
 
 @ray.remote(num_cpus=1, max_restarts=-1)

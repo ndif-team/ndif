@@ -32,6 +32,13 @@ logger = logging.getLogger("ndif.controller")
 # outright -- see `ModelEvaluator.tp_enabled`.
 TP_MODEL_ACTOR_CLASS = "ndif.services.ray.tp.model.TPModelActor"
 
+# The same, for a cluster that also runs untrusted code. It serves trusted
+# requests exactly as the above does and sends untrusted ones to a runner the
+# whole group hosts, so a cluster with auth on wants this one. Kept as a separate
+# class rather than a flag because it is what the env var names, and because a
+# node that never sees untrusted traffic shouldn't carry a runner pool.
+SANDBOXED_TP_MODEL_ACTOR_CLASS = "ndif.services.ray.tp.model.SandboxedTPModelActor"
+
 
 def tp_degree(limit: Optional[int], gpus: int) -> Optional[int]:
     """The tensor-parallel degree to use for ``gpus`` cards, or ``None``.

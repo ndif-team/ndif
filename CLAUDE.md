@@ -215,10 +215,15 @@ Read the first two if a behavior seems inexplicable:
   Unset means no TP path at all — no degree worked out, no GPU count rounded
   up, per-model `max_tp` inert. Set it to
   `ndif.services.ray.tp.model.TPModelActor` to enable it.
-- **A tensor-parallel replica cannot be cached and is not sandboxed.** Its ranks'
-  devices are fixed when their processes start, so HOT→WARM is impossible and the
-  controller evicts it outright (`CACHEABLE = False`); and a TP placement replaces
-  the actor class, so untrusted code on a TP model runs in-process.
+- **A tensor-parallel replica cannot be cached.** Its ranks' devices are fixed
+  when their processes start, so HOT→WARM is impossible and the controller evicts
+  it outright (`CACHEABLE = False`). Pin one you want to keep.
+- **A TP replica is only sandboxed if you name the sandboxed class.** A TP
+  placement replaces the actor class, so `TPModelActor` runs untrusted code
+  in-process. Point `NDIF_TP_MODEL_ACTOR_CLASS` at
+  `ndif.services.ray.tp.model.SandboxedTPModelActor` instead: it serves trusted
+  requests identically and runs untrusted ones in a runner the whole group hosts,
+  which is what a cluster with auth on wants.
 - **Tensor parallelism needs transformers >= 5.15.** Older versions don't shard a
   tied LM head's weight while still gathering its output, so any model with
   `tie_word_embeddings=True` serves logits `tp_size` times too wide — with a
