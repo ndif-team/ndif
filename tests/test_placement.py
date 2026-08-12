@@ -1520,3 +1520,144 @@ class TestARunnerInheritsNothingSensitive:
         source = inspect.getsource(host.spawn)
         assert "env = runner_env()" in source
         assert "dict(os.environ)" not in source
+
+
+class TestScaleMatchesWhatIsRunning:
+    """Adding capacity adds *more of what is there*.
+
+    Two replicas under one model key answering differently is the failure this
+    exists for: a sharded replica and an unsharded one give different numbers for
+    the same block (measured: 424.7618 against 424.2299) and nothing tells the
+    caller which one answered. The autoscaler used to provision with a bare
+    config, so a busy tensor-parallel model grew a single-GPU replica.
+
+    The live cluster is the source of truth, not a remembered config — nothing to
+    persist, nothing to expire, and no way to change what an explicit value means.
+    """
+
+    def _controller(self, *deployments):
+        from ndif.services.ray.deployments.controller.controller import _ControllerActor
+
+        class Node:
+            def __init__(self, replicas):
+                self.deployments = {"m": {d.replica_id: d for d in replicas}} if replicas else {}
+
+        class Cluster:
+            def __init__(self, replicas):
+                self.nodes = {"n": Node(replicas)}
+
+        controller = _ControllerActor.__new__(_ControllerActor)
+        controller.cluster = Cluster(list(deployments))
+        return controller
+
+    def _replica(self, replica_id="a", actor_class="tp.Sandboxed", gpus=2,
+                 dtype="bfloat16", timeout=None, size_bytes=1234):
+        from ndif.services.ray.deployments.controller.cluster.deployment import (
+            Deployment,
+            DeploymentLevel,
+        )
+
+        return Deployment(
+            model_key="m",
+            replica_id=replica_id,
+            deployment_level=DeploymentLevel.HOT,
+            gpus={i: 1 for i in range(gpus)},
+            size_bytes=size_bytes,
+            actor_class=actor_class,
+            dtype=dtype,
+            execution_timeout_seconds=timeout,
+        )
+
+    def _config(self, **fields):
+        from ndif.common.schema.controller import DeploymentConfig
+
+        return DeploymentConfig(**fields)
+
+    def test_it_copies_the_actor_class_and_gpu_count(self):
+        controller = self._controller(self._replica())
+
+        filled = controller._like_existing("m", self._config(trusted=True))
+
+        assert filled.actor_class == "tp.Sandboxed"
+        assert filled.gpus == 2
+
+    def test_it_copies_the_dtype(self):
+        # The same hazard without the sharding: a model deployed float32 growing
+        # a bfloat16 replica is a silent change of numbers.
+        controller = self._controller(self._replica(dtype="float32"))
+
+        assert controller._like_existing("m", self._config()).dtype == "float32"
+
+    def test_it_copies_the_timeout(self):
+        controller = self._controller(self._replica(timeout=600.0))
+
+        assert controller._like_existing("m", self._config()).execution_timeout_seconds == 600.0
+
+    def test_it_does_not_copy_the_size(self):
+        # A Deployment's size_bytes is the evaluator's output -- already padded --
+        # while the config field means the model's own weights, with padding
+        # applied on top. Copying one into the other pads twice: measured on a
+        # 2-GPU replica, 33.6 GB per card became 70.9 GB.
+        controller = self._controller(self._replica(size_bytes=67_266_882_560))
+
+        assert controller._like_existing("m", self._config()).size_bytes is None
+
+    def test_an_explicit_value_wins(self):
+        controller = self._controller(self._replica(dtype="bfloat16", gpus=2))
+
+        filled = controller._like_existing("m", self._config(dtype="float32"))
+
+        assert filled.dtype == "float32", "a value the caller set must not be overridden"
+        assert filled.gpus == 2, "and the rest still comes from what is running"
+
+    def test_it_prefers_a_replica_that_agrees_with_what_was_asked_for(self):
+        # The pinned fields are also the matching rule: asking for a single-GPU
+        # replica should copy from the single-GPU one, not the sharded one.
+        controller = self._controller(
+            self._replica("sharded", actor_class="tp.Sandboxed", gpus=2, timeout=10.0),
+            self._replica("plain", actor_class="sandbox.Model", gpus=1, timeout=20.0),
+        )
+
+        filled = controller._like_existing("m", self._config(gpus=1))
+
+        assert filled.actor_class == "sandbox.Model"
+        assert filled.execution_timeout_seconds == 20.0
+
+    def test_with_nothing_running_it_changes_nothing(self):
+        # Cold start: nothing in the cluster claims the model is served any
+        # particular way, so the evaluator decides as it always has.
+        controller = self._controller()
+        asked = self._config(trusted=True)
+
+        filled = controller._like_existing("m", asked)
+
+        assert filled.actor_class is None and filled.gpus is None and filled.dtype is None
+
+    def test_it_does_not_mutate_what_it_was_given(self):
+        controller = self._controller(self._replica())
+        asked = self._config()
+
+        controller._like_existing("m", asked)
+
+        assert asked.actor_class is None, "the caller's config must come back untouched"
+
+    def test_scale_is_additive(self):
+        # `n` is how many to add, not a target -- same sense as
+        # `deploy --replicas`.
+        import inspect
+
+        from ndif.services.ray.deployments.controller.controller import _ControllerActor
+
+        source = inspect.getsource(_ControllerActor.scale)
+        assert "config.replicas = n" in source
+
+    def test_the_autoscaler_uses_it(self):
+        # If provisioning still called `deploy`, none of the above would matter:
+        # that is the call that grew a single-GPU replica for a sharded model.
+        import inspect
+
+        from ndif.services.api.queue.replica import Replica
+
+        source = inspect.getsource(Replica.provision)
+        assert "controller_handle().scale.remote" in source
+        assert "deploy.remote" not in source

@@ -12,6 +12,7 @@ from .commands.deploy import deploy
 from .commands.doctor import doctor
 from .commands.env import env
 from .commands.evict import evict
+from .commands.scale import scale
 from .commands.export import export
 from .commands.info import info
 from .commands.kill import kill
@@ -39,6 +40,6 @@ def cli(env_file):
     config.load_env_files(env_file)
 
 
-for _command in (start, stop, restart, deploy, evict, status, queue, kill, export,
-                 env, logs, info, doctor):
+for _command in (start, stop, restart, deploy, scale, evict, status, queue, kill,
+                 export, env, logs, info, doctor):
     cli.add_command(_command)

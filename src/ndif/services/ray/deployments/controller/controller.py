@@ -191,6 +191,89 @@ class _ControllerActor:
 
         return response
 
+    def live(self, model_key: MODEL_KEY) -> List["Deployment"]:
+        """Every replica of ``model_key`` the cluster is currently running."""
+        return [
+            deployment
+            for node in self.cluster.nodes.values()
+            for deployment in node.deployments.get(model_key, {}).values()
+        ]
+
+    def _like_existing(
+        self, model_key: MODEL_KEY, config: DeploymentConfig
+    ) -> DeploymentConfig:
+        """``config`` with its unset fields filled in from a replica already running.
+
+        Adding capacity to a model should add *more of what is there*, not a
+        second opinion about how the model should be served. Two replicas under
+        one model key answering differently is the failure this exists for: a
+        sharded replica and an unsharded one give different numbers for the same
+        block (measured: 424.7618 against 424.2299) and nothing tells the caller
+        which one answered.
+
+        The live cluster is the source of truth rather than a remembered config,
+        so there is nothing to persist, nothing to expire, and no way for this to
+        change what an explicit value means -- a field the caller set always wins,
+        and is also what makes a replica "matching" enough to copy the rest from.
+
+        With no live replica there is nothing to copy and the config is returned
+        untouched: at cold start nothing in the cluster claims the model is served
+        any particular way, and the evaluator decides as it always has. A durable
+        answer to that belongs in a config file, not here.
+        """
+        candidates = self.live(model_key)
+        if not candidates:
+            return config
+
+        # Prefer a replica that agrees with everything the caller pinned; among
+        # equals the choice is arbitrary, because replicas of one model are meant
+        # to be alike and a disagreement is worth surfacing rather than resolving.
+        def agrees(deployment: "Deployment") -> bool:
+            if config.actor_class is not None and deployment.actor_class != config.actor_class:
+                return False
+            if config.dtype is not None and deployment.dtype != config.dtype:
+                return False
+            if config.gpus is not None and len(deployment.gpus) != config.gpus:
+                return False
+            return True
+
+        model = next((d for d in candidates if agrees(d)), candidates[0])
+
+        filled = config.model_copy(deep=True)
+        if filled.actor_class is None:
+            filled.actor_class = model.actor_class
+        if filled.dtype is None:
+            filled.dtype = model.dtype
+        if filled.gpus is None:
+            filled.gpus = len(model.gpus)
+        if filled.execution_timeout_seconds is None:
+            filled.execution_timeout_seconds = model.execution_timeout_seconds
+        # Deliberately *not* size_bytes. A Deployment's is the evaluator's output
+        # -- already padded -- while the config field means the model's own
+        # weights, with padding applied on top. Copying one into the other pads
+        # twice: measured on a 2-GPU replica, 33.6 GB per card became 70.9 GB.
+        # There is nothing to gain either way, since the evaluator sizes the new
+        # replica from the same dtype and the same defaults as the old one.
+        return filled
+
+    def scale(
+        self,
+        model_key: MODEL_KEY,
+        n: int = 1,
+        config: Optional[DeploymentConfig] = None,
+    ) -> DeployResponse:
+        """Add ``n`` replicas of ``model_key``, like the ones already running.
+
+        Additive, like ``deploy``: ``n`` is how many to add, not a target. The
+        difference from ``deploy`` is where the unspecified fields come from --
+        here, from a live replica (:meth:`_like_existing`) instead of the
+        controller's defaults, so growing a tensor-parallel model gives you more
+        tensor-parallel replicas.
+        """
+        config = (config or DeploymentConfig()).model_copy(deep=True)
+        config.replicas = n
+        return self._deploy({model_key: self._like_existing(model_key, config)})
+
     async def deploy(
         self,
         deployments: Union[

@@ -112,8 +112,13 @@ class Replica:
         id. Raises if the controller reports a deploy error; the actor itself
         may not exist yet (``wait`` polls for it).
         """
-        response: DeployResponse = await controller_handle().deploy.remote(
-            {model_key: DeploymentConfig(replicas=1, trusted=processor.trusted)}
+        # `scale`, not `deploy`: this call knows nothing about how the model is
+        # served and has no business deciding. Adding capacity should add more of
+        # what is already running -- a sharded model stays sharded -- and the
+        # controller fills that in from a live replica. With none running there is
+        # nothing to copy and this behaves exactly as a bare deploy did.
+        response: DeployResponse = await controller_handle().scale.remote(
+            model_key, 1, DeploymentConfig(trusted=processor.trusted)
         )
 
         result = response.results[model_key]
