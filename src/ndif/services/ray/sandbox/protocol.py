@@ -54,7 +54,9 @@ runner -> host
   ("EXCEPTION", error)        the block raised ``error``
 """
 
+import select
 import struct
+import time
 
 import cloudpickle
 
@@ -184,3 +186,111 @@ class Channel:
             self.sock.close()
         except OSError:
             pass
+
+class RanksDiverged(Exception):
+    """The peers behind a `Fanout` stopped agreeing about what is happening.
+
+    Under tensor parallelism the ranks run one program between them, joined by
+    collectives. If one asks to resume a worker while another asks something else,
+    they have already taken different paths, and the next collective either hangs
+    or combines tensors computed from different things. Raising here turns that
+    into a diagnosable error at the moment it becomes knowable, instead of a stall
+    that surfaces as an execution timeout with no cause attached.
+    """
+
+
+class Fanout:
+    """One channel-shaped view over several peers that must agree.
+
+    Presents `send`/`recv` so a caller written against a single
+    [`Channel`][ndif.services.ray.sandbox.protocol.Channel] needs no changes:
+
+    * **send** goes to every peer, so they all see the same instruction.
+    * **recv** waits for *all* of them, checks they are asking the same thing, and
+      returns one answer.
+
+    That second half is the barrier. A worker driven through this runs **once** per
+    serve however many peers there are, which is the point — the peers are ranks
+    of one model, not independent callers, and resuming a worker once per rank
+    would run the user's block N times over.
+
+    Whose answer is returned: the first peer's. Where the peers hold pieces of a
+    sharded tensor, their values differ and one has to be chosen; where the value
+    was made whole before they sent it, they are identical and the choice does not
+    matter.
+
+    Args:
+        channels: one per peer, in a fixed order. ``channels[0]`` is the peer whose
+            reply is returned.
+        signature: what must match across peers, given a received message.
+            Defaults to the event name — enough to catch one peer resuming a worker
+            while another finishes. A caller that knows the protocol can compare
+            more.
+        timeout: how long to wait for the group. Bounded on purpose: peers that
+            have genuinely diverged will never all arrive, and a stall is a worse
+            way to learn that than an error.
+    """
+
+    def __init__(self, channels, signature=None, timeout: float = 300.0) -> None:
+        self.channels = list(channels)
+        self._signature = signature or (lambda message: _event_of(message))
+        self.timeout = timeout
+
+    def send(self, *args, **kwargs) -> None:
+        """Send the same message to every peer."""
+        for channel in self.channels:
+            channel.send(*args, **kwargs)
+
+    def recv(self, timeout=None):
+        """Wait for every peer, check they agree, and return the first one's message.
+
+        Raises:
+            RanksDiverged: if a peer never arrives, drops its connection, or asks
+                for something different from the others.
+        """
+        deadline = time.time() + (self.timeout if timeout is None else timeout)
+        waiting = {channel.sock.fileno(): index for index, channel in enumerate(self.channels)}
+        received: dict = {}
+
+        while waiting:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise RanksDiverged(
+                    f"{len(waiting)} of {len(self.channels)} peers did not answer "
+                    f"within {self.timeout}s: {sorted(waiting.values())}"
+                )
+            ready, _, _ = select.select(list(waiting), [], [], remaining)
+            for fileno in ready:
+                index = waiting.pop(fileno)
+                try:
+                    received[index] = self.channels[index].recv()
+                except Exception as error:
+                    raise RanksDiverged(f"peer {index} dropped: {error}") from error
+
+        signatures = {index: self._signature(message) for index, message in received.items()}
+        expected = signatures[0]
+        disagreeing = {i: s for i, s in signatures.items() if s != expected}
+        if disagreeing:
+            raise RanksDiverged(
+                f"peers disagree: peer 0 sent {expected!r}, "
+                + ", ".join(f"peer {i} sent {s!r}" for i, s in sorted(disagreeing.items()))
+            )
+        return received[0]
+
+    def close(self) -> None:
+        for channel in self.channels:
+            channel.close()
+
+
+def _event_of(message):
+    """The event name in a received message, whichever codec produced it.
+
+    `unpack` yields ``(values, kwargs)`` and `decode` yields the value itself, so
+    a Fanout can sit on either direction without being told which.
+    """
+    if isinstance(message, tuple) and len(message) == 2 and isinstance(message[0], (list, tuple)):
+        values = message[0]
+        return values[0] if values else None
+    if isinstance(message, (list, tuple)):
+        return message[0] if message else None
+    return message

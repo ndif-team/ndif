@@ -35,6 +35,7 @@ across a process boundary.
 | File | Role |
 |------|------|
 | [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model (base class), owns the runner pool, and turns a runner failure into a client-facing error. Thin: it acquires a runner and hands it to a driver. |
+| [`protocol.py`](protocol.py) | The wire: framing, the two direction-specific codecs, the shared `Channel`, and `Fanout` — one channel-shaped view over several peers that must agree. |
 | [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: `MediatorProxy` per worker, the interleaved run, control events. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the transport `Connection`. |
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
@@ -222,6 +223,37 @@ because the tracer's root envoy is a model-wrapper *subclass*
 (`TransformersModel → … → Envoy`) that inherits `interleave`; rebinding the module's
 `Envoy` name wouldn't reach it, so the overrides are grafted onto the base class
 every envoy shares.
+
+---
+
+## Driving more than one host
+
+`Fanout` (in [`protocol.py`](protocol.py)) presents `send`/`recv` over *several*
+peers: send goes to all of them, recv waits for all of them, checks they are asking
+the same thing, and returns one answer. Nothing uses it yet.
+
+It exists for the tensor-parallel case, where the peers are ranks of one model
+rather than independent callers. Two consequences follow from that and are the
+whole reason it is not just a loop:
+
+- **A worker is served once per serve, not once per rank.** The runner holds one
+  set of workers; resuming one per rank would run the user's block N times over.
+  Because `recv` collapses N arrivals into one message, the loop that drives the
+  workers — `while True: message = connection.recv()` — needs no changes at all.
+- **Ranks that stop agreeing are reported rather than waited on.** If one asks to
+  resume a worker while another finishes, they have already taken different paths
+  and the next collective either hangs or combines tensors computed from different
+  things. `RanksDiverged` names which peer disagreed, at the moment it becomes
+  knowable. The wait is bounded for the same reason: a genuinely diverged rank
+  never arrives, and a stall is a worse way to learn that.
+
+Whose value is returned is the first peer's. Where ranks hold pieces of a sharded
+tensor their values differ and one must be chosen; where the value was made whole
+before they sent it they are identical and the choice does not matter.
+
+Tested in `tests/test_fanout.py` with real sockets and scripted peers — no model,
+no GPUs, no server, which is the point: the ordering rules are cheaper to pin here
+than to discover from a hang on eight cards.
 
 ---
 
