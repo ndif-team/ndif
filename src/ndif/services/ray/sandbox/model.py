@@ -93,6 +93,17 @@ class SandboxModelDeployment(BaseModelDeployment):
             self.execution_sandbox.stop()
             self.execution_sandbox = None
 
+    def block_seed(self) -> "int | None":
+        """The seed the runner should draw from, or None to leave its RNG alone.
+
+        None here: one process runs the block, and two identical requests are
+        meant to draw differently. A deployment whose block runs in *several*
+        processes at once overrides this — see the tensor-parallel actor, where
+        ranks drawing different numbers is a correctness failure, not a
+        cosmetic one.
+        """
+        return None
+
     def execute(self, request: "BackendRequestModel") -> "tuple[bytes, float | None]":
         """Worker-thread body: run the request's block in a fresh runner.
 
@@ -112,7 +123,9 @@ class SandboxModelDeployment(BaseModelDeployment):
         try:
             # The dtype rides along because the runner has no model to ask, and
             # runs the block under the same autocast bracket this actor would.
-            connection.send((request.payload, request.compress, str(self.dtype)))
+            connection.send(
+                (request.payload, request.compress, str(self.dtype), self.block_seed())
+            )
             driver = SandboxDriver(
                 self.model,
                 self.dtype,

@@ -23,6 +23,7 @@ usually fails and the last point where one can fail safely (see
 import contextlib
 import linecache
 import time
+from typing import Optional
 
 import torch
 
@@ -108,6 +109,33 @@ def request_dtype(dtype):
     )
 
 
+def seed_block(seed: Optional[int]) -> None:
+    """Put this process's RNG in a known state before a block runs.
+
+    ``None`` leaves it alone, which is the ordinary single-process case: two
+    identical requests are *meant* to draw differently, and seeding every request
+    would silently turn repeated sampling into repeated identical samples.
+
+    A seed is passed when several processes have to draw the *same* numbers as
+    each other within one request. Under tensor parallelism that is a correctness
+    requirement rather than hygiene: ranks that sample differently generate
+    different tokens, and the model's own all-reduces then sum activations
+    computed from different sequences, so the answer is wrong on every rank
+    rather than merely inconsistent. Many checkpoints ship ``do_sample: true``,
+    so it applies to requests that never asked to sample.
+
+    Here rather than in the tensor-parallel package because the processes that
+    need it no longer all live there — a sandbox runner runs the block too, and
+    it must seed exactly as a rank does.
+    """
+    if seed is None:
+        return
+
+    import torch
+
+    torch.manual_seed(seed)
+
+
 def prepare_traced_block(model, payload, compress, deserialize):
     """Rebuild a request's tracer against this process's live model.
 
@@ -130,7 +158,7 @@ def prepare_traced_block(model, payload, compress, deserialize):
     return tracer, elapsed_ms(deserialize_started)
 
 
-def execute_traced_block(tracer, dtype):
+def execute_traced_block(tracer, dtype, seed: Optional[int] = None):
     """Run an already-built block and return the values it saved.
 
     Autocasts user-created tensors to the model's dtype, runs the block bracketed
@@ -138,9 +166,13 @@ def execute_traced_block(tracer, dtype):
 
     Shared with the tensor-parallel shards rather than reimplemented there,
     because every rank has to execute a block *identically* — the autocast dtype
-    in particular, since a mismatch would have the ranks reduce tensors of
-    different dtypes. Two copies of this would be two chances to drift.
+    and the seed in particular, since ranks that disagree on either reduce
+    tensors computed from different things. Two copies of this would be two
+    chances to drift.
     """
+    # Immediately before the block, not before deserializing it: what has to
+    # match across processes is the state the *user's* code draws from.
+    seed_block(seed)
     with request_dtype(dtype):
         # Bracket execution in a trace scope (inc/dec), the way the client's
         # Tracer.__exit__ does, so nnsight's save() records into this thread's
@@ -161,7 +193,7 @@ def execute_traced_block(tracer, dtype):
     return saved
 
 
-def run_traced_block(model, payload, compress, dtype, deserialize):
+def run_traced_block(model, payload, compress, dtype, deserialize, seed=None):
     """Build a request's block and run it: the whole body of a request.
 
     Returns ``(saved_values, deserialize_ms)``.
@@ -169,4 +201,4 @@ def run_traced_block(model, payload, compress, dtype, deserialize):
     tracer, deserialize_ms = prepare_traced_block(
         model, payload, compress, deserialize
     )
-    return execute_traced_block(tracer, dtype), deserialize_ms
+    return execute_traced_block(tracer, dtype, seed), deserialize_ms

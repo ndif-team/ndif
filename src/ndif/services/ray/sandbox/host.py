@@ -78,6 +78,11 @@ def spawn(python: str = sys.executable, quiet: bool = True, timeout: float = 30.
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
     )
+    # See the note in tp/common.rank_env: a runner is another process whose hash
+    # randomization would make a block's set/dict iteration order differ from the
+    # host's, and — once a tensor-parallel group runs one runner per rank — from
+    # its peers'.
+    env["PYTHONHASHSEED"] = "0"
     output = subprocess.DEVNULL if quiet else None
     process = subprocess.Popen(
         [python, "-m", "ndif.services.ray.sandbox.runner", path],

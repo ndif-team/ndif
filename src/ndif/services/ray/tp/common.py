@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from ..deployments.modeling.nns import seed_block as seed_ranks  # noqa: F401
 from ..sandbox.protocol import Channel
 
 logger = logging.getLogger("ndif.modeling")
@@ -61,6 +62,14 @@ def rank_env(gpu_ids: List[int], rank: int, master_port: int) -> Dict[str, str]:
         # a rank lost mid-run surfaces as an error the actor can restart on.
         "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        # Pinned so a block's control flow cannot depend on which process ran
+        # it. Python randomizes string hashing per process, so `set` and `dict`
+        # iteration order differ between one process and the next -- and a block
+        # that iterates a set of module names, or breaks a tie by iteration
+        # order, then takes a different path in each. In a single process that is
+        # invisible; across a tensor-parallel group it is a rank divergence, and
+        # divergence there is a hang rather than a wrong answer.
+        "PYTHONHASHSEED": "0",
     }
 
 
@@ -88,21 +97,6 @@ def load_sharded_model(
     )
     model._module.requires_grad_(False)
     return model
-
-
-def seed_ranks(seed: int) -> None:
-    """Put every rank's RNG in the same state.
-
-    Not hygiene — a correctness requirement. If sampling diverges the ranks
-    generate different tokens, and the model's own all-reduces then sum
-    activations computed from different sequences, so the output is wrong on
-    every rank rather than merely inconsistent. Many checkpoints ship
-    ``do_sample: true`` in their generation config, so this applies to requests
-    that never asked to sample.
-    """
-    import torch
-
-    torch.manual_seed(seed)
 
 
 class AbortController:

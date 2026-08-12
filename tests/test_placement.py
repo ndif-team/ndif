@@ -983,3 +983,89 @@ class TestTheEnvVarIsTheSwitch:
 
         importlib.reload(mod)
         assert mod.ControllerDeploymentArgs().tp_model_actor_class == TP_MODEL_ACTOR_CLASS
+
+
+class TestDeterminismAcrossProcesses:
+    """What has to match when a block runs in more than one process at once.
+
+    Under tensor parallelism the ranks must draw the same numbers and take the
+    same branches, or they compute from different things and the model's own
+    all-reduces combine them — wrong on every rank, not merely inconsistent. Once
+    the block moves to a sandbox runner, "the process that must match" stops
+    being the rank and becomes the runner.
+    """
+
+    def test_hash_randomization_is_pinned_for_a_rank(self):
+        # Python randomizes string hashing per process, so set/dict iteration
+        # order differs between processes. A block that iterates a set of module
+        # names then takes a different path on each rank -- a hang, not a wrong
+        # answer.
+        from ndif.services.ray.tp.common import rank_env
+
+        assert rank_env([0, 1], 0, 29500)["PYTHONHASHSEED"] == "0"
+
+    def test_hash_randomization_is_pinned_for_a_runner(self):
+        import inspect
+
+        from ndif.services.ray.sandbox import host
+
+        assert 'env["PYTHONHASHSEED"] = "0"' in inspect.getsource(host.spawn)
+
+    def test_there_is_one_definition_of_seeding(self):
+        # The tensor-parallel name is kept because it reads well at its call
+        # sites, but it must not be a second implementation.
+        from ndif.services.ray.deployments.modeling.nns import seed_block
+        from ndif.services.ray.tp.common import seed_ranks
+
+        assert seed_ranks is seed_block
+
+    def test_no_seed_leaves_the_rng_alone(self):
+        # The ordinary single-process case: two identical requests are *meant* to
+        # draw differently, and seeding every one would turn repeated sampling
+        # into repeated identical samples.
+        import torch
+
+        from ndif.services.ray.deployments.modeling.nns import seed_block
+
+        torch.manual_seed(1234)
+        first = torch.randn(3)
+        seed_block(None)
+        second = torch.randn(3)
+
+        assert not torch.equal(first, second)
+
+    def test_a_seed_makes_two_processes_agree(self):
+        import torch
+
+        from ndif.services.ray.deployments.modeling.nns import seed_block
+
+        seed_block(99)
+        first = torch.randn(3)
+        seed_block(99)
+        second = torch.randn(3)
+
+        assert torch.equal(first, second)
+
+    def test_the_executor_seeds_before_the_block_not_before_deserializing(self):
+        # What must match across processes is the state the *user's* code draws
+        # from, so the seed lands as late as possible.
+        import inspect
+
+        from ndif.services.ray.deployments.modeling import nns
+
+        source = inspect.getsource(nns.execute_traced_block)
+        assert source.index("seed_block(seed)") < source.index("tracer.execute")
+
+    def test_an_ordinary_deployment_sends_no_seed(self):
+        from ndif.services.ray.sandbox.model import SandboxModelDeployment
+
+        assert SandboxModelDeployment.block_seed(None) is None
+
+    def test_the_runner_tolerates_a_host_that_sends_none(self):
+        # The wire tuple grew a field; a runner must not require it.
+        import inspect
+
+        from ndif.services.ray.sandbox import runner
+
+        source = inspect.getsource(runner.Runner.handle)
+        assert "*rest" in source and "rest[0] if rest else None" in source

@@ -329,7 +329,8 @@ _original_cache = InterleavingTracer.cache
 InterleavingTracer.cache = ipc_cache
 
 
-def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32") -> None:
+def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32",
+        seed: "int | None" = None) -> None:
     """Deserialize the request in this process and execute it; interleave over IPC.
 
     Runs as the runner's user code: ``conn`` is the socket to the host. Model calls
@@ -343,6 +344,11 @@ def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32") -> No
     model to ask. It matters: the block runs under the same autocast bracket the
     in-process path uses, and without it an untrusted submission computed at
     different numerics from the identical trusted one.
+
+    ``seed`` rides along for the same reason and is usually ``None``. It is set
+    when several processes must draw the *same* numbers within one request — a
+    tensor-parallel group, where the block's RNG now lives out here rather than
+    in the rank. Seeding the rank would seed the wrong process.
     """
     global connection
     connection = conn
@@ -357,10 +363,10 @@ def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32") -> No
     # load-bearing, because the failure it prevents is a block silently running
     # the *previous* request's code (see nns.block_scope).
     with block_scope():
-        _run(conn, blob, compress, dtype)
+        _run(conn, blob, compress, dtype, seed)
 
 
-def _run(conn, blob: bytes, compress: bool, dtype: str) -> None:
+def _run(conn, blob: bytes, compress: bool, dtype: str, seed: "int | None") -> None:
     try:
         # Same rebuild as a normal server (code recompiled, scope restored), but
         # with our unpickler so persistent ids resolve to the IPC interleaver / None.
@@ -381,7 +387,7 @@ def _run(conn, blob: bytes, compress: bool, dtype: str) -> None:
             # save collection have to be identical to the in-process path, or the
             # same block returns different numbers depending on whether the
             # request was trusted.
-            saved = execute_traced_block(tracer, resolve_dtype(dtype))
+            saved = execute_traced_block(tracer, resolve_dtype(dtype), seed)
             buffer = io.BytesIO()
             torch.save(saved, buffer, pickle_module=cpu_pickle_module())
         except Exception as error:

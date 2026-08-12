@@ -127,10 +127,11 @@ class Runner:
         # where `warnings.warn` goes, and a warning only the runner sees is a
         # warning nobody reads. Separate writers so their partial lines don't
         # interleave.
-        blob, compress, dtype = connection.recv()
+        blob, compress, dtype, *rest = connection.recv()
+        seed = rest[0] if rest else None
         with contextlib.redirect_stdout(Writer(connection)):
             with contextlib.redirect_stderr(Writer(connection)):
-                nns.run(connection, blob, compress, dtype)
+                nns.run(connection, blob, compress, dtype, seed)
 
 
 if __name__ == "__main__":
