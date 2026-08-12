@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 
-from .protocol import encode, recv_frame, send_frame, unpack
+from .protocol import Channel, unpack
 
 # The dir containing the top-level ``ndif`` package, so the runner (which runs as
 # ndif.services.ray.sandbox.runner) can import ndif.* and reuse its helpers.
@@ -26,11 +26,13 @@ _PACKAGE_ROOT = os.path.dirname(
 )
 
 
-class Connection:
-    """A framed message channel to a runner. Transport only."""
+class Connection(Channel):
+    """The host's end of a runner channel.
 
-    def __init__(self, sock):
-        self.sock = sock
+    Inherits the framing; overrides only the receive codec, because the two
+    directions deliberately differ — the host sends one value, the runner replies
+    with an event name plus values and kwargs (see this module's protocol).
+    """
 
     @classmethod
     def open(cls, path: str, timeout: float = 60.0) -> "Connection":
@@ -40,16 +42,9 @@ class Connection:
         sock.settimeout(None)
         return cls(sock)
 
-    def send(self, value) -> None:
-        """Send one value to the runner (str/bytes raw, else cloudpickled)."""
-        send_frame(self.sock, encode(value))
-
-    def recv(self):
-        """Receive a message as ``(values, kwargs)``."""
-        return unpack(recv_frame(self.sock))
-
-    def close(self) -> None:
-        self.sock.close()
+    def recv(self, timeout=None):
+        """Receive a runner message as ``(values, kwargs)``."""
+        return unpack(self.recv_raw(timeout))
 
 
 class Sandbox:

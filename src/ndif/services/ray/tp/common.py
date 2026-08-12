@@ -17,10 +17,9 @@ Nothing here may branch on rank except where a collective genuinely has a root
 from __future__ import annotations
 
 import logging
-import socket
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from ..sandbox.protocol import decode, encode, recv_frame, send_frame
+from ..sandbox.protocol import Channel
 
 logger = logging.getLogger("ndif.modeling")
 
@@ -166,32 +165,3 @@ class AbortController:
 
     def close(self) -> None:
         self._handle.remove()
-
-
-class Channel:
-    """A framed message channel between rank 0 and a shard.
-
-    Both ends speak the same thing, so both use this: rank 0 wraps the socket it
-    accepted, the shard wraps the one it connected with. Framing and the codec
-    come from the sandbox's wire protocol, which is transport-agnostic — only the
-    message catalog here is ours (see host.py).
-    """
-
-    def __init__(self, sock: socket.socket) -> None:
-        self.sock = sock
-
-    def send(self, value: Any) -> None:
-        send_frame(self.sock, encode(value))
-
-    def recv(self, timeout: Optional[float] = None) -> Any:
-        self.sock.settimeout(timeout)
-        try:
-            return decode(recv_frame(self.sock))
-        finally:
-            self.sock.settimeout(None)
-
-    def close(self) -> None:
-        try:
-            self.sock.close()
-        except OSError:
-            pass

@@ -34,7 +34,8 @@ across a process boundary.
 
 | File | Role |
 |------|------|
-| [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model on the host (base class), owns a pool of runners, drives one per request, and holds the **host side** of the interleaver (`MediatorProxy`). |
+| [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model (base class), owns the runner pool, and turns a runner failure into a client-facing error. Thin: it acquires a runner and hands it to a driver. |
+| [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: `MediatorProxy` per worker, the interleaved run, control events. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the transport `Connection`. |
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
 | [`nns.py`](nns.py) | The nnsight glue that runs **inside the runner**: deserialize the tracer, execute the block, and host the **worker side** of the interleaver (`IPCInterleaver`, patched `Mediator.event`, `IPCEnvoy`). |
@@ -90,7 +91,8 @@ across a process boundary.
 4. **Interleave.** `IPCEnvoy.interleave` starts the workers (each parks on its first
    activation request), ships one **initial park per worker** in an `INTERLEAVE`
    message, and then **pumps** the socket. On the host, `interleave` builds one
-   `MediatorProxy` per park, installs them as the model interleaver's mediators,
+   `MediatorProxy` per park (in `driver.py`), installs them as the model
+   interleaver's mediators,
    and runs the real forward pass. As the model reaches each location, the proxies
    drive their workers over the socket (details below).
 

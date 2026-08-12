@@ -602,9 +602,9 @@ class TestTheTwoExecutorsAreOne:
         # is the *right* one is measured in test_sandbox_conformance.py.
         import inspect
 
-        from ndif.services.ray.sandbox import model
+        from ndif.services.ray.sandbox import driver
 
-        source = inspect.getsource(model.SandboxModelDeployment.interleave)
+        source = inspect.getsource(driver.SandboxDriver.interleave)
         assert "request_dtype" in source
 
     def test_no_execution_path_builds_its_own_region(self):
@@ -684,7 +684,7 @@ class TestDrainingTheGroup:
     def _group(count=3):
         import socket
 
-        from ndif.services.ray.tp.common import encode, send_frame
+        from ndif.services.ray.sandbox.protocol import encode, send_frame
         from ndif.services.ray.tp.host import Shard, ShardGroup
 
         group = ShardGroup(model_key="m", gpu_ids=list(range(count + 1)), dtype="bfloat16")

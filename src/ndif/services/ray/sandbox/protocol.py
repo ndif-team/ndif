@@ -138,3 +138,49 @@ def unpack(blob: bytes):
         kwargs = {take().decode(): decode(take()) for _ in range(kcount)}
 
     return values, kwargs
+
+
+class Channel:
+    """A framed message channel over one socket. Transport only.
+
+    The framing, the timeout handling and the close are the same everywhere a
+    process in this system talks to another one; only the *codec* differs by
+    direction, so subclasses override `send`/`recv` and inherit the rest. Three
+    near-identical copies of this existed — the sandbox host's, the runner's, and
+    the tensor-parallel `Channel` — differing in which of `encode`/`pack` they
+    reached for.
+
+    A timeout applies to each `recv` **syscall**, not to a whole frame, so a
+    timeout between a header and its body leaves the stream mid-frame and every
+    later read misinterprets body bytes as a length. Treat a failed `recv` as
+    fatal to the channel.
+    """
+
+    def __init__(self, sock) -> None:
+        self.sock = sock
+
+    def send_raw(self, data: bytes) -> None:
+        send_frame(self.sock, data)
+
+    def recv_raw(self, timeout=None) -> bytes:
+        if timeout is None:
+            return recv_frame(self.sock)
+        self.sock.settimeout(timeout)
+        try:
+            return recv_frame(self.sock)
+        finally:
+            self.sock.settimeout(None)
+
+    def send(self, value) -> None:
+        """One value, cloudpickled unless it is already str/bytes."""
+        self.send_raw(encode(value))
+
+    def recv(self, timeout=None):
+        """One value, as sent."""
+        return decode(self.recv_raw(timeout))
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass

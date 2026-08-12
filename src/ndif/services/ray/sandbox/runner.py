@@ -19,7 +19,7 @@ import threading
 import time
 
 from . import nns
-from .protocol import decode, pack, recv_frame, send_frame
+from .protocol import Channel, pack
 
 _PARENT_POLL_S = 1.0
 
@@ -60,21 +60,15 @@ def die_with_parent() -> None:
     threading.Thread(target=watch, daemon=True, name="die-with-parent").start()
 
 
-class Connection:
+class Connection(Channel):
     """The runner's framed channel to the host (used by ``nns.run`` and ``Writer``).
 
     ``send`` ships a runner -> host message (event name + values + kwargs); ``recv``
     reads one host -> runner message. See ``protocol.py`` for the message catalog.
     """
 
-    def __init__(self, sock):
-        self.sock = sock
-
     def send(self, event, *values, **kwargs):
-        send_frame(self.sock, pack((event, *values), kwargs))
-
-    def recv(self):
-        return decode(recv_frame(self.sock))
+        self.send_raw(pack((event, *values), kwargs))
 
     def print_event(self, text):
         """Forward stdout text to the host as a PRINT event."""
