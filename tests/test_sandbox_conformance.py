@@ -36,6 +36,22 @@ from conftest import PROMPT, REPO, requires_server
 pytestmark = requires_server
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _not_under_the_untrusted_plugin(pytestconfig):
+    """Refuse to run beneath `-p conftest_untrusted`.
+
+    That plugin forces every request untrusted by patching the same method this
+    file toggles, so running both together silently compares untrusted against
+    untrusted — which passes the equality tests for the wrong reason and fails the
+    control. Worth failing loudly: the two look like they compose and do not.
+    """
+    if any("conftest_untrusted" in str(p) for p in pytestconfig.getoption("plugins") or []):
+        pytest.fail(
+            "run this suite without -p conftest_untrusted; it sets `trusted` "
+            "itself, and the plugin overrides it"
+        )
+
+
 @contextmanager
 def _trusted(value: bool):
     """Run the requests in this block with ``trusted`` set to ``value``."""

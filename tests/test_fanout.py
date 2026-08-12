@@ -303,3 +303,131 @@ class TestItDropsIntoThePumpLoop:
             thread.join(timeout=5)
 
         assert replies == ["PARK"] * 3
+
+
+class TestTheRunnerServesAGroup:
+    """A runner told it has several hosts waits for all of them before starting.
+
+    Real subprocesses and real sockets, but no model: `Runner` is exercised up to
+    the point it would hand off to nnsight, which is where the group behaviour
+    lives. What happens after that needs GPUs and belongs to the end-to-end suite.
+    """
+
+    @staticmethod
+    def _runner(peers, script_dir):
+        """Start a Runner in a subprocess that reports what it received."""
+        import subprocess
+        import sys
+        import textwrap
+        import uuid
+        from pathlib import Path
+
+        path = f"/tmp/fanout-test-{uuid.uuid4().hex[:8]}.sock"
+        script = Path(script_dir) / "run_runner.py"
+        script.write_text(
+            textwrap.dedent(
+                f"""
+                import sys
+                sys.path.insert(0, {str(Path.cwd() / "src")!r})
+                from ndif.services.ray.sandbox.runner import Runner
+                from ndif.services.ray.sandbox.protocol import Fanout
+
+                class Probe(Runner):
+                    def handle(self, channels):
+                        leader = channels[0]
+                        payload = leader.recv()
+                        conn = Fanout(channels) if len(channels) > 1 else leader
+                        # Say what we saw, to everyone, then stop.
+                        conn.send("SAW", len(channels), payload[0])
+                        raise SystemExit(0)
+
+                Probe({path!r}, peers={peers}).serve()
+                """
+            )
+        )
+        process = subprocess.Popen([sys.executable, str(script)])
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if __import__("os").path.exists(path):
+                break
+            time.sleep(0.05)
+        return process, path
+
+    def _connect(self, path):
+        from ndif.services.ray.sandbox.host import Connection
+
+        return Connection.open(path, timeout=10)
+
+    def test_it_waits_for_every_host_before_starting(self, tmp_path):
+        process, path = self._runner(peers=3, script_dir=tmp_path)
+        try:
+            leader = self._connect(path)
+            leader.send(("payload", False, "float32", None))
+
+            # Only one host so far: the runner must not have started.
+            time.sleep(0.4)
+            second = self._connect(path)
+            third = self._connect(path)
+
+            for host in (leader, second, third):
+                values, _ = host.recv()
+                assert values[0] == "SAW"
+                assert values[1] == 3, "the runner did not see the whole group"
+                assert values[2] == "payload"
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+    def test_one_host_still_works(self, tmp_path):
+        # The single-GPU sandbox is the same code with one peer.
+        process, path = self._runner(peers=1, script_dir=tmp_path)
+        try:
+            host = self._connect(path)
+            host.send(("payload", False, "float32", None))
+
+            values, _ = host.recv()
+
+            assert values[0] == "SAW" and values[1] == 1
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+    def test_a_probe_does_not_take_one_of_the_groups_places(self, tmp_path):
+        # `spawn` learns the runner is up by connecting and closing again. With one
+        # peer that probe only caused a failed exchange and a retry; with several
+        # it would occupy a slot and the runner would wait for a host that had
+        # already gone.
+        import socket as socket_module
+
+        process, path = self._runner(peers=2, script_dir=tmp_path)
+        try:
+            probe = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            probe.connect(path)
+            probe.close()
+
+            leader = self._connect(path)
+            follower = self._connect(path)
+            leader.send(("after-a-probe", False, "float32", None))
+
+            for host in (leader, follower):
+                values, _ = host.recv()
+                assert values[1] == 2 and values[2] == "after-a-probe"
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+
+    def test_the_payload_comes_from_whoever_connects_first(self, tmp_path):
+        # The runner takes its first connection as the leader, which is why rank 0
+        # must connect before it tells the shards where the runner is.
+        process, path = self._runner(peers=2, script_dir=tmp_path)
+        try:
+            leader = self._connect(path)
+            follower = self._connect(path)
+            leader.send(("from-the-leader", False, "float32", None))
+
+            for host in (leader, follower):
+                values, _ = host.recv()
+                assert values[2] == "from-the-leader"
+        finally:
+            process.terminate()
+            process.wait(timeout=10)

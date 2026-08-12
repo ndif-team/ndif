@@ -19,7 +19,7 @@ import threading
 import time
 
 from . import nns
-from .protocol import Channel, pack
+from .protocol import Channel, Fanout, pack
 
 _PARENT_POLL_S = 1.0
 
@@ -70,15 +70,14 @@ class Connection(Channel):
     def send(self, event, *values, **kwargs):
         self.send_raw(pack((event, *values), kwargs))
 
-    def print_event(self, text):
-        """Forward stdout text to the host as a PRINT event."""
-        self.send("PRINT", text)
-
 
 class Writer:
     """Forwards the user's stdout to the host as PRINT events, one per complete
     line (like the in-process ``LogStream``) so a lone ``"\\n"`` from ``print``
-    doesn't become an empty LOG. ``flush`` drains a trailing partial line."""
+    doesn't become an empty LOG. ``flush`` drains a trailing partial line.
+
+    Takes anything that can `send` an event, so the same writer serves one host or
+    a whole group of them."""
 
     def __init__(self, connection):
         self.connection = connection
@@ -88,20 +87,43 @@ class Writer:
         self.buffer += text
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
-            self.connection.print_event(line)
+            self.connection.send("PRINT", line)
         return len(text)
 
     def flush(self):
         if self.buffer:
-            self.connection.print_event(self.buffer)
+            self.connection.send("PRINT", self.buffer)
             self.buffer = ""
 
 
-class Runner:
-    """Serves user code over a Unix socket."""
+def _hung_up(sock) -> bool:
+    """Whether the peer has already closed, without consuming anything it sent.
 
-    def __init__(self, path: str):
+    A closed peer reads as end-of-stream; one that is connected but has not
+    spoken yet has nothing to read, which is the ordinary state of a host waiting
+    for the group to assemble.
+    """
+    try:
+        return sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+    except BlockingIOError:
+        return False
+    except OSError:
+        return True
+
+
+class Runner:
+    """Serves user code over a Unix socket.
+
+    ``peers`` is how many hosts drive one request. One is the ordinary case: a
+    single model actor. Several means the hosts are *ranks of one model* — they run
+    the same forward, joined by collectives, so the block must be run once for all
+    of them and every reply must reach all of them. `Fanout` is what makes that the
+    same code as the single case.
+    """
+
+    def __init__(self, path: str, peers: int = 1):
         self.path = path
+        self.peers = peers
         if os.path.exists(path):
             os.unlink(path)
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -110,24 +132,44 @@ class Runner:
 
     def serve(self):
         while True:
-            sock, _ = self.socket.accept()
+            channels = []
             try:
-                self.handle(sock)
+                while len(channels) < self.peers:
+                    sock, _ = self.socket.accept()
+                    if _hung_up(sock):
+                        # `spawn` probes the socket to learn this process is up,
+                        # by connecting and closing again. With one peer that
+                        # probe merely caused a failed exchange and a retry; with
+                        # several it would take one of the group's places and the
+                        # runner would wait forever for a host that already left.
+                        sock.close()
+                        continue
+                    channels.append(Connection(sock))
+                self.handle(channels)
             except Exception as error:
                 # A dropped probe or a failing exchange must not kill the loop.
                 print(f"runner: {error}", file=sys.stderr, flush=True)
             finally:
-                sock.close()
+                for channel in channels:
+                    channel.close()
 
-    def handle(self, sock):
-        connection = Connection(sock)
+    def handle(self, channels):
+        # The payload comes from the first host only -- every host would send the
+        # same bytes, and the block is deserialized once here regardless.
+        #
+        # "First" is by connection order, so the host that sends the payload has to
+        # be the one that connects first. Under tensor parallelism rank 0 opens its
+        # connection before it tells the shards where the runner is, which orders
+        # them by construction.
+        leader = channels[0]
+        connection = Fanout(channels) if len(channels) > 1 else leader
         # The host sends the request payload; deserialize and run it here (nns.run
         # reports its own END/EXCEPTION). All stdout *and stderr* from the traced
         # block is forwarded to the host as PRINT events — stderr because that is
         # where `warnings.warn` goes, and a warning only the runner sees is a
         # warning nobody reads. Separate writers so their partial lines don't
         # interleave.
-        blob, compress, dtype, *rest = connection.recv()
+        blob, compress, dtype, *rest = leader.recv()
         seed = rest[0] if rest else None
         with contextlib.redirect_stdout(Writer(connection)):
             with contextlib.redirect_stderr(Writer(connection)):
@@ -136,4 +178,5 @@ class Runner:
 
 if __name__ == "__main__":
     die_with_parent()
-    Runner(sys.argv[1]).serve()
+    peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    Runner(sys.argv[1], peers=peers).serve()

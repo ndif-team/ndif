@@ -71,8 +71,19 @@ class Sandbox:
             pass
 
 
-def spawn(python: str = sys.executable, quiet: bool = True, timeout: float = 30.0) -> Sandbox:
-    """Launch a runner process and wait until its socket is accepting."""
+def spawn(
+    python: str = sys.executable,
+    quiet: bool = True,
+    timeout: float = 30.0,
+    peers: int = 1,
+) -> Sandbox:
+    """Launch a runner process and wait until its socket is accepting.
+
+    ``peers`` is how many hosts will drive each request. Above one they are
+    ranks of one model and the runner waits for all of them before it starts
+    (see `Runner`); the runner has to be told at launch because it accepts the
+    connections before anyone has said anything.
+    """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -85,7 +96,7 @@ def spawn(python: str = sys.executable, quiet: bool = True, timeout: float = 30.
     env["PYTHONHASHSEED"] = "0"
     output = subprocess.DEVNULL if quiet else None
     process = subprocess.Popen(
-        [python, "-m", "ndif.services.ray.sandbox.runner", path],
+        [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)],
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=output,
@@ -120,10 +131,17 @@ class Pool:
     release-back-to-pool.
     """
 
-    def __init__(self, size: int = 2, python: str = sys.executable, quiet: bool = True):
+    def __init__(
+        self,
+        size: int = 2,
+        python: str = sys.executable,
+        quiet: bool = True,
+        peers: int = 1,
+    ):
         self.size = size
         self.python = python
         self.quiet = quiet
+        self.peers = peers
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -141,7 +159,7 @@ class Pool:
 
         def warm():
             try:
-                sandbox = spawn(python=self.python, quiet=self.quiet)
+                sandbox = spawn(python=self.python, quiet=self.quiet, peers=self.peers)
             finally:
                 with self.lock:
                     self.spawning -= 1
@@ -158,7 +176,7 @@ class Pool:
         try:
             sandbox = self.ready.get(timeout=timeout)
         except queue.Empty:
-            sandbox = spawn(python=self.python, quiet=self.quiet)
+            sandbox = spawn(python=self.python, quiet=self.quiet, peers=self.peers)
         self.refill()
         return sandbox
 

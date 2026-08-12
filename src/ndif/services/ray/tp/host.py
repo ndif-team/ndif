@@ -270,6 +270,41 @@ class ShardGroup:
         if failures:
             raise ShardError("; ".join(failures))
 
+    def sandbox(
+        self,
+        path: str,
+        env: Dict[str, Any],
+        seed: int,
+        timeout: float = PREPARE_TIMEOUT_SECONDS,
+    ) -> None:
+        """Point every shard at the runner holding this request's block.
+
+        The untrusted counterpart to :meth:`prepare`, and the same shape: the
+        shards answer READY once they can reach the runner, which is the last
+        point before any collective, so a shard that cannot get there is still a
+        failure rank 0 can report without leaving anyone blocked.
+
+        What is *not* the same: no shard builds the block. One runner holds it for
+        the whole group. Rank 0 must already be connected to that runner before
+        calling this — the runner treats its first connection as the one that
+        sends the payload.
+
+        Raises:
+            ShardError: if any shard could not reach the runner.
+        """
+        for shard in self.shards:
+            shard.send(("SANDBOX", path, env, seed))
+
+        received, lost = self._drain(time.time() + timeout)
+        failures = list(lost)
+        failures.extend(
+            f"rank {rank}: {self._describe(message)}"
+            for rank, message in sorted(received.items())
+            if not (isinstance(message, tuple) and message[0] == "READY")
+        )
+        if failures:
+            raise ShardError("; ".join(failures))
+
     def go(self) -> None:
         """Release the shards into the forward. Rank 0 must run it too."""
         for shard in self.shards:

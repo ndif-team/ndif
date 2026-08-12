@@ -109,6 +109,18 @@ last point before any collective. So the shards prove they can build the block
 before rank 0 commits to a forward. Past `GO`, a shard that drops out leaves rank
 0 blocked in NCCL until the execution timeout.
 
+An untrusted request uses the same two phases with `SANDBOX` in place of
+`PREPARE`. Nothing is built on a shard: one runner process holds the block for the
+whole group, and each rank is a *host* to it — driving the forward and answering
+reads, exactly as the single-GPU sandbox actor does. `READY` then means "the
+environment is applied and I can reach the runner", which is still the last point
+before any collective.
+
+The runner serves each worker once for the whole group rather than once per rank
+(`sandbox.protocol.Fanout`), so the block runs a single time. Rank 0 must connect
+to the runner *before* handing the path out, because the runner takes its first
+connection as the one that sends the payload.
+
 A request that never reaches `GO` is stood down with `SKIP`, and each shard
 answers `IDLE`. That acknowledgement is load-bearing: "the group is back at rest"
 has to be something rank 0 **observes**, not assumes, or a stood-down shard is
@@ -138,10 +150,11 @@ their code, and the person who paid was whoever sent the next request.
 - **No HOT↔WARM caching.** A group cannot be parked: every rank's device is fixed
   when its process starts, and restoring may land on different cards. The actor
   sets `CACHEABLE = False` and the controller evicts these outright.
-- **No sandbox.** A tensor-parallel placement replaces the actor class, so an
-  untrusted request on a TP model runs in-process. Combining them needs one runner
-  per rank kept in lockstep — the gather is not the hard part (see
-  `nnsight.intervention.fragments`), the N runners are.
+- **The sandbox is wired but not selectable.** A shard can now serve an
+  untrusted request as a *host* to one runner shared by the whole group
+  (`SANDBOX` below), but nothing chooses that path yet: the controller returns
+  one actor class, so "sharded" and "sandboxed" are still mutually exclusive by
+  construction. See `docs/developing/sandboxed-tensor-parallel-proposal.md`.
 - **Dense models only.** Expert-parallel styles that slice by expert rather than
   along the last dim are refused at load; nnsight's `SHARDED_SIDES` is the list.
 - **Rank 0's metrics only.** Its peak memory is representative under TP.

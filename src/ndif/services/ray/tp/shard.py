@@ -30,6 +30,8 @@ from ..deployments.modeling.nns import (
     prepare_traced_block,
 )
 from ..deployments.modeling.util import resolve_dtype, set_process_limits
+from ..sandbox.driver import SandboxDriver
+from ..sandbox.host import Connection as RunnerConnection
 from .common import (
     AbortController,
     AbortedError,
@@ -112,6 +114,20 @@ def main() -> int:
             connection.send(("IDLE", args.rank))
             continue
 
+        if message[0] == "SANDBOX":
+            # An untrusted request: the block is not ours to build or run. One
+            # runner process holds it for the whole group, and this rank is a
+            # *host* to it -- it drives the forward and answers reads, exactly as
+            # the single-GPU sandbox actor does, with the difference that the
+            # runner is answering several of us and serves each worker once for
+            # all of us (see sandbox.protocol.Fanout).
+            _, path, env, seed = message
+            if _sandboxed_request(
+                connection, args.rank, model, dtype, abort, path, env, seed
+            ):
+                continue
+            return 0
+
         if message[0] != "PREPARE":
             continue
 
@@ -166,6 +182,64 @@ def main() -> int:
             finally:
                 abort.disarm()
                 torch.cuda.synchronize()
+
+
+def _sandboxed_request(connection, rank, model, dtype, abort, path, env, seed) -> bool:
+    """Serve one untrusted request as a host to the group's runner.
+
+    Returns True to keep serving, False if rank 0 has gone and this process
+    should exit.
+
+    The two phases are the same as a trusted request's and exist for the same
+    reason, only what happens in each differs: there is no block to build here, so
+    "ready" means the environment is applied and the runner is reachable, and that
+    is still the last point before any collective.
+    """
+    runner = None
+    with block_scope():
+        try:
+            model._remoteable_set_env(env)
+            # The *model's* own sampling still happens in this process even though
+            # the block does not, so the ranks still have to agree here. The
+            # block's own RNG is seeded separately, in the runner, from the same
+            # number.
+            seed_ranks(seed)
+            runner = RunnerConnection.open(path)
+            connection.send(("READY", rank))
+        except Exception as exception:
+            if runner is not None:
+                runner.close()
+            connection.send(("ERROR", _format(exception)))
+            return True
+
+        if not _await_go(connection):
+            runner.close()
+            try:
+                connection.send(("IDLE", rank))
+            except OSError:
+                return False
+            return True
+
+        abort.arm()
+        try:
+            # No `on_log`: a shard has no client to tell. The runner fans its
+            # PRINTs to every host and only rank 0 forwards them.
+            SandboxDriver(model, dtype).pump(runner)
+            # Whatever the block saved came back to every host; rank 0 is the one
+            # that uploads it, so this copy is dropped.
+            connection.send(("DONE",))
+        except AbortedError:
+            # Every rank raised this on the same iteration; the group is intact.
+            connection.send(("DONE",))
+        except Exception as exception:
+            connection.send(("ERROR", _format(exception)))
+        finally:
+            import torch
+
+            abort.disarm()
+            runner.close()
+            torch.cuda.synchronize()
+    return True
 
 
 def _await_go(connection: Channel) -> bool:
