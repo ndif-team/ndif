@@ -1391,3 +1391,117 @@ class TestWhoseErrorTheOperatorSees:
                 rank_zero_error=error,
             )
             assert deployment._await_shards() is True
+
+
+class TestAReplacementReplicaIsTheSameModel:
+    """How a model is served has to outlive the deploy that said so.
+
+    The queue provisions a replacement replica with a bare
+    `DeploymentConfig(replicas=1, trusted=...)` -- it has no idea how the model
+    was deployed and shouldn't. Without a memory of it, a model placed
+    tensor-parallel comes back on the default single-GPU actor under the same
+    model key and answers with different numbers, with nothing saying the model
+    is no longer sharded. Observed live: the sharded replica gave 424.7618 and
+    its unsharded replacement 424.2299 for the same block.
+    """
+
+    def _controller(self):
+        from ndif.services.ray.deployments.controller.controller import _ControllerActor
+
+        controller = _ControllerActor.__new__(_ControllerActor)
+        controller.deployment_configs = {}
+        return controller
+
+    def _config(self, **fields):
+        from ndif.common.schema.controller import DeploymentConfig
+
+        return DeploymentConfig(**fields)
+
+    def test_a_bare_redeploy_keeps_the_actor_class(self):
+        controller = self._controller()
+        controller._remember("m", self._config(actor_class="tp.SandboxedTPModelActor", gpus=2))
+
+        replacement = self._config(replicas=1, trusted=True)
+        controller._remember("m", replacement)
+
+        assert replacement.actor_class == "tp.SandboxedTPModelActor"
+        assert replacement.gpus == 2
+
+    def test_it_keeps_the_dtype_too(self):
+        # The same hazard without the sharding: a model deployed float32 coming
+        # back bfloat16 is a silent change of numbers.
+        controller = self._controller()
+        controller._remember("m", self._config(dtype="float32"))
+
+        replacement = self._config(replicas=1)
+        controller._remember("m", replacement)
+
+        assert replacement.dtype == "float32"
+
+    def test_an_explicit_value_wins(self):
+        controller = self._controller()
+        controller._remember("m", self._config(gpus=2, dtype="float32"))
+
+        changed = self._config(gpus=4)
+        controller._remember("m", changed)
+
+        assert changed.gpus == 4, "an operator's new setting must not be overridden"
+        assert changed.dtype == "float32", "and the rest still carries over"
+
+    def test_the_new_setting_is_what_is_remembered_next(self):
+        controller = self._controller()
+        controller._remember("m", self._config(gpus=2))
+        controller._remember("m", self._config(gpus=4))
+
+        later = self._config(replicas=1)
+        controller._remember("m", later)
+
+        assert later.gpus == 4
+
+    def test_replicas_and_trusted_do_not_carry_over(self):
+        # `replicas` is additive per call -- inheriting it would multiply the
+        # deployment. `trusted` belongs to the request that triggered the deploy.
+        controller = self._controller()
+        controller._remember("m", self._config(replicas=3, trusted=True, gpus=2))
+
+        replacement = self._config(replicas=1, trusted=False)
+        controller._remember("m", replacement)
+
+        assert replacement.replicas == 1
+        assert replacement.trusted is False
+
+    def test_models_do_not_borrow_each_other_s_settings(self):
+        controller = self._controller()
+        controller._remember("sharded", self._config(gpus=2, actor_class="tp"))
+
+        other = self._config(replicas=1)
+        controller._remember("other", other)
+
+        assert other.gpus is None
+        assert other.actor_class is None
+
+    def test_the_first_deploy_of_a_model_is_unchanged(self):
+        controller = self._controller()
+
+        first = self._config(replicas=1, trusted=True)
+        controller._remember("m", first)
+
+        assert first.gpus is None and first.actor_class is None and first.dtype is None
+
+    def test_what_is_remembered_is_a_copy(self):
+        # The caller goes on to mutate the config it passed (dtype is pinned to
+        # the controller's default straight after), and that must not become the
+        # remembered value.
+        controller = self._controller()
+        config = self._config(gpus=2)
+
+        controller._remember("m", config)
+        config.gpus = 99
+
+        assert controller.deployment_configs["m"].gpus == 2
+
+    def test_every_sticky_field_is_a_real_field(self):
+        from ndif.common.schema.controller import DeploymentConfig
+
+        unknown = set(DeploymentConfig.STICKY) - set(DeploymentConfig.model_fields)
+        assert not unknown, f"STICKY names fields that do not exist: {sorted(unknown)}"

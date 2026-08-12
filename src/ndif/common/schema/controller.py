@@ -7,7 +7,7 @@ shapes; the controller produces the full replica/deploy state.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import ClassVar, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -69,6 +69,22 @@ class DeploymentConfig(BaseModel):
     """Ray actor class serving this deployment: a dotted import path resolvable
     inside the Ray actor's Python path, or an already-``@ray.remote`` class.
     ``None`` defers to the controller's ``default_model_actor_class``."""
+
+    #: Fields describing *how this model is served* rather than what one call
+    #: asked for. They are remembered per model key and reapplied when a later
+    #: deploy leaves them unset -- see `Controller._remember`. `replicas` is not
+    #: here because it is additive per call, and neither is `trusted`, which
+    #: belongs to the request that triggered the deploy.
+    STICKY: ClassVar[Tuple[str, ...]] = (
+        "size_bytes",
+        "padding_factor",
+        "padding_bias",
+        "gpus",
+        "max_tp",
+        "execution_timeout_seconds",
+        "dtype",
+        "actor_class",
+    )
 
     @staticmethod
     def normalize(
