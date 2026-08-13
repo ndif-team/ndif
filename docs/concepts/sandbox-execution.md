@@ -92,16 +92,18 @@ worker asked for something the model already ran past.
 |---|---|
 | the serialized request payload (host → runner, once) | the model, its weights, and its module tree — host only |
 | an activation a worker is actually parked on, narrowed to that invoke's rows | every other activation the forward produces |
-| a worker's replacement value on a swap, and the value it was handed (written back so in-place edits land) | the tokenizer / pipeline: raw invoke inputs ship to the host and are assembled there |
+| a worker's replacement value on a swap, and the value it was handed (written back so in-place edits land) | invoke inputs: they ship raw and the host's tokenizer / pipeline assembles them (the runner's own tokenizer is a local copy, used only by the block) |
 | ad-hoc module calls (`model.lm_head(h)`) as a request/response | the module itself — the host runs its forward and returns the output |
 | `tracer.cache()` hits, filtered and moved off-device on the host | untargeted locations — a cache never ships what it wouldn't keep |
 | the block's stdout, one line at a time, surfaced as `LOG` responses | — |
 | the final `torch.save` blob of saved values (runner → host, uploaded as-is) | — |
 
-The runner holds **no model objects at all**. When the request is deserialized
-there, the model, its modules, and the tokenizer all resolve to `None`; only the
-interleaver is real, and it is wired to the socket. Everything the block does that
-looks like touching the model is a message.
+The runner holds **no weights**. It does hold a *meta* model — built from the model
+key when the runner starts — so when the request is deserialized there, the module
+tree, tokenizer and pipeline resolve to weightless local objects, and the
+interleaver resolves to one wired to the socket. Structural work (tokenizing,
+walking the tree) happens in the runner; anything that needs a real activation is
+still a message, because the meta modules have no values to give.
 
 ## What it implies
 

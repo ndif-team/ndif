@@ -80,7 +80,15 @@ class SandboxHost:
         runner rather than a process per rank.
         """
         self.pool = Pool(
-            size=DEFAULT_POOL_SIZE if pool_size is None else pool_size, peers=peers
+            size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
+            peers=peers,
+            # Each runner builds its own meta model from this key, so its
+            # persistent-id map has the same paths as the tree this actor loaded
+            # -- which is also why the build has to be told what this actor's was
+            # told: a checkpoint that defines its architecture in its own repo has
+            # no readable config without it.
+            model_key=self.model_key,
+            trust_remote_code=self.kwargs.get("trust_remote_code", False),
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
@@ -107,10 +115,15 @@ class SandboxHost:
         connection = sandbox.connection()
         try:
             self.before_payload(request, sandbox, seed)
-            # The dtype rides along because the runner has no model to ask, and
-            # runs the block under the same autocast bracket this actor would.
+            # The dtype rides along because the runner has no *loaded* model to
+            # ask, and runs the block under the same autocast bracket this actor
+            # would. The env rides along for the opposite reason: the runner does
+            # have a weightless model, and the env can reshape its tree (a PEFT
+            # adapter), which the ids in the payload are about to be resolved
+            # against. The base applied the same dict to this actor's model
+            # moments ago.
             connection.send(
-                (request.payload, request.compress, str(self.dtype), seed)
+                (request.payload, request.compress, str(self.dtype), seed, request.env)
             )
             self.after_payload()
             driver = SandboxDriver(

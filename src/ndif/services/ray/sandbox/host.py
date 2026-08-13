@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Tuple
+from typing import Optional, Tuple
 
 from .protocol import Channel, signature_of, unpack
 
@@ -150,6 +150,8 @@ def spawn(
     quiet: bool = True,
     timeout: float = 30.0,
     peers: int = 1,
+    model_key: Optional[str] = None,
+    trust_remote_code: bool = False,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -157,6 +159,14 @@ def spawn(
     ranks of one model and the runner waits for all of them before it starts
     (see `Runner`); the runner has to be told at launch because it accepts the
     connections before anyone has said anything.
+
+    ``model_key`` is the checkpoint the runner builds its *meta* model from, so
+    the payload's ``Module:<path>`` / ``Tokenizer`` ids resolve to weightless
+    local objects rather than to ``None``. It is told at launch for the same
+    reason ``peers`` is, and because the build is what the readiness wait is
+    mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
+    behaviour before meta models, and what a standalone runner gets.
+    ``trust_remote_code`` is the actor's, since the build has to be the same one.
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     env = runner_env()
@@ -174,8 +184,11 @@ def spawn(
     # `serve`'s "runner: ..." handler, which is the only report of a request the
     # runner could not finish. Sending it to DEVNULL made a runner that died
     # mid-request indistinguishable from one that hung, and cost hours.
+    argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
+    if model_key is not None:
+        argv += [model_key, "1" if trust_remote_code else "0"]
     process = subprocess.Popen(
-        [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)],
+        argv,
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL if quiet else None,
@@ -216,17 +229,31 @@ class Pool:
         python: str = sys.executable,
         quiet: bool = True,
         peers: int = 1,
+        model_key: Optional[str] = None,
+        trust_remote_code: bool = False,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
+        self.model_key = model_key
+        self.trust_remote_code = trust_remote_code
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
         self.closed = False
         for _ in range(size):
             self.refill()
+
+    def _spawn(self) -> Sandbox:
+        """One runner, configured the way this pool's runners are."""
+        return spawn(
+            python=self.python,
+            quiet=self.quiet,
+            peers=self.peers,
+            model_key=self.model_key,
+            trust_remote_code=self.trust_remote_code,
+        )
 
     def refill(self) -> None:
         """Warm one runner into the ready set in the background, unless the pool is
@@ -238,7 +265,7 @@ class Pool:
 
         def warm():
             try:
-                sandbox = spawn(python=self.python, quiet=self.quiet, peers=self.peers)
+                sandbox = self._spawn()
             finally:
                 with self.lock:
                     self.spawning -= 1
@@ -255,7 +282,7 @@ class Pool:
         try:
             sandbox = self.ready.get(timeout=timeout)
         except queue.Empty:
-            sandbox = spawn(python=self.python, quiet=self.quiet, peers=self.peers)
+            sandbox = self._spawn()
         self.refill()
         return sandbox
 

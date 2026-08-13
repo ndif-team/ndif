@@ -1,14 +1,14 @@
 """The sandbox runner: a separate process that runs the user's traced block.
 
 Binds a Unix socket and serves: each connection delivers the request payload
-(``(blob, compress, dtype, seed)``); the runner deserializes and executes it with ``nns.run``,
+(``(blob, compress, dtype, seed, env)``); the runner deserializes and executes it with ``nns.run``,
 which drives the exchange with events (INTERLEAVE/PRINT/END/EXCEPTION). Importing
 ``nns`` here — in the runner, never on the host — installs the IPC envoy/interleaver
 patches. The process is not hardened (no namespaces, seccomp, rlimits, or
 filesystem jail); what it provides is separation from the model actor and a fresh
 process per request.
 
-Run standalone:  python -m sandbox.runner /path/to/socket
+Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1]
 """
 
 import contextlib
@@ -119,13 +119,42 @@ class Runner:
     the same forward, joined by collectives, so the block must be run once for all
     of them and every reply must reach all of them. `Fanout` is what makes that the
     same code as the single case.
+
+    ``model_key`` is the checkpoint whose *meta* model this process builds, so a
+    request's module / tokenizer ids resolve to real weightless objects here. It is
+    built **before the socket binds**, so a host that can connect is a host whose
+    runner is genuinely ready — the pool's readiness wait covers the build. Without
+    one those ids resolve to ``None``, which is what a standalone runner gets.
+
+    A build that fails is reported and then ignored, on purpose. The map is an
+    optimization: with none, every id resolves to ``None`` and the runner serves
+    requests exactly as it did before meta models existed. Raising here instead
+    would kill the process before it binds, which `Pool.refill` swallows on its
+    warm thread — so one unbuildable checkpoint would present as every request
+    waiting out `acquire`'s 30s timeout with nothing in the actor's log.
     """
 
-    def __init__(self, path: str, peers: int = 1):
+    def __init__(
+        self,
+        path: str,
+        peers: int = 1,
+        model_key: "str | None" = None,
+        trust_remote_code: bool = False,
+    ):
         self.path = path
         self.peers = peers
         if os.path.exists(path):
             os.unlink(path)
+        if model_key is not None:
+            try:
+                nns.load_meta_model(model_key, trust_remote_code=trust_remote_code)
+            except Exception as error:
+                print(
+                    f"runner: no meta model for {model_key!r} ({error!r}); "
+                    "module and tokenizer ids will resolve to None",
+                    file=sys.stderr,
+                    flush=True,
+                )
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.bind(path)
         self.socket.listen()
@@ -171,12 +200,20 @@ class Runner:
         # interleave.
         blob, compress, dtype, *rest = leader.recv()
         seed = rest[0] if rest else None
+        env = rest[1] if len(rest) > 1 else None
         with contextlib.redirect_stdout(Writer(connection)):
             with contextlib.redirect_stderr(Writer(connection)):
-                nns.run(connection, blob, compress, dtype, seed)
+                nns.run(connection, blob, compress, dtype, seed, env)
 
 
 if __name__ == "__main__":
     die_with_parent()
     peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    Runner(sys.argv[1], peers=peers).serve()
+    model_key = sys.argv[3] if len(sys.argv) > 3 else None
+    trust_remote_code = len(sys.argv) > 4 and sys.argv[4] == "1"
+    Runner(
+        sys.argv[1],
+        peers=peers,
+        model_key=model_key,
+        trust_remote_code=trust_remote_code,
+    ).serve()

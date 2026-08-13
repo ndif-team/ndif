@@ -110,7 +110,7 @@ as an `EXCEPTION` event:
         terminal = ("EXCEPTION", message)
 ```
 
-— `src/ndif/services/ray/sandbox/nns.py:372-376`. The host turns that event into
+— `src/ndif/services/ray/sandbox/nns.py:514-522`. The host turns that event into
 a `RunnerError` carrying the text (`sandbox/model.py:228-229`), and
 `SandboxModelDeployment.format_error` returns it verbatim and marks it
 **non-fatal — it's user code** (`sandbox/model.py:188-194`). `run()` then sends it

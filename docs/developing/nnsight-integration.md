@@ -109,11 +109,12 @@ tracer = RequestModel.deserialize(
 ```
 
 (`.../deployments/modeling/base.py:391-394` — the in-process path.) The sandbox
-runner calls the same function with its own unpickler
-(`.../sandbox/nns.py:346`):
+runner calls the same function with its own unpickler and its own map — built once
+per runner from a meta model, not from loaded weights (`.../sandbox/nns.py:487`):
 
 ```python
-tracer = RequestModel.deserialize(blob, compress=compress, unpickler=IPCCloudUnpickler)
+tracer = RequestModel.deserialize(blob, persistent_objects=PERSISTENT_OBJECTS,
+                                  compress=compress, unpickler=IPCCloudUnpickler)
 ```
 
 Inside, nnsight decompresses, unpickles (resolving persistent ids from the map),
@@ -229,17 +230,19 @@ extension points; prefer them over reaching further in.
 
 | Seam | Shape | NDIF's use |
 |---|---|---|
-| `deserialize(..., unpickler=)` | the unpickler class is a parameter; it is constructed as `unpickler(file, persistent_objects)` | the sandbox passes `IPCCloudUnpickler`, which resolves `"Interleaver"` to a socket-backed `IPCInterleaver` and **everything else to `None`** — the runner has no model |
-| `_remoteable_persistent_objects()` | model wrapper → `{persistent_id: live object}` | the in-process actor passes it straight to `deserialize`; subclasses extend it (tokenizer, pipeline) |
-| `_remoteable_get_env()` / `_remoteable_set_env(env)` | client produces a dict, server applies it before the run | PEFT adapter swap; applied off the event loop inside `run`'s try block so a bad adapter id becomes a normal user-facing `ERROR` (`base.py:294`) |
+| `deserialize(..., unpickler=)` | the unpickler class is a parameter; it is constructed as `unpickler(file, persistent_objects)` | the sandbox passes `IPCCloudUnpickler`, which resolves `"Interleaver"` to a socket-backed `IPCInterleaver`, other ids from its meta model's map, and **unknown ids to `None`** instead of raising |
+| `_remoteable_persistent_objects()` | model wrapper → `{persistent_id: live object}` | the in-process actor passes it straight to `deserialize`; the runner builds the same map from a meta model (`load_meta_model`, `.../sandbox/nns.py:352`); subclasses extend it (tokenizer, pipeline) |
+| `_remoteable_get_env()` / `_remoteable_set_env(env)` | client produces a dict, server applies it before the run | PEFT adapter swap; applied off the event loop inside `run`'s try block so a bad adapter id becomes a normal user-facing `ERROR` (`base.py:294`). The sandbox applies the same dict a second time, in the runner, so its meta model's paths match the adapted tree (`set_env`, `.../sandbox/nns.py:389`) |
 | `to_model_key()` / `from_model_key(key, **kwargs)` | `"import.path.ClassName:{...}"` | the deployment identity used everywhere — queue keys, actor names, `models.yaml` |
 | `Remotable.from_model_key(..., dispatch=False)` | build on the meta device | the controller's size estimate, before any weights exist |
 | `_saves()` / `inc()` / `dec()` | thread-local save set | collecting the values to return |
 | `cloudpickle.register_pickle_by_value` (via `nnsight.register`) | ship a local module's source | lets user code reference modules the server doesn't have installed |
 
-`IPCCloudUnpickler`'s "everything else is `None`" is the reason the runner
-process cannot touch the model even though the payload *mentions* it — the
-persistent-id indirection is what makes the sandbox's boundary expressible.
+The persistent-id indirection is what makes the sandbox's boundary expressible at
+all: the payload *mentions* the model everywhere, and what the runner ends up
+holding is entirely decided by the map it resolves against. Give it nothing and the
+model is `None`; give it a meta build and the runner gets structure but never
+weights.
 
 ## Developing against a local nnsight
 

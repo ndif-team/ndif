@@ -71,8 +71,10 @@ resolves. Note `resources={f"node:{node_name}": 0.01}` and no `num_gpus`: placem
 by node, and GPU targeting happens inside the actor via `max_memory`.
 
 > **Gotcha:** an extra constructor parameter of your own has no path from the
-> controller. `SandboxModelDeployment.__init__` takes `pool_size: int = 2`
-> (`sandbox/model.py:173`) and nothing can set it — it is always 2 in production.
+> controller. `SandboxModelDeployment.__init__` takes `pool_size`
+> (`sandbox/model.py:194`) and nothing can set it — which is why its default falls
+> back to `NDIF_SANDBOX_POOL_SIZE` (`DEFAULT_POOL_SIZE`, `:47`) rather than a
+> literal, and it is that env value in production.
 > Read your own options from the environment (the actor's `runtime_env` carries the
 > provider config already) or add a field to `BaseModelDeploymentArgs`, which also
 > means teaching `DeploymentConfig` and the controller to populate it.
@@ -141,11 +143,12 @@ base's `load_from_disk`, but an untrusted request's block runs in a separate run
 process, driven over a socket. It overrides the five hooks and nothing else.
 
 ```python
-class SandboxModelDeployment(BaseModelDeployment):
-    def __init__(self, *args, pool_size: int = 2, **kwargs):
+class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
+    def __init__(self, *args, pool_size: Optional[int] = None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.pool = Pool(size=pool_size)
-        self.execution_sandbox = None
+        # open_pool sets self.pool and self.execution_sandbox. It passes the
+        # actor's model_key down so each runner builds its own meta model.
+        self.open_pool(pool_size)
 
     def execute(self, request):
         if request.trusted:

@@ -38,7 +38,7 @@ across a process boundary.
 | [`protocol.py`](protocol.py) | The wire: framing, the two direction-specific codecs, the shared `Channel`, and `Fanout` — one channel-shaped view over several peers that must agree. |
 | [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: `MediatorProxy` per worker, the interleaved run, control events. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the transport `Connection`. |
-| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
+| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <model_key>`). Accepts a connection, receives the payload, and calls `nns.run`. Importing `nns` here installs the IPC patches — **in the runner, never on the host**. |
 | [`nns.py`](nns.py) | The nnsight glue that runs **inside the runner**: deserialize the tracer, execute the block, and host the **worker side** of the interleaver (`IPCInterleaver`, patched `Mediator.event`, `IPCEnvoy`). |
 
 ```
@@ -51,7 +51,7 @@ across a process boundary.
                         │  Unix socket (protocol.py)
                         │  RESUME / PARK / THROW / DONE / INTERLEAVE / …
         ┌───────────────┴───────────────────────▼─────────────────────┐
-        │  runner process (no model)                                   │
+        │  runner process (meta model, no weights)                     │
         │    • nns.run: deserialize + execute the traced block         │
         │    • IPCInterleaver + worker greenlets  (worker side)        │
         └──────────────────────────────────────────────────────────────┘
@@ -75,16 +75,20 @@ across a process boundary.
    On timeout/cancel the template calls `interrupt()`, which stops the runner —
    closing the socket unblocks the host thread parked on `recv`.
 
-2. **Ship the payload.** `run_in_process` acquires a warm runner from the `Pool`,
-   opens a `Connection`, and sends `(request.payload, request.compress)` — the
-   serialized tracer blob. That's the whole handoff; there's no bootstrap closure.
+2. **Ship the payload.** `run_in_runner` acquires a warm runner from the `Pool`,
+   opens a `Connection`, and sends `(payload, compress, dtype, seed, env)` — the
+   serialized tracer blob, plus the few things the runner cannot ask a loaded model
+   for. That's the whole handoff; there's no bootstrap closure.
 
-3. **Runner executes.** The runner's `handle` receives `(blob, compress, dtype, seed)` and calls
+3. **Runner executes.** The runner's `handle` receives `(blob, compress, dtype, seed, env)` and calls
    `nns.run`, which:
    - Deserializes the tracer with `IPCCloudUnpickler`. Persistent ids resolve
      specially here: the **interleaver** → an `IPCInterleaver` bound to this socket;
-     the **model and its modules** → `None` (they live on the host and are never
-     touched in the runner).
+     the **model, its modules and its tokenizer** → the runner's own *meta* build
+     (structure, no weights), registered by `load_meta_model` at startup and
+     re-registered per request by `set_env` when the request's env reshapes the
+     tree; anything unknown → `None`. The weights live on the host and are never
+     touched here, so every activation still crosses the socket.
    - Runs `tracer.execute(...)`. The block runs as a set of greenlet **workers**.
      Whenever the block calls the model, it hits `IPCEnvoy.interleave`.
 
@@ -207,11 +211,11 @@ grafts `IPCEnvoy`'s overrides onto the base `Envoy` **process-wide**. On the hos
 that would break the real model (its `interleave` would start forwarding to a
 socket instead of running the forward pass). So the import lives in `runner.py`,
 executed in the runner process; the host never imports `nns`. This is also why the
-handoff is a plain `(blob, compress, dtype, seed)` message rather than a pickled callable — the
+handoff is a plain `(blob, compress, dtype, seed, env)` message rather than a pickled callable — the
 runner already knows to run `nns.run`.
 
-The runner runs as `python -m ndif.services.ray.sandbox.runner` (with the repo
-root on `PYTHONPATH`), i.e. as a normal `ndif` submodule, so it can reuse ndif
+The runner runs as `python -m ndif.services.ray.sandbox.runner <socket> <peers> <model_key>`
+(with the repo root on `PYTHONPATH`), i.e. as a normal `ndif` submodule, so it can reuse ndif
 helpers rather than duplicate them: `nns.run` deserializes via nnsight's own
 `RequestModel.deserialize(..., unpickler=IPCCloudUnpickler)` (an unpickler hook
 added to nnsight), and imports `cpu_pickle_module` from `deployments/modeling/util`.
@@ -286,5 +290,5 @@ The authoritative message catalog (both directions, payload shapes, and the
 runner→host `pack` vs host→runner single-`encode` asymmetry) lives in the
 [`protocol.py`](protocol.py) module docstring. In brief:
 
-- **host → runner:** `(blob, compress, dtype)`, `RESUME`, `THROW`, `DONE`
+- **host → runner:** `(blob, compress, dtype, seed, env)`, `RESUME`, `THROW`, `DONE`
 - **runner → host:** `INTERLEAVE`, `PARK`, `STOP`, `PRINT`, `END`, `EXCEPTION`

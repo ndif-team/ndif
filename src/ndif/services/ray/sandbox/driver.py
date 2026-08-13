@@ -255,8 +255,9 @@ class SandboxDriver:
     def install_source(self, path: str):
         """Source-instrument the module at ``path`` (permanent, idempotent) and
         return its operation names — the runner's IPCSource asks for this over a
-        SOURCE event because it holds no modules. ``None`` when the ``forward``
-        can't be sourced, so the runner reports it like the local path would."""
+        SOURCE event because instrumenting its own copy would instrument nothing:
+        the forward runs here. ``None`` when the ``forward`` can't be sourced, so
+        the runner reports it like the local path would."""
         from nnsight.intervention.source import SourceNotAvailable, install_source
 
         try:
