@@ -250,13 +250,28 @@ def resolve_dtype(dtype: "str | Any | None") -> Any:
     ``None`` -> ``bfloat16``: the cluster's default and the dtype the controller's
     evaluator estimates model size with, so the actor's load matches the memory
     accounting that placed it.
+
+    A quantization name (``"nf4"``, ``"int8"``, ...) resolves to what that format
+    **computes** in, not to its storage width -- there is no ``torch.dtype`` for
+    a 4-bit weight, and every caller of this wants the compute dtype anyway: it
+    is what user execution autocasts to and what activations come back as. What
+    the weights are *held* as never becomes a ``torch.dtype``; it stays the name,
+    which is what the loader is handed (see ``BaseModelDeployment.dtype_name``).
     """
     import torch
+
+    from nnsight.modeling.quantization import quantization
 
     if dtype is None:
         return torch.bfloat16
     if isinstance(dtype, torch.dtype):
         return dtype
+
+    # nnsight owns the table, so a format added there is understood here without
+    # a second list to keep in step.
+    quantized = quantization(dtype)
+    if quantized is not None:
+        return resolve_dtype(quantized.compute_dtype)
     # Accepts its own inverse: `str(torch.bfloat16)` is "torch.bfloat16", and a
     # caller shipping a dtype over a socket or a command line reaches for `str`
     # long before it reaches for a prefix strip.

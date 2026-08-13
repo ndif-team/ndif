@@ -23,7 +23,9 @@ from ..lib.model_config import load_model_config
 @click.option("--trusted", is_flag=True,
               help="Run the model's own repo code (HF trust_remote_code) and skip the sandbox.")
 @click.option("--dtype", default=None,
-              help="Torch dtype to load and size the model in (default: controller's).")
+              help="How the weights are held: a torch dtype (bfloat16, float32) or a "
+                   "quantization (nf4/int4/4bit, fp4, int8/8bit, fp8). "
+                   "Loads and sizes the model (default: controller's).")
 @click.option("--gpus", type=int, default=None,
               help="Place on exactly this many GPUs, instead of deriving the count from the model's size.")
 @click.option("--size-bytes", "size_bytes", type=int, default=None,

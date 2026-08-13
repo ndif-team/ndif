@@ -160,7 +160,7 @@ class TPModelDeployment(BaseModelDeployment):
         self.group = ShardGroup(
             model_key=self.model_key,
             gpu_ids=self.tp_gpu_ids,
-            dtype=str(self.dtype).removeprefix("torch."),
+            dtype=self.dtype_name,
             tp_size=self.tp_size,
             load_kwargs=self.kwargs,
             gpu_mem_bytes_by_id=self.tp_budgets,
@@ -174,7 +174,7 @@ class TPModelDeployment(BaseModelDeployment):
         self.group.start()
 
         model = load_sharded_model(
-            self.model_key, self.dtype, tp_size=self.tp_size, **self.kwargs
+            self.model_key, self.dtype_name, tp_size=self.tp_size, **self.kwargs
         )
         self.group.wait_ready()
 

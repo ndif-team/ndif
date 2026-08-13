@@ -12,7 +12,9 @@ from ..lib.scale import scale as scale_lib
 @click.option("--revision", default=None, help="Model revision/branch.")
 @click.option("--actor-class", default=None,
               help="Override the actor class instead of matching the running one.")
-@click.option("--dtype", default=None, help="Override the dtype instead of matching.")
+@click.option("--dtype", default=None,
+              help="Override the dtype instead of matching. A torch dtype or a "
+                   "quantization name (nf4, int8, ...).")
 @click.option("--gpus", type=int, default=None,
               help="Override the GPU count instead of matching.")
 @click.option("--execution-timeout", "execution_timeout_seconds", type=float, default=None,

@@ -121,7 +121,7 @@ model key.
 | `trusted` | `False` | — | Becomes `trust_remote_code` at load. See below. | CLI `--trusted`, yaml, dashboard, `lib.deploy` API, implicit deploy |
 | `padding_factor` | `None` | `NDIF_DEFAULT_PADDING_FACTOR` = `0.15` | Headroom added on top of weight size when sizing. | yaml, dashboard, `lib.deploy` API |
 | `execution_timeout_seconds` | `None` | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, itself unset by default (no cap) | Per-request wall clock on the actor; on expiry the user gets `ERROR` (`modeling/base.py:322`). Set it per model, or via the env var, on a shared deployment. | yaml, dashboard, `lib.deploy` API |
-| `dtype` | `None` | `NDIF_DEFAULT_DTYPE` = `bfloat16` | The dtype weights load in **and** the dtype the size estimate assumes. | CLI `--dtype`, yaml, dashboard, `lib.deploy` API |
+| `dtype` | `None` | `NDIF_DEFAULT_DTYPE` = `bfloat16` | How the weights are held: a torch dtype, or a quantization (`nf4`/`int4`/`4bit`, `fp4`, `int8`/`8bit`, `fp8`). Used both to load **and** to size. See below. | CLI `--dtype`, yaml, dashboard, `lib.deploy` API |
 | `actor_class` | `None` | `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Dotted path of the Ray actor class serving the replica. | CLI `--actor-class`, yaml, dashboard |
 | `size_bytes` | `None` | estimated from the checkpoint | The model's own weights, measured. Skips the Hub round-trip, so a deploy that names its size places with the Hub unreachable. Padding still applies on top. | CLI `--size-bytes`, yaml |
 | `padding_bias` | `None` | `NDIF_DEFAULT_PADDING_BIAS` = 500 MiB | Flat headroom, per model rather than per cluster. | CLI `--padding-bias`, yaml |
@@ -144,6 +144,35 @@ estimate and the actor's load agree. The compose stack overrides the actor class
 to `ndif.services.ray.sandbox.model.SandboxModelActor`
 (`docker/docker-compose.yml:228`) — model on the host, user code in a separate
 process.
+
+## `dtype` — quantization is a dtype name
+
+`--dtype nf4` (or `int4`, `4bit`, `fp4`, `int8`, `8bit`, `fp8`) deploys the model
+with its weights held that narrow. Nothing else about the deployment changes, and
+nothing client-side does either: module paths and activations are the same as an
+unquantized replica, so a trace written against one works against the other. The
+names and the widths come from nnsight
+(`nnsight.modeling.quantization.QUANTIZATIONS`), which is also where the loader
+builds the quantizer config from — one table, so sizing a deployment and loading
+it can never accept different sets.
+
+Two things are worth knowing before deploying one:
+
+- **The size estimate runs low, by more than `padding_factor` covers.** The
+  estimate is parameters times nominal width, but the format leaves embeddings,
+  norms and the LM head in 16 bits and stores a scale per block. Measured on
+  Llama-3.2-1B: `nf4` estimates 0.62 GB against 1.07 GB really allocated, `int8`
+  1.24 against 1.50, where `bfloat16` is exact. The default 0.15 padding does not
+  absorb 1.74x, so give a quantized deploy a measured `size_bytes` or a padding
+  factor you worked out on the hardware.
+- **A client cannot ask for it.** A model key is the repo id and revision, so
+  quantization is not part of what routes a request. The deployment decides, and
+  two dtypes of one checkpoint are the same model as far as routing is concerned.
+
+Quantization has not been exercised with tensor parallelism. Rank 0 and the
+shards are all handed the same dtype name, so nothing is inconsistent by
+construction, but whether transformers will split packed weights at all is
+untested.
 
 ## `trusted` — the field to get right
 

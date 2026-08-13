@@ -134,7 +134,16 @@ class BaseModelDeployment:
         self.model_key = model_key
         self.execution_timeout = execution_timeout
         self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
-        # Resolve once: used to load the weights and to autocast user execution.
+        # Two halves of one setting, because a quantization is not a torch.dtype.
+        #
+        # `dtype_name` is what was asked for and what the loader is handed:
+        # nnsight turns a name like "nf4" into a quantizer config, which nothing
+        # of type torch.dtype can carry. `dtype` is what the model *computes* in
+        # -- the same thing for an ordinary dtype, the format's compute dtype for
+        # a quantization -- and is what user execution autocasts to and what the
+        # sandbox runner is told, neither of which cares how the weights are
+        # stored.
+        self.dtype_name = dtype or "bfloat16"
         self.dtype = resolve_dtype(dtype)
         self.kwargs = kwargs
         self.model = None
@@ -199,7 +208,9 @@ class BaseModelDeployment:
         model = HuggingFaceModel.from_model_key(
             self.model_key,
             dispatch=True,
-            torch_dtype=self.dtype,
+            # The name, not the resolved dtype: a quantization has to reach
+            # nnsight's loader as a name for it to build a quantizer config.
+            dtype=self.dtype_name,
             **placement,
             **self.kwargs,
         )

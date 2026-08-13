@@ -671,6 +671,92 @@ class TestDtypeResolution:
             resolve_dtype("float3")
 
 
+class TestQuantizedDtypes:
+    """A deployment can name a quantization where it names a dtype.
+
+    The split these check: what the weights are **held** as stays a name, because
+    no ``torch.dtype`` describes a 4-bit weight, and it is the name the loader
+    needs to build a quantizer config. What the model **computes** in is a real
+    dtype, and is what user execution autocasts to.
+
+    Getting this backwards is quiet in both directions. Load with the resolved
+    dtype and the quantization is silently dropped -- the model loads at full
+    width onto a GPU allocation sized for a quarter of it. Autocast with the
+    name and there is no dtype to autocast to at all.
+    """
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("nf4", "bfloat16"),
+            ("int4", "bfloat16"),
+            ("4bit", "bfloat16"),
+            ("fp8", "bfloat16"),
+            # bitsandbytes implements LLM.int8() in float16; nnsight's table
+            # says so and this must follow it rather than assume the default.
+            ("int8", "float16"),
+            ("8bit", "float16"),
+        ],
+    )
+    def test_a_quantization_resolves_to_its_compute_dtype(self, name, expected):
+        import torch
+
+        from ndif.services.ray.deployments.modeling.util import resolve_dtype
+
+        assert resolve_dtype(name) is getattr(torch, expected)
+
+    def test_the_names_come_from_nnsight(self):
+        # One table, so a format added to nnsight is understood here without a
+        # second list to keep in step -- and so sizing a deployment and loading
+        # it can never accept different sets.
+        from nnsight.modeling.quantization import QUANTIZATIONS
+
+        from ndif.services.ray.deployments.modeling.util import resolve_dtype
+
+        for name in QUANTIZATIONS:
+            assert resolve_dtype(name) is not None
+
+    def test_the_actor_keeps_the_name_it_was_given(self):
+        import inspect
+
+        from ndif.services.ray.deployments.modeling import base
+
+        source = inspect.getsource(base.BaseModelDeployment.__init__)
+        assert "self.dtype_name = dtype" in source
+        assert "self.dtype = resolve_dtype(dtype)" in source
+
+    def test_the_loader_is_handed_the_name_not_the_resolved_dtype(self):
+        import inspect
+
+        from ndif.services.ray.deployments.modeling import base
+
+        source = inspect.getsource(base.BaseModelDeployment.load_from_disk)
+        assert "dtype=self.dtype_name" in source
+        # The old spelling would load a quantized deployment at full width.
+        assert "torch_dtype=self.dtype" not in source
+
+    def test_every_rank_loads_from_the_same_name(self):
+        # Rank 0 and the shards must hold their weights identically; a rank that
+        # quantized while another did not would all-reduce mismatched values.
+        import inspect
+
+        from ndif.services.ray.tp import model
+
+        source = inspect.getsource(model.TPModelDeployment.load_from_disk)
+        assert "dtype=self.dtype_name" in source
+        assert "self.model_key, self.dtype_name" in source
+
+    def test_the_shard_loads_by_name_and_autocasts_by_dtype(self):
+        import inspect
+
+        from ndif.services.ray.tp import shard
+
+        source = inspect.getsource(shard.main)
+        assert "args.model_key, args.dtype" in source
+        assert "dtype = resolve_dtype(args.dtype)" in source
+        assert "execute_traced_block(tracer, dtype)" in source
+
+
 class TestDrainingTheGroup:
     """Reading the shards' replies must wait on all of them at once.
 

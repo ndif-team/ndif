@@ -213,7 +213,7 @@ with `Cannot connect to Ray at <url>`.
 | `--replicas` | int, `1` | **new** replicas to add per model |
 | `--actor-class` | dotted path, default `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Ray actor class serving the deployment |
 | `--trusted` | flag, off | load with `trust_remote_code=True`; see below |
-| `--dtype` | str, unset | dtype to load and size the model in; defaults to the controller's `NDIF_DEFAULT_DTYPE` |
+| `--dtype` | str, unset | how the weights are held — a torch dtype, or a quantization (`nf4`/`int4`/`4bit`, `fp4`, `int8`/`8bit`, `fp8`). Loads *and* sizes the model; defaults to the controller's `NDIF_DEFAULT_DTYPE` |
 | `--gpus` | int, unset | place on exactly this many cards instead of deriving the count from the size |
 | `--size-bytes` | int, unset | the model's weights, measured; skips the Hub estimate |
 | `--padding-factor` | float, unset | headroom as a fraction of the model's size |

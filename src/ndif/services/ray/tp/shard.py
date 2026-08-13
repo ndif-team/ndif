@@ -61,6 +61,9 @@ def main() -> int:
     sock.connect(args.socket)
     connection = Channel(sock)
 
+    # Same split as the actor's: the name loads (it may be a quantization, which
+    # is not a torch.dtype), the resolved one autocasts. Every rank has to make
+    # this split identically or they hold their weights differently.
     dtype = resolve_dtype(args.dtype)
     load_kwargs = ast.literal_eval(args.load_kwargs)
 
@@ -81,7 +84,7 @@ def main() -> int:
 
     try:
         model = load_sharded_model(
-            args.model_key, dtype, tp_size=args.tp_size, **load_kwargs
+            args.model_key, args.dtype, tp_size=args.tp_size, **load_kwargs
         )
         abort = AbortController(model._module, source=False)
     except Exception as exception:
