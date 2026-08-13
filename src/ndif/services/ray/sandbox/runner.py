@@ -1,7 +1,7 @@
 """The sandbox runner: a separate process that runs the user's traced block.
 
 Binds a Unix socket and serves: each connection delivers the request payload
-(``(blob, compress)``); the runner deserializes and executes it with ``nns.run``,
+(``(blob, compress, dtype, seed)``); the runner deserializes and executes it with ``nns.run``,
 which drives the exchange with events (INTERLEAVE/PRINT/END/EXCEPTION). Importing
 ``nns`` here — in the runner, never on the host — installs the IPC envoy/interleaver
 patches. The process is not hardened (no namespaces, seccomp, rlimits, or

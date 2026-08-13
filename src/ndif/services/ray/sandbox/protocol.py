@@ -29,7 +29,11 @@ finished. The host tags/matches the occurrence, so parks cross untagged.
 Message catalog (the event name is the first element):
 
 host -> runner
-  (blob, compress)            the request payload; first message, starts nns.run
+  (blob, compress, dtype, seed)
+                              the request payload; first message, starts nns.run.
+                              `dtype` is the model's (the runner has none to ask);
+                              `seed` is None unless several processes must draw the
+                              same numbers, as tensor-parallel ranks do
   ("RESUME", id, args, pin)   switch worker ``id`` in with ``args`` (a read's value,
                               or empty for a swap); ``pin`` pushes the host's pin so
                               tracer.iter relaxation stays in step. Reply: PARK

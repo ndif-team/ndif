@@ -79,7 +79,7 @@ across a process boundary.
    opens a `Connection`, and sends `(request.payload, request.compress)` — the
    serialized tracer blob. That's the whole handoff; there's no bootstrap closure.
 
-3. **Runner executes.** The runner's `handle` receives `(blob, compress)` and calls
+3. **Runner executes.** The runner's `handle` receives `(blob, compress, dtype, seed)` and calls
    `nns.run`, which:
    - Deserializes the tracer with `IPCCloudUnpickler`. Persistent ids resolve
      specially here: the **interleaver** → an `IPCInterleaver` bound to this socket;
@@ -207,7 +207,7 @@ grafts `IPCEnvoy`'s overrides onto the base `Envoy` **process-wide**. On the hos
 that would break the real model (its `interleave` would start forwarding to a
 socket instead of running the forward pass). So the import lives in `runner.py`,
 executed in the runner process; the host never imports `nns`. This is also why the
-handoff is a plain `(blob, compress)` message rather than a pickled callable — the
+handoff is a plain `(blob, compress, dtype, seed)` message rather than a pickled callable — the
 runner already knows to run `nns.run`.
 
 The runner runs as `python -m ndif.services.ray.sandbox.runner` (with the repo

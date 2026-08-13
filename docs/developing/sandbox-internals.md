@@ -3,14 +3,14 @@ title: Sandbox Internals
 one_liner: How a request's traced block runs in a separate runner process while the model stays on the host, with nnsight's interleaver split across a Unix socket.
 tags: [internals, dev, sandbox, ray]
 related: [docs/concepts/sandbox-execution.md, docs/developing/model-actor.md, docs/developing/nnsight-integration.md, docs/concepts/request-lifecycle.md, docs/errors/server-exceptions.md]
-sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/modeling/base.py]
+sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/modeling/base.py]
 ---
 
 # Sandbox Internals
 
 ## What this covers
 
-`src/ndif/services/ray/sandbox/` — the five modules that let a request's traced
+`src/ndif/services/ray/sandbox/` — the modules that let a request's traced
 block (arbitrary user Python) execute in a process that is not the model actor,
 while the model it interleaves with stays on the actor's GPUs. Two facts frame the
 design: **the model never moves** (weights load in the Ray actor process and stay
@@ -18,6 +18,14 @@ there — `BaseModelDeployment.load_from_disk`, `base.py:144`), and **the block 
 the forward pass are interleaved, not sequential** (user code reads and edits
 activations mid-forward, so the two take strict turns — locally a greenlet switch,
 here a process boundary that must not change the semantics).
+
+The two halves are split by *who they answer*. `driver.py` is the **host** side of
+a request — one proxy per runner worker, the interleaved run, the control events —
+and knows nothing of Ray, requests or actors, so anything holding a model and a
+socket can drive one. That is what lets a tensor-parallel shard be a host too
+(`../tp/`). `model.py` is the **actor** side: the runner pool, the request
+lifecycle, and turning a runner failure into a client-facing error, most of it in
+a `SandboxHost` mixin the sharded actor shares.
 
 Read nnsight's own "Interleaver Internals" page first (nnsight repo /
 [nnsight.net](https://nnsight.net)) — this page assumes `Mediator`, `Event`,
@@ -34,10 +42,10 @@ a lookup table, and the trusted/untrusted fork.
 
 | `request.trusted` | Path | Where the block runs |
 |---|---|---|
-| `True` | `SandboxModelDeployment.execute` defers to `BaseModelDeployment.execute` (`model.py:242`) | in the model actor process, next to the weights — no runner, no socket |
+| `True` | `SandboxModelDeployment.execute` defers to `BaseModelDeployment.execute` (`model.py`) | in the model actor process, next to the weights — no runner, no socket |
 | `False` | `execute` acquires a runner and interleaves over the Unix socket | in a separate runner process |
 
-`execution_scope` forks the same way (`model.py:184`): trusted reuses the base's
+`execution_scope` forks the same way (`model.py`): trusted reuses the base's
 stdout redirect, untrusted gets `nullcontext` because its stdout arrives as `PRINT`
 messages. The flag is stamped at ingress from the key's `trusted` user_tag when auth
 is on; with auth off (no `NDIF_POSTGRES_URL`) it **defaults to `True` but honors a
@@ -75,13 +83,17 @@ The actor class comes from `NDIF_MODEL_IMPORT_PATH`, which resolves
 
 ## Transport
 
-`protocol.py` is dependency-light (stdlib + cloudpickle) because both processes
+`protocol.py` is dependency-light (stdlib + torch) because both processes
 import it. **Framing:** one length-prefixed frame per message — `>Q` byte count,
 then the body (`send_frame`, `protocol.py:65`; `recv_frame`, `:69`); `recvn`
 (`:74`) raises `ConnectionError("connection closed before message complete")` on a
 half-read, which is what a killed runner looks like to the host. **Codec:**
-`encode` (`:86`) tags one byte — `\x01` raw `bytes`, `\x02` UTF-8 `str`, `\x00`
-cloudpickle — so a `torch.save` blob rides without a second pickle pass.
+`encode` tags one byte — `\x01` raw `bytes`, `\x02` UTF-8 `str`, `\x03`
+`torch.save` — so an already-serialized blob rides without a second pickle pass,
+and an unknown tag raises rather than guessing (the two ends are different
+builds). `torch` rather than a plain pickler because `torch.load` takes a
+**`map_location`**: the receiver says where the tensors in a message land as they
+are rebuilt. `SandboxDriver.pump` sets it to the host's own model device.
 **Asymmetry:** runner → host uses `pack`/`unpack` (`:103`/`:119`), read as
 `(values, kwargs)`; host → runner sends one `encode`d value (`Connection.send`,
 `host.py:43`), so multi-field messages are a single tuple.
@@ -95,19 +107,19 @@ host owns the `.i{n}` occurrence tag.
 
 | Message | Dir | Payload | Sent by | Reply |
 |---|---|---|---|---|
-| `(blob, compress)` | h→r | the request's serialized tracer payload and its zstd flag; first message on the connection | `execute`, `model.py:249` | eventually `INTERLEAVE`, then `END`/`EXCEPTION` |
-| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step | `MediatorProxy.switch`, `model.py:159`; `settle_control`, `:137` | `PARK` |
-| `("THROW", id, requester, is_iter)` | h→r | worker `id` is still parked on `requester`, which the model never reached | `check_dangling`, `model.py:380` | none |
-| `("CACHE_HIT", cache_id, path, key, value)` | h→r | one filtered, transformed value for a `tracer.cache()` living in the runner | `ShippingCache._record`, `model.py:71` | none |
-| `("DONE", result)` | h→r | the forward pass returned `result` | `interleave`, `model.py:366` | none — ends `pump` |
+| `(blob, compress)` | h→r | the request's serialized tracer payload and its zstd flag; first message on the connection | `execute`, `driver.py` | eventually `INTERLEAVE`, then `END`/`EXCEPTION` |
+| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step | `MediatorProxy.switch`, `driver.py`; `settle_control`, `:137` | `PARK` |
+| `("THROW", id, requester, is_iter)` | h→r | worker `id` is still parked on `requester`, which the model never reached | `check_dangling`, `driver.py` | none |
+| `("CACHE_HIT", cache_id, path, key, value)` | h→r | one filtered, transformed value for a `tracer.cache()` living in the runner | `ShippingCache._record`, `model.py` | none |
+| `("DONE", result)` | h→r | the forward pass returned `result` | `interleave`, `driver.py` | none — ends `pump` |
 | `("INTERLEAVE", fn_name, parks, batch_groups, invokes, **kwargs)` | r→h | run wrapper method `fn_name` (`_call` / `generate` / `pipe`) on the model; one initial park per worker, each worker's `[start, size]` batch rows, the raw per-invoke inputs, and the trace-level forward kwargs | `IPCEnvoy.interleave`, `nns.py:220` | a stream of `RESUME`/`THROW`, then `DONE` |
 | `("PARK", id, park)` | r→h | worker `id`'s next park, or `None` if it finished | `pump`, `nns.py:145`; `writeback`, `:167` | `RESUME` (unless the run is ending) |
 | `("STOP",)` | r→h | a worker called `tracer.stop()` | `pump`, `nns.py:139` | none |
 | `("PRINT", text)` | r→h | one complete line of the block's stdout | `Connection.print_event`, `runner.py:39` | none — echoed as a `LOG` response |
 | `("END", blob, deserialize_ms)` | r→h | `torch.save` of the block's saved values, plus the runner's deserialize time | `run`, `nns.py:378` | none |
 | `("EXCEPTION", text)` | r→h | the block raised; already-formatted traceback text | `run`, `nns.py:376` | none |
-| `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:273` | served by `install_source` (`model.py:281`) → operation names, or `None` if the forward can't be sourced |
-| `("CALL", path, None, hook, args, kwargs)` | park | control park: run the module's forward ad hoc (logit lens) | `IPCEnvoy.__call__`, `nns.py:234` | served by `run_module` (`model.py:293`) → the module's output |
+| `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:273` | served by `install_source` (`driver.py`) → operation names, or `None` if the forward can't be sourced |
+| `("CALL", path, None, hook, args, kwargs)` | park | control park: run the module's forward ad hoc (logit lens) | `IPCEnvoy.__call__`, `nns.py:234` | served by `run_module` (`driver.py`) → the module's output |
 | `("CACHE", cache_id, None, config)` | park | control park: register a `tracer.cache()` filter | `ipc_cache`, `nns.py:321` | `settle_control` attaches a `ShippingCache` → `None` |
 
 The last three name nothing the forward produces: they ride inside a `PARK`, are
@@ -157,7 +169,7 @@ line, mirroring the in-process `LogStream`), and calls `nns.run`. `nns.run`
 save set, collects the marked frame locals by identity, and `torch.save`s them
 with the shared `cpu_pickle_module` (`deployments/modeling/util.py:269`) — so the
 host uploads the bytes as-is, no unpickle/repickle round trip. Tracebacks don't
-survive cloudpickle, so an exception is **formatted here** (preferring the
+survive serialization, so an exception is **formatted here** (preferring the
 worker's `__intervention_tb__`) and shipped as text. `IPCCloudUnpickler`
 (`nns.py:237`) is the only persistent-id resolution the runner does:
 `"Interleaver"` becomes an `IPCInterleaver` bound to this request's socket, and
@@ -180,11 +192,11 @@ Each nnsight `Mediator` is cut in half at the model↔mediator seam:
 | block execution / parking | worker greenlet; patched `Mediator.event` parks untagged with the pin | `MediatorProxy.adopt` tags `.i{n}` |
 | occurrence counting, pin relaxation | none (pin pushed back on every `RESUME`) | inherited `Mediator.handle` on the proxy |
 | forward hooks | `IPCInterleaver.instrument` is a no-op (`nns.py:101`) | the model's real `Interleaver` |
-| batch scoping, input assembly | `batch_group` computed by the tracer, shipped | `Batcher` + `narrow`/`widen`, `_assemble` (`model.py:321`) |
+| batch scoping, input assembly | `batch_group` computed by the tracer, shipped | `Batcher` + `narrow`/`widen`, `_assemble` (`driver.py`) |
 | `.source` / ad-hoc call / cache | `IPCSource`, `IPCEnvoy.__call__`, the real `Cache` | `install_source`, `run_module`, `ShippingCache` |
 | dangling workers | `IPCInterleaver.throw` (`nns.py:170`) | `check_dangling` sends `THROW` |
 
-`MediatorProxy` (`model.py:74`) **subclasses `Mediator` and reuses `handle`
+`MediatorProxy` (`model.py`) **subclasses `Mediator` and reuses `handle`
 unchanged** — the matching, iteration, and relaxation logic is stock nnsight. It
 overrides three things: `adopt` (`:100`) re-tags an incoming park, `switch`
 (`:155`) turns a greenlet hop into a `RESUME`→`PARK` round trip, and `start`
@@ -195,7 +207,7 @@ first park arrived in `INTERLEAVE`). `alive` (`:151`) is "has a pending park".
 prepends the trace's edits, enters the interleaver (starting every worker so each
 parks on its first location), ships `INTERLEAVE`, then hands the socket to
 `IPCInterleaver.pump` (`:105`) until `DONE`. On the host,
-`SandboxModelDeployment.interleave` (`model.py:336`) builds one proxy per park,
+`SandboxModelDeployment.interleave` (`driver.py`) builds one proxy per park,
 settles their control events, installs them as the model interleaver's mediators,
 assembles the inputs, runs `fn(...)` for real, serves the return value at
 `"result"`, checks for dangling workers, and sends `DONE`.
@@ -241,7 +253,7 @@ read then a swap three; a location no worker is parked on never crosses at all.
 nnsight splits occurrence handling between `Mediator.handle` (counts visits,
 relaxes a pin) and `Mediator.event` (tags a park from that count); here all of it
 lives on the host. The runner parks untagged with `worker.mediator().iteration` as
-`pin` (`ipc_event`, `nns.py:60`); `adopt` (`model.py:100`) sets
+`pin` (`ipc_event`, `nns.py:60`); `adopt` (`driver.py`) sets
 `self.iteration = pin` and tags with `pin` when pinned, else with the proxy's own
 `iterations[location]` — the counter `handle` matches against; and every `RESUME`
 pushes the proxy's `iteration` back, which `pump` assigns to the runner-side
@@ -253,14 +265,14 @@ The tracer computes each worker's `batch_group` in the runner, but the tokenizer
 and pipeline that turn text into model inputs live on the host — so the runner
 ships `batcher.invokes` raw (`IPCEnvoy.interleave`, `nns.py:219`) and the host
 rebuilds a `Batcher`, `add`s each invoke, and calls `assemble(fn)` (`_assemble`,
-`model.py:321`); trace-level kwargs (`max_new_tokens`) win, and input tensors are
+`driver.py`); trace-level kwargs (`max_new_tokens`) win, and input tensors are
 device-placed (`_to_device`, `:272`). Each proxy carries its shipped `batch_group`
 (`_build_proxies`, `:307`), so the inherited `handle` narrows a read to that
 invoke's rows and widens its edit back into the batch.
 
 ### Control events and caches
 
-`settle_control` (`model.py:119`) drains `SOURCE`/`CALL`/`CACHE` parks before
+`settle_control` (`driver.py`) drains `SOURCE`/`CALL`/`CACHE` parks before
 `handle` ever sees them — reply, `RESUME`, adopt the next park, repeat until the
 worker parks on a real model location — once per proxy before the forward starts,
 and again after every `switch`.
@@ -268,7 +280,7 @@ and again after every `switch`.
 `tracer.cache()` **is** supported over the socket: `ipc_cache` (`nns.py:299`)
 builds the ordinary nnsight `Cache`/`CacheView` in the runner (so the client can
 deserialize it), registers it on `IPCInterleaver.caches`, and parks on `CACHE` with
-the filter config. The host attaches a `ShippingCache` (`model.py:46`) — a `Cache`
+the filter config. The host attaches a `ShippingCache` (`driver.py`) — a `Cache`
 whose `_record` sends a `CACHE_HIT` instead of storing — to that proxy, so
 `Interleaver.handle` feeds it every location the forward reaches, narrowed to the
 worker's rows; `pump` records each hit into the runner's cache (`nns.py:149`).
@@ -279,9 +291,9 @@ worker's rows; `pump` records each hit into the runner's cache (`nns.py:149`).
 |---|---|---|
 | Normal | block finishes | forward returns → `DONE` → `pump` returns → block ends → `END` with the saved-values blob → host uploads it |
 | `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises (`nns.py:139`); the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
-| Dangling worker | worker still parked after the forward | `check_dangling` (`model.py:368`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:170`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
-| Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` (`model.py:214`) raises `RunnerError`; `format_error` returns it verbatim, non-fatal |
-| Timeout / cancel | `run`'s race (`base.py:298`) | `interrupt` (`model.py:201`) stops the runner; the host thread's `recv` fails with `ConnectionError` |
+| Dangling worker | worker still parked after the forward | `check_dangling` (`driver.py`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:170`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
+| Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` (`driver.py`) raises `RunnerError`; `format_error` returns it verbatim, non-fatal |
+| Timeout / cancel | `run`'s race (`base.py:298`) | `interrupt` (`driver.py`) stops the runner; the host thread's `recv` fails with `ConnectionError` |
 | Always | after every request | `cleanup` (`:196`) → `discard_sandbox` stops the request's runner |
 
 `next_event` services `PRINT` transparently throughout — it echoes the line as a
@@ -311,18 +323,23 @@ hardening can be added behind, not a boundary to rely on today.
 
 - **`tracer.barrier()` parks a 2-tuple.** nnsight's `Mediator.barrier` switches
   `(Event.BARRIER, None)` directly instead of going through `Mediator.event`, so
-  it carries no `pin` and `MediatorProxy.adopt`'s 3-way unpack (`model.py:108`)
+  it carries no `pin` and `MediatorProxy.adopt`'s 3-way unpack (`driver.py`)
   fails on it. A barrier every block reaches during worker start-up is released
   inside the runner and never crosses; one still waiting when the parks ship does.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
   mediator in the *runner*, whose `handle` never runs, so only the generic
   writeback of the raw value reaches the host.
-- **No autocast in the runner.** The in-process path wraps execution in
-  `torch.autocast` at the model's dtype (`base.py:404`); `nns.run` does not.
-- **Activations cross as-is, and must survive cloudpickle both ways.** Only
-  assembled inputs and `CALL` arguments are device-placed (`_to_device`,
-  `model.py:272`); a CUDA activation is pickled by value and rebuilt in the runner,
-  assuming it sees the same device.
+- **Both sides autocast.** The runner brackets the block and `SandboxDriver`
+  brackets the forward it drives, each at the model's dtype (`request_dtype`), so
+  an untrusted request returns the same numbers as the identical trusted one.
+  Without the host half, the *model's own* arithmetic ran uncast.
+- **Activations cross by value, and land on the receiver's device.** `torch.load`'s
+  `map_location` places them as they are rebuilt (`SandboxDriver.pump` sets it);
+  `_to_device` in `driver.py` covers the tensors the batcher and tokenizer build
+  *on the host*, which never cross the wire. Assuming the sender's device instead
+  is what broke every untrusted request on a sharded model — one runner serves a
+  whole tensor-parallel group, so a value rebuilt from rank 0's bytes reached rank
+  1 still labelled `cuda:0`.
 
 ## Related
 

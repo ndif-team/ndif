@@ -34,7 +34,10 @@ Two consequences that will mislead you if you don't know them:
   [docs/developing/testing.md](docs/developing/testing.md).
 - Sandboxing is **process-based and still in progress**. The runner is an ordinary
   OS process with no hardening; each request gets a fresh one, stopped afterward,
-  so nothing leaks between requests. Don't describe it as a security boundary.
+  so nothing leaks between requests. It inherits an **allowlist** of environment
+  variables rather than the actor's environment, so a block cannot read the
+  operator's `HF_TOKEN` or database URL out of `os.environ` — but that is one hole
+  closed, not a boundary. Don't describe it as a security boundary.
 
 ---
 
@@ -224,6 +227,13 @@ Read the first two if a behavior seems inexplicable:
   `ndif.services.ray.tp.model.SandboxedTPModelActor` instead: it serves trusted
   requests identically and runs untrusted ones in a runner the whole group hosts,
   which is what a cluster with auth on wants.
+- **`ndif deploy` uses the controller's defaults; `ndif scale` copies a live
+  replica.** They are both additive. The difference only shows for a model served
+  differently from how the controller would choose on its own — a tensor-parallel
+  replica, or a non-default dtype — where `deploy` would add a replica that
+  answers differently under the same model key. The queue's autoscaler provisions
+  through `scale`. At cold start there is nothing to copy, so placement falls back
+  to the evaluator; a durable answer belongs in `models.yaml`.
 - **Tensor parallelism needs transformers >= 5.15.** Older versions don't shard a
   tied LM head's weight while still gathering its output, so any model with
   `tie_word_embeddings=True` serves logits `tp_size` times too wide — with a

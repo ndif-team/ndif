@@ -233,7 +233,7 @@ still printing means the block is running, not blocked. And the actor's own logs
 | Per-model queue wait | none | — | unbounded; autoscaling is the only relief |
 | Waiting for a replica to be ready | none (`Replica.wait` polls forever) | — | the Processor stays `deploying` |
 | **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **3600 s** | `interrupt()`, then `Status.ERROR` "Your job exceeded the execution timeout of Ns." (`modeling/base.py:321-328`) |
-| CLI deploy readiness | `wait_for_replica_ready` | 300 s | the CLI reports `initialization timed out`; the actor may still come up |
+| CLI deploy readiness | `wait_for_replica_ready` | none | blocks until the actor serves, or raises why it never will (a constructor that failed reaches the CLI as its own error) |
 | `ndif queue` / `ndif kill` | event round-trip | 5 s | `No response from the dispatcher` |
 
 > **Gotcha:** the execution timeout is enforced by injecting an exception into the

@@ -157,8 +157,8 @@ Deployment nnsight...TransformersModel:{...} failed during create: <traceback>
 
 (`controller.py:298-323`.) Meanwhile the CLI is polling `__ray_ready__` and,
 because `max_restarts=-1`, Ray restarts the actor — which reloads and OOMs again.
-The CLI eventually reports `initialization timed out` after 300 s
-(`cli/lib/models.py:77-97`). A model actor that keeps cycling
+The CLI surfaces the actor's own death rather than a deadline — an OOM in the
+constructor comes back as that error (`cli/lib/models.py`). A model actor that keeps cycling
 `RUNNING`→`UNHEALTHY` in `ndif status` is this loop.
 
 **2. `RuntimeError` from `verify_device_placement`.** More common than a raw OOM,

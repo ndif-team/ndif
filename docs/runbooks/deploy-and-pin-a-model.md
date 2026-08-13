@@ -63,10 +63,9 @@ What happened, in order (`src/ndif/cli/lib/deploy.py:64-193`):
 3. The controller creates a **detached Ray actor** named
    `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace
    (`cluster/deployment.py:105`, `:192-198`). Weights load inside that actor.
-4. The CLI blocks per replica on `__ray_ready__`, up to 300 s
-   (`cli/lib/models.py:77-97`). A large model that takes longer to load reports
-   `initialization timed out` here even though the actor is still coming up —
-   re-run `ndif status` before assuming failure.
+4. The CLI blocks per replica on `__ray_ready__` with no deadline
+   (`cli/lib/models.py`). A large model simply sits here while it loads; if it
+   cannot come up, the actor's own error is what you get, not a timeout.
 
 Useful flags (full list in [docs/operating/cli.md](../operating/cli.md)):
 `--replicas N`, `--revision`, `--pinned`, `--actor-class`, `--trusted`, `--dtype`,

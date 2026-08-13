@@ -63,7 +63,7 @@ curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher recon
 | Model actors can't publish responses | `NDIF_REDIS_URL` unset inside the ray container | `just logs ray` — connection refused on localhost:6379 | [No Redis on localhost](#no-redis-on-localhost-inside-the-ray-container) |
 | Ray head won't start, port in use | `NDIF_RAY_HEAD_PORT` collides with Redis | `ss -ltnp \| grep 6379` | Set `NDIF_RAY_HEAD_PORT=6385` explicitly |
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
-| `ndif deploy` hangs then reports `initialization timed out` | Weight download or a slow load; 300s CLI cap | `ndif status` — actor `DEPLOYING`? | Wait; the actor may still come up |
+| `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status` per-GPU `available_memory_bytes` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `ndif deploy` errors with an HF `trust_remote_code` message | Every CLI deploy is `trusted=False` | the evaluator traceback in the error | Deploy from the dashboard, which hard-codes `trusted: True` |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision is part of the key), or the replica is only WARM | `ndif status --show-cold` | Name the exact revision, or `--all` |

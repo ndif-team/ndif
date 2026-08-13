@@ -237,8 +237,11 @@ call does:
    shortfall only.
 4. **Call `controller._deploy`** in two batches, non-pinned then pinned
    (`lib/deploy.py:101`), with a `DeploymentConfig` per model key.
-5. **Block per replica** on the actor's `__ray_ready__`, polling every 2s for up to
-   300s (`lib/models.py:77`). A model that must download weights sits here a while.
+5. **Block per replica** on the actor's `__ray_ready__`, polling every 2s with no
+   deadline (`lib/models.py`). A model that must download weights sits here a
+   while, which is why there is no deadline: only two failures mean "not yet"
+   (the actor is unregistered, or restarting) and everything else — including a
+   constructor that raised — propagates as itself instead of as a timeout.
 6. **Nudge the dispatcher**: fire-and-forget `reconcile_model` events on Redis for every
    touched model key, so an already-live Processor refreshes its replica pool.
    Best-effort — a Redis failure never fails a deploy that already succeeded.
@@ -314,6 +317,44 @@ So `ndif deploy --trusted` (or `trusted: true` in `models.yaml`) can deploy a
 `trusted: True` as an admin action
 (`services/dashboard/backend/routers/deploy.py:34`).
 
+### `ndif scale`
+
+`ndif scale CHECKPOINT [-n N] [--revision REV] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--execution-timeout SECONDS] [--trusted] [--pinned] [--ray-address ADDR]`
+
+| Option | Type / default | Effect |
+|---|---|---|
+| `CHECKPOINT` | HF repo id | the model to grow (exactly one) |
+| `-n` | int, `1` | how many replicas to **add** — additive, like `deploy --replicas` |
+| `--actor-class` / `--dtype` / `--gpus` / `--execution-timeout` | — | override instead of matching what is running |
+| `--trusted` / `--pinned` | flags, off | as in `deploy` |
+
+Adds replicas that look like the ones already serving that model. The only
+difference from `deploy --replicas` is where the *unspecified* settings come
+from: `deploy` uses the controller's defaults, `scale` copies a live replica.
+
+That matters when a model is served differently from how the controller would
+choose on its own — a tensor-parallel replica, or a non-default dtype. Growing it
+with `deploy` gives a replica placed by the defaults, so two replicas under one
+model key answer differently and nothing says which one you got. `scale` gives
+you more of what is there.
+
+Anything you pass is used as-is *and* decides which live replica counts as a
+match to copy the rest from, so `ndif scale gpt2 --gpus 1` copies from the
+single-GPU replica rather than the sharded one.
+
+```bash
+ndif scale meta-llama/Llama-3.2-1B          # one more, sharded like the rest
+ndif scale meta-llama/Llama-3.2-1B -n 2
+```
+
+**With nothing running there is nothing to copy**, and this behaves as a plain
+deploy — at cold start no live replica claims the model is served any particular
+way, so the evaluator decides. A durable answer to that belongs in `models.yaml`.
+
+The queue's autoscaler provisions through the same call
+(`services/api/queue/replica.py`), which is the point: it has no idea how a model
+is served and should not be deciding.
+
 ### `ndif evict`
 
 `ndif evict [CHECKPOINTS...] [--revision REV] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
@@ -349,7 +390,7 @@ prints for multi-model or multi-replica evictions.
 resolves the model key, asks the controller for the deployment's replicas, then per
 replica calls `ray.kill(actor, no_restart=False)` and waits for it to come back
 (`src/ndif/cli/lib/restart.py:69`). The actor is declared `max_restarts=-1` so Ray
-respawns it; the wait is the same 300s `__ray_ready__` poll as deploy. Use it to drop
+respawns it; the wait is the same `__ray_ready__` poll as deploy. Use it to drop
 cached state, reload weights, or recover a wedged replica without giving up its GPU
 placement. Unlike `deploy`/`evict` it sends **no** reconcile event. Unrelated to
 `ndif start --restart`, which restarts local *services*.
