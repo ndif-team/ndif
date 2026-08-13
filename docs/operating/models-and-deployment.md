@@ -169,10 +169,16 @@ Two things are worth knowing before deploying one:
   quantization is not part of what routes a request. The deployment decides, and
   two dtypes of one checkpoint are the same model as far as routing is concerned.
 
-Quantization has not been exercised with tensor parallelism. Rank 0 and the
-shards are all handed the same dtype name, so nothing is inconsistent by
-construction, but whether transformers will split packed weights at all is
-untested.
+**Quantization composes with tensor parallelism.** Verified on hakone with
+Llama-3.3-70B-Instruct at `nf4` over 4 A100s
+(`--dtype nf4 --gpus 4`): transformers shards the packed weights, and a remote
+trace reads `layers[40].mlp.gate_proj.output` at its full 28672 rather than one
+rank's 7168, so nnsight's gather works through the quantization. The weights took
+**43.3 GB across the four cards** where bfloat16 would have taken ~141 GB.
+
+Every rank is handed the same dtype name, which is what keeps them holding their
+weights identically — ranks that quantized differently would all-reduce
+mismatched values.
 
 ## `trusted` — the field to get right
 
