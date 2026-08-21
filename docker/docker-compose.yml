@@ -184,6 +184,12 @@ services:
       NDIF_DASHBOARD_MONITOR_URL: http://api:8001
       NDIF_RAY_ADDRESS: ray://ray:10001
       NDIF_REDIS_URL: redis://redis:6379
+      # Read-side telemetry for the daily report cron (jobs/report.py). Same
+      # org/bucket/token as the writers; the dashboard only ever queries.
+      NDIF_INFLUX_URL: http://influxdb:8086
+      NDIF_INFLUX_TOKEN: ndif-dev-token
+      NDIF_INFLUX_ORG: ndif
+      NDIF_INFLUX_BUCKET: metrics
       # Dev: auth disabled so the UI opens without a login. For a real
       # deployment remove this and set NDIF_DASHBOARD_USERNAME, a bcrypt
       # NDIF_DASHBOARD_PASSWORD_HASH (generate with `python -m

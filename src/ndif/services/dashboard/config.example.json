@@ -6,6 +6,10 @@
         "still_down": "🔴 **NDIF is still down** — {reason} at {timestamp} (down since {down_since})",
         "back_up": "🟢 **NDIF is back UP** — Recovered at {timestamp} (was down since {down_since}) {mention}",
         "models_failed": "⚠️ **{failed_count}/{total} model(s) failed** {mention}\n{model_list}",
-        "schedule_failed": "⚠️ **Scheduled deployment failed** {mention}\n{model_list}"
+        "schedule_failed": "⚠️ **Scheduled deployment failed** {mention}\n{model_list}",
+        "daily_report": "📊 **NDIF report** — {window}\n**Uptime** {uptime}\n**Requests** {requests}\n**Users** {users}\n**Models** {models}\n**Latency** {latency}\n**Data** {data}"
+    },
+    "report": {
+        "top_n": 3
     }
 }

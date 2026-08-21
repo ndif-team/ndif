@@ -1,9 +1,9 @@
 ---
 title: Admin Dashboard
-one_liner: Running the NDIF admin dashboard — bringing it up, auth, the three views, the schedule model, and the monitor + reconcile crons.
+one_liner: Running the NDIF admin dashboard — bringing it up, auth, the three views, the schedule model, and the monitor + reconcile + report crons.
 tags: [operating, dashboard, gotchas]
 related: [docs/developing/dashboard-internals.md, docs/developing/dashboard-frontend.md, docs/operating/compose-stack.md, docs/operating/models-and-deployment.md, docs/operating/cli.md, docs/operating/observability.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/concepts/sandbox-execution.md]
-sources: [src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/jobs/monitor.py, src/ndif/services/dashboard/jobs/reconcile.py, docker/docker-compose.yml, src/ndif/cli/service.py]
+sources: [src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/jobs/monitor.py, src/ndif/services/dashboard/jobs/reconcile.py, src/ndif/services/dashboard/jobs/report.py, docker/docker-compose.yml, src/ndif/cli/service.py]
 ---
 
 # Admin Dashboard
@@ -11,8 +11,8 @@ sources: [src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/back
 ## What this covers
 
 The dashboard is an optional admin web app beside the `api` and `ray` services:
-a FastAPI backend (`backend/`), a Vue 3 SPA (`frontend/`), and two cron
-entrypoints (`jobs/monitor.py`, `jobs/reconcile.py`). It gives an operator three
+a FastAPI backend (`backend/`), a Vue 3 SPA (`frontend/`), and three cron
+entrypoints (`jobs/monitor.py`, `jobs/reconcile.py`, `jobs/report.py`). It gives an operator three
 things the CLI doesn't — a browsable uptime/latency history, per-replica
 deploy/evict/restart buttons, and a calendar that keeps a set of models pinned
 over a time window.
@@ -59,7 +59,7 @@ The `dashboard` block in `docker/docker-compose.yml:173` builds from the same
 `docker/Dockerfile` as everything else; `NDIF_SERVICE=dashboard` makes the
 entrypoint run `ndif start dashboard`, which execs
 `src/ndif/services/dashboard/start.sh`. Because the image installs `cron`
-(`docker/Dockerfile`), the container runs both crons alongside uvicorn.
+(`docker/Dockerfile`), the container runs all three crons alongside uvicorn.
 
 ```bash
 just build dashboard       # the committed dist/ is already in the image
@@ -246,6 +246,7 @@ on a dev laptop neither does, so you get uvicorn alone and the message
 |---|---|---|---|
 | monitor | `*/10 * * * *` | `python -m ndif.services.dashboard.jobs.monitor --url $MONITOR_URL --log-dir … --config …` | `logs/{connected,models,cluster}_*.log`, `logs/monitor.cron.log` |
 | reconcile | `*/2 * * * *` | `python -m ndif.services.dashboard.jobs.reconcile` | `logs/reconcile.cron.log` |
+| report | `0 0 * * *` | `python -m ndif.services.dashboard.jobs.report --log-dir … --config … --window-hours 24` | `logs/report_*.log`, `logs/report.cron.log` |
 
 Each monitor tick probes `GET {monitor_url}/connected` then `GET
 {monitor_url}/status`, calling the deployment down if either fails or if zero
@@ -262,6 +263,40 @@ Point `NDIF_DASHBOARD_MONITOR_URL` at the URL your users hit (e.g.
 DNS, TLS and the load balancer. The same URL is used as nnsight's `CONFIG.API.HOST`
 for the traces (`jobs/monitor.py:410`) — otherwise nnsight would default to
 `https://api.ndif.us` and silently probe production from your dev stack.
+
+### The daily report
+
+Where monitor alerts on transitions, `jobs/report.py` is a digest: once a day it
+posts one message answering "what happened on NDIF today?". It reads two sources
+and never probes anything itself:
+
+- **Uptime** from the `connected_*.log` datapoints monitor already writes, so the
+  report cannot disagree with the alerts that were sent. An outage is a run of
+  consecutive non-ok ticks, measured first-bad to next-good, so it does not
+  assume the monitor interval.
+- **Usage** from InfluxDB — requests, completions, failures, active users, models,
+  execution p50/p95 and bytes moved. Loki is not consulted: every headline number
+  is already a metric, and log retention is usually shorter than a daily window.
+
+Failures are counted against *received*, not against executed, because a request
+that dies before reaching a replica never emits an `execution_time` point and an
+executed-based rate would hide it. Requests with no `email` tag — all of them when
+auth is off — are reported as `unattributed` so the per-user counts visibly add up.
+
+It fails open: if InfluxDB is unreachable you still get an uptime-only report,
+which is exactly the moment you want one. Run it by hand with `--dry-run` to print
+instead of posting.
+
+| Knob | Where | Default |
+|---|---|---|
+| schedule | `NDIF_DASHBOARD_REPORT_CRON` | `0 0 * * *` |
+| window | `NDIF_DASHBOARD_REPORT_WINDOW_HOURS` / `--window-hours` | 24 |
+| rows per top-list | `report.top_n` in `config.json` | 3 |
+| message | `messages.daily_report` in `config.json` | see `config.example.json` |
+| metrics source | `NDIF_INFLUX_URL` / `_TOKEN` / `_ORG` / `_BUCKET` | compose sets these |
+
+Placeholders available to the template: `{window}`, `{uptime}`, `{requests}`,
+`{users}`, `{models}`, `{latency}`, `{data}`.
 
 Discord alerts are off unless `discord_webhook` is set in
 `<data_dir>/config.json`, which `start.sh:40` seeds from `config.example.json` on

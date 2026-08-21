@@ -8,7 +8,7 @@
 #
 # Behavior:
 #   - Always execs uvicorn in the foreground on $NDIF_DASHBOARD_PORT (default 8081).
-#   - Additionally starts a cron daemon for the monitor + reconcile jobs IF
+#   - Additionally starts a cron daemon for the monitor + reconcile + report jobs IF
 #     ``cron`` is on PATH and ``/etc/cron.d`` is writable (this is the case
 #     inside the container, where we install cron via apt and run as root).
 #     Outside the container the check fails harmlessly and uvicorn runs alone.
@@ -28,6 +28,9 @@
 #   NDIF_API_KEY                         needed by the monitor cron's model traces
 #   NDIF_DASHBOARD_MONITOR_CRON          default "*/10 * * * *"
 #   NDIF_DASHBOARD_RECONCILE_CRON        default "*/2 * * * *"
+#   NDIF_DASHBOARD_REPORT_CRON           default "0 0 * * *" (daily usage digest)
+#   NDIF_DASHBOARD_REPORT_WINDOW_HOURS   default 24
+#   NDIF_INFLUX_URL / _TOKEN / _ORG / _BUCKET   read by the report cron
 set -euo pipefail
 
 PORT="${NDIF_DASHBOARD_PORT:-8081}"
@@ -62,11 +65,17 @@ NDIF_API_URL=${NDIF_API_URL:-http://api:8001}
 NDIF_API_KEY=${NDIF_API_KEY:-}
 NDIF_RAY_ADDRESS=${NDIF_RAY_ADDRESS:-}
 NDIF_REDIS_URL=${NDIF_REDIS_URL:-}
+NDIF_INFLUX_URL=${NDIF_INFLUX_URL:-}
+NDIF_INFLUX_TOKEN=${NDIF_INFLUX_TOKEN:-}
+NDIF_INFLUX_ORG=${NDIF_INFLUX_ORG:-}
+NDIF_INFLUX_BUCKET=${NDIF_INFLUX_BUCKET:-}
+NDIF_ENVIRONMENT=${NDIF_ENVIRONMENT:-}
 HF_TOKEN=${HF_TOKEN:-}
 HF_HOME=${HF_HOME:-/root/.cache/huggingface}
 
 ${NDIF_DASHBOARD_MONITOR_CRON:-*/10 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.monitor --url ${NDIF_DASHBOARD_MONITOR_URL:-http://localhost:8001} --log-dir $LOG_DIR --config $CONFIG >> $LOG_DIR/monitor.cron.log 2>&1
 ${NDIF_DASHBOARD_RECONCILE_CRON:-*/2 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.reconcile >> $LOG_DIR/reconcile.cron.log 2>&1
+${NDIF_DASHBOARD_REPORT_CRON:-0 0 * * *} root $PYTHON -m ndif.services.dashboard.jobs.report --log-dir $LOG_DIR --config $CONFIG --window-hours ${NDIF_DASHBOARD_REPORT_WINDOW_HOURS:-24} >> $LOG_DIR/report.cron.log 2>&1
 EOF
     chmod 0644 "$CRON_FILE"
 

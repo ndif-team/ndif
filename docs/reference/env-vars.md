@@ -231,6 +231,8 @@ Dashboard service only; `NDIF_DASHBOARD_*` maps onto pydantic-settings fields vi
 | `NDIF_DASHBOARD_MONITOR_URL` | `http://localhost:8001` | `dashboard/start.sh:68` | What the monitor cron probes. In prod point it at the *public* URL so the probe exercises DNS, TLS and the load balancer. |
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | `dashboard/start.sh:68` | Crontab expression for the uptime monitor. |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | `dashboard/start.sh:69` | Crontab expression for the schedule reconciler. |
+| `NDIF_DASHBOARD_REPORT_CRON` | `0 0 * * *` | `start.sh` | Schedule for the daily usage/uptime digest posted to Discord (`jobs/report.py`). |
+| `NDIF_DASHBOARD_REPORT_WINDOW_HOURS` | `24` | `start.sh`, `jobs/report.py` | How far back that digest looks. |
 
 `cron` strips the environment, so `start.sh:57-70` writes an explicit variable
 block into `/etc/cron.d/ndif-dashboard`. Only the variables listed there reach a
