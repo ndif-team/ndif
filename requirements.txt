@@ -18,12 +18,16 @@
 # For local development `just up` bind-mounts your working nnsight checkout over
 # this install (see the justfile / compose), so a code change on the client side
 # is picked up without a rebuild.
-# Pinned to a commit, not the branch tip: an unpinned branch means every
-# rebuild silently ships a different client library. The 2026-08-04 rebuild
+# This tracks the branch tip, so every rebuild ships whatever 0.8 holds at
+# build time. That keeps the server on the client library it is developed
+# against while both move, and it costs reproducibility: two images built from
+# the same ndif commit can carry different nnsight code. The 2026-08-04 rebuild
 # moved 3 commits and touched intervention/serialization.py and
-# tracing/util.py — the serialization path the server depends on — which
-# would have been deployed unnoticed. Bump this deliberately.
-git+https://github.com/ndif-team/nnsight.git@ad939e9bb24a6bde237dd3a48a49e3d36b1cc87f
+# tracing/util.py — the serialization path the server depends on — with nothing
+# in this file to show it. Recover what a build actually resolved with
+#   docker run --rm --entrypoint pip <image> freeze | grep nnsight
+# and pin this line to that commit for anything that has to be reproducible.
+git+https://github.com/ndif-team/nnsight.git@0.8
 
 # The one exception to leaving transformers unpinned, and it is a floor, not a
 # pin. Before 5.15 tensor parallelism does not shard a tied LM head's weight

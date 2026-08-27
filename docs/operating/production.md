@@ -94,6 +94,15 @@ the server and the MinIO container. Replace them, and put the bucket somewhere
 durable — the dev MinIO writes to the container filesystem and loses everything
 on `just down`.
 
+On a cloud host, prefer holding no key at all. Set **both** variables empty and
+boto3 falls back to its own credential chain, which on AWS finds the instance or
+task role — so the deployment authenticates as an identity the platform rotates,
+scoped by a policy that names the bucket. A static key is a second place the
+bucket has to be named, and the two can disagree: an environment given another
+environment's key is authenticated but not authorized, and fails every upload
+with AccessDenied. The keys are used only when both are set, so a half-configured
+pair falls back to the chain as well.
+
 > **Gotcha — the single most common misconfiguration.** There are two endpoint
 > variables and they are not interchangeable
 > (`common/providers/objectstore.py:9-18`). `NDIF_OBJECT_STORE_URL` is what the

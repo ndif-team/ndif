@@ -41,6 +41,9 @@ class ObjectStoreProvider(Provider):
         "url": ("NDIF_OBJECT_STORE_URL", "http://localhost:9000", str),
         # Client-facing endpoint used only for presigning. Empty -> use `url`.
         "public_url": ("NDIF_OBJECT_STORE_PUBLIC_URL", "", str),
+        # Static keys, for a store that has no other way to authenticate — the
+        # default pair is MinIO's. Set both empty to authenticate as whatever
+        # role the host already carries; see _make_client.
         "access_key": ("NDIF_OBJECT_STORE_ACCESS_KEY", "minioadmin", str),
         "secret_key": ("NDIF_OBJECT_STORE_SECRET_KEY", "minioadmin", str),
         "bucket": ("NDIF_OBJECT_STORE_BUCKET", "ndif-results", str),
@@ -72,12 +75,27 @@ class ObjectStoreProvider(Provider):
         host, which wouldn't resolve for ``minio:9000`` / an IP. Real AWS uses
         the default virtual-hosted style. SigV4 everywhere for presigned-url
         compatibility.
+
+        The keys are passed only when both are set. Leaving them empty hands
+        boto3 no explicit credentials, so it walks its own chain — environment,
+        shared config, container role, instance role. That is what lets a
+        deployment on AWS authenticate as the role its host already carries
+        instead of storing a long-lived IAM user's key. Passing an empty string
+        would not do this: botocore treats it as a credential rather than an
+        absence, and every request fails to sign.
         """
+        credentials = (
+            {
+                "aws_access_key_id": cls.access_key,
+                "aws_secret_access_key": cls.secret_key,
+            }
+            if cls.access_key and cls.secret_key
+            else {}
+        )
         return boto3.client(
             "s3",
             endpoint_url=endpoint or None,
-            aws_access_key_id=cls.access_key,
-            aws_secret_access_key=cls.secret_key,
+            **credentials,
             region_name=cls.region,
             verify=cls.verify,
             config=Config(

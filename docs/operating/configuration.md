@@ -107,7 +107,7 @@ reader of each.
 | `NDIF_RAY_HEAD_ADDRESS` | *(empty)* | Empty ⇒ this node starts a head. Every worker node must set it to the head's `HOST:6385`. |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | The endpoint the *server* uploads through. Empty means real AWS S3 for `NDIF_OBJECT_STORE_REGION`. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → falls back to the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Real credentials. |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Real credentials. Both empty ⇒ no credentials are passed and boto3 uses its own chain (on AWS, the instance/task role). |
 | `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth ⇒ every request trusted. See below. |
 | `NDIF_API_URL` | `http://localhost:8001` | The address other components use to reach the API (compose sets `http://api:8001`). |
 | `NDIF_DASHBOARD_DEV_MODE` | `false` in code, **`true` in compose** | `true` disables the dashboard login entirely. |

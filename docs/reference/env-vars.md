@@ -155,8 +155,8 @@ Read by the API and by model actors. Boto3-backed: MinIO in dev, real S3 in prod
 |---|---|---|---|
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `src/ndif/common/providers/objectstore.py:41` | Server-side endpoint used to upload and ensure the bucket. **Empty means real AWS S3** — boto3 derives the endpoint from `region`. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | `objectstore.py:43` | Client-facing endpoint used *only for presigning*. Empty → falls back to `url`. A presigned URL is an HMAC over the request including the host, so this must be the host the downloader actually hits. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` | `minioadmin` | `objectstore.py:44` | S3 access key. Also becomes MinIO's `MINIO_ROOT_USER` when the CLI spawns MinIO (`cli/service.py:48`). |
-| `NDIF_OBJECT_STORE_SECRET_KEY` | `minioadmin` | `objectstore.py:45` | S3 secret key; likewise `MINIO_ROOT_PASSWORD` (`cli/service.py:49`). |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` | `minioadmin` | `objectstore.py:47` | S3 access key. Also becomes MinIO's `MINIO_ROOT_USER` when the CLI spawns MinIO (`cli/service.py:48`). **Set this and the secret key both empty** to authenticate as the host's own IAM role instead — see below. |
+| `NDIF_OBJECT_STORE_SECRET_KEY` | `minioadmin` | `objectstore.py:48` | S3 secret key; likewise `MINIO_ROOT_PASSWORD` (`cli/service.py:49`). |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | `objectstore.py:46` | Bucket result blobs are written to. |
 | `NDIF_OBJECT_STORE_REGION` | `us-east-1` | `objectstore.py:49` | Set explicitly so presigning never round-trips to discover the region. |
 | `NDIF_OBJECT_STORE_VERIFY` | `true` | `objectstore.py:51` | TLS verification. Set false for self-signed MinIO over HTTPS. Parsed by `_boolish` — `1`/`true`/`yes`/`on` (`objectstore.py:33`). |
@@ -251,6 +251,7 @@ An unset value silently disables a subsystem rather than erroring.
 | `NDIF_RAY_HEAD_ADDRESS` | This node starts a Ray **head** rather than joining one. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | Presigned URLs are signed with the internal endpoint — clients outside the network can't download results. |
 | `NDIF_OBJECT_STORE_URL` | boto3 talks to **real AWS S3** for the configured region, not to a local MinIO. |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` **and** `_SECRET_KEY` (both empty) | No credentials are handed to boto3, so it walks its own chain — environment, shared config, container role, instance role. On AWS this authenticates as the role the host already carries, which is what lets a deployment hold no long-lived key at all. The keys are used only when **both** are set (`_make_client`); a half-configured pair falls back to the chain too, rather than signing with a missing half. |
 
 ## Minimum viable config
 

@@ -183,7 +183,7 @@ URL on the COMPLETED response.
 |---|---|---|
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | Server-side endpoint (upload, bucket ops). Empty → boto3 derives the real AWS endpoint from `region` |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | Client-facing endpoint used *only* for presigning. Empty → falls back to `url` |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients. `_make_client` passes them only when both are set; both empty → boto3's own credential chain (on AWS, the host's IAM role) |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket for result blobs and non-blocking responses |
 | `NDIF_OBJECT_STORE_REGION` / `_VERIFY` | `us-east-1` / `true` | Region is explicit so presigning never round-trips to discover it; set verify false for self-signed MinIO over https |
 
