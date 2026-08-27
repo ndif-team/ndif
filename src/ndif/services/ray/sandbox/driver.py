@@ -24,7 +24,7 @@ import torch
 
 from nnsight.intervention.batching import Batcher
 from nnsight.intervention.cache import Cache
-from nnsight.intervention.interleaver import EarlyStopException, Mediator
+from nnsight.intervention.interleaver import EarlyStopException, Mediator, Pending
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
@@ -89,26 +89,32 @@ class MediatorProxy(Mediator):
         self.adopt(park)
 
     def adopt(self, park) -> None:
-        """Store the worker's latest park, tagging its raw location with the
-        occurrence this proxy's counter (or the pin) resolves it to — so the
-        inherited ``handle`` sees the same ``(event, "{loc}.i{n}", *rest)`` shape
-        it would from a local greenlet. ``None`` means the worker finished."""
+        """Store the worker's latest park, resolving the occurrence its raw
+        location is waiting for — so the inherited ``handle`` sees the same
+        ``Pending`` shape it would from a local greenlet. ``None`` means the
+        worker finished."""
         if park is None:
             self.pending = None
             return
-        # TODO: tracer.barrier() parks a 2-tuple (no pin), which the unpack
-        # below can't destructure — it raises here. The barrier primitive is
+        # TODO: tracer.barrier() parks without a pin, which the unpack below
+        # can't destructure — it raises here. The barrier primitive is
         # unsupported on the sandbox path for now.
         event, location, pin, *rest = park
         if event in ("SOURCE", "CALL", "CACHE"):
             # A control event, not a model location: SOURCE (instrument a module),
             # CALL (run a module's forward ad hoc), or CACHE (observe for a
-            # tracer.cache()). Left untagged for settle_control, payload in `rest`.
-            self.pending = (event, location, *rest)
+            # tracer.cache()). Its payload rides in `value` as one tuple, since a
+            # Pending has no room for several items; settle_control unpacks it.
+            # The iteration stays None so it is never mistaken for a location
+            # this run can reach.
+            self.pending = Pending(event, location, None, *rest)
             return
         self.iteration = pin
-        occurrence = pin if pin is not None else self.iterations[location]
-        self.pending = (event, f"{location}.i{occurrence}", *rest)
+        # The occurrence a relaxed worker wants is the next visit the model has
+        # not handled yet, which the base class reads off the interleaver's
+        # counts (`Mediator.occurrence`) rather than a counter of its own.
+        occurrence = pin if pin is not None else self.occurrence(location)
+        self.pending = Pending(event, location, occurrence, *rest)
 
     def settle_control(self) -> None:
         # Drain control parks that name no forward location: SOURCE (source-instrument
@@ -117,16 +123,20 @@ class MediatorProxy(Mediator):
         # Reply to the worker and resume it — repeat until it parks on a real
         # location, so `handle` only ever sees model locations. Runs before the
         # forward and after every switch.
-        while self.pending is not None and self.pending[0] in ("SOURCE", "CALL", "CACHE"):
-            kind = self.pending[0]
+        while self.pending is not None and self.pending.event in ("SOURCE", "CALL", "CACHE"):
+            kind = self.pending.event
             if kind == "SOURCE":
-                reply = self.driver.install_source(self.pending[1])
+                reply = self.driver.install_source(self.pending.provider)
             elif kind == "CALL":
-                _, path, hook, call_args, call_kwargs = self.pending
-                reply = self.driver.run_module(path, hook, call_args, call_kwargs)
+                hook, call_args, call_kwargs = self.pending.value
+                reply = self.driver.run_module(
+                    self.pending.provider, hook, call_args, call_kwargs
+                )
             else:  # CACHE: observe on the runner's behalf, shipping hits back to it
-                _, cache_id, config = self.pending
-                self.caches.append(ShippingCache(cache_id, self.connection, config))
+                (config,) = self.pending.value
+                self.caches.append(
+                    ShippingCache(self.pending.provider, self.connection, config)
+                )
                 reply = None
             self.connection.send(("RESUME", self.id, (reply,), self.iteration))
             event, rest, _ = self.driver.next_event(self.connection)
@@ -138,8 +148,12 @@ class MediatorProxy(Mediator):
         # Interleaver.__enter__ starts every mediator; this proxy's worker lives in
         # the runner and its first park already arrived in the INTERLEAVE message,
         # so there's no greenlet to spin up here — just record the run it belongs to
-        # (handle() reads batch scoping off it).
+        # (handle() reads batch scoping off it) and the counts it started at, which
+        # is what `occurrence` measures this worker's visits against.
         self.interleaver = interleaver
+        self.counts_at_start = (
+            dict(interleaver.counts) if interleaver is not None else {}
+        )
 
     @property
     def alive(self) -> bool:
@@ -360,5 +374,5 @@ class SandboxDriver:
         for proxy in proxies:
             if not proxy.alive:
                 continue
-            requester = proxy.pending[1]
+            requester = str(proxy.pending)
             connection.send(("THROW", proxy.id, requester, proxy.iteration != 0))

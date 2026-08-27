@@ -133,8 +133,8 @@ Crucially, **`MediatorProxy` subclasses `Mediator` and reuses its `handle`
 unchanged.** All the intricate matching/iteration/relaxation logic is the real
 nnsight code. The proxy only overrides the two things that touch the boundary:
 
-- `adopt` — re-tags each *untagged* park the worker sends into the
-  `(event, "{location}.i{n}", *rest)` shape `handle` expects.
+- `adopt` — resolves the occurrence on each park the worker sends, into the
+  `Pending(event, provider, iteration, value)` shape `handle` expects.
 - `switch` — turns a greenlet hop into a `RESUME`→`PARK` socket round-trip.
 
 ### The exchange
@@ -165,7 +165,8 @@ host: forward pass reaches location L, value V
 
 Why one proxy **per** worker (not a single forwarder)? Two reasons:
 1. **Per-mediator iteration.** Each worker tracks occurrences independently; the
-   host must too, so the `.i{n}` tag is preserved, not collapsed.
+   host must too, so each park keeps its own resolved occurrence rather than
+   being collapsed onto a shared one.
 2. **Batch slicing.** Each worker owns a slice of a batched forward pass. The
    runner ships each worker's `batch_group` (its `[start, size]` rows) in the
    `INTERLEAVE` message; the host sets it on the proxy and registers the batcher on
@@ -182,11 +183,17 @@ methods — `Mediator.handle` *counts* visits and *relaxes* the pin, while
 `Mediator.event` *tags* a park from that count. To avoid a shadow counter, the
 sandbox moves **all** of it to the host:
 
-- Patched `Mediator.event` (runner) parks **untagged**: it sends the raw location
-  plus the worker's current pin, not a resolved `.i{n}` tag.
-- The proxy (host) owns the counter, computes the tag in `adopt`, matches in
-  `handle`, and on each `RESUME` **pushes the pin back** so `tracer.iter`
+- Patched `Mediator.event` (runner) parks **unresolved**: it sends the raw
+  location plus the worker's current pin, leaving `iteration` for the host.
+- The proxy (host) owns the counter, resolves the occurrence in `adopt`, matches
+  in `handle`, and on each `RESUME` **pushes the pin back** so `tracer.iter`
   relaxation stays in lockstep with the worker.
+
+A park crosses the socket as nnsight's `Pending` named tuple, which carries the
+occurrence as its own field alongside the undecorated location. The interleaver
+reads both by name — it builds its parked-location set from `pending.provider`
+and matches a visit on `.provider` and `.iteration` — so a bare tuple of the
+same values in the same order does not substitute for one.
 
 ---
 

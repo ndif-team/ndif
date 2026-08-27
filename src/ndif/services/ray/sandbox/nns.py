@@ -8,9 +8,9 @@ interleaved over the socket.
 The interleaver is split across the socket at the mediator level:
 
 * The intervention **workers** (greenlets) run in this process. A worker still
-  parks on a location, but instead of resolving its ``.i{n}`` occurrence tag here
-  it sends the raw location plus its current ``tracer.iter`` pin to the host
-  (patched ``Mediator.event`` below).
+  parks on a location, but instead of resolving the occurrence here it sends the
+  raw location plus its current ``tracer.iter`` pin to the host (patched
+  ``Mediator.event`` below).
 * Each worker's **parent side** — the occurrence counter, the pin, and the
   read/swap matching — lives on the host as one proxy per worker. The host drives
   each worker individually over the socket: ``pump`` resumes a worker on RESUME
@@ -45,6 +45,7 @@ from nnsight.intervention.interleaver import (
     Interleaver,
     Mediator,
     OutOfOrderError,
+    Pending,
 )
 from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.intervention.source import SourceEnvoy
@@ -62,15 +63,23 @@ connection = None
 
 
 def ipc_event(cls, event, location, *rest):
-    """Park by handing the host the raw location + current pin, not a tagged one.
+    """Park by handing the host the raw location + current pin, unresolved.
 
-    The base ``Mediator.event`` resolves the ``.i{n}`` occurrence tag here from the
-    worker's own counter. In the split the host owns that counter (one proxy per
-    worker), so a park carries only ``(event, location, pin, *rest)`` and the host
-    tags/matches it. ``pin`` is the worker's ``tracer.iter`` pointer (or None).
+    The base ``Mediator.event`` resolves the occurrence here from the worker's own
+    counter. In the split the host owns that counter (one proxy per worker), so a
+    park carries the pin and the host resolves and matches it. ``pin`` is the
+    worker's ``tracer.iter`` pointer (or None).
+
+    The park is a ``Pending`` rather than a plain tuple because the interleaver
+    reads it by name — ``Interleaver._reindex_parked`` builds the parked set from
+    ``pending.provider``, and ``Mediator.handle`` matches on ``.provider`` and
+    ``.iteration``. A bare tuple carries the same values in the same order and
+    still fails on the attribute access.
     """
     worker = getcurrent()
-    return worker.parent.switch((event, location, worker.mediator().iteration, *rest))
+    return worker.parent.switch(
+        Pending(event, location, worker.mediator().iteration, *rest)
+    )
 
 
 # Every mediator in this process is a worker whose parent lives on the host, so
@@ -81,8 +90,8 @@ Mediator.event = classmethod(ipc_event)
 def read_of(park):
     """The read a park represents — ``(location, occurrence)`` — or ``None`` if the
     park isn't a value read. pump tracks these to write in-place edits back."""
-    if park is not None and park[0] is Event.VALUE:
-        return (park[1], park[2])
+    if park is not None and park.event is Event.VALUE:
+        return (park.provider, park.iteration)
     return None
 
 
@@ -238,7 +247,9 @@ class IPCEnvoy(Envoy):
         # An ad-hoc module call (e.g. the logit lens): the module lives on the host,
         # so send a CALL event with the inputs, run its forward there, and hand the
         # output back. `hook` mirrors Envoy.__call__ (direct forward vs full module).
-        return getcurrent().parent.switch(("CALL", self.path, None, hook, args, kwargs))
+        return getcurrent().parent.switch(
+            Pending("CALL", self.path, None, (hook, args, kwargs))
+        )
 
 
 class IPCCloudUnpickler(CustomCloudUnpickler):
@@ -289,7 +300,7 @@ class IPCSource:
         self._prefix = f"{envoy.path}.source"
         # Round-trip to the host: install source on the module and return its op
         # names (None when the forward can't be sourced).
-        self._names = getcurrent().parent.switch(("SOURCE", envoy.path, None))
+        self._names = getcurrent().parent.switch(Pending("SOURCE", envoy.path, None))
 
     def __getattr__(self, name: str) -> SourceEnvoy:
         if name.startswith("_"):
@@ -337,7 +348,7 @@ def ipc_cache(self, *args, **kwargs):
         "include_output": cache.include_output,
         "include_inputs": cache.include_inputs,
     }
-    getcurrent().parent.switch(("CACHE", cache_id, None, config))
+    getcurrent().parent.switch(Pending("CACHE", cache_id, None, (config,)))
     return view
 
 

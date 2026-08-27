@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import pickle
+import time
 import traceback
 
 from ....common.providers.ray import RayProvider, controller_handle
@@ -76,12 +77,30 @@ class Dispatcher:
         asyncio.run(dispatcher.dispatch_worker())
 
     def connect(self) -> None:
-        """Block until connected to Ray, retrying every second.
+        """Block until connected to Redis and then to Ray, retrying every second.
 
         Maintains the ``ray:connected`` Redis flag so API endpoints can tell
         whether the cluster is reachable. Also called during error recovery.
         """
         logger.info("Connecting to Ray")
+
+        # Wait for Redis before touching a key, the same way the Ray loop below
+        # waits for the cluster.
+        #
+        # This runs in a child of the gunicorn master that nothing restarts, so
+        # an exception here does not retry — it kills the dispatcher for the
+        # life of the container. Redis merely being slow to arrive is enough:
+        # on a cold deployment its service-discovery record can land a minute
+        # after this container does, and the DNS failure that follows used to
+        # end the process. The API then stayed up serving ``/ping`` from a
+        # process that no longer had a dispatcher, so its health check passed,
+        # its ECS service reached steady state, and every request path answered
+        # 503 "compute backend is reconnecting" until someone stopped the task
+        # by hand. Nothing was reconnecting.
+        while not RedisProvider.connected():
+            logger.info("Waiting for Redis")
+            RedisProvider.reset()
+            time.sleep(1)
 
         RedisProvider.sync_client.delete("ray:connected")
 
