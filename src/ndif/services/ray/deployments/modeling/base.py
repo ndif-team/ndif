@@ -12,6 +12,7 @@ import contextlib
 import gc
 import io
 import logging
+import os
 import threading
 import time
 import traceback
@@ -57,6 +58,32 @@ from .util import (
 
 if TYPE_CHECKING:
     from .....common.schema.request import BackendRequestModel
+
+
+def _max_socket_result_bytes() -> Optional[int]:
+    """The largest result to hand back over the websocket, or None for no limit.
+
+    Read per call rather than cached at import so an operator can change it with
+    a restart of the actor rather than a rebuild. Unset means every result goes
+    over the socket; set it to fall back to the object store above that size.
+    A value that is not a positive integer is ignored, with a warning — the safe
+    reading of a typo here is "no limit", which is also the default.
+    """
+    raw = os.environ.get("NDIF_MAX_SOCKET_RESULT_BYTES")
+    if not raw:
+        return None
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = -1
+    if limit <= 0:
+        logger.warning(
+            "NDIF_MAX_SOCKET_RESULT_BYTES=%r is not a positive integer; "
+            "ignoring it and returning every result over the socket",
+            raw,
+        )
+        return None
+    return limit
 
 logger = logging.getLogger("ndif.modeling")
 
@@ -327,6 +354,9 @@ class BaseModelDeployment:
         scope.__enter__()
         fatal = False
         url = None
+        # The result itself, when it is going back over the socket rather than
+        # through the object store. Mutually exclusive with `url`.
+        inline: Optional[bytes] = None
         # Phase timings (ms) for the ExecutionTimeMetric; stay None until measured.
         exec_ms: Optional[float] = None
         deserialize_ms: Optional[float] = None
@@ -412,7 +442,15 @@ class BaseModelDeployment:
                 )
 
             upload_started = time.time()
-            url = self.upload_bytes(request, data)
+            # Hand the result straight back on the COMPLETED response when it is
+            # small enough (and there is a socket to hand it to). A non-blocking
+            # request has no live channel, so it always goes to the object store.
+            limit = _max_socket_result_bytes()
+            blob = self.prepare_result(request, data)
+            if request.session_id and (limit is None or len(blob) <= limit):
+                inline = blob
+            else:
+                url = self.upload_bytes(request, blob)
             upload_ms = elapsed_ms(upload_started)
         except CachedActorError:
             # Eviction, not a failure of the request. Propagate so the queue
@@ -440,7 +478,15 @@ class BaseModelDeployment:
             else:
                 self.cleanup()
 
-        request.respond(Status.COMPLETED, "Your job has been completed.", data=url)
+        # A pickled response carries the bytes themselves; a JSON one carries a
+        # url to fetch them from. `pickled` is what tells /subscribe to forward
+        # this as a binary frame.
+        request.respond(
+            Status.COMPLETED,
+            "Your job has been completed.",
+            data=inline if inline is not None else url,
+            pickled=inline is not None,
+        )
         self.report(
             request,
             "completed",
@@ -638,21 +684,20 @@ class BaseModelDeployment:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def upload_bytes(self, request: "BackendRequestModel", data: bytes) -> str:
-        """Stage a serialized result blob (``torch.save`` output) in the object store.
+    def prepare_result(self, request: "BackendRequestModel", data: bytes) -> bytes:
+        """Compress a serialized result (``torch.save`` output) and meter its size.
 
-        The saved values are too big for the redis response channel, so upload the
-        blob under the request id and return a presigned url the client downloads
-        and injects. Compresses to match the request.
+        Shared by both routes back to the client, so a result is byte-identical
+        whether it travels over the socket or through the object store, and is
+        measured the same either way. The client decompresses under the same
+        ``compress`` flag it set on the request, and neither route tells it which
+        one was taken.
         """
         # Match the request's compression so the client decompresses correctly.
         # zstd level 3: near-lz4 speed with a better ratio — a good balance for
         # the large tensor blobs here (the client unzips under request.compress).
         if request.compress:
             data = zstandard.ZstdCompressor(level=3).compress(data)
-
-        key = f"{request.id}.pt"
-        ObjectStoreProvider.put(key, data)
 
         RequestResponseSizeMetric.update(
             model_key=self.model_key,
@@ -662,6 +707,18 @@ class BaseModelDeployment:
             response_bytes=len(data),
             compressed=request.compress,
         )
+
+        return data
+
+    def upload_bytes(self, request: "BackendRequestModel", data: bytes) -> str:
+        """Stage a prepared result blob in the object store and presign a GET.
+
+        Takes the blob from :meth:`prepare_result`, so it is already compressed
+        and metered. Used when the result is too large to hand back on the
+        response, or when there is no socket to hand it to.
+        """
+        key = f"{request.id}.pt"
+        ObjectStoreProvider.put(key, data)
 
         return ObjectStoreProvider.presigned_get(key)
 

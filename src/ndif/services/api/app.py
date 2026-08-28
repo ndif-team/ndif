@@ -375,17 +375,22 @@ async def subscribe(websocket: WebSocket):
     The server generates a `session_id` and sends it as the first message
     (`{"session_id": "..."}`). The client echoes that id back as the
     `session_id` of a subsequent `POST /request`. Thereafter, every Response
-    published to the Redis channel named by that id (already a JSON string) is
-    forwarded down this socket.
+    published to the Redis channel named by that id is forwarded down this
+    socket — as a text frame for a JSON response, or a binary one for a pickled
+    response carrying the result itself (see ``BackendRequestModel.respond``).
     """
     await websocket.accept()
 
     session_id = uuid.uuid4().hex
 
+    # The bytes client, not the decoding one: a pickled response is `torch.save`
+    # output and is not valid UTF-8, so decoding it on the way out of redis
+    # fails. JSON responses are decoded here instead, per message.
+    #
     # Subscribe BEFORE handing the client its session id. The client only POSTs
     # /request after receiving the id, so subscribing first guarantees the
     # channel is live before any status can be published — no lost-message race.
-    pubsub = RedisProvider.async_client.pubsub()
+    pubsub = RedisProvider.async_bytes_client.pubsub()
     await pubsub.subscribe(session_id)
 
     await websocket.send_json({"session_id": session_id})
@@ -393,7 +398,15 @@ async def subscribe(websocket: WebSocket):
     async def forward() -> None:
         async for message in pubsub.listen():
             if message["type"] == "message":
-                await websocket.send_text(message["data"])
+                payload = message["data"]
+                # A JSON response starts with '{'; a pickled one is a zip
+                # container (torch.save) and never does. Status updates stay
+                # text frames, so a client that only reads text sees exactly
+                # what it saw before this existed.
+                if payload[:1] == b"{":
+                    await websocket.send_text(payload.decode())
+                else:
+                    await websocket.send_bytes(payload)
 
     async def watch_disconnect() -> None:
         # The client never sends on this socket, so receive() returns only when

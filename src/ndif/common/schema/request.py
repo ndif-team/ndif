@@ -159,7 +159,11 @@ class BackendRequestModel(RequestModel):
         )
 
     def respond(
-        self, status: Status, description: str = "", data: Optional[Any] = None
+        self,
+        status: Status,
+        description: str = "",
+        data: Optional[Any] = None,
+        pickled: bool = False,
     ) -> BackendResponseModel:
         """Build a response and publish it to the client's websocket channel.
 
@@ -169,6 +173,13 @@ class BackendRequestModel(RequestModel):
         non-blocking request (no ``session_id``) has no live channel, so the
         latest response is saved to the object store instead, where the client
         reads it via ``GET /response/{id}`` (LOG updates are skipped).
+
+        ``pickled`` publishes ``torch.save`` bytes rather than a JSON dump, so
+        ``data`` can carry the result blob itself instead of a url to fetch it
+        from. Only meaningful for a blocking request: the object store path
+        keeps serving JSON, which is what ``GET /response/{id}`` returns.
+        ``/subscribe`` tells the two apart by their first byte and forwards a
+        pickled response as a binary frame.
         """
         from ..providers.objectstore import ObjectStoreProvider
         from ..providers.redis import RedisProvider
@@ -177,7 +188,8 @@ class BackendRequestModel(RequestModel):
 
         if self.session_id:
             RedisProvider.sync_client.publish(
-                self.session_id, response.model_dump_json()
+                self.session_id,
+                response.pickle() if pickled else response.model_dump_json(),
             )
         elif status != Status.LOG:
             ObjectStoreProvider.put(
@@ -189,7 +201,11 @@ class BackendRequestModel(RequestModel):
         return response
 
     async def arespond(
-        self, status: Status, description: str = "", data: Optional[Any] = None
+        self,
+        status: Status,
+        description: str = "",
+        data: Optional[Any] = None,
+        pickled: bool = False,
     ) -> BackendResponseModel:
         """Async counterpart of :meth:`respond`.
 
@@ -204,7 +220,8 @@ class BackendRequestModel(RequestModel):
 
         if self.session_id:
             await RedisProvider.async_client.publish(
-                self.session_id, response.model_dump_json()
+                self.session_id,
+                response.pickle() if pickled else response.model_dump_json(),
             )
         elif status != Status.LOG:
             # Non-blocking: persist the latest response for GET /response/{id}.
