@@ -142,7 +142,7 @@ it serializes as its own name (`"COMPLETED"`).
 | `DEPLOYING` | `Processor.reply`, `processor.py:332` | A replica exists but isn't serving yet — waiting on the actor to load weights. | non-terminal, repeatable |
 | `DISPATCHED` | `Replica.dispatch`, `replica.py:199` | Handed to a specific model actor over Ray. | non-terminal, once |
 | `RUNNING` | `BaseModelDeployment.run`, `base.py:261` | The actor has started executing the block. | non-terminal, once |
-| `COMPLETED` | `BaseModelDeployment.run`, `base.py:370` | Done; `data` carries the presigned result URL. | **terminal** |
+| `COMPLETED` | `BaseModelDeployment.run`, `base.py:370` | Done; `data` carries the result blob, or a presigned URL to download it. | **terminal** |
 | `ERROR` | many (see below) | Failed, cancelled, timed out, or evicted mid-flight; `description` carries the message. | **terminal** |
 | `LOG` | `LogStream.write`, `modeling/util.py:35`; `SandboxModelDeployment.next_event`, `sandbox/model.py:226` | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many times per run** |
 
@@ -199,7 +199,7 @@ bytes the backend publishes are exactly what an unmodified client parses.
 | `id` | `str` | *(required)* | The request id this update belongs to. |
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — the queue position, the error traceback, or one line of `print` output for `LOG`. |
-| `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`, where it is the presigned GET url of the result blob. |
+| `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`. Either the result blob itself (`bytes`, on a response sent as `torch.save` rather than JSON) or the presigned GET url to download it from. `NDIF_MAX_SOCKET_RESULT_BYTES` decides which; a non-blocking request always gets the url. |
 
 Model config: `arbitrary_types_allowed=True, protected_namespaces=()`, the latter
 so `model_key`-style names don't collide with pydantic's `model_` namespace.

@@ -1,5 +1,6 @@
 import importlib
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -38,6 +39,16 @@ def _provider_runtime_env() -> Dict[str, str]:
         provider.from_env()
         env.update(provider.to_env())
     return env
+
+
+def _socket_result_runtime_env() -> Dict[str, str]:
+    """``NDIF_MAX_SOCKET_RESULT_BYTES`` for the actor, if this process has one.
+
+    Absent when unset, which the actor reads as "no cap" — the default, where
+    every result for a blocking request travels back on the response.
+    """
+    limit = os.environ.get("NDIF_MAX_SOCKET_RESULT_BYTES")
+    return {"NDIF_MAX_SOCKET_RESULT_BYTES": limit} if limit else {}
 
 
 class DeploymentLevel(Enum):
@@ -203,6 +214,12 @@ class Deployment:
                 # override it so a model actor's logs/metrics attribute to
                 # "model", not the controller.
                 "NDIF_SERVICE": "model",
+                # How much of a result the actor may hand back on the response
+                # rather than staging it for download. Declared on
+                # `ControllerDeploymentArgs` and carried into this process's
+                # env; forwarded here for the same reason the provider config
+                # is — a Ray worker inherits only its node's ambient env.
+                **_socket_result_runtime_env(),
             }
 
             actor_class = self._resolve_actor_class()

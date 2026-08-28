@@ -92,7 +92,7 @@ The response key is minted per call as
 
 | Channel | Type | Published by | Subscribed by | TTL | Carries |
 |---|---|---|---|---|---|
-| `{session_id}` | Pub/sub channel | `BackendRequestModel.respond` (sync, `request.py:149`) and `arespond` (async, `:173`) — so the queue's processor/replica workers, the dispatcher's kill handler (`dispatcher.py:346`), the model actor (`modeling/base.py:261` onward), `LogStream.write` (`modeling/util.py:35`), and `SandboxModelDeployment.next_event` (`sandbox/model.py:226`) | The API's `/subscribe` websocket handler (`app.py:386`), which forwards each message verbatim to the client | n/a | `BackendResponseModel.model_dump_json()` — `id`, `status`, `description`, optional `data` |
+| `{session_id}` | Pub/sub channel | `BackendRequestModel.respond` (sync, `request.py:149`) and `arespond` (async, `:173`) — so the queue's processor/replica workers, the dispatcher's kill handler (`dispatcher.py:346`), the model actor (`modeling/base.py:261` onward), `LogStream.write` (`modeling/util.py:35`), and `SandboxModelDeployment.next_event` (`sandbox/model.py:226`) | The API's `/subscribe` websocket handler (`app.py:386`), which forwards each message verbatim to the client | n/a | `BackendResponseModel.model_dump_json()` — `id`, `status`, `description`, optional `data`. A COMPLETED response carrying the result itself is published as `.pickle()` (`torch.save`) bytes instead, and forwarded as a binary frame |
 
 `session_id` is a bare `uuid4().hex` generated per websocket (`app.py:380`) and
 used as the channel name with no prefix. The handler subscribes *before* sending

@@ -252,9 +252,13 @@ trace-site would otherwise run *this* request's stale compiled block. Then
 drop `execution_ident`, `model.interleaver.cancel()`, and `synchronize` +
 `gc.collect` + `empty_cache`.
 
-`upload_bytes` (`base.py:536`) zstd-compresses (level 3) when `request.compress` is
-set, `put`s the blob under `{request.id}.pt`, and returns a presigned GET url that
-rides back on the `COMPLETED` response's `data` field. The url is signed with
+`prepare_result` zstd-compresses (level 3) when `request.compress` is set and meters
+the size. The blob then takes one of two routes back, decided against
+`NDIF_MAX_SOCKET_RESULT_BYTES`: under the limit (and unset means no limit) it rides
+on the `COMPLETED` response's `data` field itself, published as `torch.save` output
+and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking
+request, which has no socket — `upload_bytes` `put`s it under `{request.id}.pt` and
+returns a presigned GET url to ride on `data` instead. The url is signed with
 `NDIF_OBJECT_STORE_PUBLIC_URL` when set: a presigned url is an HMAC over the request
 *including the host*, so it must be signed with the host the downloader will hit
 (`objectstore.py:159`). Default expiry: one hour.

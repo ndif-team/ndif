@@ -789,6 +789,26 @@ class ControllerDeploymentArgs(BaseModel):
         os.environ.get("NDIF_DEFAULT_PADDING_BIAS", str(500 * 1024 * 1024))
     )
     default_dtype: str = os.environ.get("NDIF_DEFAULT_DTYPE", "bfloat16")
+    # Largest result, after compression, a model actor hands back on the
+    # COMPLETED response instead of staging in the object store for the client
+    # to download. Unset means no cap, so every result for a blocking request
+    # goes over the websocket. Declared here with the rest of the actor
+    # configuration and forwarded into each actor's env (see
+    # `cluster.deployment`), because the actor reads it from its environment.
+    #
+    # Redis is the ceiling worth knowing: a pubsub client whose output buffer
+    # exceeds `client-output-buffer-limit pubsub` (32 MB hard by default) is
+    # disconnected and the response goes with it. A value that is not a positive
+    # integer is treated as unset.
+    _max_socket_result_env: Optional[str] = os.environ.get(
+        "NDIF_MAX_SOCKET_RESULT_BYTES"
+    )
+    max_socket_result_bytes: Optional[int] = (
+        int(_max_socket_result_env)
+        if _max_socket_result_env and _max_socket_result_env.lstrip("+").isdigit()
+        and int(_max_socket_result_env) > 0
+        else None
+    )
 
 
 def app(**kwargs):
@@ -813,8 +833,31 @@ def app(**kwargs):
         namespace="NDIF",
         lifetime="detached",
         get_if_exists=True,
-        runtime_env={"env_vars": LokiProvider.to_env()},
-    ).remote(**args.model_dump())
+        runtime_env={
+            "env_vars": {
+                **LokiProvider.to_env(),
+                # Forwarded on to each model actor by `cluster.deployment`; the
+                # controller worker only inherits the node's ambient env, so it
+                # has to be carried in explicitly like the provider config.
+                **(
+                    {
+                        "NDIF_MAX_SOCKET_RESULT_BYTES": str(
+                            args.max_socket_result_bytes
+                        )
+                    }
+                    if args.max_socket_result_bytes
+                    else {}
+                ),
+            }
+        },
+    ).remote(
+        # Every field here becomes a constructor kwarg for the actor, and Ray
+        # validates the signature — so a setting the actor does not take has to
+        # be left out. `max_socket_result_bytes` is one: it reaches the model
+        # actors through the environment above, not through the controller's
+        # constructor.
+        **args.model_dump(exclude={"max_socket_result_bytes"})
+    )
 
 
 if __name__ == "__main__":

@@ -150,12 +150,13 @@ Protocol (`app.py:368`): the server accepts, mints `session_id = uuid4().hex`,
 subscribes to the Redis channel of that name, and sends `{"session_id": "a1b2..."}`
 as the first message. The client echoes that id as `session_id` in a
 `POST /request`; from then on every response published to that channel is
-forwarded verbatim as a text frame. The socket closes when the client
-disconnects or the forwarder errors. The client never sends anything on it.
+forwarded verbatim — as a **text** frame for a JSON response, or a **binary**
+one for a `torch.save` response carrying the result itself. The socket closes
+when the client disconnects or the forwarder errors. The client never sends anything on it.
 Subscribe-before-id is deliberate — it guarantees the channel is live before any
 status can be published, so no update is lost.
 
-Each forwarded frame is a JSON status update:
+A status update is a JSON text frame:
 
 ```json
 {"id": "3f2a...c1", "status": "RUNNING", "description": "Your job has started running.", "data": null}

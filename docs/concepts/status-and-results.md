@@ -1,6 +1,6 @@
 ---
 title: Status and Results
-one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and why saved values come back as a blob behind a presigned URL instead of over the response channel.
+one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and the two routes saved values take back to the client.
 tags: [concepts, api, redis, queue]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/errors/client-side-failures.md, docs/developing/model-actor.md]
 sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py]
@@ -55,7 +55,7 @@ stateDiagram-v2
 | `DISPATCHED` | `Replica.dispatch` | handed to a specific actor (`queue/replica.py:198`) |
 | `RUNNING` | model actor | execution started (`modeling/base.py:261`) |
 | `LOG` | model actor | one line the block printed (`LogStream` in `modeling/util.py`) |
-| `COMPLETED` | model actor | result uploaded; `data` is the presigned URL (`base.py:370`) |
+| `COMPLETED` | model actor | `data` is the result itself, or a presigned URL to download it — see below |
 | `ERROR` | any of the above | terminal failure; `description` is the message |
 
 `RECEIVED` is the only status the client gets over HTTP — it's the body of the
@@ -109,27 +109,39 @@ elif status != Status.LOG:
 
 (`src/ndif/common/schema/request.py:148`)
 
-## Why the result is a blob
+## How the result gets back
 
-The saved values are whatever the user marked with `.save()` — potentially many
-gigabytes of tensors. Redis pub/sub is a fan-out message bus for small JSON
-frames, and the websocket in front of it is a per-session pipe held open by an
-API worker; pushing a multi-gigabyte payload through either would pin an API
-worker for the duration of a transfer it has no business doing. So the actor
-does the transfer itself, out of band:
+The saved values are whatever the user marked with `.save()` — anything from a
+few kilobytes to many gigabytes of tensors. Both routes start the same way:
 
 1. `execute` returns `torch.save`d bytes, with CUDA tensors relocated to CPU by
    a custom pickle module.
-2. `upload_bytes` (`modeling/base.py:536`) zstd-compresses them if the request
-   asked for compression (matching what the client will try to decompress), PUTs
-   them at key `{request.id}.pt`, and records a `RequestResponseSizeMetric`.
-3. `presigned_get` signs a GET URL valid for one hour, using the *public*
-   endpoint (`NDIF_OBJECT_STORE_PUBLIC_URL`) rather than the server-side one.
-4. That URL rides on the `COMPLETED` response as `data`.
+2. `prepare_result` zstd-compresses them if the request asked for compression
+   (matching what the client will try to decompress) and records a
+   `RequestResponseSizeMetric`.
 
-The client downloads it directly from the object store, decompresses,
-`torch.load(..., map_location="cpu")`, and — on the blocking path — pushes the
-values back into the caller's frame so `h = ....save()` populates.
+Then the actor picks a route by size, against `NDIF_MAX_SOCKET_RESULT_BYTES`:
+
+**On the response.** Under the limit — and unset means no limit, so this is the
+default — the bytes ride on the `COMPLETED` response as `data`. That response is
+published as `torch.save` output rather than a JSON dump, and `/subscribe`
+forwards it as a binary frame. The client loads it directly, with no second
+round trip.
+
+**Through the object store.** Over the limit, or for a non-blocking request —
+which has no live socket to hand anything to — `upload_bytes` PUTs the blob at
+key `{request.id}.pt` and `presigned_get` signs a GET URL valid for one hour,
+using the *public* endpoint (`NDIF_OBJECT_STORE_PUBLIC_URL`) rather than the
+server-side one. That URL rides on `data` instead, and the client downloads it.
+
+Either way the client decompresses, `torch.load(..., map_location="cpu")`, and —
+on the blocking path — pushes the values back into the caller's frame so
+`h = ....save()` populates.
+
+Redis is what bounds the first route: pub/sub is a fan-out bus, and a subscriber
+whose output buffer exceeds `client-output-buffer-limit pubsub` (32 MB hard by
+default) is disconnected, taking the response with it. Set the limit below that
+on a deployment whose results can be large.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually

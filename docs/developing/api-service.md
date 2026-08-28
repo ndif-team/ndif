@@ -1,6 +1,6 @@
 ---
 title: API Service
-one_liner: The FastAPI ingress — how it boots under gunicorn, what the dependency chain does to a request, and how a request becomes a pickled queue entry and comes back as a presigned URL.
+one_liner: The FastAPI ingress — how it boots under gunicorn, what the dependency chain does to a request, and how a request becomes a pickled queue entry and comes back as a result or a presigned URL.
 tags: [internals, dev, api]
 related: [docs/reference/http-api.md, docs/developing/queue-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/developing/redis-layer.md, docs/reference/schemas.md, docs/reference/redis-keys.md]
 sources: [src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/start.sh, src/ndif/common/schema/request.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/objectstore.py]
@@ -21,10 +21,13 @@ Three constraints shape the whole design:
    client connection. Everything the API needs from the cluster (status, env,
    dispatch) goes through Redis. That is why `/status` and `/env` are
    cache-and-wake-up dances rather than RPCs.
-2. **The API never sees a result.** The model actor uploads the result blob to
-   the object store and publishes a *presigned URL* on the COMPLETED response;
-   the client downloads it directly. No large payload ever flows back through
-   FastAPI.
+2. **The API forwards results but never produces them.** The model actor
+   publishes the result on the COMPLETED response and the `/subscribe`
+   forwarder passes it to the client, so it does cross an API worker.
+   `NDIF_MAX_SOCKET_RESULT_BYTES` caps what may travel that way; above it the
+   actor stages the blob in the object store and publishes a *presigned URL*
+   instead, which the client downloads directly. A non-blocking request always
+   takes the object-store route.
 3. **Ingress is where trust is decided.** The `trusted` flag stamped here
    determines whether a caller's Python runs inside the model actor process or in
    a separate runner, and whether the model loads with `trust_remote_code`.
@@ -213,7 +216,7 @@ flowchart TB
   MA -- "PUBLISH session_id &lt;json&gt;" --> R
   R -- pubsub --> S -- "status updates" --> C
   MA -- "put result blob" --> OS
-  MA -- "COMPLETED, data=presigned url" --> R
+  MA -- "COMPLETED, data=result or presigned url" --> R
   C -- "GET presigned url" --> OS
 ```
 

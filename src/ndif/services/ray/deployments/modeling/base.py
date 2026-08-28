@@ -61,13 +61,14 @@ if TYPE_CHECKING:
 
 
 def _max_socket_result_bytes() -> Optional[int]:
-    """The largest result to hand back over the websocket, or None for no limit.
+    """The largest result to hand back on the response, or None for no limit.
 
-    Read per call rather than cached at import so an operator can change it with
-    a restart of the actor rather than a rebuild. Unset means every result goes
-    over the socket; set it to fall back to the object store above that size.
-    A value that is not a positive integer is ignored, with a warning — the safe
-    reading of a typo here is "no limit", which is also the default.
+    Declared as ``max_socket_result_bytes`` on ``ControllerDeploymentArgs`` and
+    forwarded into this actor's environment when it is created, which is why it
+    is read from the environment here. Still parsed defensively: a node can also
+    carry the variable ambiently, without the controller having vetted it, and
+    the safe reading of a value that is not a positive integer is the default —
+    no limit.
     """
     raw = os.environ.get("NDIF_MAX_SOCKET_RESULT_BYTES")
     if not raw:
@@ -79,7 +80,7 @@ def _max_socket_result_bytes() -> Optional[int]:
     if limit <= 0:
         logger.warning(
             "NDIF_MAX_SOCKET_RESULT_BYTES=%r is not a positive integer; "
-            "ignoring it and returning every result over the socket",
+            "ignoring it and returning every result on the response",
             raw,
         )
         return None
