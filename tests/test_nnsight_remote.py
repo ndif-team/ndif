@@ -5,10 +5,13 @@ traced block is serialized, run on the server's real gpt2, and saved values come
 back over the wire. Shapes/paths come from ``conftest`` (gpt2).
 """
 
+import asyncio
+
 import nnsight
 import torch
 
 from nnsight.modeling.transformers import TransformersModel
+from nnsight.schema.response import Status
 
 from conftest import (
     HIDDEN,
@@ -576,3 +579,130 @@ class TestRemoteSaving:
         with model.trace(PROMPT, remote=True):
             mean = model.transformer.h[-1].output.mean().save()
         assert mean.ndim == 0 and torch.isfinite(mean)
+
+
+class TestRemoteMetaData:
+    """What the server reports back about a finished job's cost.
+
+    The one place the whole path is visible at once: the actor measures a real
+    run on a real GPU, ``request_meta`` shapes it, it crosses the wire on the
+    COMPLETED response, and the client parks it on the backend the tracer holds.
+    ``test_request_meta.py`` covers the arithmetic; this covers the plumbing,
+    which is all that can go wrong silently.
+    """
+
+    def test_tracer_exposes_the_job_cost(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            logits = model.output.logits.save()
+
+        # The backend runs in __exit__, so the report exists only out here.
+        meta = tracer.backend.meta_data
+        assert meta is not None, "server sent no meta_data on COMPLETED"
+        assert set(meta) >= {
+            "runtime",
+            "max_memory_usage",
+            "max_mem_by_gpu",
+            "max_mem_pct_by_gpu",
+        }
+        assert logits.shape[-1] == VOCAB  # the job really did run
+
+    def test_runtime_is_plausible_seconds(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            model.output.logits.save()
+
+        runtime = tracer.backend.meta_data["runtime"]
+        # Seconds, not the actor's milliseconds: a gpt2 forward is well under a
+        # minute, so a value in the hundreds would mean the units are wrong.
+        assert 0 < runtime < 60, runtime
+
+    def test_gpu_figures_are_reported_per_device(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            model.output.logits.save()
+
+        meta = tracer.backend.meta_data
+        by_gpu = meta["max_mem_by_gpu"]
+        if not by_gpu:
+            pytest.skip("server has no CUDA device to report")
+
+        # Keys are strings whichever way the response came back (JSON frame or
+        # pickled frame) — that's the point of stringifying them server-side.
+        assert all(isinstance(k, str) for k in by_gpu)
+        assert set(meta["max_mem_pct_by_gpu"]) == set(by_gpu)
+        # A real forward pass allocates activations on top of the weights.
+        assert meta["max_memory_usage"] == max(by_gpu.values()) > 0
+        assert all(0 <= p <= 100 for p in meta["max_mem_pct_by_gpu"].values())
+
+
+class TestRemoteAsync:
+    """The async backend against a live job (``await`` and ``async for``).
+
+    The rest of this file drives the blocking path; ``AsyncRemoteBackend`` is
+    otherwise only exercised in nnsight's unit tests against a fake connection
+    with a stubbed download. This is the one place the real socket, the real
+    COMPLETED frame and the real result decode are on the async path.
+
+    ``asyncio.run`` rather than pytest-asyncio: the suite has no asyncio config
+    and needs none for this, and it matches how nnsight tests the same class.
+    """
+
+    def _backend(self, model):
+        from nnsight.intervention.backends.remote import AsyncRemoteBackend
+
+        # Host comes from CONFIG.API.HOST, pointed at the local server in conftest.
+        return AsyncRemoteBackend(model.to_model_key())
+
+    def test_await_returns_the_saves(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            logits = model.output.logits.save()
+
+        # The trace has exited, so nothing is pushed back into this frame — the
+        # saves come out of the await, keyed by the name they were bound to.
+        result = asyncio.run(backend.resolve())
+        assert result["logits"].shape[-1] == VOCAB
+
+    def test_await_records_the_job_cost(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            model.output.logits.save()
+
+        asyncio.run(backend.resolve())
+        # resolve() goes through note(), the same shared handling the blocking
+        # path uses.
+        assert backend.meta_data is not None
+        assert backend.meta_data["runtime"] > 0
+
+    def test_aiter_yields_statuses_then_the_saves(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            logits = model.output.logits.save()
+
+        async def collect():
+            return [item async for item in backend]
+
+        items = asyncio.run(collect())
+        # Every item but the last is a raw status update; the saves dict is last.
+        assert items[-1]["logits"].shape[-1] == VOCAB
+        statuses = [item.status for item in items[:-1]]
+        assert statuses[-1] == Status.COMPLETED
+        assert Status.RUNNING in statuses
+
+    def test_stream_records_the_cost_off_the_raw_frame(self, model):
+        # stream() bypasses note(), so it records meta_data on its own path —
+        # and the frame it yields carries the report itself. The fake-connection
+        # unit test can't vouch for the server actually putting it there.
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            model.output.logits.save()
+
+        async def collect():
+            return [item async for item in backend]
+
+        items = asyncio.run(collect())
+        completed = [
+            item
+            for item in items[:-1]
+            if item.status == Status.COMPLETED
+        ]
+        assert completed and completed[0].meta_data is not None
+        assert backend.meta_data == completed[0].meta_data

@@ -111,8 +111,8 @@ included — travels as **pickle**, not JSON:
 ### Response methods
 
 Three, all on the request because the request knows the id, the channel, and the
-status clock. `response(status, description="", data=None)`
-(`request.py:75`) advances the status and returns a `BackendResponseModel`, with
+status clock. `response(status, description="", data=None, meta_data=None)`
+(`request.py:100`) advances the status and returns a `BackendResponseModel`, with
 no I/O; `respond` (`request.py:134`) also publishes, over sync Redis, from the
 model actor's threads; `arespond` (`request.py:161`) is the async counterpart the
 queue's workers use so a status update doesn't block the event loop. Publishing
@@ -200,11 +200,14 @@ bytes the backend publishes are exactly what an unmodified client parses.
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — the queue position, the error traceback, or one line of `print` output for `LOG`. |
 | `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`. Either the result blob itself (`bytes`, on a response sent as `torch.save` rather than JSON) or the presigned GET url to download it from. `NDIF_MAX_SOCKET_RESULT_BYTES` decides which; a non-blocking request always gets the url. |
+| `meta_data` | `Optional[dict]` | `None` | Also `COMPLETED`-only: what the run cost. Built by `request_meta` (`modeling/util.py:246`) from the same measurements the `GPUMemMetric` gets, and passed at the COMPLETED `respond` (`base.py:494`). Keys: `runtime` (wall-clock **seconds** — the actor times in ms and converts here), `max_mem_by_gpu` / `max_mem_pct_by_gpu` (bytes this request drove *above the resident weights*, and that against the headroom it had), and `max_memory_usage` (the worst-pressured device's bytes). GPU keys are **strings** so the JSON and `torch.save` encodings agree. An open dict, not a model, so measurements can be added without a client release. |
 
 Model config: `arbitrary_types_allowed=True, protected_namespaces=()`, the latter
 so `model_key`-style names don't collide with pydantic's `model_` namespace.
-`pickle()` / `unpickle()` are inherited but unused — every response on the wire is
-`model_dump_json()`.
+A response goes out as `model_dump_json()` unless it carries the result inline, in
+which case `respond(pickled=True)` sends the inherited `pickle()` (`torch.save`)
+bytes instead — the one encoding difference `meta_data`'s string GPU keys exist to
+paper over.
 
 **Result blobs are referenced, never embedded.** `upload_bytes`
 (`modeling/base.py:536`) `torch.save`s the `nnsight.save()`-marked values,

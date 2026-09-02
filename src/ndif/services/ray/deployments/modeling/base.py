@@ -49,6 +49,7 @@ from .util import (
     gpu_peaks,
     kill_thread,
     remove_accelerate_hooks,
+    request_meta,
     reset_process_limits,
     resolve_dtype,
     set_default_gpu,
@@ -487,6 +488,7 @@ class BaseModelDeployment:
             "Your job has been completed.",
             data=inline if inline is not None else url,
             pickled=inline is not None,
+            meta_data=request_meta(per_device, self.gpu_mem_bytes_by_id, exec_ms),
         )
         self.report(
             request,

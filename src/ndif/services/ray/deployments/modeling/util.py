@@ -243,6 +243,59 @@ def gpu_peaks(baselines: Dict[int, int]) -> Dict[int, Tuple[int, int]]:
     return per_device
 
 
+def request_meta(
+    per_device: Dict[int, Tuple[int, int]],
+    gpu_mem_bytes_by_id: Dict[int, int],
+    exec_ms: "float | None",
+) -> Dict[str, Any]:
+    """What the just-finished request cost, for the client's COMPLETED response.
+
+    Reuses what the actor already measured for its metrics — ``gpu_peaks`` output
+    and the run's wall clock — and shapes it for
+    ``nnsight``'s ``ResponseModel.meta_data``:
+
+    - ``runtime`` — wall-clock **seconds** (the actor times in ms; this is the
+      one place that converts, because the client-facing field is seconds).
+    - ``max_mem_by_gpu`` — bytes this request drove *on top of the resident
+      weights* (peak minus baseline), per device. Not the device's total usage:
+      the weights are the actor's, not the request's.
+    - ``max_mem_pct_by_gpu`` — that figure against the headroom the request
+      actually had (this actor's assigned bytes on the card, less the weights
+      already sitting in them), so 100% means it filled what was left for it.
+    - ``max_memory_usage`` — the worst-pressured single device's bytes, for a
+      caller that just wants one number.
+
+    GPU keys are **strings**, not ints. A response reaches the client two ways —
+    JSON over the socket, or ``torch.save`` bytes when the result rides along —
+    and only JSON stringifies dict keys. Emitting strings makes both routes agree,
+    so the client isn't parsing a different shape depending on how big its result
+    was.
+
+    Best-effort throughout: no CUDA (so no ``per_device``) simply yields zeros and
+    empty maps rather than omitting the report.
+    """
+    by_gpu: Dict[str, int] = {}
+    pct_by_gpu: Dict[str, float] = {}
+    for gpu_id, (baseline, peak) in per_device.items():
+        used = max(peak - baseline, 0)
+        by_gpu[str(gpu_id)] = used
+        # Headroom is what this actor was assigned on the card minus what its
+        # weights already hold. Non-positive means we can't say (the assignment
+        # is unknown, or the weights already fill it) -- report 0 rather than
+        # dividing by it.
+        headroom = gpu_mem_bytes_by_id.get(gpu_id, 0) - baseline
+        pct_by_gpu[str(gpu_id)] = (
+            round(used / headroom * 100, 2) if headroom > 0 else 0.0
+        )
+
+    return {
+        "runtime": round(exec_ms / 1000, 4) if exec_ms is not None else None,
+        "max_memory_usage": max(by_gpu.values()) if by_gpu else 0,
+        "max_mem_by_gpu": by_gpu,
+        "max_mem_pct_by_gpu": pct_by_gpu,
+    }
+
+
 def resolve_dtype(dtype: "str | Any | None") -> Any:
     """Resolve a dtype name (e.g. ``"bfloat16"``), a ``torch.dtype``, or ``None``
     to a concrete ``torch.dtype``.
