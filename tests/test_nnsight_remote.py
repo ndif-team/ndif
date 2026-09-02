@@ -706,3 +706,71 @@ class TestRemoteAsync:
         ]
         assert completed and completed[0].meta_data is not None
         assert backend.meta_data == completed[0].meta_data
+
+
+class TestRemoteOOM:
+    """A block that asks for more GPU memory than its job is allowed.
+
+    The allocation is refused by the per-process cap the actor sets for itself,
+    so this is a bounded failure, not a way to exhaust the card: torch rejects
+    the request rather than taking the memory. OOM is also not in the actor's
+    fatal-CUDA list, so the replica survives and later tests still run.
+    """
+
+    # Comfortably past any budget gpt2 would be given, and harmless if a very
+    # large deployment somehow satisfied it.
+    HOG_BYTES = 8 * 1024**3
+
+    def _oom(self, model):
+        """Run a block that can't fit; return the tracer and the raised error."""
+        from nnsight.intervention.backends.remote import RemoteError
+
+        # Bound outside the block on purpose. The traced block is shipped by
+        # source with its free variables, so referencing `self` in there would
+        # drag this test module along and the server would fail on `import
+        # pytest` long before it ran out of memory.
+        hog_bytes = self.HOG_BYTES
+        try:
+            with model.trace(PROMPT, remote=True) as tracer:
+                hog = torch.empty(hog_bytes, dtype=torch.uint8, device="cuda").save()
+        except RemoteError as error:
+            return tracer, error
+        pytest.skip("the server had room for the allocation; nothing to assert")
+
+    def test_the_failure_is_reported_as_an_oom(self, model):
+        _, error = self._oom(model)
+        assert "out of memory" in str(error).lower()
+
+    def test_a_failed_job_still_reports_its_cost(self, model):
+        # note() records meta_data before it raises, so the report survives.
+        tracer, _ = self._oom(model)
+        meta = tracer.backend.meta_data
+        assert meta is not None, "no meta_data on the ERROR response"
+        assert meta["runtime"] >= 0
+
+    def test_it_says_how_much_more_was_needed(self, model):
+        tracer, _ = self._oom(model)
+        meta = tracer.backend.meta_data
+
+        if meta.get("extra_memory_needed") is None:
+            pytest.skip("no OOM observer on the server's torch build")
+
+        # Keyed by GPU, like the other per-device maps, with string keys. The
+        # block asked for 8 GiB it did not have, so the shortfall is real and
+        # can't exceed what was asked for.
+        short = meta["extra_memory_needed"]
+        assert short and all(isinstance(gpu, str) for gpu in short)
+        assert all(0 < value <= self.HOG_BYTES for value in short.values())
+
+    def test_an_ordinary_failure_carries_no_memory_shortfall(self, model):
+        # The observer fires on OOM events torch recovers from too, so a failure
+        # that isn't an OOM must not inherit a stale one.
+        from nnsight.intervention.backends.remote import RemoteError
+
+        with pytest.raises(RemoteError):
+            with model.trace(PROMPT, remote=True) as tracer:
+                broken = (model.output.logits + "not a tensor").save()
+
+        meta = tracer.backend.meta_data
+        if meta is not None:
+            assert meta.get("extra_memory_needed") is None
