@@ -16,7 +16,7 @@ pytest.importorskip("nnsight", reason="the wire models subclass nnsight's")
 from ndif.common.schema.request import BackendRequestModel
 from ndif.common.schema.response import Status
 from ndif.services.ray.deployments.modeling.util import (
-    extra_memory_needed,
+    alloc_shortfall,
     is_oom,
     request_meta,
 )
@@ -53,12 +53,12 @@ class TestRequestMeta:
     def test_bytes_are_measured_above_the_resident_weights(self):
         # Not the device's total usage: the 30 GB of weights are the actor's.
         meta = request_meta(self.ONE_PEAK, self.ONE_CARD, exec_ms=1000)
-        assert meta["max_mem_by_gpu"] == {"0": 2 * self.GB}
+        assert meta.max_mem_by_gpu == {"0": 2 * self.GB}
 
     def test_percent_is_against_the_headroom_the_request_had(self):
         # 2 GB of the 10 GB left over once the weights are subtracted.
         meta = request_meta(self.ONE_PEAK, self.ONE_CARD, exec_ms=1000)
-        assert meta["max_mem_pct_by_gpu"] == {"0": 20.0}
+        assert meta.max_mem_pct_by_gpu == {"0": 20.0}
 
     def test_scalar_is_the_worst_pressured_device(self):
         meta = request_meta(
@@ -66,23 +66,23 @@ class TestRequestMeta:
             {0: 40 * self.GB, 1: 40 * self.GB},
             exec_ms=1000,
         )
-        assert meta["max_mem_by_gpu"] == {"0": self.GB, "1": 4 * self.GB}
-        assert meta["max_memory_usage"] == 4 * self.GB
+        assert meta.max_mem_by_gpu == {"0": self.GB, "1": 4 * self.GB}
+        assert meta.max_memory_usage == 4 * self.GB
 
     def test_freed_memory_does_not_go_negative(self):
         # A peak below the baseline means the block freed weights-adjacent memory;
         # a negative footprint is meaningless, so it floors at zero.
         meta = request_meta({0: (30 * self.GB, 29 * self.GB)}, self.ONE_CARD, exec_ms=1)
-        assert meta["max_mem_by_gpu"] == {"0": 0}
-        assert meta["max_mem_pct_by_gpu"] == {"0": 0.0}
+        assert meta.max_mem_by_gpu == {"0": 0}
+        assert meta.max_mem_pct_by_gpu == {"0": 0.0}
 
     # -- runtime -----------------------------------------------------------
 
     def test_runtime_is_seconds_not_the_actors_milliseconds(self):
-        assert request_meta({}, {}, exec_ms=1500)["runtime"] == 1.5
+        assert request_meta({}, {}, exec_ms=1500).runtime == 1.5
 
     def test_unmeasured_runtime_is_none(self):
-        assert request_meta({}, {}, exec_ms=None)["runtime"] is None
+        assert request_meta({}, {}, exec_ms=None).runtime is None
 
     # -- degenerate inputs: none of these may raise ------------------------
     # The report is best-effort. It is never the thing that fails a job that
@@ -91,22 +91,23 @@ class TestRequestMeta:
     def test_no_headroom_reports_zero_percent_rather_than_dividing(self):
         # Weights already fill the assignment — the percentage has no denominator.
         meta = request_meta({0: (40 * self.GB, 41 * self.GB)}, self.ONE_CARD, exec_ms=1)
-        assert meta["max_mem_pct_by_gpu"] == {"0": 0.0}
-        assert meta["max_mem_by_gpu"] == {"0": self.GB}  # the bytes are still real
+        assert meta.max_mem_pct_by_gpu == {"0": 0.0}
+        assert meta.max_mem_by_gpu == {"0": self.GB}  # the bytes are still real
 
     def test_unknown_assignment_reports_zero_percent(self):
         # gpu_peaks saw a device the actor has no budget recorded for.
         meta = request_meta({3: (0, self.GB)}, self.ONE_CARD, exec_ms=1)
-        assert meta["max_mem_pct_by_gpu"] == {"3": 0.0}
+        assert meta.max_mem_pct_by_gpu == {"3": 0.0}
 
     def test_no_cuda_still_reports(self):
         # gpu_baselines/gpu_peaks return nothing off-GPU. The runtime is still
         # worth having, so the report is emitted with the memory fields empty.
-        assert request_meta({}, {}, exec_ms=250) == {
+        assert request_meta({}, {}, exec_ms=250).model_dump() == {
             "runtime": 0.25,
             "max_memory_usage": 0,
             "max_mem_by_gpu": {},
             "max_mem_pct_by_gpu": {},
+            "alloc_shortfall_by_gpu": None,
         }
 
     # -- string GPU keys ---------------------------------------------------
@@ -115,8 +116,8 @@ class TestRequestMeta:
 
     def test_keys_are_strings_not_ints(self):
         meta = request_meta(self.ONE_PEAK, self.ONE_CARD, exec_ms=1)
-        assert list(meta["max_mem_by_gpu"]) == ["0"]
-        assert list(meta["max_mem_pct_by_gpu"]) == ["0"]
+        assert list(meta.max_mem_by_gpu) == ["0"]
+        assert list(meta.max_mem_pct_by_gpu) == ["0"]
 
     def test_both_wire_routes_produce_the_same_report(self):
         from nnsight.schema.response import ResponseModel
@@ -133,17 +134,16 @@ class TestRequestMeta:
 
     # -- the optional out-of-memory key ------------------------------------
 
-    def test_no_extra_key_without_an_exception(self):
-        # A COMPLETED job. The key is absent, not None, so its presence alone
-        # says the request died for want of memory.
+    def test_no_shortfall_without_an_exception(self):
+        # A COMPLETED job. None is the answer to "did this run out of memory".
         meta = request_meta(self.ONE_PEAK, self.ONE_CARD, exec_ms=1000)
-        assert "extra_memory_needed" not in meta
+        assert meta.alloc_shortfall_by_gpu is None
 
-    def test_an_ordinary_failure_adds_no_extra_key(self):
+    def test_an_ordinary_failure_reports_no_shortfall(self):
         meta = request_meta(
             self.ONE_PEAK, self.ONE_CARD, 1000, ValueError("shape mismatch")
         )
-        assert "extra_memory_needed" not in meta
+        assert meta.alloc_shortfall_by_gpu is None
 
     def test_an_oom_adds_the_shortfall(self, monkeypatch):
         import torch
@@ -157,9 +157,9 @@ class TestRequestMeta:
             message_error("Tried to allocate 20.00 GiB. GPU 0 has ..."),
         )
         # 40 GiB assigned, 30 reserved -> 10 free; a 20 GiB ask is 10 GiB short.
-        assert meta["extra_memory_needed"] == {"0": 10 * self.GB}
+        assert meta.alloc_shortfall_by_gpu == {"0": 10 * self.GB}
         # ...and the rest of the report is unchanged by it.
-        assert meta["max_mem_by_gpu"] == {"0": 2 * self.GB}
+        assert meta.max_mem_by_gpu == {"0": 2 * self.GB}
 
     # -- it actually rides on the response ---------------------------------
 
@@ -174,7 +174,7 @@ class TestRequestMeta:
         assert request.response(Status.RUNNING, "started").meta_data is None
 
 
-class TestExtraMemoryNeeded:
+class TestAllocShortfall:
     """How far past its allowance a refused allocation reached, per device.
 
     The size of the refused allocation on its own doesn't say what to do about
@@ -215,7 +215,7 @@ class TestExtraMemoryNeeded:
         # 8 GiB asked for against 800.55 MiB allowed with 262 MiB reserved:
         # ~538.55 MiB was free, so the block was ~7.47 GiB short.
         reserved(262 * 1024**2)
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             RuntimeError(self.REAL), {0: int(800.55 * 1024**2)}
         )
         assert round(short["0"] / self.GB, 2) == 7.47
@@ -223,12 +223,12 @@ class TestExtraMemoryNeeded:
     def test_takes_the_card_from_the_message(self, reserved):
         reserved(0)
         message = "CUDA out of memory. Tried to allocate 2.00 GiB. GPU 3 has ..."
-        short = extra_memory_needed(message_error(message), {0: self.GB, 3: self.GB})
+        short = alloc_shortfall(message_error(message), {0: self.GB, 3: self.GB})
         assert list(short) == ["3"]
 
     def test_falls_back_to_the_only_card_when_none_is_named(self, reserved):
         reserved(0)
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             message_error("CUDA out of memory. Tried to allocate 2.00 GiB."),
             {2: self.GB},
         )
@@ -238,7 +238,7 @@ class TestExtraMemoryNeeded:
         # No GPU named and several assigned -- guessing would be worse than
         # saying nothing.
         reserved(0)
-        assert extra_memory_needed(
+        assert alloc_shortfall(
             message_error("CUDA out of memory. Tried to allocate 2.00 GiB."),
             {0: self.GB, 1: self.GB},
         ) is None
@@ -246,7 +246,7 @@ class TestExtraMemoryNeeded:
     def test_understands_the_smaller_units(self, reserved):
         # torch scales the unit to the size, so MiB shows up on near misses.
         reserved(0)
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             message_error("Tried to allocate 512.00 MiB. GPU 0 has ..."),
             {0: 256 * 1024**2},
         )
@@ -256,7 +256,7 @@ class TestExtraMemoryNeeded:
         # 2 GiB budget with 1.72 reserved leaves 0.28 free; a 1.5 GiB ask is
         # therefore 1.22 GiB short.
         reserved(int(1.72 * self.GB))
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             message_error("Tried to allocate 1.50 GiB. GPU 0 has ..."),
             {0: 2 * self.GB},
         )
@@ -269,9 +269,9 @@ class TestExtraMemoryNeeded:
         error = message_error("Tried to allocate 2.00 GiB. GPU 0 has ...")
         budget = {0: 2 * self.GB}
         reserved(3 * self.GB // 2)
-        tight = extra_memory_needed(error, budget)      # 0.5 free -> 1.5 short
+        tight = alloc_shortfall(error, budget)      # 0.5 free -> 1.5 short
         reserved(self.GB // 2)
-        loose = extra_memory_needed(error, budget)      # 1.5 free -> 0.5 short
+        loose = alloc_shortfall(error, budget)      # 1.5 free -> 0.5 short
         assert tight["0"] == 3 * self.GB // 2
         assert loose["0"] == self.GB // 2
 
@@ -279,7 +279,7 @@ class TestExtraMemoryNeeded:
         # The request would have fit in what was free -- nothing to report
         # rather than a negative shortfall.
         reserved(0)
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             message_error("Tried to allocate 1.00 GiB. GPU 0 has ..."),
             {0: 8 * self.GB},
         )
@@ -289,7 +289,7 @@ class TestExtraMemoryNeeded:
         # Same reason as request_meta's: the JSON and torch.save encodings of a
         # response must agree on the key type.
         reserved(0)
-        short = extra_memory_needed(
+        short = alloc_shortfall(
             message_error("Tried to allocate 2.00 GiB. GPU 0 has ..."), {0: self.GB}
         )
         assert list(short) == ["0"]
@@ -298,11 +298,11 @@ class TestExtraMemoryNeeded:
         # The overwhelming case: a job that failed for some other reason. No
         # stale record to inherit, because there is no record.
         reserved(0)
-        assert extra_memory_needed(ValueError("shape mismatch"), {0: self.GB}) is None
+        assert alloc_shortfall(ValueError("shape mismatch"), {0: self.GB}) is None
 
     def test_none_when_the_card_has_no_recorded_budget(self, reserved):
         reserved(0)
-        assert extra_memory_needed(
+        assert alloc_shortfall(
             message_error("Tried to allocate 2.00 GiB. GPU 7 has ..."),
             {0: self.GB},
         ) is None

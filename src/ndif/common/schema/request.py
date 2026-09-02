@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from nnsight.intervention.serialization import UnknownPersistentIdError
 from nnsight.schema.request import RequestModel
+from nnsight.schema.response import MetaData
 from pydantic import Field
 
 from ..errors import ArchitectureMismatchError, PayloadError
@@ -102,7 +103,7 @@ class BackendRequestModel(RequestModel):
         status: Status,
         description: str = "",
         data: Optional[Any] = None,
-        meta_data: Optional[dict] = None,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Advance the request's lifecycle status, then build the response for it.
 
@@ -172,7 +173,7 @@ class BackendRequestModel(RequestModel):
         description: str = "",
         data: Optional[Any] = None,
         pickled: bool = False,
-        meta_data: Optional[dict] = None,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Build a response and publish it to the client's websocket channel.
 
@@ -215,7 +216,7 @@ class BackendRequestModel(RequestModel):
         description: str = "",
         data: Optional[Any] = None,
         pickled: bool = False,
-        meta_data: Optional[dict] = None,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Async counterpart of :meth:`respond`.
 

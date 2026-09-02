@@ -598,19 +598,15 @@ class TestRemoteMetaData:
         # The backend runs in __exit__, so the report exists only out here.
         meta = tracer.backend.meta_data
         assert meta is not None, "server sent no meta_data on COMPLETED"
-        assert set(meta) >= {
-            "runtime",
-            "max_memory_usage",
-            "max_mem_by_gpu",
-            "max_mem_pct_by_gpu",
-        }
+        assert meta.runtime is not None
+        assert meta.max_mem_by_gpu is not None
         assert logits.shape[-1] == VOCAB  # the job really did run
 
     def test_runtime_is_plausible_seconds(self, model):
         with model.trace(PROMPT, remote=True) as tracer:
             model.output.logits.save()
 
-        runtime = tracer.backend.meta_data["runtime"]
+        runtime = tracer.backend.meta_data.runtime
         # Seconds, not the actor's milliseconds: a gpt2 forward is well under a
         # minute, so a value in the hundreds would mean the units are wrong.
         assert 0 < runtime < 60, runtime
@@ -620,17 +616,17 @@ class TestRemoteMetaData:
             model.output.logits.save()
 
         meta = tracer.backend.meta_data
-        by_gpu = meta["max_mem_by_gpu"]
+        by_gpu = meta.max_mem_by_gpu
         if not by_gpu:
             pytest.skip("server has no CUDA device to report")
 
         # Keys are strings whichever way the response came back (JSON frame or
         # pickled frame) — that's the point of stringifying them server-side.
         assert all(isinstance(k, str) for k in by_gpu)
-        assert set(meta["max_mem_pct_by_gpu"]) == set(by_gpu)
+        assert set(meta.max_mem_pct_by_gpu) == set(by_gpu)
         # A real forward pass allocates activations on top of the weights.
-        assert meta["max_memory_usage"] == max(by_gpu.values()) > 0
-        assert all(0 <= p <= 100 for p in meta["max_mem_pct_by_gpu"].values())
+        assert meta.max_memory_usage == max(by_gpu.values()) > 0
+        assert all(0 <= p <= 100 for p in meta.max_mem_pct_by_gpu.values())
 
 
 class TestRemoteAsync:
@@ -670,7 +666,7 @@ class TestRemoteAsync:
         # resolve() goes through note(), the same shared handling the blocking
         # path uses.
         assert backend.meta_data is not None
-        assert backend.meta_data["runtime"] > 0
+        assert backend.meta_data.runtime > 0
 
     def test_aiter_yields_statuses_then_the_saves(self, model):
         backend = self._backend(model)
@@ -746,19 +742,19 @@ class TestRemoteOOM:
         tracer, _ = self._oom(model)
         meta = tracer.backend.meta_data
         assert meta is not None, "no meta_data on the ERROR response"
-        assert meta["runtime"] >= 0
+        assert meta.runtime >= 0
 
     def test_it_says_how_much_more_was_needed(self, model):
         tracer, _ = self._oom(model)
         meta = tracer.backend.meta_data
 
-        if meta.get("extra_memory_needed") is None:
-            pytest.skip("no OOM observer on the server's torch build")
+        if meta.alloc_shortfall_by_gpu is None:
+            pytest.skip("the server could not identify the refused allocation")
 
         # Keyed by GPU, like the other per-device maps, with string keys. The
         # block asked for 8 GiB it did not have, so the shortfall is real and
         # can't exceed what was asked for.
-        short = meta["extra_memory_needed"]
+        short = meta.alloc_shortfall_by_gpu
         assert short and all(isinstance(gpu, str) for gpu in short)
         assert all(0 < value <= self.HOG_BYTES for value in short.values())
 
@@ -773,4 +769,4 @@ class TestRemoteOOM:
 
         meta = tracer.backend.meta_data
         if meta is not None:
-            assert meta.get("extra_memory_needed") is None
+            assert meta.alloc_shortfall_by_gpu is None

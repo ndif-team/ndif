@@ -9,6 +9,8 @@ import re
 from typing import TYPE_CHECKING, Any, Dict, Tuple
 
 if TYPE_CHECKING:
+    from nnsight.schema.response import MetaData
+
     from .....common.schema.request import BackendRequestModel
 
 logger = logging.getLogger("ndif.modeling")
@@ -293,10 +295,10 @@ def _refused_allocation(message: str) -> "Tuple[int | None, int] | None":
     )
 
 
-def extra_memory_needed(
+def alloc_shortfall(
     exception: BaseException, gpu_mem_bytes_by_id: Dict[int, int]
 ) -> "Dict[str, int] | None":
-    """How much more GPU memory the request needed than it was allowed, per device.
+    """Of the allocation the allocator refused, the part that would not fit.
 
     ``{gpu_id: bytes}``, keyed like ``max_mem_by_gpu`` and with string keys for
     the same reason -- a response crosses the wire as JSON or as ``torch.save``
@@ -354,20 +356,25 @@ def request_meta(
     gpu_mem_bytes_by_id: Dict[int, int],
     exec_ms: "float | None",
     exception: "BaseException | None" = None,
-) -> Dict[str, Any]:
+) -> "MetaData":
     """What the just-finished request cost, for the response that ends its job.
 
     Built for a COMPLETED response and for a failed one alike -- the run is over
     either way, and a timeout that peaked at 99% of its headroom explains itself.
     Pass the ``exception`` a failing request died of and, when it was the CUDA
     allocator refusing an allocation, the report also carries
-    ``extra_memory_needed`` (see :func:`extra_memory_needed`). Nothing else about
+    ``alloc_shortfall_by_gpu`` (see :func:`alloc_shortfall`). Nothing else about
     the report changes, so every terminal response has the same shape but one
     optional key.
 
     Reuses what the actor already measured for its metrics — ``gpu_peaks`` output
     and the run's wall clock — and shapes it for
     ``nnsight``'s ``ResponseModel.meta_data``:
+
+    Returns nnsight's ``MetaData``, not a dict: the client declares this shape,
+    so building it here is what keeps the two repos' idea of the report from
+    drifting apart, and a wrong key or a stray integer GPU id fails in this
+    actor rather than reaching a user as a differently-shaped payload.
 
     - ``runtime`` — wall-clock **seconds** (the actor times in ms; this is the
       one place that converts, because the client-facing field is seconds).
@@ -403,17 +410,19 @@ def request_meta(
             round(used / headroom * 100, 2) if headroom > 0 else 0.0
         )
 
-    meta: Dict[str, Any] = {
-        "runtime": round(exec_ms / 1000, 4) if exec_ms is not None else None,
-        "max_memory_usage": max(by_gpu.values()) if by_gpu else 0,
-        "max_mem_by_gpu": by_gpu,
-        "max_mem_pct_by_gpu": pct_by_gpu,
-    }
+    from nnsight.schema.response import MetaData
 
-    # Only on an out-of-memory failure: the key is absent rather than None on
-    # every other outcome, so its presence is itself the signal.
+    meta = MetaData(
+        runtime=round(exec_ms / 1000, 4) if exec_ms is not None else None,
+        max_memory_usage=max(by_gpu.values()) if by_gpu else 0,
+        max_mem_by_gpu=by_gpu,
+        max_mem_pct_by_gpu=pct_by_gpu,
+    )
+
+    # Left None on every other outcome, so None is itself the answer to "did
+    # this run out of memory".
     if exception is not None and is_oom(exception):
-        meta["extra_memory_needed"] = extra_memory_needed(
+        meta.alloc_shortfall_by_gpu = alloc_shortfall(
             exception, gpu_mem_bytes_by_id
         )
 
