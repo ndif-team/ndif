@@ -5,10 +5,13 @@ traced block is serialized, run on the server's real gpt2, and saved values come
 back over the wire. Shapes/paths come from ``conftest`` (gpt2).
 """
 
+import asyncio
+
 import nnsight
 import torch
 
 from nnsight.modeling.transformers import TransformersModel
+from nnsight.schema.response import Status
 
 from conftest import (
     HIDDEN,
@@ -576,3 +579,194 @@ class TestRemoteSaving:
         with model.trace(PROMPT, remote=True):
             mean = model.transformer.h[-1].output.mean().save()
         assert mean.ndim == 0 and torch.isfinite(mean)
+
+
+class TestRemoteMetaData:
+    """What the server reports back about a finished job's cost.
+
+    The one place the whole path is visible at once: the actor measures a real
+    run on a real GPU, ``request_meta`` shapes it, it crosses the wire on the
+    COMPLETED response, and the client parks it on the backend the tracer holds.
+    ``test_request_meta.py`` covers the arithmetic; this covers the plumbing,
+    which is all that can go wrong silently.
+    """
+
+    def test_tracer_exposes_the_job_cost(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            logits = model.output.logits.save()
+
+        # The backend runs in __exit__, so the report exists only out here.
+        meta = tracer.backend.meta_data
+        assert meta is not None, "server sent no meta_data on COMPLETED"
+        assert meta.runtime is not None
+        assert meta.max_mem_by_gpu is not None
+        assert logits.shape[-1] == VOCAB  # the job really did run
+
+    def test_runtime_is_plausible_seconds(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            model.output.logits.save()
+
+        runtime = tracer.backend.meta_data.runtime
+        # Seconds, not the actor's milliseconds: a gpt2 forward is well under a
+        # minute, so a value in the hundreds would mean the units are wrong.
+        assert 0 < runtime < 60, runtime
+
+    def test_gpu_figures_are_reported_per_device(self, model):
+        with model.trace(PROMPT, remote=True) as tracer:
+            model.output.logits.save()
+
+        meta = tracer.backend.meta_data
+        by_gpu = meta.max_mem_by_gpu
+        if not by_gpu:
+            pytest.skip("server has no CUDA device to report")
+
+        # Keys are strings whichever way the response came back (JSON frame or
+        # pickled frame) — that's the point of stringifying them server-side.
+        assert all(isinstance(k, str) for k in by_gpu)
+        assert set(meta.max_mem_pct_by_gpu) == set(by_gpu)
+        # A real forward pass allocates activations on top of the weights.
+        assert meta.max_memory_usage == max(by_gpu.values()) > 0
+        assert all(0 <= p <= 100 for p in meta.max_mem_pct_by_gpu.values())
+
+
+class TestRemoteAsync:
+    """The async backend against a live job (``await`` and ``async for``).
+
+    The rest of this file drives the blocking path; ``AsyncRemoteBackend`` is
+    otherwise only exercised in nnsight's unit tests against a fake connection
+    with a stubbed download. This is the one place the real socket, the real
+    COMPLETED frame and the real result decode are on the async path.
+
+    ``asyncio.run`` rather than pytest-asyncio: the suite has no asyncio config
+    and needs none for this, and it matches how nnsight tests the same class.
+    """
+
+    def _backend(self, model):
+        from nnsight.intervention.backends.remote import AsyncRemoteBackend
+
+        # Host comes from CONFIG.API.HOST, pointed at the local server in conftest.
+        return AsyncRemoteBackend(model.to_model_key())
+
+    def test_await_returns_the_saves(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            logits = model.output.logits.save()
+
+        # The trace has exited, so nothing is pushed back into this frame — the
+        # saves come out of the await, keyed by the name they were bound to.
+        result = asyncio.run(backend.resolve())
+        assert result["logits"].shape[-1] == VOCAB
+
+    def test_await_records_the_job_cost(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            model.output.logits.save()
+
+        asyncio.run(backend.resolve())
+        # resolve() goes through note(), the same shared handling the blocking
+        # path uses.
+        assert backend.meta_data is not None
+        assert backend.meta_data.runtime > 0
+
+    def test_aiter_yields_statuses_then_the_saves(self, model):
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            logits = model.output.logits.save()
+
+        async def collect():
+            return [item async for item in backend]
+
+        items = asyncio.run(collect())
+        # Every item but the last is a raw status update; the saves dict is last.
+        assert items[-1]["logits"].shape[-1] == VOCAB
+        statuses = [item.status for item in items[:-1]]
+        assert statuses[-1] == Status.COMPLETED
+        assert Status.RUNNING in statuses
+
+    def test_stream_records_the_cost_off_the_raw_frame(self, model):
+        # stream() bypasses note(), so it records meta_data on its own path —
+        # and the frame it yields carries the report itself. The fake-connection
+        # unit test can't vouch for the server actually putting it there.
+        backend = self._backend(model)
+        with model.trace(PROMPT, backend=backend):
+            model.output.logits.save()
+
+        async def collect():
+            return [item async for item in backend]
+
+        items = asyncio.run(collect())
+        completed = [
+            item
+            for item in items[:-1]
+            if item.status == Status.COMPLETED
+        ]
+        assert completed and completed[0].meta_data is not None
+        assert backend.meta_data == completed[0].meta_data
+
+
+class TestRemoteOOM:
+    """A block that asks for more GPU memory than its job is allowed.
+
+    The allocation is refused by the per-process cap the actor sets for itself,
+    so this is a bounded failure, not a way to exhaust the card: torch rejects
+    the request rather than taking the memory. OOM is also not in the actor's
+    fatal-CUDA list, so the replica survives and later tests still run.
+    """
+
+    # Comfortably past any budget gpt2 would be given, and harmless if a very
+    # large deployment somehow satisfied it.
+    HOG_BYTES = 8 * 1024**3
+
+    def _oom(self, model):
+        """Run a block that can't fit; return the tracer and the raised error."""
+        from nnsight.intervention.backends.remote import RemoteError
+
+        # Bound outside the block on purpose. The traced block is shipped by
+        # source with its free variables, so referencing `self` in there would
+        # drag this test module along and the server would fail on `import
+        # pytest` long before it ran out of memory.
+        hog_bytes = self.HOG_BYTES
+        try:
+            with model.trace(PROMPT, remote=True) as tracer:
+                hog = torch.empty(hog_bytes, dtype=torch.uint8, device="cuda").save()
+        except RemoteError as error:
+            return tracer, error
+        pytest.skip("the server had room for the allocation; nothing to assert")
+
+    def test_the_failure_is_reported_as_an_oom(self, model):
+        _, error = self._oom(model)
+        assert "out of memory" in str(error).lower()
+
+    def test_a_failed_job_still_reports_its_cost(self, model):
+        # note() records meta_data before it raises, so the report survives.
+        tracer, _ = self._oom(model)
+        meta = tracer.backend.meta_data
+        assert meta is not None, "no meta_data on the ERROR response"
+        assert meta.runtime >= 0
+
+    def test_it_says_how_much_more_was_needed(self, model):
+        tracer, _ = self._oom(model)
+        meta = tracer.backend.meta_data
+
+        if meta.alloc_shortfall_by_gpu is None:
+            pytest.skip("the server could not identify the refused allocation")
+
+        # Keyed by GPU, like the other per-device maps, with string keys. The
+        # block asked for 8 GiB it did not have, so the shortfall is real and
+        # can't exceed what was asked for.
+        short = meta.alloc_shortfall_by_gpu
+        assert short and all(isinstance(gpu, str) for gpu in short)
+        assert all(0 < value <= self.HOG_BYTES for value in short.values())
+
+    def test_an_ordinary_failure_carries_no_memory_shortfall(self, model):
+        # The observer fires on OOM events torch recovers from too, so a failure
+        # that isn't an OOM must not inherit a stale one.
+        from nnsight.intervention.backends.remote import RemoteError
+
+        with pytest.raises(RemoteError):
+            with model.trace(PROMPT, remote=True) as tracer:
+                broken = (model.output.logits + "not a tensor").save()
+
+        meta = tracer.backend.meta_data
+        if meta is not None:
+            assert meta.alloc_shortfall_by_gpu is None

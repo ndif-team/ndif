@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from nnsight.intervention.serialization import UnknownPersistentIdError
 from nnsight.schema.request import RequestModel
+from nnsight.schema.response import MetaData
 from pydantic import Field
 
 from ..errors import ArchitectureMismatchError, PayloadError
@@ -98,7 +99,11 @@ class BackendRequestModel(RequestModel):
             raise PayloadError(error) from error
 
     def response(
-        self, status: Status, description: str = "", data: Optional[Any] = None
+        self,
+        status: Status,
+        description: str = "",
+        data: Optional[Any] = None,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Advance the request's lifecycle status, then build the response for it.
 
@@ -109,7 +114,11 @@ class BackendRequestModel(RequestModel):
         """
         self._advance_status(status, description)
         return BackendResponseModel(
-            id=self.id, status=status, description=description, data=data
+            id=self.id,
+            status=status,
+            description=description,
+            data=data,
+            meta_data=meta_data,
         )
 
     def _advance_status(self, status: Status, description: str = "") -> None:
@@ -164,6 +173,7 @@ class BackendRequestModel(RequestModel):
         description: str = "",
         data: Optional[Any] = None,
         pickled: bool = False,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Build a response and publish it to the client's websocket channel.
 
@@ -184,7 +194,7 @@ class BackendRequestModel(RequestModel):
         from ..providers.objectstore import ObjectStoreProvider
         from ..providers.redis import RedisProvider
 
-        response = self.response(status, description, data)
+        response = self.response(status, description, data, meta_data)
 
         if self.session_id:
             RedisProvider.sync_client.publish(
@@ -206,6 +216,7 @@ class BackendRequestModel(RequestModel):
         description: str = "",
         data: Optional[Any] = None,
         pickled: bool = False,
+        meta_data: Optional["MetaData"] = None,
     ) -> BackendResponseModel:
         """Async counterpart of :meth:`respond`.
 
@@ -216,7 +227,7 @@ class BackendRequestModel(RequestModel):
         from ..providers.objectstore import ObjectStoreProvider
         from ..providers.redis import RedisProvider
 
-        response = self.response(status, description, data)
+        response = self.response(status, description, data, meta_data)
 
         if self.session_id:
             await RedisProvider.async_client.publish(
