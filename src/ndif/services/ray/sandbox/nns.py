@@ -298,9 +298,18 @@ class IPCSource:
     def __init__(self, envoy: Envoy) -> None:
         self._envoy = envoy
         self._prefix = f"{envoy.path}.source"
-        # Round-trip to the host: install source on the module and return its op
-        # names (None when the forward can't be sourced).
-        self._names = getcurrent().parent.switch(Pending("SOURCE", envoy.path, None))
+        # Round-trip to the host: install source on the module and describe it —
+        # operation names, the forward's source text, and the line each operation
+        # sits on (None when the forward can't be sourced).
+        described = getcurrent().parent.switch(Pending("SOURCE", envoy.path, None))
+        if described is None:
+            self._names = None
+            self._source = ""
+            self._lines = {}
+        else:
+            self._names = described["names"]
+            self._source = described["source"]
+            self._lines = described["lines"]
 
     def __getattr__(self, name: str) -> SourceEnvoy:
         if name.startswith("_"):
@@ -310,7 +319,18 @@ class IPCSource:
             raise AttributeError(
                 f"{self._prefix!r} has no operation {name!r}; available: {available}"
             )
-        return SourceEnvoy(self._envoy, name, f"{self._prefix}.{name}")
+        # A local Source takes the last two off its own Compiled. The runner has
+        # no Compiled of the forward that runs, so they came over with the names.
+        # They are only read by SourceEnvoy.__repr__, which falls back to the
+        # dotted path when the text is empty — so an unsourceable forward still
+        # yields a usable envoy.
+        return SourceEnvoy(
+            self._envoy,
+            name,
+            f"{self._prefix}.{name}",
+            self._source,
+            self._lines.get(name, 0),
+        )
 
 
 # Patch the whole IPCEnvoy class onto the base Envoy. The tracer's root is a model

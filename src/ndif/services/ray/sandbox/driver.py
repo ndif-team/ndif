@@ -45,10 +45,16 @@ class ShippingCache(Cache):
     location the forward reaches, narrowed to that worker's rows.
     """
 
-    def __init__(self, cache_id, connection, config) -> None:
+    def __init__(self, cache_id, connection, config, model=None) -> None:
         targets = config["targets"]
         super().__init__(
-            None,
+            # The host's model, not None. `Cache.subscriptions` reads every
+            # module's path off it when the cache names no explicit targets —
+            # which is what a bare `tracer.cache()` asks for — so without it the
+            # run dies in `Interleaver.__enter__` with 'NoneType' object has no
+            # attribute 'modules'. The runner cannot supply one: its copy is on
+            # meta and the forward runs here.
+            model,
             modules=list(targets) if targets is not None else None,
             device=config["device"],
             dtype=config["dtype"],
@@ -135,7 +141,12 @@ class MediatorProxy(Mediator):
             else:  # CACHE: observe on the runner's behalf, shipping hits back to it
                 (config,) = self.pending.value
                 self.caches.append(
-                    ShippingCache(self.pending.provider, self.connection, config)
+                    ShippingCache(
+                        self.pending.provider,
+                        self.connection,
+                        config,
+                        self.driver.model,
+                    )
                 )
                 reply = None
             self.connection.send(("RESUME", self.id, (reply,), self.iteration))
@@ -268,16 +279,28 @@ class SandboxDriver:
 
     def install_source(self, path: str):
         """Source-instrument the module at ``path`` (permanent, idempotent) and
-        return its operation names — the runner's IPCSource asks for this over a
+        describe it for the runner — the runner's IPCSource asks for this over a
         SOURCE event because instrumenting its own copy would instrument nothing:
         the forward runs here. ``None`` when the ``forward`` can't be sourced, so
-        the runner reports it like the local path would."""
+        the runner reports it like the local path would.
+
+        Returns the operation names plus the forward's source text and the line
+        each operation sits on. A local ``Source`` reads those off its ``Compiled``
+        to build a ``SourceEnvoy``; the runner has no ``Compiled`` of the forward
+        that actually runs, so they travel with the names. Everything else on
+        ``Compiled`` stays here — ``code`` is a code object and does not pickle.
+        """
         from nnsight.intervention.source import SourceNotAvailable, install_source
 
         try:
-            return list(install_source(self._envoy_at(path)).names)
+            compiled = install_source(self._envoy_at(path))
         except SourceNotAvailable:
             return None
+        return {
+            "names": list(compiled.names),
+            "lines": dict(compiled.lines),
+            "source": compiled.source,
+        }
 
     def run_module(self, path: str, hook: bool, args, kwargs):
         """Run the module at ``path``'s forward on ``args`` and return its output —
