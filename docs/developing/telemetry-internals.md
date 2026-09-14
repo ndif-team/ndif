@@ -300,7 +300,7 @@ The controller's launcher does the same for the controller actor
 | `NDIF_LOKI_LEVEL` | `INFO` | `loki.py:145` | Minimum level shipped to Loki (console keeps its own). |
 | `NDIF_LOKI_QUEUE_MAX` | `10000` | `loki.py:147` | In-memory queue bound; records dropped when full. |
 | `NDIF_INFLUX_ENABLED` | `True` | `influx.py:70` | `1/true/yes/on` are truthy; anything else disables metrics. |
-| `NDIF_INFLUX_URL` | `http://localhost:8086` | `influx.py:66` | InfluxDB 2.x endpoint. |
+| `NDIF_INFLUX_URL` | `""` (metrics off) | `influx.py:71` | InfluxDB 2.x endpoint; unset, the provider never connects. |
 | `NDIF_INFLUX_TOKEN` / `_ORG` / `_BUCKET` | `""` / `ndif` / `metrics` | `influx.py:67`–`:69` | Credentials and destination for every point. |
 | `NDIF_INFLUX_BATCH_SIZE` / `_FLUSH_INTERVAL_MS` | `500` / `1000` | `influx.py:78`–`:79` | Flush when either threshold is hit. |
 | `NDIF_INFLUX_TIMEOUT_MS` | `10000` | `influx.py:80` | Per-HTTP-write timeout. |

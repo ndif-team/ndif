@@ -63,7 +63,12 @@ class InfluxProvider(Provider):
     """Installs (once per process) a batching InfluxDB write client."""
 
     CONFIG = {
-        "url": ("NDIF_INFLUX_URL", "http://localhost:8086", str),
+        # Empty -> metrics off. Like NDIF_LOKI_URL and NDIF_POSTGRES_URL, the
+        # provider is configured by giving it a server; a localhost default
+        # made an unconfigured single-host stack dial a port nothing listens
+        # on, and the client library's write-failure logging rode the model
+        # actor's stderr all the way to the user's terminal as LOG events.
+        "url": ("NDIF_INFLUX_URL", "", str),
         "token": ("NDIF_INFLUX_TOKEN", "", str),
         "org": ("NDIF_INFLUX_ORG", "ndif", str),
         "bucket": ("NDIF_INFLUX_BUCKET", "metrics", str),
@@ -109,8 +114,15 @@ class InfluxProvider(Provider):
         A construction failure (bad URL, missing dependency, unreachable server)
         is swallowed — metrics stay disabled and the service runs normally.
         """
-        if not cls.enabled or not _HAS_CLIENT or cls.client is not None:
+        if not cls.enabled or not cls.url or not _HAS_CLIENT or cls.client is not None:
             return
+
+        # The client library logs every failed batch flush at ERROR through its
+        # own logger before it calls error_callback. In the model actor stderr
+        # is forwarded to the requesting client as LOG events, so a down
+        # metrics server would show up mid-trace on a user's screen. Metrics
+        # are best-effort; keep the library quiet and log via _on_write_error.
+        logging.getLogger("influxdb_client").setLevel(logging.CRITICAL)
 
         try:
             client = InfluxDBClient(

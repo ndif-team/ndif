@@ -200,7 +200,7 @@ Read by the API and by model actors. Boto3-backed: MinIO in dev, real S3 in prod
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_INFLUX_URL` | `http://localhost:8086` | `src/ndif/common/providers/influx.py:66` | InfluxDB v2 endpoint. |
+| `NDIF_INFLUX_URL` | `""` (metrics off) | `src/ndif/common/providers/influx.py:71` | InfluxDB v2 endpoint. Unset, the provider never connects; the compose file sets it to `http://influxdb:8086`. |
 | `NDIF_INFLUX_TOKEN` | `""` | `influx.py:67` | Write token. Empty means writes will be rejected by Influx; the provider is fail-open, so the service keeps running without metrics. |
 | `NDIF_INFLUX_ORG` | `ndif` | `influx.py:68` | Influx organization. |
 | `NDIF_INFLUX_BUCKET` | `metrics` | `influx.py:69` | Target bucket. |

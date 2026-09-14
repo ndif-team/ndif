@@ -247,7 +247,7 @@ that provider is *off* until you set its URL.
 
 | Variable | Default | Description |
 |---|---|---|
-| `NDIF_INFLUX_URL` | `http://localhost:8086` | InfluxDB endpoint. |
+| `NDIF_INFLUX_URL` | _(unset — metrics off)_ | InfluxDB endpoint; set it to turn metrics on. |
 | `NDIF_INFLUX_TOKEN` | _(empty)_ | Write token. |
 | `NDIF_INFLUX_ORG` | `ndif` | Influx organization. |
 | `NDIF_INFLUX_BUCKET` | `metrics` | Target bucket. |
