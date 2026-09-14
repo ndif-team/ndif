@@ -14,10 +14,15 @@ Everything `just up` starts, and the wiring between it. Two facts explain the
 shape:
 
 1. **One image, one service per container.** `docker/Dockerfile` builds a single
-   image whose entrypoint is `ndif start --foreground`; `NDIF_SERVICE` picks
-   which service that container becomes (`api`, `ray`, `dashboard`). There is no
-   per-service image and no config file — every knob is an `NDIF_*` env var read
-   at process start.
+   image whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
+   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` picks
+   which service that container becomes — `api`, `ray`, `dashboard`, `redis`,
+   `minio`, or a space/comma list of those (`env_services`,
+   `src/ndif/cli/service.py:83`). The image's default is `all`, which expands to
+   the core stack — redis, minio, ray, api, but not dashboard
+   (`resolve_targets`, `service.py:88`) — in one container; compose sets one name
+   per container instead. There is no per-service image and no config file —
+   every knob is an `NDIF_*` env var read at process start.
 2. **The API and the Ray cluster never speak directly.** The API talks to Redis;
    a separate dispatcher process (spawned by the API's gunicorn master) holds
    the one Ray client connection. Redis is therefore the load-bearing hop for
@@ -106,7 +111,7 @@ and the only one with a named compose volume.
 | `ray` | this repo, `NDIF_SERVICE=ray` | 8265 (Ray dashboard), 10001 (Ray client) | redis, minio, influxdb; a host GPU | no |
 | `dashboard` | this repo, `NDIF_SERVICE=dashboard` | 8081 | redis, api | yes — nothing else reads it |
 | `redis` | `redis:7-alpine` | 6379 | — | no |
-| `minio` | `minio/minio` | 9000 (S3), 9001 (console) | — | no in practice — results have nowhere to go |
+| `minio` | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | 9000 (S3), 9001 (console) | — | no in practice — results have nowhere to go |
 | `postgres` | `postgres:16-alpine` | 5432 | — | yes — unset `NDIF_POSTGRES_URL` runs the API unauthenticated |
 | `loki` | `grafana/loki:3.0.0` | 3100 | — | yes — services log to console only |
 | `influxdb` | `influxdb:2.7` | 8086 | — | yes — no metrics are recorded |

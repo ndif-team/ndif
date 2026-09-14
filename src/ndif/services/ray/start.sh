@@ -16,6 +16,17 @@ set -euo pipefail
 # spawns (controller, model actors) — inherits it.
 export NDIF_SERVICE="${NDIF_SERVICE:-ray}"
 
+# Every `ray://` client connection (the API's dispatcher, `ndif status`, the
+# dashboard) makes the Ray client proxier fork a per-client server. With
+# grpc's fork support on (its default here), the proxier's gRPC threads make
+# it skip its fork handlers and the child dies within 100 ms, silently, about
+# half the time in a container and one time in six on bare metal — the client
+# then waits 40 s for "Starting Ray client server failed". Turning fork
+# support off removes the failure entirely (0/8 vs 9/17 failures, Ray 2.55.1,
+# grpcio 1.84.0). Set before `ray start` so the proxier inherits it; an
+# operator who sets it explicitly wins.
+export GRPC_ENABLE_FORK_SUPPORT="${GRPC_ENABLE_FORK_SUPPORT:-0}"
+
 NDIF_RAY_TEMP_DIR="${NDIF_RAY_TEMP_DIR:-/tmp/ray}"
 mkdir -p "$NDIF_RAY_TEMP_DIR"
 if [ ! -w "$NDIF_RAY_TEMP_DIR" ]; then

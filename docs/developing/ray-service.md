@@ -20,12 +20,12 @@ Two facts frame the whole design:
 
 1. **NDIF uses plain Ray actors, not Ray Serve.** Every model deployment is a
    detached, named `@ray.remote` actor in the `NDIF` namespace, created with
-   `actor_class.options(lifetime="detached", ...)` (`cluster/deployment.py:192`)
+   `actor_class.options(lifetime="detached", ...)` (`cluster/deployment.py:210`)
    and retrieved with `ray.get_actor(self.name, namespace="NDIF")`
-   (`deployment.py:110`). There is no `serve.run` and no `@serve.deployment` in
-   the repo — the only mention of `ray[serve]` anywhere is an install hint in
-   `cli/commands/doctor.py:49`. Names, not HTTP routes, are the addressing
-   scheme.
+   (`deployment.py:128`). There is no `serve.run`, no `@serve.deployment` and
+   no `ray[serve]` anywhere in the repo — `cli/commands/doctor.py:52` points a
+   missing Ray at `ndif[ray]`, which pulls `ray[default]`. Names, not HTTP
+   routes, are the addressing scheme.
 2. **Head vs worker is one env var, and nothing else.** `start.sh` branches on
    `NDIF_RAY_HEAD_ADDRESS` alone (`src/ndif/services/ray/start.sh:50`). Every
    other `ray start` flag is env-driven with a default.
@@ -46,7 +46,8 @@ else
     # ---- Worker node ----
     HEAD_ADDRESS="${HEAD_ADDRESS#ray://}"
     wait_for_head "$HEAD_ADDRESS"
-    ray start --address="$HEAD_ADDRESS" --resources="$resources" ...
+    ray start --address="$HEAD_ADDRESS" --resources="$resources" \
+        --temp-dir="$NDIF_RAY_TEMP_DIR"
 fi
 ```
 
@@ -66,11 +67,14 @@ Three things to note:
 
 Only the head launches the controller. `python -m ...controller.controller`
 runs as a short-lived *driver*: it `ray.init(address="auto", namespace="NDIF")`
-and schedules a detached actor, then exits (`controller.py:582`). `start.sh`
+and schedules a detached actor, then exits (`controller.py:830`). `start.sh`
 ends in `tail -f /dev/null` because `ray start` daemonizes and the container
 needs a foreground process.
 
 ## Ports
+
+Every flag below is on the **head** branch (`start.sh:58-67`). The worker
+branch passes only `--address`, `--resources` and `--temp-dir` (`start.sh:82-85`).
 
 | Port | `ray start` flag | Env var | Default | What it is |
 |---|---|---|---|---|
@@ -86,8 +90,14 @@ server's `--port`), kept as-is. Ray's own GCS default is `6379`
 (`ray._private.ray_constants.DEFAULT_PORT`), but NDIF overrides it to `6385` to
 stay clear of Redis (see the gotcha). `--object-manager-port`,
 `--dashboard-agent-grpc-port` and `--metrics-export-port` default to `None` in
-Ray — i.e. a random free port — so `start.sh` pins them to fixed numbers, which is
-what makes a multi-node firewall rule or a static Prometheus target possible at all.
+Ray — i.e. a random free port — so the head pins them to fixed numbers, which is
+what makes a firewall rule or a static Prometheus target possible at all.
+
+> **Gotcha:** a *worker* pins none of them. Its object manager, dashboard agent
+> and metrics port are each whatever free port Ray picks that boot, so a second
+> node needs an open ephemeral range rather than three firewall holes, and its
+> `/metrics` cannot be a static Prometheus target — use the `file_sd_configs`
+> discovery file below.
 
 > **Gotcha:** Ray's own GCS default (`6379`) collides with Redis, so NDIF offsets
 > the head port to `6385`. Both the CLI (`src/ndif/cli/config.py:29`) and
@@ -97,7 +107,7 @@ what makes a multi-node firewall rule or a static Prometheus target possible at 
 > `NDIF_RAY_HEAD_ADDRESS` says must match the head's actual `NDIF_RAY_HEAD_PORT`.
 
 The compose file publishes only two of these to the host
-(`docker/docker-compose.yml:252-253`): `8265` for the Ray dashboard and `10001` for
+(`docker/docker-compose.yml:276-277`): `8265` for the Ray dashboard and `10001` for
 the client server. Everything else stays on the compose network.
 
 ## Custom resources
@@ -115,21 +125,21 @@ resources["cpu_memory_bytes"] = get_total_cpu_memory_bytes()
 
 | Resource | Computed from | Consumed by |
 |---|---|---|
-| `cuda_memory_bytes` | `sum(torch.cuda.mem_get_info(d)[1])` over all devices | `Cluster.update_nodes` — divided by the node's `GPU` count to get per-GPU capacity (`cluster/cluster.py:103`) |
-| `cpu_memory_bytes` | `psutil.virtual_memory().total` | `Cluster.update_nodes` — scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default 0.9) into the node's WARM-cache budget (`cluster.py:106`) |
-| `head=10` | present on the head only | `@ray.remote(..., resources={"head": 1})` on `ControllerActor` (`controller.py:527`) — this is what pins the controller to the head |
+| `cuda_memory_bytes` | `sum(torch.cuda.mem_get_info(d)[1])` over all devices | `Cluster.update_nodes` — divided by the node's `GPU` count to get per-GPU capacity (`cluster/cluster.py:118`) |
+| `cpu_memory_bytes` | `psutil.virtual_memory().total` | `Cluster.update_nodes` — scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default 0.9) into the node's WARM-cache budget (`cluster.py:120`) |
+| `head=10` | present on the head only | `@ray.remote(..., resources={"head": 1})` on `ControllerActor` (`controller.py:729`) — this is what pins the controller to the head |
 
 These are two **separate budgets** and it is easy to conflate them:
 `cuda_memory_bytes` funds the GPU-resident (HOT) model, `cpu_memory_bytes` funds
 the CPU-resident WARM cache. `NDIF_MODEL_CACHE_PERCENTAGE` scales only the
-second — it reserves no GPU memory at all, despite what `README.md:145` says.
+second — it reserves no GPU memory at all.
 
 Both numbers are *totals*, not what's free at boot. That is deliberate: the
 advertised budget must not depend on what happened to be running when the node
 started, because the controller does its own accounting on top of it. Ray never
 enforces either one — they are advertised numbers the controller reads back and
 decrements in its own in-memory model. The chosen allocation is injected into the
-actor as `gpu_mem_bytes_by_id` (`cluster/deployment.py:172`), which the actor turns
+actor as `gpu_mem_bytes_by_id` (`cluster/deployment.py:190`), which the actor turns
 into an accelerate `max_memory` map — that is what actually confines it.
 
 Model actors are pinned to a node with Ray's implicit per-node resource rather
@@ -145,12 +155,12 @@ actor_class.options(
 ).remote(**deployment_args.model_dump())
 ```
 
-(`cluster/deployment.py:192`.) The actors also set
+(`cluster/deployment.py:210`.) The actors also set
 `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1` so Ray does *not* mask GPUs —
 the controller assigns specific GPU indices and the actor honours them itself.
 
 > **Gotcha:** `Cluster.update_nodes` skips any node without a `GPU` resource
-> (`cluster.py:92`). A CPU-only Ray head registers zero managed nodes and every
+> (`cluster.py:106`). A CPU-only Ray head registers zero managed nodes and every
 > deploy fails with `"No GPU nodes available."` — including a laptop `ndif start`
 > with no NVIDIA GPU.
 
@@ -178,8 +188,8 @@ flowchart TB
   end
 
   subgraph worker["Worker node (NDIF_RAY_HEAD_ADDRESS=head:6385)"]
-    RL["raylet + object manager :8076"]
-    MXW["metrics :8080"]
+    RL["raylet + object manager<br/>(ports unpinned)"]
+    MXW["metrics (port unpinned)"]
     MA1["ModelActor replicas"]
   end
 
@@ -197,21 +207,29 @@ flowchart TB
 ## How clients connect
 
 Everything outside the Ray cluster goes through `ray://`, wrapped by
-`RayProvider` (`src/ndif/common/providers/ray.py:38`):
+`RayProvider` (`src/ndif/common/providers/ray.py:47`):
 
 ```python
 CONFIG = {"ray_url": ("NDIF_RAY_ADDRESS", "ray://localhost:10001", str)}
 ```
 
+Each `ray.init` against `ray://` makes the proxier on the head fork a per-client
+server process. `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before
+`ray start` because with grpc's fork support on, that child died at birth about
+half the time in a container (9 of 17 connections, empty logs, a 40 s wait for
+`Starting Ray client server failed`); with it off, 0 of 16 across docker and bare
+metal. The variable is inherited by the proxier, so it has to be set on the head
+node's environment, not the client's.
+
 `connect()` verifies the host/port is listening before calling `ray.init`, and
 `connected()` is deliberately stricter than "the cluster is up" — it also
 requires that `ray.get_actor("Controller", namespace="NDIF")` resolves
-(`providers/ray.py:95`). The dispatcher's connect loop therefore won't proceed
+(`providers/ray.py:104`). The dispatcher's connect loop therefore won't proceed
 until the control plane is actually serving, not merely until Ray answers.
 
 Actor handles come back as `NDIFActorHandle`, a `ClientActorHandle` subclass
 whose `__getattr__` returns a minimal remote-method stub
-(`providers/ray.py:181`). Stock Ray Client fetches every method's signature over
+(`providers/ray.py:190`). Stock Ray Client fetches every method's signature over
 RPC on first attribute access and unpickles the annotations client-side, which
 drags `BackendRequestModel` and its transitive imports into the caller's
 process. NDIF callers pass hardcoded method names with known shapes, so the
@@ -222,8 +240,8 @@ Named actors, both in namespace `NDIF`:
 
 | Name | Created by | Looked up with |
 |---|---|---|
-| `Controller` | `controller.app()` (`controller.py:573`) | `get_controller_actor_handle()` |
-| `{replica_id}:ModelActor:{model_key}` | `Deployment.create` (`cluster/deployment.py:192`) | `get_model_actor_handle(model_key, replica_id)` |
+| `Controller` | `controller.app()` (`controller.py:794`) | `get_controller_actor_handle()` |
+| `{replica_id}:ModelActor:{model_key}` | `Deployment.create` (`cluster/deployment.py:187`) | `get_model_actor_handle(model_key, replica_id)` |
 
 ## Metrics
 
@@ -254,7 +272,7 @@ rewrites as nodes join and leave.
 `start.sh:17` exports `NDIF_SERVICE=ray` *before* `ray start`, so the raylet and
 every actor process it later spawns inherit it and their Loki lines are labelled
 `service=ray`. Model actors override it back to `model` in their `runtime_env`
-(`cluster/deployment.py:187`) so their telemetry attributes separately. Provider
+(`cluster/deployment.py:205`) so their telemetry attributes separately. Provider
 configuration (Redis, object store, Loki, Influx) is likewise pushed into each
 actor's `runtime_env` by `_provider_runtime_env()`
 (`cluster/deployment.py:16`) — a Ray worker inherits only its node's ambient
@@ -263,14 +281,17 @@ environment, so anything the launcher configured must be forwarded explicitly.
 ## Container requirements
 
 The image is a single `python:3.12-slim` build shared by every service
-(`docker/Dockerfile`), selected at runtime by `NDIF_SERVICE`; the entrypoint is
-`ndif start --foreground`. For the `ray` service that means:
+(`docker/Dockerfile:29`), selected at runtime by `NDIF_SERVICE` (which the image
+defaults to `all`, `Dockerfile:34`). `ENTRYPOINT ["ndif"]` with
+`CMD ["start", "--foreground"]` (`Dockerfile:141`), so compose overrides
+`NDIF_SERVICE: ray` and the container runs `ndif start --foreground`. For the
+`ray` service that means:
 
 - **NVIDIA container toolkit on the host.** The compose service requests
   `driver: nvidia, count: all, capabilities: [gpu]`
-  (`docker-compose.yml:261`). Without it, `torch.cuda.device_count()` is 0,
+  (`docker-compose.yml:285`). Without it, `torch.cuda.device_count()` is 0,
   `cuda_memory_bytes` is 0, and the node is invisible to the controller.
-- **`shm_size: "4gb"`** (`docker-compose.yml:256`). Ray's plasma object store
+- **`shm_size: "4gb"`** (`docker-compose.yml:280`). Ray's plasma object store
   lives in `/dev/shm`, and Docker's 64 MB default is far too small for it. Raise
   it further for real workloads.
 - **A writable `NDIF_RAY_TEMP_DIR`** (default `/tmp/ray`). `start.sh:21` exits
@@ -278,13 +299,14 @@ The image is a single `python:3.12-slim` build shared by every service
 - **`NDIF_REDIS_URL` pointing at the real Redis.** Model actors publish
   responses back to the client over Redis; unset, they default to
   `localhost:6379`, which inside the ray container is Ray's own GCS, not Redis.
-  The handshake fails there. This is why `docker-compose.yml:213` sets it
+  The handshake fails there. This is why `docker-compose.yml:237` sets it
   explicitly on the ray service.
 
 Ray itself is an optional extra: `pip install ".[ray]"` pulls `ray[default]`
-(pinned to `2.55.1` in `requirements.txt`) plus `transformers`, `accelerate`,
-`peft` and `zstandard`. `src/ndif/services/ray/requirements.txt` exists but is
-empty — the real pins live in the repo-root `requirements.txt`.
+(pinned to `2.55.1` in `requirements.txt:40`) plus `transformers`, `accelerate`,
+`numpy`, `zstandard` and `peft` (`pyproject.toml:45`).
+`src/ndif/services/ray/requirements.txt` exists but is empty — the real pins live
+in the repo-root `requirements.txt`.
 
 ## Running a worker
 

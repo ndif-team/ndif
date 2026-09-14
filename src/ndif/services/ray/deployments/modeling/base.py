@@ -12,7 +12,6 @@ import contextlib
 import gc
 import io
 import logging
-import os
 import threading
 import time
 import traceback
@@ -59,32 +58,6 @@ from .util import (
 if TYPE_CHECKING:
     from .....common.schema.request import BackendRequestModel
 
-
-def _max_socket_result_bytes() -> Optional[int]:
-    """The largest result to hand back on the response, or None for no limit.
-
-    Declared as ``max_socket_result_bytes`` on ``ControllerDeploymentArgs`` and
-    forwarded into this actor's environment when it is created, which is why it
-    is read from the environment here. Still parsed defensively: a node can also
-    carry the variable ambiently, without the controller having vetted it, and
-    the safe reading of a value that is not a positive integer is the default —
-    no limit.
-    """
-    raw = os.environ.get("NDIF_MAX_SOCKET_RESULT_BYTES")
-    if not raw:
-        return None
-    try:
-        limit = int(raw)
-    except ValueError:
-        limit = -1
-    if limit <= 0:
-        logger.warning(
-            "NDIF_MAX_SOCKET_RESULT_BYTES=%r is not a positive integer; "
-            "ignoring it and returning every result on the response",
-            raw,
-        )
-        return None
-    return limit
 
 logger = logging.getLogger("ndif.modeling")
 
@@ -446,9 +419,10 @@ class BaseModelDeployment:
             # Hand the result straight back on the COMPLETED response when it is
             # small enough (and there is a socket to hand it to). A non-blocking
             # request has no live channel, so it always goes to the object store.
-            limit = _max_socket_result_bytes()
+            # 0 means no cap; see ObjectStoreProvider.CONFIG for why there is one.
+            limit = ObjectStoreProvider.max_socket_result_bytes
             blob = self.prepare_result(request, data)
-            if request.session_id and (limit is None or len(blob) <= limit):
+            if request.session_id and (not limit or len(blob) <= limit):
                 inline = blob
             else:
                 url = self.upload_bytes(request, blob)

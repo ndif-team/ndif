@@ -3,14 +3,33 @@ title: "Proposal: untrusted code on a tensor-parallel model"
 one_liner: One runner process holding one set of workers, talking to every rank over the sandbox protocol unchanged. Why the ranks need no new decision channel, what the runner has to do that a single host doesn't, and the two problems that need real design.
 tags: [internals, dev, proposal, sandbox, tp]
 related: [src/ndif/services/ray/tp/ARCHITECTURE.md, src/ndif/services/ray/sandbox/ARCHITECTURE.md, docs/developing/sandbox-internals.md, docs/concepts/sandbox-execution.md]
-sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/tp/shard.py, src/ndif/services/ray/tp/host.py, src/nnsight/intervention/interleaver.py]
+sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/tp/shard.py, src/ndif/services/ray/tp/host.py, src/ndif/services/ray/tp/common.py]
 ---
 
 # Proposal: untrusted code on a tensor-parallel model
 
-**Status: not implemented.** A tensor-parallel placement currently replaces the
-actor class, so an untrusted request on a sharded model runs in-process next to
-the weights. This is how to fix that.
+**Status: this is a design document, and the design has shipped.** It is kept as
+the record of *why* the shape is what it is — the reasoning below is what makes
+the barrier and the mirrored worker state defensible, and none of it is written
+down in the code. Read it as the argument, not as the API; for what the running
+system does, read [`tp/ARCHITECTURE.md`](../../src/ndif/services/ray/tp/ARCHITECTURE.md)
+and [sandbox-internals.md](sandbox-internals.md).
+
+Where each phase of the build order at the bottom landed:
+
+| Phase | Where it lives |
+|---|---|
+| 1 — extract the driver | `SandboxDriver` (`sandbox/driver.py:190`), with `MediatorProxy` at `sandbox/driver.py:72`; the actor-side half is the `SandboxHost` mixin (`sandbox/model.py:50`) |
+| 2 — determinism and seeding | `PYTHONHASHSEED=0` in `tp/common.py:72` and `sandbox/host.py:180`; the seed rides in the payload (`sandbox/model.py:125`) and is applied in the runner (`sandbox/nns.py:539`) |
+| 3 — the barrier | `Fanout` (`sandbox/protocol.py:243`) and `RanksDiverged` (`sandbox/protocol.py:231`), with a bounded wait; `tests/test_fanout.py` |
+| 4 — shard as host | the `SANDBOX` branch of the shard loop (`tp/shard.py:120`, `_sandboxed_request` at `tp/shard.py:190`) |
+| 5 — combine | `SandboxedTPModelDeployment` / `SandboxedTPModelActor` (`tp/model.py:435`, `tp/model.py:516`), selected by pointing `NDIF_TP_MODEL_ACTOR_CLASS` at the sandboxed class |
+
+Two things in here did **not** ship. The `.source` writeback hazard below is
+unfixed: nothing tags a `RESUME` as rank-local, `Fanout.recv` returns the first
+peer's message (`sandbox/protocol.py:285`), and the runner writes that value back
+to every rank (`sandbox/nns.py:169`). And the "only rank 0 ships the value"
+optimization under *What to measure* is not there — every rank sends its own.
 
 ## The shape
 
@@ -35,13 +54,13 @@ gather a value depends on where the user's workers are parked**, and every rank
 has to reach that decision identically or NCCL deadlocks. Today the ranks agree
 because each runs the block.
 
-They can also agree without running it. `Interleaver.observed` reads only
-`mediator.pending`, `mediator.iterations` and `mediator.caches`
-(`nnsight/intervention/interleaver.py`), and under the sandbox those mediators are
-`MediatorProxy` objects living in the **host** process
-(`sandbox/model.py:77-173`) — mirrors of the runner's workers, updated by `adopt`
+They can also agree without running it. `Interleaver._ready(provider)` reads only
+each mediator's `pending` and its `occurrence(provider)` count
+(`nnsight/intervention/interleaver.py:690-698`), and under the sandbox those
+mediators are `MediatorProxy` objects living in the **host** process
+(`sandbox/driver.py:72-188`) — mirrors of the runner's workers, updated by `adopt`
 the moment a park arrives. So if the runner sends the same parks to every rank,
-every rank holds the same mirror and answers `observed()` **locally**.
+every rank holds the same mirror and answers `_ready()` **locally**.
 
 That is the whole reason this design is cheap:
 
@@ -59,7 +78,7 @@ That is the whole reason this design is cheap:
 
 **1. Dispatch.** Rank 0 receives the request and acquires a runner from its pool.
 It hands the runner a connection to each rank and sends the payload once
-(`payload, compress, dtype, seed`).
+(`payload, compress, dtype, seed, env` — `sandbox/model.py:125`).
 
 **2. Build.** The runner deserializes the block and creates its workers. A
 failure here is reported before any rank has started a forward — the existing
@@ -110,7 +129,7 @@ Everything else is code that exists.
 
 The runner writes back **every** read as a swap, unconditionally, and says so:
 *"We always write back (any object may have been edited, and we can't tell from
-here)"* (`sandbox/nns.py`).
+here)"* (`sandbox/nns.py:177`).
 
 That is harmless for a module boundary, because under tensor parallelism those
 values are already identical on every rank — a rowwise layer all-reduces its
@@ -141,8 +160,8 @@ The sequence at a location must be the same on every rank:
 
 Two ranks must never be on opposite sides of that — one inside an all-gather
 waiting for a peer that is blocked on the runner. It holds because both the
-gather condition (`observed() and fragmented()`) and the barrier condition
-(`observed()`) are computed from the mirrored proxy state, so all ranks take the
+gather condition (`fragmented(provider) and (observers or _ready(provider))`,
+`interleaver.py:799`) and the barrier condition (`_ready(provider)`) are computed from the mirrored proxy state, so all ranks take the
 same branch. **This invariant is the design**, and it deserves an explicit test
 rather than a comment.
 
@@ -166,23 +185,28 @@ ordinary implementation risk, not a structural hazard.
 Two determinism bugs that already exist and that any sandboxed design makes
 reachable:
 
-- **`PYTHONHASHSEED` is pinned nowhere.** Neither `tp/common.py:rank_env` nor
-  `sandbox/host.py:spawn` sets it, so every process gets a randomized hash seed.
-  A block whose control flow depends on `set` iteration order can already diverge.
-  Under this design only one process runs the block, so it stops mattering for the
-  block — but it still matters for anything the ranks compute independently.
-- **`seed_ranks` seeds the wrong process.** It calls `torch.manual_seed` in the
-  rank process (`tp/common.py`, `tp/model.py`, `tp/shard.py`), but the block's own
-  RNG will live in the runner. The seed must ride in the payload and be applied
-  there, next to `dtype`.
+- **`PYTHONHASHSEED` must be pinned.** Python randomizes string hashing per
+  process, so `set` and `dict` iteration order differ between one process and the
+  next, and a block that breaks a tie by iteration order takes a different path in
+  each — a rank divergence, which is a hang rather than a wrong answer. Both
+  process launchers set it: `rank_env` (`tp/common.py:72`) and `spawn`
+  (`sandbox/host.py:180`).
+- **The seed has to reach the process that runs the block.** Seeding the rank is
+  the wrong process once the block lives in a runner, so the seed rides in the
+  payload next to `dtype` (`sandbox/model.py:125`) and is applied immediately
+  before the block runs, wherever that is — `seed_block`
+  (`deployments/modeling/nns.py:112`), called from `execute_traced_block`
+  (`deployments/modeling/nns.py:175`) on a rank and in the runner alike. Rank 0 seeds itself as well
+  (`tp/model.py:488`), because the *model* still runs there and its sampling draws
+  from that process.
 
 ## Build order
 
 **Phase 1 — extract the driver.** Pull the host side out of
 `SandboxModelDeployment` into a `SandboxDriver` that needs only a model, a dtype,
-a connection and a responder: `next_event`, `interleave`, `_build_proxies`,
+a connection and a responder: `pump`, `next_event`, `interleave`, `_build_proxies`,
 `_assemble`, `install_source`, `run_module`, `check_dangling`
-(`sandbox/model.py:239-420`). Prove it against the existing untrusted suite on the
+(`sandbox/driver.py:190-401`). Prove it against the existing untrusted suite on the
 single-GPU path, with no tensor parallelism involved.
 
 This phase is worth doing on its own merits and **is common to every candidate

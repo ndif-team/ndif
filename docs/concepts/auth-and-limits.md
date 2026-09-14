@@ -33,12 +33,12 @@ highest-stakes facts in this documentation set for anyone self-hosting:
 
 1. **User code runs inside the model actor process.** The sandbox actor's
    `execute` defers to the base implementation for a trusted request
-   (`src/ndif/services/ray/sandbox/model.py:242`), so the submitted block is
+   (`src/ndif/services/ray/sandbox/model.py:218`), so the submitted block is
    deserialized and run in the same process as the loaded weights, with no
    process boundary between it and the model.
 2. **Models deploy with `trust_remote_code=True`.** The flag rides from the
    request through the queue's `DeploymentConfig` into the actor's model load
-   (`src/ndif/services/ray/deployments/controller/controller.py:280`), so the
+   (`src/ndif/services/ray/deployments/controller/controller.py:450`), so the
    model repo's own Python executes at load time.
 
 A bare `just up` therefore runs everything trusted by default. That is fine for
@@ -66,7 +66,7 @@ is ever enqueued.
 
 | Situation | Result |
 |---|---|
-| Postgres not configured | `verify_api_key` returns `None`; request allowed and defaulted to `trusted` unless the client explicitly set `trusted: false` |
+| Postgres not configured | `verify_api_key` returns `None`; request allowed, and a client-supplied `trusted` (True *or* False) is left untouched — only an unspecified one defaults to `True` (`auth.py:180`) |
 | No key sent | `401` — "Missing or invalid API key" |
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
@@ -96,7 +96,7 @@ key" is distinguished from "known key, no tags".
 Everything else about identity is **observability only**. `email` is carried on
 the request — across the Ray boundary via pickling — so every downstream log
 line and metric point can be attributed to a person rather than an opaque key
-(`src/ndif/common/schema/request.py:51`). `api_key` and `email` appear on the
+(`src/ndif/common/schema/request.py:50`). `api_key` and `email` appear on the
 request-size, status-time, execution-time, GPU-memory, and response-size
 metrics.
 
@@ -107,7 +107,7 @@ is as capable as one with ten (minus `trusted`/`priority`).
 `GET /whoami` resolves a key to `{"email": ..., "tags": [...]}`. It is
 deliberately lenient — a missing, malformed, or unknown key resolves to
 `{"email": None, "tags": []}` rather than erroring; only a 503 propagates
-(`src/ndif/services/api/app.py:341`).
+(`src/ndif/services/api/app.py:344`).
 
 ## Client version gating
 
@@ -140,8 +140,9 @@ every auth failure above.
 
 **There is no request size limit.** Nothing in the API, gunicorn config, or
 compose file bounds the multipart body: `POST /request` reads the whole blob
-into memory with `await blob.read()` (`app.py:147`), pickles the request, and
-`LPUSH`es it into Redis. `RequestSizeMetric` records `payload_bytes` — it
+into memory with `await blob.read()` (`app.py:150`), pickles the request, and
+`LPUSH`es it into Redis. The gap is marked in the source as a TODO
+(`app.py:147`). `RequestSizeMetric` records `payload_bytes` — it
 measures, it does not enforce.
 
 The practical consequences for a self-hosted deployment: a large request is held
@@ -161,32 +162,34 @@ The value is the controller's default, passed into each actor as
 `execution_timeout`; a deployment can override it per model via
 `DeploymentConfig.execution_timeout_seconds`. The
 actor enforces it by racing the execution against a timer
-(`src/ndif/services/ray/deployments/modeling/base.py:298`):
+(`src/ndif/services/ray/deployments/modeling/base.py:354`):
 
 ```python
 job = asyncio.create_task(asyncio.to_thread(self.execute, request))
 kill = asyncio.create_task(self.kill_switch.wait())
 with self.execution_scope(request):
-    done, pending = await asyncio.wait({job, kill},
-                                       timeout=self.execution_timeout,
-                                       return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait(
+        {job, kill},
+        timeout=self.execution_timeout,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
 ```
 
 On expiry the actor calls `interrupt()` and responds `ERROR` with "Your job
-exceeded the execution timeout of Ns." The same machinery serves operator
-cancellation (`kill_switch`), which produces "Your job was cancelled or
-preempted by the server."
+exceeded the execution timeout of Ns." (`base.py:401`). The same machinery serves
+operator cancellation (`kill_switch`), which produces "Your job was cancelled or
+preempted by the server." (`base.py:393`).
 
 How hard that interrupt lands depends on the fork:
 
-- **Trusted (in-process).** `interrupt` injects `SystemExit` into the execution
-  thread with CPython's async-exception API. It only fires at a bytecode
-  boundary, so it cannot interrupt a CUDA kernel or a large tensor op already in
-  flight — the timeout bounds when the *user* gets an answer, not necessarily
-  when the GPU stops.
-- **Untrusted (sandboxed).** `interrupt` also stops the runner process, which
-  closes the socket and unblocks the host — a real kill of the code that was
-  running.
+- **Trusted (in-process).** `interrupt` (`base.py:541`) injects `SystemExit` into
+  the execution thread with CPython's async-exception API (`kill_thread`,
+  `modeling/util.py:69`). It only fires at a bytecode boundary, so it cannot
+  interrupt a CUDA kernel or a large tensor op already in flight — the timeout
+  bounds when the *user* gets an answer, not necessarily when the GPU stops.
+- **Untrusted (sandboxed).** `interrupt` (`sandbox/model.py:200`) also stops the
+  runner process, which closes the socket and unblocks the host — a real kill of
+  the code that was running.
 
 ## Every limit in one table
 

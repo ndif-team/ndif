@@ -76,29 +76,29 @@ Two consequences worth internalizing:
 
 - **A multi-GPU model is charged its share of each card**, `ceil(size / count)`,
   not all of it — so a model 1.01× a card takes two cards at ~half each and the
-  rest stays usable by other models. It used to reserve both entirely; if you are
-  reading older notes about a "multi-GPU cliff", that is what they mean.
-- **`per_gpu_memory` is `cuda_memory_bytes // total_gpus`** (`cluster.py:104`),
+  rest stays usable by other models. Notes elsewhere describing a "multi-GPU
+  cliff" — a replica reserving 100% of every card it spans — do not describe this
+  code.
+- **`per_gpu_memory` is `cuda_memory_bytes // total_gpus`** (`cluster.py:114-117`),
   computed once when the node first appears, from `torch.cuda.mem_get_info`'s
   *total* (`resources.py:27-34`). Nodes with mixed card sizes are mis-accounted.
 
 If enough GPUs already have room, the node is `FREE` (or `CACHED_AND_FREE` if it
 holds a WARM copy). Otherwise `find_evictions` looks for the cheapest set of
 evictable deployments that frees the shortfall, giving `FULL` /
-`CACHED_AND_FULL`; if it can't, `CANT_ACCOMMODATE` (`node.py:327-385`). The
+`CACHED_AND_FULL`; if it can't, `CANT_ACCOMMODATE` (`node.py:340-400`). The
 cluster picks the best level across nodes and breaks ties randomly
 (`cluster.py:204-223`).
 
 A deployment is evictable only if it is **not pinned**, and — when the incoming
 deploy is itself unpinned — only if it is older than
 `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600)
-(`node.py:314-325`).
+(`node.py:327-338`).
 
 > **`NDIF_MODEL_CACHE_PERCENTAGE` is not a GPU knob.** It scales
 > `cpu_memory_bytes` — total host RAM — into the node's **WARM cache budget**
-> (`cluster.py:106-109`, `resources.py:5-7`). Lowering it frees nothing on the
-> GPU; it only makes the node hold fewer offloaded models. (The README's
-> description of this variable is wrong; the code is authoritative.)
+> (`cluster.py:118-122`, `resources.py:5-7`). Lowering it frees nothing on the
+> GPU; it only makes the node hold fewer offloaded models.
 
 ## Reading the error
 
@@ -208,7 +208,7 @@ In eviction order of preference:
 3. **WARM replicas.** They hold no GPU memory, but they consume the node's CPU
    cache budget, and a HOT→WARM demotion needs CPU headroom to succeed —
    without it, an evicted replica is dropped outright rather than cached
-   (`node.py:277-312`).
+   (`node.py:257-325`).
 4. **Pinned models.** `pinned` stops the *controller's* automatic eviction, not
    yours: `ndif evict` removes a pinned replica like any other
    (see [deploy-and-pin-a-model](deploy-and-pin-a-model.md)).
@@ -243,9 +243,11 @@ Both defaults live on the controller and are read at actor construction
 ndif status --verbose | jq '.cluster.evaluator | {padding_factor, padding_bias, dtype}'
 ```
 
-> **Note:** `DeploymentConfig.padding_factor` supports a per-model override. There
-> is no `ndif deploy` flag for it, but `load_model_config` reads a
-> `padding_factor:` key from `models.yaml` (`cli/lib/model_config.py`), so a YAML
+> **Note:** `DeploymentConfig.padding_factor` supports a per-model override:
+> `ndif deploy --padding-factor 0.3 <checkpoint>` (`cli/commands/deploy.py:33`,
+> alongside `--padding-bias`, `--size-bytes`, `--gpus`, `--max-tp`), and
+> `load_model_config` reads a `padding_factor:` key from `models.yaml`
+> (`cli/lib/model_config.py`), so a YAML
 > deploy can raise padding for just the models that need it. The dashboard's deploy
 > form (`dashboard/backend/routers/deploy.py:30`) and calling
 > `ndif.cli.lib.deploy.deploy` directly also set it.
@@ -263,7 +265,7 @@ Every item here is real memory on the card that the controller never subtracted:
   actor from a killed controller — is invisible to the ledger, and it is the
   single most common cause of "the numbers said it fit".
 - **Fragmentation.** Actors run with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-  (`cluster/deployment.py:179`) to blunt it, not eliminate it.
+  (`cluster/deployment.py:197`) to blunt it, not eliminate it.
 - **Controller state after a restart.** The ledger is in-memory. A replaced
   controller actor rebuilds `Cluster.nodes` from scratch with every GPU marked
   fully free, while the surviving detached model actors still hold their weights.

@@ -75,7 +75,7 @@ environment) as far as the CLI is concerned, and beats everything except an
 explicit `-e`.
 
 > **Gotcha:** the auto-discovered `.env` is relative to the **current working
-> directory**, which inside every NDIF container is `/app` (`Dockerfile:20`) —
+> directory**, which inside every NDIF container is `/app` (`Dockerfile:36`) —
 > a directory with no `.env` in it. Configuring a container through `.env`
 > requires bind-mounting the file to `/app/.env`. The compose file also uses no
 > `${VAR}` interpolation and no `env_file:` key, so a `docker/.env` would have
@@ -87,7 +87,7 @@ explicit `-e`.
 A Ray worker inherits only its node's ambient environment, not the controller's.
 So when the controller creates a model actor, it explicitly exports its own
 Redis, object-store, Loki and Influx settings into the actor's Ray
-`runtime_env` (`cluster/deployment.py:16-39`, applied at `deployment.py:174-196`),
+`runtime_env` (`cluster/deployment.py:16-39`, applied at `deployment.py:191-206`),
 plus `NDIF_SERVICE=model` so the actor's telemetry attributes correctly.
 
 The practical consequence: **you configure model actors by configuring the `ray`
@@ -118,7 +118,7 @@ reader of each.
 
 That last row is worth dwelling on: the code default and the compose value
 **differ**. `just up` runs `ndif.services.ray.sandbox.model.SandboxModelActor`
-(`docker-compose.yml:228`); a plain `pip install` plus `ndif start ray` runs the
+(`docker-compose.yml:252`); a plain `pip install` plus `ndif start ray` runs the
 base in-process actor. If you are reproducing a compose behavior outside compose,
 set the variable.
 
@@ -145,7 +145,7 @@ doesn't set it (`src/ndif/services/api/auth.py:180`). `trusted` is the fork that
 user code executes: a trusted request's traced block runs **in-process inside the
 model actor, next to the weights**, with no runner subprocess; and the same flag
 becomes `trust_remote_code=` when the model loads
-(`cluster/cluster.py:169`). So an unauthenticated NDIF runs every caller's
+(`cluster/cluster.py:183`, `:225`, `:296`). So an unauthenticated NDIF runs every caller's
 arbitrary Python in-process and loads models with remote code execution enabled.
 That is the trade the zero-config default makes. `docs/concepts/auth-and-limits.md`
 and `docs/runbooks/enable-auth.md` cover flipping it.
@@ -153,21 +153,23 @@ and `docs/runbooks/enable-auth.md` cover flipping it.
 ## Pip extras
 
 The package's core dependency set is deliberately small — nnsight, pydantic,
-redis, click, python-dotenv, pyyaml, boto3 (`pyproject.toml:21-34`). Everything
+redis, click, python-dotenv, pyyaml, boto3 (`pyproject.toml:23-36`). Everything
 else is an extra, so a machine that only runs one role installs only that role's
 dependencies.
 
 | Extra | Pulls in | Unlocks |
 |---|---|---|
-| `api` (`pyproject.toml:37`) | fastapi, uvicorn, gunicorn, python-multipart | Running `ndif start api` — the HTTP surface and the queue dispatcher. |
-| `ray` (`:43`) | ray[default], transformers, accelerate, numpy, zstandard, peft | Running a Ray node and the model actors: loading checkpoints, decompressing request payloads (nnsight compresses by default), applying per-request PEFT adapters. |
-| `dashboard` (`:81`) | fastapi, uvicorn, pydantic-settings, itsdangerous, bcrypt, requests | `ndif start dashboard`. The reconcile cron additionally needs the `ray` extra; the monitor cron's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
-| `metrics` (`:62`) | influxdb-client, python-logging-loki | Telemetry shipping. Both providers fail open without it — services run console-only and metrics-free. |
-| `postgres` (`:71`) | asyncpg | API-key auth. Without it (or without the URL), the API runs unauthenticated. |
-| `dev` (`:90`) | ruff, httpx, pytest, pytest-asyncio | The live-server test suite under `tests/`. |
+| `api` (`pyproject.toml:39`) | fastapi, uvicorn, gunicorn, python-multipart | Running `ndif start api` — the HTTP surface and the queue dispatcher. |
+| `ray` (`:45`) | ray[default], transformers, accelerate, numpy, zstandard, peft | Running a Ray node and the model actors: loading checkpoints, decompressing request payloads (nnsight compresses by default), applying per-request PEFT adapters. |
+| `dashboard` (`:110`) | fastapi, uvicorn, pydantic-settings, itsdangerous, bcrypt, requests | `ndif start dashboard`. The reconcile cron additionally needs the `ray` extra; the monitor cron's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
+| `metrics` (`:91`) | influxdb-client, python-logging-loki | Telemetry shipping. Both providers fail open without it — services run console-only and metrics-free. |
+| `postgres` (`:100`) | asyncpg | API-key auth. Without it (or without the URL), the API runs unauthenticated. |
+| `dev` (`:119`) | ruff, httpx, pytest, pytest-asyncio | The live-server test suite under `tests/`. |
 
 The docker image takes `[api,ray,metrics,postgres,dashboard]` in a single install
-so one image can play any role (`docker/Dockerfile:45`). It uses `--no-deps`
+so one image can play any role (`docker/Dockerfile:93`), plus the `ext` extra —
+the packages a user's block may import — installed from the same list
+(`Dockerfile:102-104`). It uses `--no-deps`
 because `requirements.txt` already pins every transitive dependency — the extras
 there only declare intent, so a source change reinstalls the package alone rather
 than re-resolving multiple GB of wheels.
@@ -198,10 +200,12 @@ docker compose -f docker/docker-compose.yml exec ray ndif info
   back to that process's hardcoded default, which is almost always `localhost`.
   Most cross-service breakage in this stack is a `localhost` default that nobody
   overrode.
-- **`NDIF_SERVICE` does double duty**: it selects which service `ndif start`
+- **`NDIF_SERVICE` does double duty**: it selects which service(s) `ndif start`
   launches *and* becomes the `service` label on every log line and metric point.
+  The image defaults it to `all` (`Dockerfile:34`), which means the core stack —
+  redis, minio, ray, api — in one container; compose overrides it per container.
 - **The dashboard reads `NDIF_DASHBOARD_API_URL` first, then `NDIF_API_URL`**
-  (`dashboard/backend/config.py:49-52`), so setting only the shared variable is
+  (`dashboard/backend/config.py`), so setting only the shared variable is
   enough.
 
 ## Related

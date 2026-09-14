@@ -55,9 +55,9 @@ For iterating on the SPA, the Vite dev server (see
 
 ### With compose
 
-The `dashboard` block in `docker/docker-compose.yml:173` builds from the same
+The `dashboard` block in `docker/docker-compose.yml:191` builds from the same
 `docker/Dockerfile` as everything else; `NDIF_SERVICE=dashboard` makes the
-entrypoint run `ndif start dashboard`, which execs
+default command run `ndif start dashboard`, which execs
 `src/ndif/services/dashboard/start.sh`. Because the image installs `cron`
 (`docker/Dockerfile`), the container runs all three crons alongside uvicorn.
 
@@ -182,7 +182,7 @@ model — set `trusted: True` unconditionally (`backend/routers/deploy.py:34`,
 `backend/routers/deployments.py:38`, `jobs/reconcile.py:62`). The code calls this
 an admin action, and it has one concrete consequence: the flag becomes
 `trust_remote_code=True` when the controller sizes and loads the model
-(`controller/cluster/cluster.py:169`, `controller/controller.py:280`), so a
+(`controller/cluster/cluster.py:183`, `:225`, `:296`), so a
 checkpoint shipping custom modeling code executes that code inside the model
 actor. Deploy from the dashboard only what you'd deploy with
 `trust_remote_code=True` from a shell.

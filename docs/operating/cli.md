@@ -3,18 +3,19 @@ title: The ndif CLI
 one_liner: Every `ndif` command — service lifecycle, model deploy/evict/restart, queue and cluster introspection — with options, defaults, and what each one touches.
 tags: [operating, cli, runbook]
 related: [docs/operating/models-and-deployment.md, docs/operating/configuration.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/dashboard.md, docs/developing/cli-internals.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md]
-sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/events.py, docker/Dockerfile, justfile]
+sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/doctor.py, src/ndif/cli/commands/version.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/events.py, docker/Dockerfile, justfile]
 ---
 
 # The ndif CLI
 
 ## What this covers
 
-`ndif` is the only binary this repo ships (`pyproject.toml:98` maps it to
+`ndif` is the only binary this repo ships (`pyproject.toml:126-127` maps it to
 `ndif.cli:cli`; `python -m ndif.cli` is equivalent). It does three unrelated jobs, and
 knowing which job a command belongs to is most of the battle:
 
-1. **Process lifecycle on one host** — `start`, `stop`, `logs`, `info`, `doctor`. With
+1. **Process lifecycle on one host** — `start`, `stop`, `logs`, `info`, `doctor`,
+   `version`. With
    the compose stack you use `just` instead — except *inside* a container, where
    `ndif start` is the entrypoint.
 2. **Model control-plane ops** — `deploy`, `evict`, `restart`, `status`, `export`. They
@@ -29,9 +30,11 @@ knowing which job a command belongs to is most of the battle:
 | `ndif logs SERVICE` | Tail a detached service's captured log | `$NDIF_HOME/logs` |
 | `ndif info` | Config, tracked PIDs, endpoint reachability | local state + probes |
 | `ndif doctor` | Versions, binaries, GPU, connectivity; exits non-zero on failure | local + probes |
+| `ndif version` | The resolved stack: ndif, nnsight, torch (+CUDA), transformers, ray, peft, accelerate, python | installed metadata |
 | `ndif deploy [CHECKPOINTS...]` | Place model replicas | Ray controller, Redis |
 | `ndif evict [CHECKPOINTS...]` | Remove model replicas | Ray controller, Redis |
 | `ndif restart CHECKPOINT` | Kill + await respawn of a model's replicas | Ray controller + actors |
+| `ndif scale CHECKPOINT` | Add replicas matching the ones already running (`--count`) | Ray controller |
 | `ndif status` | Deployments by level + cluster GPU resources | Ray controller |
 | `ndif export` | Dump HOT deployments as `models.yaml` | Ray controller |
 | `ndif queue` | Processor status, queue depth, in-flight requests | Redis → dispatcher |
@@ -40,7 +43,7 @@ knowing which job a command belongs to is most of the battle:
 
 ## Configuration: `--env-file`, `.env`, defaults
 
-The group callback loads env files before any command runs (`src/ndif/cli/main.py:39`
+The group callback loads env files before any command runs (`src/ndif/cli/main.py:41`
 → `src/ndif/cli/config.py:42`):
 
 ```python
@@ -51,7 +54,7 @@ if env_file:
 
 Precedence, highest first: **`--env-file`** (loaded with `override=True`, so it beats
 even your shell) → the real process environment → **`./.env`** in the current
-directory (no override, so it only fills gaps) → `config.DEFAULTS` (`config.py:22`), a
+directory (no override, so it only fills gaps) → `config.DEFAULTS` (`src/ndif/cli/config.py:22-31`), a
 floor used by `config.get()` and by the environment handed to spawned services, never
 written into `os.environ`. `DEFAULTS` exists because service defaults are tuned for
 docker's per-container network, or collide on one host:
@@ -72,7 +75,7 @@ docker's per-container network, or collide on one host:
 > unambiguous however Ray is launched. If you override it, set the same value
 > everywhere the head and its workers read it.
 
-`build_env` (`config.py:54`) assembles a spawned service's environment as `DEFAULTS` →
+`build_env` (`src/ndif/cli/config.py:54`) assembles a spawned service's environment as `DEFAULTS` →
 real environment → `-e KEY=VALUE` pairs → typed shortcuts (`--redis-url`,
 `--ray-address`, `--ray-head-address`, `--api-port`).
 
@@ -89,7 +92,7 @@ plus `kill(pid, 0)`; a PID file whose process is gone is cleared lazily on read
 
 | Option | Type / default | Effect |
 |---|---|---|
-| `SERVICES...` | `$NDIF_SERVICE`, else all | `redis`, `minio`, `ray`, `api`, `dashboard`, or `all` |
+| `SERVICES...` | `$NDIF_SERVICE`, else all | `redis`, `minio`, `ray`, `api`, `dashboard`, or `all` (which expands to the core stack in place) |
 | `-e/--env` | `KEY=VALUE`, repeatable | injected into every started service |
 | `--redis-url`, `--ray-address`, `--api-port` | str, str, int | set the matching `NDIF_*` var |
 | `--ray-head-address` | `HOST:PORT` | sets `NDIF_RAY_HEAD_ADDRESS`; makes this a worker node |
@@ -115,11 +118,17 @@ $ ndif start
   • ray: already running (pid 41240), skipping
 ```
 
-**As the container entrypoint.** `docker/Dockerfile:49` is
-`ENTRYPOINT ["ndif", "start", "--foreground"]` with `NDIF_SERVICE=api` as the image
-default; compose picks the role per container by setting `NDIF_SERVICE` to `api`,
-`ray`, or `dashboard` (`docker/docker-compose.yml:138`, `:209`, `:178`).
-`env_services()` splits it on spaces and commas, so `NDIF_SERVICE="ray api"` runs both.
+**As the container entrypoint.** The image's `ENTRYPOINT` is `["ndif"]` and its
+`CMD` is `["start", "--foreground"]` (`docker/Dockerfile:141-142`), with
+`NDIF_SERVICE=all` as the image default (`Dockerfile:34`) — so a bare
+`docker run ndif/ndif` brings up redis, minio, ray and api in one container, and
+`docker run ndif/ndif doctor` (or `version`) runs that command instead. Compose
+picks one role per container by setting `NDIF_SERVICE` to `api`, `ray`, or
+`dashboard` (`docker/docker-compose.yml:147`, `:233`, `:196`). `env_services()`
+splits it on spaces and commas (`service.py:83-85`), and `resolve_targets`
+expands `all` in place (`service.py:88-98`) — so `NDIF_SERVICE="ray api"` runs
+both, `all` (or empty) means the core stack, and `"all dashboard"` means the core
+stack plus the dashboard.
 In foreground mode a **single** service replaces the CLI via `execvpe` (it becomes
 PID 1 and gets signals directly); **several** run as children with SIGTERM/SIGINT
 forwarding, and the first to exit tears the rest down and sets the exit code
@@ -169,28 +178,94 @@ Connectivity:
 
 | Section | Checks | Counts as failure? |
 |---|---|---|
-| Environment | Python ≥ 3.12; `ndif` and `nnsight` versions | yes |
-| Binaries | `ray`, `redis-server`, `minio` on `PATH` | yes |
-| Compute | `nvidia-smi` returns ≥1 GPU | yes |
+| Environment | Python ≥ 3.12; `ndif` and `nnsight` installed; then `torch` (with its CUDA build), `transformers` and `ray`, read through `version.collect()` (`doctor.py:46-52`) | Python/ndif/nnsight yes; torch/transformers/ray **no** — they are reported, not required |
+| Binaries | `ray`, `redis-server`, `minio` on `PATH` (`doctor.py:56-69`) | yes |
+| Compute | `nvidia-smi` returns ≥1 GPU, **and** `torch.cuda.is_available()` is true. The second catches a torch wheel built for a newer CUDA line than the driver supports (a `-cu130` image on a 12.x driver): nvidia-smi lists the card, torch quietly sees nothing, and Ray would advertise `cuda_memory_bytes: 0` | yes |
 | Connectivity | redis / minio / api / ray at their `NDIF_*` URLs | **no** |
 
 Connectivity is informational by design — a stopped service is a normal answer
-(`doctor.py:82`). Exit code is 1 if any of the first three sections failed. Reach for
-it first when `ndif start` fails or a fresh checkout misbehaves. Note it demands a CUDA
-GPU: no `nvidia-smi` is a hard failure even though the rest of the stack starts fine.
+(`doctor.py:92-104`). Exit code is 1 if any of the first three sections failed.
+Reach for it first when `ndif start` fails or a fresh install misbehaves. Note it
+demands a CUDA GPU: no `nvidia-smi` is a hard failure even though the API and
+Redis start fine without one.
 
 ```console
 $ ndif doctor
 Environment
-  ✓ Python 3.12.4        ✓ ndif 0.0.1        ✓ nnsight 0.5.0
+  ✓ Python 3.12.14
+  ✓ ndif 0.1.0
+  ✓ nnsight 0.8.0rc1
+  ✓ torch 2.14.0+cu126 (CUDA 12.6)
+  ✓ transformers 5.17.0
+  ✓ ray 2.55.1
 Binaries
+  ✓ ray → /usr/local/bin/ray
+  ✓ redis-server → /usr/bin/redis-server
   ✗ minio not on PATH
-      → install the MinIO server binary
+      → conda install -c conda-forge minio-server (MinIO no longer publishes standalone binaries)
+Compute
+  ✓ 2× GPU (NVIDIA A100-SXM4-80GB, 81920 MiB)
+  ✓ torch sees 2 GPU(s) (driver CUDA 12.8, torch CUDA 12.6)
 Connectivity
   ○ minio not reachable at http://localhost:9000 (start it with `ndif start minio`)
 
 ✗ 1 issue found.
 ```
+
+> **Gotcha: the `minio` hint has nowhere to send you.** MinIO no longer publishes
+> standalone server binaries — `dl.min.io` returns 410 and the GitHub releases
+> carry no assets — so "install the MinIO server binary" is not an actionable
+> instruction any more. The options are the conda-forge `minio-server` package
+> (unverified here), or extracting the binary from the official image the way the
+> Dockerfile does (`docker/Dockerfile:26-27`, `:50`):
+>
+> ```bash
+> cid=$(docker create quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z)
+> docker cp "$cid:/usr/bin/minio" /usr/local/bin/minio && docker rm "$cid"
+> ```
+>
+> quay.io, not Docker Hub: `minio/minio` on the Hub no longer resolves. If you
+> already run an S3-compatible store, point `NDIF_OBJECT_STORE_URL` at it and
+> ignore the binary — this failure does not stop the rest of NDIF.
+
+### `ndif version`
+
+`ndif version [--json-output] [--write PATH]` — the versions that decide how this
+server behaves (`src/ndif/cli/commands/version.py`). Distinct from
+`ndif --version`, which prints only the `ndif` package version (`main.py:31`).
+
+| Option | Effect |
+|---|---|
+| _(none)_ | aligned `key  value` lines; a missing package prints `(not installed)` |
+| `--json-output` | the same dict as JSON |
+| `--write PATH` | writes the JSON to `PATH` (creating parent dirs) and prints `wrote <path>` instead |
+
+Reported: `python`, then `ndif`, `nnsight`, `torch`, `transformers`, `ray`,
+`peft`, `accelerate` (`version.py:19`), plus `cuda` — `torch.version.cuda`, the
+CUDA line the installed torch wheel was built for, added only when torch imports
+(`version.py:30-36`).
+
+```console
+$ ndif version
+python        3.12.4
+ndif          0.1.0
+nnsight       0.8.0rc1
+torch         2.13.0
+transformers  5.15.0
+ray           2.55.1
+peft          0.19.1
+accelerate    1.14.0
+cuda          12.6
+```
+
+The published image runs `ndif version --write /etc/ndif/build.json` at build
+time (`docker/Dockerfile:111`), so a tagged image records what it resolved to
+even before you start it, and `docker run --rm ndif/ndif version` answers the
+question without a GPU, a volume, or a port.
+
+`ndif env` is the other half of this: `version` is about *this* machine, `env`
+fetches the **cluster's** environment from the API. Run both to spot client/server
+drift.
 
 ## Model operations
 
@@ -302,20 +377,20 @@ cluster.
 
 - **How the weights load.** It becomes `DeploymentConfig.trusted`, which the controller
   passes as `trust_remote_code=` to the size evaluator and to the actor's model load
-  (`services/ray/deployments/controller/cluster/cluster.py:169`). Deploying a checkpoint
+  (`services/ray/deployments/controller/cluster/cluster.py:183`, `:225`, `:296`). Deploying a checkpoint
   whose HF repo ships custom modelling code with `trusted=False` fails to load.
 - **Where user code runs.** The same flag on a *request* — stamped by the API from the
   API key's `trusted` user_tag, or, when auth is off, honored from the request and
   defaulting to `True` when the client leaves it unspecified
   (`services/api/auth.py:180-184`) — decides whether the traced block runs in-process
   inside the model actor or in a separate runner subprocess
-  (`services/ray/sandbox/model.py:242`). Isolation here is process-based, and it is
+  (`services/ray/sandbox/model.py:207-222`). Isolation here is process-based, and it is
   still in progress.
 
 So `ndif deploy --trusted` (or `trusted: true` in `models.yaml`) can deploy a
-`trust_remote_code` model directly. Dashboard-initiated deploys still hard-code
+`trust_remote_code` model directly. Dashboard-initiated deploys still default
 `trusted: True` as an admin action
-(`services/dashboard/backend/routers/deploy.py:34`).
+(`services/dashboard/backend/routers/deployments.py:36-38`).
 
 ### `ndif scale`
 
@@ -500,7 +575,8 @@ client/server `nnsight` drift.
 |---|---|
 | Dev on one machine, no docker | `ndif start` / `ndif stop` / `ndif logs` |
 | Dev with the compose stack | `just up`, `just logs api`, `just down` — **not** `ndif start` |
-| Inside a container | `ndif start --foreground` is already the entrypoint; `NDIF_SERVICE` picks the role |
+| Inside a container | `ndif start --foreground` is already the default command; `NDIF_SERVICE` picks the role(s) |
+| Asking an image what it carries | `docker run --rm ndif/ndif version` |
 | Adding a GPU worker node | `ndif start --ray-head-address HEAD:6385` (brings up only `ray`) |
 | Any cluster, managing models | `ndif deploy` / `evict` / `restart` / `status` / `export` |
 | Any cluster, debugging traffic | `ndif queue` / `ndif kill` / `ndif env` |
@@ -511,9 +587,11 @@ and overlaps only the lifecycle half: `just up|down|restart|logs|ps` manage
 things and cannot see each other. The model and queue commands have no `just`
 equivalent — run them on the host against `NDIF_RAY_ADDRESS`/`NDIF_REDIS_URL`, or as
 `docker compose exec api ndif status`. In compose, `redis` and `minio` come from
-upstream images (`docker/docker-compose.yml:12`, `:118`), so `ndif start redis|minio` is
+upstream images (`docker/docker-compose.yml:18`, `:127`), so `ndif start redis|minio` is
 a single-host convenience needing those binaries on `PATH` — exactly what `ndif doctor`
-checks.
+checks. The published image carries both itself (apt's `redis-server`, and the
+`minio` binary copied out of the quay.io image — `docker/Dockerfile:46-50`), which
+is what makes `NDIF_SERVICE=all` possible in one container.
 
 ## Related
 

@@ -78,7 +78,7 @@ class ConsoleFormatter(logging.Formatter):
     Example::
 
         2026-07-06 12:00:01 INFO    [ndif.queue.replica] request completed
-        model_key=gpt2 request_id=ab12 exec_ms=1200.5 (replica.py:281)
+        model_key=gpt2 request_id=ab12 exec_ms=1200.5 (replica.py:309)
 
     The traceback (if any) follows on subsequent lines, as usual.
     """

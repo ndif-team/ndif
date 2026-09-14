@@ -14,3 +14,13 @@
 # Test suites and scratch.
 nnn.py
 request.py
+
+# Not needed inside the image.
+docs/
+tests/
+docker/grafana/
+docker/prometheus/
+docker/postgres/
+*.png
+*.ipynb
+.github/

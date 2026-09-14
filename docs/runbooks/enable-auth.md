@@ -42,14 +42,14 @@ therefore trusted. Follow that flag:
 1. **User code runs in-process, in the model actor.** `SandboxModelDeployment.execute`
    short-circuits on `request.trusted` and calls the base implementation, which
    deserializes and runs the traced block on a worker thread inside the actor —
-   the same process that holds the weights (`sandbox/model.py:242-243` →
-   `modeling/base.py:379`). No runner subprocess, no socket. The isolation the
+   the same process that holds the weights (`sandbox/model.py:207-220` →
+   `modeling/base.py:473`). No runner subprocess, no socket. The isolation the
    sandbox path provides is skipped entirely.
 2. **The model loads with `trust_remote_code=True`.** The flag rides from the
    request into the Processor (`queue/processor.py:114`, `:153-154`), into the
    `DeploymentConfig` the Processor's Replica sends the controller
    (`queue/replica.py:103`), into the evaluator and the actor's load
-   (`cluster/cluster.py:169`, `controller.py:276-281`). A model auto-deployed by
+   (`cluster/cluster.py:183`, `:225`, `:296`; `controller.py:276-284`). A model auto-deployed by
    the first request on an unauthenticated server executes whatever Python its
    HuggingFace repo ships.
 
@@ -68,7 +68,7 @@ request without the flag still runs trusted.
 
 ## 1. Bring up Postgres
 
-The compose stack already defines the service (`docker-compose.yml:98-116`):
+The compose stack already defines the service (`docker-compose.yml:104-120`):
 
 ```bash
 just up postgres
@@ -144,7 +144,7 @@ VALUES ('trusted',  'may run without sandbox isolation'),
 ## 3. Point the API at it
 
 Uncomment the line in `docker-compose.yml`'s `api` service
-(`docker-compose.yml:156`):
+(`docker-compose.yml:165`):
 
 ```yaml
       NDIF_POSTGRES_URL: postgresql://ndifapi:admin@postgres:5432/ndif
@@ -259,7 +259,7 @@ prints as `PRINT` events instead (`sandbox/model.py:180-186`).
 
 The dashboard has its own single-admin login and knows nothing about
 `NDIF_POSTGRES_URL` (`dashboard/backend/auth.py`). The compose file ships it with
-auth **disabled** (`NDIF_DASHBOARD_DEV_MODE: "true"`, `docker-compose.yml:192`),
+auth **disabled** (`NDIF_DASHBOARD_DEV_MODE: "true"`, `docker-compose.yml:216`),
 which makes `require_auth` return the configured username unconditionally
 (`auth.py:70-75`). Since the dashboard can deploy, evict, and restart models —
 and every dashboard deploy is `trusted: True` — leaving dev mode on is equivalent
@@ -309,7 +309,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/schedule   # expect 
   (`auth.py:120-126`): a Postgres blip must never quietly re-enable the trusted
   path.
 - **Models deployed while auth was off keep their `trusted` deployment.** The flag
-  is fixed on the `Deployment` at creation (`cluster/deployment.py:78-79`). Evict
+  is fixed on the `Deployment` at creation (`cluster/deployment.py:65`, `:77-79`). Evict
   and redeploy after turning auth on if you care that a model no longer loads with
   `trust_remote_code`.
 

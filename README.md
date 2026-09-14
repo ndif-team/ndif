@@ -30,18 +30,64 @@ development.
 
 ## Quick start
 
-The stack runs as a set of Docker Compose services (API, a GPU Ray cluster, a
-dashboard, and supporting stores). [`just`](https://github.com/casey/just) wraps
-the compose commands — the GPU `ray` service needs a host GPU and the NVIDIA
-container toolkit.
+Three ways to stand up your own NDIF. All three need an NVIDIA GPU and a CUDA
+driver; the container routes also need the NVIDIA container toolkit.
+
+**Trust default:** with no `NDIF_POSTGRES_URL` the API is unauthenticated, and an
+unauthenticated NDIF runs every request **trusted** — the submitted block executes
+in-process next to the model weights and models load with `trust_remote_code`. That
+is the intended default for running one for yourself. Before anyone else can reach
+it, work through [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md).
+
+### 1. `docker run` — the published image, whole stack in one container
+
+```bash
+docker run --gpus all --shm-size 4g -p 8001:8001 -p 9000:9000 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  ndif/ndif:0.1.0
+```
+
+`NDIF_SERVICE` defaults to `all`, so the container starts redis, minio, ray and
+the API together. 8001 is the API; 9000 is the object store, which the client
+downloads results from, so publish it too. Tags: `0.1.0-cu126`, `0.1.0-cu130`,
+`0.1.0` (= cu126) and `latest`; pick the CUDA line your driver supports. The
+entrypoint is the `ndif` CLI, so any other command works the same way:
+
+```bash
+docker run --rm ndif/ndif:0.1.0 version     # ndif, nnsight, torch+CUDA, transformers, ray
+docker run --rm --gpus all ndif/ndif:0.1.0 doctor
+```
+
+### 2. Docker Compose — the development stack, built from this checkout
+
+Each service in its own container, next to Postgres and the full telemetry set
+(Loki, InfluxDB, Prometheus, Grafana). [`just`](https://github.com/casey/just)
+wraps the compose commands.
 
 ```bash
 just up            # build (first time) + start the whole stack, detached
 just logs api      # follow a service's logs
+just ta            # down -> rebuild -> up, after a source change
 just down          # tear it down
 ```
 
-Then point nnsight at the local server and run remotely:
+### 3. From source — the `ndif` CLI, no Docker
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # first: requirements.txt would otherwise pull PyPI's default (CUDA 13) wheel
+pip install -r requirements.txt
+pip install ".[api,ray,metrics,postgres,dashboard]"
+ndif doctor        # versions, binaries, GPU, connectivity
+ndif start         # redis, minio, ray, api — detached
+```
+
+`ndif doctor` also wants `redis-server` and `minio` on `PATH`:
+`conda install -c conda-forge redis-server minio-server` provides both (MinIO no
+longer publishes standalone binaries; the other option is copying the binary out
+of the `quay.io/minio/minio` image — see
+[docs/operating/quickstart.md](docs/operating/quickstart.md)).
+
+### Then run a remote trace
 
 ```python
 import nnsight
@@ -54,15 +100,18 @@ with model.trace("The Eiffel Tower is in the city of", remote=True):
     hidden = model.transformer.h[-1].output.save()
 ```
 
+No API key is needed; the first request for a model deploys it. Deeper detail for
+all three routes is in [docs/operating/quickstart.md](docs/operating/quickstart.md).
+
 ## What's running
 
-`just ps` lists the stack. The main pieces:
+`just ps` lists the compose stack. The NDIF pieces:
 
 | Service | Where | What |
 |---|---|---|
 | `api` | `localhost:8001` | Accepts nnsight requests, queues them, streams results back. |
-| `ray` | GPU node | Loads models and runs the traced blocks (Ray Serve deployments). |
-| `dashboard` | `localhost:8081` | Deploy/evict/status, schedules, request monitor. |
+| `ray` | GPU node | Loads models and runs the traced blocks (plain detached Ray actors — NDIF does not use Ray Serve). |
+| `dashboard` | `localhost:8081` | Deploy/evict/status, schedules, request monitor. Compose only; not part of `NDIF_SERVICE=all`. |
 
 Redis, MinIO (object store), Postgres (API-key auth), and Loki/InfluxDB/Grafana
 (telemetry) round out the compose file; see `docker/docker-compose.yml`.
@@ -75,9 +124,13 @@ just ta ray          # ...targeting a single service
 just build && just up
 ```
 
-The `ndif` CLI (`ndif start <service>`, the image entrypoint) runs a service in
-the foreground; `NDIF_SERVICE` selects which one per container. Configuration is
-read from the environment (see the `environment:` blocks in the compose file).
+The `ndif` CLI is the image entrypoint (`ENTRYPOINT ["ndif"]`, `CMD ["start",
+"--foreground"]`); `NDIF_SERVICE` selects which service(s) a container runs. It
+accepts a space/comma list, and `all` expands in place — `"all dashboard"` is the
+core stack plus the admin UI. Configuration is read from the environment (see the
+`environment:` blocks in the compose file).
+
+Agent-facing documentation lives in [CLAUDE.md](CLAUDE.md) and `docs/`.
 
 ## Configuration
 
@@ -92,7 +145,7 @@ that provider is *off* until you set its URL.
 
 | Variable | Default | Description |
 |---|---|---|
-| `NDIF_SERVICE` | `api` | Which service this container runs (`api`, `ray`, `dashboard`). |
+| `NDIF_SERVICE` | `all` (image `ENV`) | Which service(s) this container runs: `redis`, `minio`, `ray`, `api`, `dashboard`, `all`, or a space/comma list. `all` means redis, minio, ray, api. |
 | `NDIF_ENVIRONMENT` | `dev` | Deployment tag attached to logs/metrics. |
 | `NDIF_LOG_LEVEL` | `INFO` | Root log level. |
 | `NDIF_HOME` | `~/.ndif` | CLI state directory. |
@@ -105,7 +158,7 @@ that provider is *off* until you set its URL.
 | `NDIF_API_PORT` | `8001` | Port the API binds. |
 | `NDIF_API_WORKERS` | `1` | Gunicorn worker count. |
 | `NDIF_API_TIMEOUT` | `120` | Gunicorn worker timeout (seconds). |
-| `NDIF_API_KEY` | _(unset)_ | Client API key used by the `ndif` CLI. |
+| `NDIF_API_KEY` | _(unset)_ | API key the dashboard's monitor cron sends with its probe traces (`jobs/monitor.py`). Not read by the CLI or the API. |
 
 **Request queue**
 
@@ -133,7 +186,7 @@ that provider is *off* until you set its URL.
 | `NDIF_RAY_HEAD_PORT` | `6385` | Ray GCS head port (offset from Redis's 6379). |
 | `NDIF_RAY_DASHBOARD_PORT` | `8265` | Ray dashboard port. |
 | `NDIF_RAY_DASHBOARD_GRPC_PORT` | `52366` | Ray dashboard gRPC port. |
-| `NDIF_RAY_SERVE_PORT` | `8080` | Ray Serve HTTP port. |
+| `NDIF_RAY_METRICS_PORT` | `8080` | Ray's `--metrics-export-port` (the Prometheus scrape target). Not a Ray Serve port. |
 | `NDIF_RAY_OBJECT_MANAGER_PORT` | `8076` | Ray object-manager port. |
 | `NDIF_RAY_RESOURCE_NAME` | _(empty)_ | Custom Ray resource label for this node. |
 | `NDIF_RAY_TEMP_DIR` | `/tmp/ray` | Ray temp/session directory. |
@@ -145,12 +198,13 @@ that provider is *off* until you set its URL.
 | Variable | Default | Description |
 |---|---|---|
 | `NDIF_DEPLOYMENTS` | _(empty)_ | `|`-separated model keys to deploy on boot. |
-| `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | Reconcile cadence for the deployment controller. |
+| `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | How often the controller re-syncs its node set. Deployment changes are event-driven, not polled. |
 | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Minimum lifetime before a model can be evicted. |
-| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of GPU memory reserved for the model cache. |
-| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | Actor class used to serve a model. |
+| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of the node's **host RAM** the WARM (off-GPU) model cache may use. Not a GPU knob. |
+| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | Actor class used to serve a model. Compose sets the sandboxed `...ray.sandbox.model.SandboxModelActor`. |
+| `NDIF_TP_MODEL_ACTOR_CLASS` | _(unset)_ | Tensor-parallel actor class. Unset means tensor parallelism is off entirely. |
 | `NDIF_DEFAULT_DTYPE` | `bfloat16` | Dtype models load in. |
-| `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | Per-request execution cap. |
+| `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | _(unset)_ | Per-request execution cap. Unset means no cap — set it before others can submit. |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Batch-padding memory factor. |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` | Batch-padding memory bias in bytes (500 MiB). |
 | `NDIF_MIN_NNSIGHT_VERSION` | _(unset)_ | Minimum client nnsight version accepted. |
@@ -219,7 +273,7 @@ that provider is *off* until you set its URL.
 | `NDIF_DASHBOARD_PASSWORD_HASH` | _(empty)_ | Bcrypt hash of the admin password. |
 | `NDIF_DASHBOARD_SESSION_SECRET` | `change-me-please-this-is-not-secure` | Cookie-signing secret — **set this in prod**. |
 | `NDIF_DASHBOARD_SESSION_TTL_DAYS` | `7` | Session cookie lifetime (days). |
-| `NDIF_DASHBOARD_DEV_MODE` | `false` | Enable dev conveniences. |
+| `NDIF_DASHBOARD_DEV_MODE` | `false` | Bypasses the dashboard login entirely. Compose sets it `true`. |
 | `NDIF_DASHBOARD_API_URL` | `http://localhost:8001` | NDIF API URL (falls back to `NDIF_API_URL`). |
 | `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | Dashboard state directory. |
 | `NDIF_DASHBOARD_FRONTEND_DIST` | `<package>/frontend/dist` | Built Vue UI directory to serve. |

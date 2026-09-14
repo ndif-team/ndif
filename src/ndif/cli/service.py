@@ -88,10 +88,13 @@ def env_services() -> tuple[str, ...]:
 def resolve_targets(names, *, default: list[Service]) -> list[Service]:
     """Map service names to ``Service`` objects, or fall back to ``default``.
 
-    Empty (or the literal ``all``) yields ``default``. De-duplicates while
-    preserving the order given; errors on unknown names.
+    Empty (or the literal ``all``) yields ``default``; ``all`` inside a list
+    expands to ``default`` in place, so ``NDIF_SERVICE="all dashboard"`` runs
+    the core stack plus the dashboard. De-duplicates while preserving the
+    order given; errors on unknown names.
     """
-    if not names or list(names) == ["all"]:
+    names = [n for name in names for n in ([s.name for s in default] if name == "all" else [name])]
+    if not names:
         return default
     unknown = [n for n in names if n not in SERVICE_MAP]
     if unknown:

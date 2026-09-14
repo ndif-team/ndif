@@ -51,10 +51,10 @@ threads are created fresh in it.
 
 The API pickles the whole `BackendRequestModel` — payload included — and
 `LPUSH`es it onto the list named by `NDIF_QUEUE_KEY`
-(`src/ndif/services/api/app.py:180`). The dispatcher `BRPOP`s the other end,
+(`src/ndif/services/api/app.py:183`). The dispatcher `BRPOP`s the other end,
 which makes it FIFO, and then drains up to `NDIF_QUEUE_FETCH_BATCH_MAX - 1` more
 with non-blocking `RPOP` to amortize round-trips
-(`src/ndif/services/api/queue/dispatcher.py:112`):
+(`src/ndif/services/api/queue/dispatcher.py:141`):
 
 ```python
 result = await client.brpop(CONFIG.queue_key, timeout=CONFIG.fetch_timeout_s)
@@ -87,7 +87,7 @@ if request.model_key not in self.processors:
 await self.processors[request.model_key].enqueue(request)
 ```
 
-(`src/ndif/services/api/queue/dispatcher.py:135`)
+(`src/ndif/services/api/queue/dispatcher.py:162`)
 
 So a typo'd or unavailable model key creates a real `Processor`, which asks the
 controller to deploy it, which fails in the evaluator — and the user gets an
@@ -100,7 +100,7 @@ A `Processor` is never torn down. An idle one sits with an empty pool at
 ## Provisioning: the first replica
 
 `enqueue` calls `ensure_started`, which no-ops if a replica already exists or
-setup is already underway (`src/ndif/services/api/queue/processor.py:140`).
+setup is already underway (`src/ndif/services/api/queue/processor.py:151`).
 Otherwise `start()` asks the controller for the model's current replicas; it
 adopts whatever is listed, or asks for one new one via `Replica.provision`. The
 client sees this as `PROVISIONING` then `DEPLOYING`, and `QUEUED` with a
@@ -112,7 +112,7 @@ takes the head. Nothing partitions requests across replicas in advance.
 
 > **Gotcha:** the `Processor` records `trusted` from the request that first
 > provisions it (`Processor.ensure_started`,
-> `src/ndif/services/api/queue/processor.py:140`) and passes it into the
+> `src/ndif/services/api/queue/processor.py:151`) and passes it into the
 > `DeploymentConfig` it sends the controller — which becomes the deployment's
 > `trust_remote_code`. A re-provision passes `None` and keeps the original
 > value, so the *first* requester of a model decides how it loads for everyone
@@ -121,20 +121,26 @@ takes the head. Nothing partitions requests across replicas in advance.
 ## Autoscaling: the second and third replica
 
 Each `Processor` owns one long-lived `autoscaling_loop` created in its
-constructor (`processor.py:229`). Every `NDIF_AUTOSCALING_INTERVAL_S` seconds,
-*only while `READY`*, it peeks the queue head and compares `enqueued_at`:
+constructor (`processor.py:92`; the loop itself is `processor.py:259`). Every
+`NDIF_AUTOSCALING_INTERVAL_S` seconds, *only while `READY`*, it calls
+`RequestQueue.oldest()` — the longest-waiting request across *both* priority
+groups, deliberately not the queue head (`request_queue.py:88`) — and compares
+its `enqueued_at`:
 
-- If the head has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` **and**
+- If it has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` **and**
   the pool is smaller than `NDIF_AUTOSCALING_MAX_REPLICAS`, it deploys one more
   replica and then sleeps `NDIF_AUTOSCALING_BACKOFF_S` before re-checking.
 - Otherwise it sleeps one interval.
 
-The signal is *head wait time*, not queue depth: a hundred fast requests that
-never leave anything at the head for 30 seconds will not trigger a scale-up,
-while one long-blocked request will. The backoff exists because `scale_up`
-returns as soon as the new replica is *ready*, not once it has drained anything
-— without it, a slow-draining queue would keep firing scale-ups until it hit the
-ceiling.
+The signal is *longest wait*, not queue depth: a hundred fast requests that never
+leave anything waiting 30 seconds will not trigger a scale-up, while one
+long-blocked request will. Reading the head instead would miss exactly the case
+that needs the capacity — the head is the oldest *priority* request, and a
+starved normal one can be far older (`request_queue.py:91`).
+
+The backoff exists because `scale_up` returns as soon as the new replica is
+*ready*, not once it has drained anything — without it, a slow-draining queue
+would keep firing scale-ups until it hit the ceiling.
 
 Scale-*down* does not exist here. Replicas leave the pool only by eviction,
 cancellation, or a purge; the controller is what reclaims their GPU memory
@@ -151,7 +157,7 @@ cancellation, or a purge; the controller is what reclaims their GPU memory
 | `NDIF_AUTOSCALING_MAX_REPLICAS` | `3` | Replica ceiling per model, via autoscaling |
 
 All are read once at import into a frozen `QueueConfig`
-(`src/ndif/services/api/queue/config.py:72`) — changing one means restarting the
+(`src/ndif/services/api/queue/config.py:26`, instantiated at `:72`) — changing one means restarting the
 API.
 
 ## Requeue, cancel, purge
@@ -160,15 +166,17 @@ Three things can pull a request back out of flight:
 
 - **Eviction.** If a dispatch fails with a lookup error, a dead actor, or
   `CachedActorError` (the actor's weights were moved to CPU), the replica drops
-  itself and hands the in-flight request back to the *front* of the queue,
-  keeping its original `enqueued_at` so the autoscaler still sees its true wait
-  (`src/ndif/services/api/queue/replica.py:231`). The user sees no error.
+  itself and re-enqueues the in-flight request with `prepend=True`
+  (`src/ndif/services/api/queue/replica.py:280`), which puts it at the front of
+  *its own* priority group rather than the whole queue — `prepend` is a sub-rank
+  inside the group (`request_queue.py:58`). It keeps its original `enqueued_at`,
+  so the autoscaler still sees its true wait. The user sees no error.
 - **Operator cancel.** `ndif kill <request_id>` goes through the dispatcher's
   event stream: if the request is queued it is removed and errored; if it is
   executing, the replica's worker is cancelled and the request errored.
 - **Purge.** A Ray connection error makes the dispatcher error every queued
   request for every model, clear the queues, cancel all replicas, and reconnect
-  (`dispatcher.py:151`).
+  (`Dispatcher.purge`, `dispatcher.py:169`).
 
 ## What "fair" means here
 
@@ -179,7 +187,7 @@ Not much, and it is worth being explicit about it:
   beyond the shared drain loop.
 - **Within a model:** two FIFO groups — every `priority`-tagged request is
   served before every normal one, and each group is FIFO by arrival
-  (`request_queue.py`). One user submitting a hundred requests occupies the line
+  (`request_queue.py:58`, `:68`). One user submitting a hundred requests occupies the line
   ahead of a user who submits one, within their group. There is no aging, so
   sustained priority traffic starves normal traffic indefinitely; the autoscaler
   is the only relief, and it caps at `NDIF_AUTOSCALING_MAX_REPLICAS`.

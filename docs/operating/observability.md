@@ -35,7 +35,7 @@ The metric-by-metric field reference lives in
 
 Grafana is the one you open. It runs with anonymous admin auth in the dev stack
 (`GF_AUTH_ANONYMOUS_ENABLED`, `GF_AUTH_DISABLE_LOGIN_FORM`,
-`docker/docker-compose.yml:75`) and lands on the **NDIF — Overview** dashboard
+`docker/docker-compose.yml:80-91`) and lands on the **NDIF — Overview** dashboard
 (`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, `:85`). See
 `docs/reference/ports.md` for every port the stack binds.
 
@@ -57,7 +57,7 @@ label cardinality is what kills Loki:
 
 | Label | Source | Values |
 |---|---|---|
-| `service` | `NDIF_SERVICE` env | `api`, `ray`, `dashboard`, **`model`** |
+| `service` | `NDIF_SERVICE` env (default `unknown`) | `api`, `ray`, `dashboard`, **`model`** |
 | `environment` | `NDIF_ENVIRONMENT`, default `dev` | your choice |
 | `logger` | added by `logging_loki` | the `ndif.*` sub-logger |
 | `severity` | added by `logging_loki` | `info`, `warning`, `error`, … |
@@ -68,7 +68,7 @@ label cardinality is what kills Loki:
 > runs *and* labels that process's telemetry — so `api`, `ray` and `dashboard`
 > are visible in `docker/docker-compose.yml`. **`model` is not.** The controller
 > injects `"NDIF_SERVICE": "model"` into each model actor's Ray `runtime_env`
-> (`cluster/deployment.py:187`) precisely so a replica's logs and metrics
+> (`cluster/deployment.py:200-205`) precisely so a replica's logs and metrics
 > attribute to the model rather than to the controller that spawned it. A replica
 > is a separate process on the ray node, and its logs are **not** under
 > `{service="ray"}` — that label carries only the Ray node's own output
@@ -163,7 +163,7 @@ scrapes — `targets: ["ray:8080"]` at a 10s interval
 network, not published to the host. NDIF does not use Ray Serve anywhere.
 
 Retention is `--storage.tsdb.retention.time=15d`
-(`docker/docker-compose.yml:63`). Prometheus has no `depends_on: ray` and simply
+(`docker/docker-compose.yml:61-64`). Prometheus has no `depends_on: ray` and simply
 retries until the (slow, GPU-bound) ray container is up.
 
 Useful series: `ray_node_cpu_utilization`, `ray_node_gpus_utilization`,
@@ -240,7 +240,7 @@ stream. If you only have an email, the Users & Usage dashboard
 | `NDIF_INFLUX_BATCH_SIZE` | `500` | Flush at N points… |
 | `NDIF_INFLUX_FLUSH_INTERVAL_MS` | `1000` | …or after this long |
 | `NDIF_INFLUX_TIMEOUT_MS` | `10000` | Per-write HTTP timeout |
-| `NDIF_SERVICE` | `unknown` | Label/tag on everything this process emits |
+| `NDIF_SERVICE` | `unknown` for the providers (`loki.py:142`, `influx.py:74`); `all` in the image | Label/tag on everything this process emits, **and** which service(s) `ndif start` runs |
 | `NDIF_ENVIRONMENT` | `dev` | Label/tag distinguishing prod / staging / dev |
 
 Full table in `docs/reference/env-vars.md`. Retention: Prometheus 15d (compose

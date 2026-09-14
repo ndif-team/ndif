@@ -10,8 +10,9 @@ sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, 
 
 ## What this covers
 
-There is no `CONTRIBUTING.md`, no CI, no lint gate, and no PR template in this
-repo. What there *is* is a strong and consistent house style visible in the source
+There is no `CONTRIBUTING.md`, no lint gate, and no PR template in this repo, and
+CI (`.github/workflows/`) only builds and publishes — no workflow runs the tests
+or `ruff`. What there *is* is a strong and consistent house style visible in the source
 itself. This page states it explicitly so you can hold the bar without reverse-
 engineering it. Everything below is inferred from the code; where the code and a
 comment disagree, the code wins and the comment is a bug.
@@ -123,7 +124,7 @@ imports `lib/` directly and would otherwise have no door in.
 
 Prefer subclassing an existing seam to adding a branch. The sandbox model actor is
 the worked example: it is a handful of overridden hooks on
-`BaseModelDeployment`'s `run` template (`modeling/base.py:244`), not a parallel
+`BaseModelDeployment`'s `run` template (`modeling/base.py:300`), not a parallel
 implementation. Same for providers (`Provider`) and model actors
 (`BaseModelDeployment`).
 
@@ -164,11 +165,14 @@ Commits made with agent assistance carry a trailer:
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
 ```
 
-`main` is the branch; branch from it for your change.
+`main` is the branch; branch from it for your change. A push to `main` builds and
+pushes the ECR image (`.github/workflows/build_images.yml`); a `v*` tag publishes
+the Docker Hub images and the PyPI wheel (`publish_docker.yml`, `publish.yml`), so
+a tag is a release, not a checkpoint.
 
 ## Before you open a PR
 
-There is no automated gate, so this is on you:
+The workflows publish; they do not check. So this is on you:
 
 1. Bring a stack up and run the live suite — `just up`, then `pytest tests/`. See
    [testing.md](./testing.md). An all-skipped run means the server wasn't up.
@@ -176,15 +180,16 @@ There is no automated gate, so this is on you:
    the sandbox path is covered too (testing.md has the recipe). Local dev is
    auth-off and therefore trusted-by-default; that path is otherwise never
    exercised.
-3. `ruff check src/` if you have the `dev` extra. Nothing enforces it, but the
+3. `ruff check src/` if you have the `dev` extra. No workflow enforces it, but the
    tree is clean.
 4. If you added an env var, update the README table and
    [docs/reference/env-vars.md](../reference/env-vars.md). If you added a `start.sh`
    or other non-`.py` file a service needs, update `[tool.setuptools.package-data]`
    in `pyproject.toml` — otherwise it works from a checkout and breaks from a wheel.
 
-This is a young repo at version `0.0.1`. Nothing here is a stable public API, and a
-change that deletes a concept is worth more than one that adds a flag.
+This is a young repo; the version is the git tag (setuptools-scm, `pyproject.toml` `dynamic = ["version"]`), 0.1.0 at this writing. Nothing here is a
+stable public API, and a change that deletes a concept is worth more than one that
+adds a flag.
 
 ## Related
 

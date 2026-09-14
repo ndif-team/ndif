@@ -38,8 +38,16 @@ Two caveats on `ndif doctor`: its Binaries section checks for `ray`,
 only ever run compose, and it treats a missing `nvidia-smi` as a hard failure
 even though the non-GPU half of the stack runs fine without one. Connectivity is
 informational and never sets the exit code (`_report_connectivity`,
-`cli/commands/doctor.py:82`). Reach for it when a *host* install misbehaves;
-reach for `just ps` when compose does.
+`cli/commands/doctor.py:92-104`). Its Environment section now also reports torch
+(with its CUDA build), transformers and ray, which are informational rather than
+failures (`doctor.py:44-52`). Reach for it when a *host* install misbehaves; reach
+for `just ps` when compose does. `ndif version` (or
+`docker run --rm ndif/ndif version`) answers the narrower "what is installed"
+question on its own.
+
+A third caveat: doctor's `minio not on PATH` hint says "install the MinIO server
+binary", and there is no longer a binary to download — see
+[The ndif CLI](cli.md#ndif-doctor) for the two realistic ways to get one.
 
 Two more worth having in the muscle memory:
 
@@ -65,15 +73,16 @@ curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher recon
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
 | `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status` per-GPU `available_memory_bytes` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
-| `ndif deploy` errors with an HF `trust_remote_code` message | Every CLI deploy is `trusted=False` | the evaluator traceback in the error | Deploy from the dashboard, which hard-codes `trusted: True` |
+| `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are `trusted=False` unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>` (`cli/commands/deploy.py:23`), or the dashboard, which deploys trusted |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision is part of the key), or the replica is only WARM | `ndif status --show-cold` | Name the exact revision, or `--all` |
 | `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not | `curl localhost:8001/ping` | Restart `api` |
 | Code changes have no effect | The source is baked into the image; there is no bind mount | — | `just ta` (down → build → up) |
+| `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth — grpc fork handlers skipped while its threads were busy | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` right before `SpecificServer startup failed` | `ray/start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it. Retry: the API's dispatcher loops, so it only slows boot |
 
 ## A service won't start
 
 Every NDIF container is the **same image** with a different `NDIF_SERVICE`, whose
-entrypoint is `ndif start --foreground` (`docker/Dockerfile:49`). So a startup
+default command is `ndif start --foreground` (`docker/Dockerfile:141-142`). So a startup
 crash is almost always in that service's `start.sh` or its first import.
 
 ```bash
@@ -90,7 +99,7 @@ docker compose -f docker/docker-compose.yml logs --tail=50 api
 | A Python `ImportError` for an extra | The image installs `[api,ray,metrics,postgres,dashboard]` with `--no-deps`; a new dependency needs a `requirements.txt` entry |
 | `queue/config.py` raising at import | A non-integer or non-positive `NDIF_QUEUE_*` / `NDIF_AUTOSCALING_*` value. Deliberate: a typo fails the process rather than silently defaulting |
 
-Remember the compose project is named `dev` (`docker-compose.yml:8`), so the
+Remember the compose project is named `dev` (`docker-compose.yml:14`), so the
 containers are `dev-api-1`, `dev-ray-1`, `dev-dashboard-1` if you reach past
 `just` for `docker logs` or `docker exec`.
 
@@ -100,14 +109,14 @@ containers are `dev-api-1`, `dev-ray-1`, `dev-dashboard-1` if you reach past
 --head`, which reports `cuda_memory_bytes` from `torch.cuda` and passes it as a
 custom Ray resource. With no visible GPU that number is 0 and Ray advertises no
 `GPU` resource at all — and `Cluster.update_nodes` **skips every node without
-one** (`cluster/cluster.py:92`). The cluster then has zero nodes, and every
+one** (`cluster/cluster.py:106`). The cluster then has zero nodes, and every
 deploy fails with:
 
 ```
 No GPU nodes available.
 ```
 
-(`cluster/cluster.py:220`). This is a different failure from `CANT_ACCOMMODATE`,
+(`cluster/cluster.py:247`). This is a different failure from `CANT_ACCOMMODATE`,
 which means nodes exist but none has room.
 
 Check, in order:
@@ -120,12 +129,12 @@ ndif status                                            # Nodes: N | Total GPUs: 
 ```
 
 The compose file reserves GPUs with a `deploy.resources.reservations.devices`
-block (`docker-compose.yml:257`-`263`) — the compose equivalent of
+block (`docker-compose.yml:281`-`287`) — the compose equivalent of
 `docker run --gpus all` — which requires the **NVIDIA container toolkit** on the
 host. Without it the container fails to create outright. Only `ray` gets GPUs;
 nothing else in the stack needs one.
 
-> **Gotcha:** `shm_size: "4gb"` (`docker-compose.yml:256`) is not optional either.
+> **Gotcha:** `shm_size: "4gb"` (`docker-compose.yml:280`) is not optional either.
 > Ray's plasma store lives in `/dev/shm` and Docker's default is 64 MB, which
 > makes Ray spill to disk or fail outright.
 
@@ -175,16 +184,17 @@ stuck further down the path — go to
 ```json
 {"ok": true, "hint": "Frontend dist not found. Either run `npm run build` in
  src/ndif/services/dashboard/frontend, or use `npm run dev` ...",
- "frontend_dist": "/app/src/ndif/services/dashboard/frontend/dist"}
+ "frontend_dist": "..."}
 ```
 
 The backend mounts the built Vue app only if `frontend_dist` exists and contains
 `index.html` (`dashboard/backend/app.py:57`); otherwise it registers that hint
-route instead. And **`dist/` is gitignored and untracked** (`.gitignore:9`), while
-`docker/Dockerfile` installs no Node toolchain — it `COPY src/ ./src/` and pip
-installs. So a fresh clone plus `just up` produces a dashboard backend whose API
-works and whose UI does not exist. It looks like a broken deploy; it is a missing
-build step.
+route. The build is **committed** — `.gitignore:14-15` re-includes
+`src/ndif/services/dashboard/frontend/dist/` and `pyproject.toml` packages it —
+so a fresh clone, the image and a `pip install` all carry it. Seeing the hint
+therefore means one of: `NDIF_DASHBOARD_FRONTEND_DIST` points somewhere else, a
+checkout where `dist/` was deleted, or an `npm run build` that failed halfway.
+Rebuild it with
 
 ```bash
 cd src/ndif/services/dashboard/frontend
@@ -193,14 +203,13 @@ cd - && just ta dashboard          # rebuild the image so dist/ is copied in
 ```
 
 For iterating on the UI, `npm run dev` runs Vite and proxies `/api` to the
-backend, so you don't rebuild the image at all. `NDIF_DASHBOARD_FRONTEND_DIST`
-overrides the location if you serve a build from elsewhere.
+backend, so you don't rebuild the image at all.
 
 Two neighbouring dashboard symptoms:
 
 | Symptom | Cause |
 |---|---|
-| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml:192`) makes `require_auth` return the configured username unchecked |
+| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml`) makes `require_auth` return the configured username unchecked |
 | The reconcile/monitor crons never run | `start.sh` wires cron only when `cron` is on PATH and `/etc/cron.d` is writable — true in the container, false outside it |
 
 ## Presigned URLs are unreachable from the client
@@ -215,7 +224,7 @@ uploads through.
 | `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client (`objectstore.py:41`) |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET (`objectstore.py:43`, `:93`) |
 
-Both are set on `api` and `ray` (`docker-compose.yml:150`-`151`, `223`-`224`).
+Both are set on `api` and `ray` (`docker-compose.yml:159`-`160`, `247`-`248`).
 Swap them and every job completes and then fails to download; leave the public
 one empty and `public_client` falls back to `url`, which is correct for a
 single-host install and wrong for compose. To reproduce end to end, take the
@@ -233,7 +242,7 @@ constraint for non-blocking jobs polled much later.
 container there is no Redis on localhost. Leave `NDIF_REDIS_URL` unset there and
 every model actor tries to reach a Redis that isn't there — the response
 handshake fails and nothing a user submits ever gets a status. Compose sets it
-explicitly (`docker-compose.yml:213`).
+explicitly (`docker-compose.yml:237`).
 
 Ray's own GCS is deliberately kept off 6379: `services/ray/start.sh:60` passes
 `--port="${NDIF_RAY_HEAD_PORT:-6385}"` and the CLI `DEFAULTS`

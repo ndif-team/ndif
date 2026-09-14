@@ -1,10 +1,15 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ndif"
-version = "0.0.1"
+# The version is the git tag (setuptools-scm, as in nnsight): a release is
+# `git tag v0.1.0`, an untagged commit becomes 0.1.1.devN+g<sha>. Where there
+# is no git metadata — the Docker build context excludes .git — the build
+# passes the version in through SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NDIF
+# (docker/Dockerfile), else fallback_version below applies.
+dynamic = ["version"]
 description = "The NDIF server, which performs deep inference and serves nnsight requests remotely"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -129,6 +134,9 @@ ndif = "ndif.cli:cli"
 [project.urls]
 Homepage = "https://github.com/ndif-team/ndif"
 Repository = "https://github.com/ndif-team/ndif"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

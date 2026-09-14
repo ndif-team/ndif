@@ -88,7 +88,7 @@ rejected key or an unreachable backend raises before any endpoint body runs.
 
 **`require_ray_connection`** (`app.py:106`) — an app-level route dependency, not
 a middleware. It reads the `ray:connected` Redis flag (written by
-`Dispatcher.connect`, `queue/dispatcher.py:109`) and raises 503 if absent.
+`Dispatcher.connect`, `queue/dispatcher.py:129`) and raises 503 if absent.
 Applied to `/request`, `/status`, `/env`, and `/connected`.
 
 **`validate_request`** (`auth.py:140`) — the `/request` body dependency. It parses
@@ -102,7 +102,7 @@ Auth is entirely optional: if `NDIF_POSTGRES_URL` is unset,
 `PostgresProvider.enabled()` is False and the function returns `None`.
 
 With Postgres configured, a key is valid **iff its row exists in `keys`** — key
-issuance is a separate login/account service's job. `_KEY_QUERY` (`auth.py:59`)
+issuance is a separate login/account service's job. `_KEY_QUERY` (`auth.py:55`)
 LEFT JOINs `key_user_tag_assignments` / `user_tags`, so a key with no tags still
 returns one row (tag NULL), distinguishing "known key, no tags" from "unknown
 key".
@@ -136,7 +136,7 @@ elif not client_set_trusted:
 ```
 
 `BackendRequestModel.trusted` defaults to `False`
-(`common/schema/request.py:57`), and that default is what makes user code run in
+(`common/schema/request.py:56`), and that default is what makes user code run in
 a separate process. With auth **on**, the key's `trusted` user_tag decides and any
 client-supplied value is overwritten. With auth **off**, the client's own `trusted`
 is honored — `model_fields_set` distinguishes "unspecified" (which defaults to
@@ -148,7 +148,7 @@ sending `trusted: false` without standing up Postgres.
 - A **trusted** request's traced block is executed **in-process inside the model
   actor, next to the loaded weights** — `SandboxModelDeployment.execute` defers
   to the base implementation when `request.trusted`
-  (`services/ray/sandbox/model.py:242`).
+  (`services/ray/sandbox/model.py:218`).
 - An **untrusted** request's block is shipped to a separate runner subprocess and
   driven over a Unix socket, so arbitrary user Python never runs in the actor
   process. Note that this is process separation, not a hardened jail — see
@@ -168,12 +168,13 @@ sending `trusted: false` without standing up Postgres.
 
 The flag is not re-derived anywhere. It rides the pickled request into the queue,
 where `Processor.enqueue` passes it to `ensure_started(request.trusted)`
-(`queue/processor.py:114`) and `Processor.ensure_started` copies it to
-`self.trusted` (`queue/processor.py:153`). `Replica.provision` then builds
-`DeploymentConfig(replicas=1, trusted=processor.trusted)` (`queue/replica.py:103`),
-and the controller threads that into the actor's model load as
-`trust_remote_code` (`services/ray/deployments/controller/controller.py:280`,
-`.../cluster/cluster.py:169`).
+(`queue/processor.py:119`) and `Processor.ensure_started` copies it to
+`self.trusted` (`queue/processor.py:165`). `Replica.provision` then asks the
+controller for one more replica with `DeploymentConfig(trusted=processor.trusted)`
+(`queue/replica.py:120`), the cluster stamps it onto the `Deployment`
+(`.../cluster/cluster.py:300`), and the controller threads it into the actor's
+model load as `BaseModelDeploymentArgs(trust_remote_code=deployment.trusted)`
+(`services/ray/deployments/controller/controller.py:450`).
 
 `ensure_started` only assigns when its argument is not `None`, and a
 *re*-provision after an eviction passes `None`. So the coupling to remember when
@@ -224,46 +225,46 @@ flowchart TB
 
 Every line of `create_request` (`app.py:122`) matters:
 
-- `request.payload = await blob.read()` (`app.py:147`) pulls the *entire*
+- `request.payload = await blob.read()` (`app.py:150`) pulls the *entire*
   serialized-interventions blob into memory. No streaming, no size cap.
 - The `ndif-timestamp` header (the client's send time) becomes a `SENT` bucket on
   `RequestStatusTimeMetric` — client→server transit — but only when
-  `received_at >= sent_at`, so obvious clock skew is dropped (`app.py:162`).
-- `request.response(Status.RECEIVED, ...)` (`app.py:174`) advances the status
+  `received_at >= sent_at`, so obvious clock skew is dropped (`app.py:165`).
+- `request.response(Status.RECEIVED, ...)` (`app.py:177`) advances the status
   *without publishing anything*. `_advance_status`
-  (`common/schema/request.py:90`) seeds `last_status_time`, which doubles as the
+  (`common/schema/request.py:115`) seeds `last_status_time`, which doubles as the
   ingress timestamp and travels with the pickled request so the next hop (QUEUED)
   can bill the gap.
 - `async_bytes_client.lpush(QUEUE_CONFIG.queue_key, pickle.dumps(request))`
-  (`app.py:180`) is the entire handoff. `LPUSH` plus the dispatcher's `BRPOP`
+  (`app.py:183`) is the entire handoff. `LPUSH` plus the dispatcher's `BRPOP`
   gives FIFO. The binary client is required — `async_client` has
   `decode_responses=True` and would mangle the pickle.
 - `RequestSizeMetric` gets the payload size plus the caller's IP (read only here,
-  `app.py:186`) and user-agent.
+  `app.py:189`) and user-agent.
 
 The `BackendResponseModel` returned over HTTP is the *only* status the client
 gets synchronously; everything after is pubsub or object store.
 
 ## Responses out
 
-`BackendRequestModel.respond` / `arespond` (`common/schema/request.py:134`,
-`:161`) is the single fan-out point, and it branches on `session_id`. A
+`BackendRequestModel.respond` / `arespond` (`common/schema/request.py:161`,
+`:203`) is the single fan-out point, and it branches on `session_id`. A
 **blocking** job (`session_id` set, because the client opened `/subscribe` first)
 gets `PUBLISH <session_id> <response json>`, which the websocket handler forwards
 verbatim. A **non-blocking** job (no `session_id`) has its latest response
 written to the object store at `responses/{request_id}.json`, which
 `GET /response/{id}` reads back; `LOG` updates are skipped on that path.
 `Status.LOG` and a repeat of the current status are no-ops for status timing
-(`request.py:99`) but a LOG still reaches a live websocket.
+(`request.py:124`) but a LOG still reaches a live websocket.
 
 Nothing in the API writes a response itself except the RECEIVED one it returns.
 QUEUED / PROVISIONING / DEPLOYING come from the Processor, DISPATCHED from the
 Replica, RUNNING / LOG / COMPLETED / ERROR from the model actor
-(`services/ray/deployments/modeling/base.py:261`, `:370`).
+(`services/ray/deployments/modeling/base.py:317`, `:460`).
 
 ### The websocket
 
-`subscribe` (`app.py:368`) accepts, mints `session_id = uuid.uuid4().hex`,
+`subscribe` (`app.py:371`) accepts, mints `session_id = uuid.uuid4().hex`,
 subscribes to the Redis channel of that name, and *only then* sends
 `{"session_id": ...}`. Subscribing before handing out the id closes a
 lost-message race: the client only POSTs after receiving the id, so the channel
@@ -275,11 +276,11 @@ returns only on disconnect). `asyncio.wait(..., FIRST_COMPLETED)` tears down
 whichever loses; the `finally` cancels both and
 `gather(..., return_exceptions=True)`s them, because `CancelledError` is a
 `BaseException` that a plain `except Exception` would let bubble out as a logged
-"Exception in ASGI application" (`app.py:424`).
+"Exception in ASGI application" (`app.py:440`).
 
 ## The coalesced caches
 
-`/status` and `/env` share one helper, `_coalesced_fetch` (`app.py:202`). The API
+`/status` and `/env` share one helper, `_coalesced_fetch` (`app.py:205`). The API
 cannot reach the controller, so on a cache miss it subscribes to
 `<ready_channel>`, re-checks the cache (a refresh could have landed between the
 GET and the SUBSCRIBE), then `SET <requested_key> 1 NX EX <timeout>` — the
@@ -313,19 +314,19 @@ channel.
 
 ## Gotchas
 
-> **Pickle on the wire.** `app.py:181` pickles a `BackendRequestModel` into a
-> Redis list and `queue/dispatcher.py:125` unpickles it. Anyone who can write to
+> **Pickle on the wire.** `app.py:184` pickles a `BackendRequestModel` into a
+> Redis list and `queue/dispatcher.py:145` unpickles it. Anyone who can write to
 > the `queue` key gets code execution in the dispatcher process. Redis has no
 > auth in the dev compose stack and its port is published to the host
-> (`docker/docker-compose.yml:14`).
+> (`docker/docker-compose.yml:20`).
 
-> **`/response/{id}` is unauthenticated** (`app.py:304`). A request id is a
+> **`/response/{id}` is unauthenticated** (`app.py:307`). A request id is a
 > uuid4 hex, but knowing one lets anyone read that job's latest response —
 > including, on COMPLETED, the presigned result URL. `/whoami` is likewise open
-> by design (`app.py:355`).
+> by design (`app.py:344`).
 
 > **`ray:connected` has no TTL.** `Dispatcher.connect` sets it on connect and
-> deletes it while reconnecting (`dispatcher.py:85`, `:109`). If the dispatcher
+> deletes it while reconnecting (`dispatcher.py:129`, `:105`). If the dispatcher
 > process dies outright, the flag stays set, `require_ray_connection` keeps
 > passing, `GET /connected` still reports "connected", and requests accumulate in
 > the Redis list unserved.
@@ -339,8 +340,8 @@ channel.
 
 > **Blocking calls must be wrapped.** `ObjectStoreProvider.get` is boto3
 > (synchronous), so `/response/{id}` runs it through `asyncio.to_thread`
-> (`app.py:313`), and `arespond` does the same for the object-store write
-> (`request.py:178`). Metric emission is already non-blocking; S3 and the sync
+> (`app.py:316`), and `arespond` does the same for the object-store write
+> (`request.py:228`). Metric emission is already non-blocking; S3 and the sync
 > Redis client are not. Version gating, by contrast, is import-time
 > (`versioning.py:23`) — changing `NDIF_MIN_NNSIGHT_VERSION` needs a restart.
 

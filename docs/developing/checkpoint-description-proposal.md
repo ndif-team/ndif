@@ -1,21 +1,26 @@
 ---
 title: "One call to describe a checkpoint"
-one_liner: Why the controller now asks nnsight one question about a checkpoint instead of four, why max_tp_size deliberately isn't one of them, and the two live problems the change fixed.
-tags: [internals, dev, controller]
+one_liner: "Design record, not a proposal: why the controller asks nnsight one question about a checkpoint instead of four, why max_tp_size deliberately isn't part of it, and the two problems it fixed."
+tags: [internals, dev, controller, proposal]
 related: [docs/developing/controller-internals.md, docs/operating/models-and-deployment.md, docs/concepts/deployments-and-eviction.md]
 sources: [src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/controller.py]
 ---
 
 # One call to describe a checkpoint
 
-**Status: implemented.** Written down after an audit of the tensor-parallel work,
-then built. Kept because the reasoning outlived the change — particularly the
-part about what `max_tp_size` is, and one correction the implementation forced.
+> **This page is a design record, not a proposal, and not a description of
+> current behaviour.** The interface it argues for is **shipped**: `ModelEvaluator._entry`
+> makes one `Remotable.describe_checkpoint` call (`.../cluster/evaluator.py:155`)
+> plus a separate `Remotable.max_tp_size` (`:161`). For what the evaluator does
+> today, read [Controller Internals](controller-internals.md); read this for *why*
+> it is shaped that way. Written after an audit of the tensor-parallel work, then
+> built; kept because the reasoning outlived the change — particularly the part
+> about what `max_tp_size` is, and one correction the implementation forced.
 
 Before the controller can place a model it has to know things about a checkpoint
 it has not loaded. Those answers live in nnsight, because the wrapper class is
-what knows how to read its own checkpoint. `ModelEvaluator._entry` asks for them
-one at a time:
+what knows how to read its own checkpoint. The shape this replaced asked for them
+one at a time, each a public/hook pair on `Remotable`:
 
 ```python
 base_size_bytes = Remotable.estimate_bytes(model_key, resolved, trust_remote_code=...)
@@ -24,17 +29,17 @@ config          = Remotable.checkpoint_config(model_key, trust_remote_code=...)
 revision        = Remotable.checkpoint_revision(model_key)
 ```
 
-Each is a public/hook pair on `Remotable` — four now, and growing along a
-predictable axis (activation footprint, KV-cache size, quantization support,
-minimum degree), each addition about 20 lines of boilerplate.
+Four pairs, growing along a predictable axis (activation footprint, KV-cache size,
+quantization support, minimum degree), each addition about 20 lines of
+boilerplate.
 
 ## The two problems it fixed
 
 ### It runs on the controller's event loop (and the timeout story is smaller than it looked)
 
-`estimate_bytes` calls `HfApi().model_info`; `max_tp_size` and
-`checkpoint_config` each call `AutoConfig.from_pretrained`. None passed a
-timeout, and all of it happens inside `Cluster.deploy`, which is synchronous
+`estimate_bytes` called `HfApi().model_info`; `max_tp_size` and
+`checkpoint_config` each called `AutoConfig.from_pretrained`. None passed a
+timeout, and all of it happened inside `Cluster.deploy`, which is synchronous
 inside the controller's `async def deploy`.
 
 **Correction, found while fixing it:** "no timeout" was true of the API surface
@@ -73,9 +78,9 @@ this problem is worth.
 
 ### The same config is fetched twice per cold entry
 
-`_remoteable_max_tp_size` and `_remoteable_checkpoint_config` each call
-`AutoConfig.from_pretrained` through a shared private reader that does not cache.
-Two network round trips for one object, on the path that is already blocking the
+`_remoteable_max_tp_size` and `_remoteable_checkpoint_config` each called
+`AutoConfig.from_pretrained` through a shared private reader that did not cache.
+Two network round trips for one object, on the path that was already blocking the
 event loop.
 
 **Done:** `_config` memoizes on `(model_key, trust_remote_code)`. Measured on a
@@ -84,7 +89,9 @@ live stack: a cold `describe_checkpoint` for Llama-3.2-3B takes 1.14s, the
 
 ## The interface
 
-The four pairs became one, as sketched here:
+The four pairs became one. What shipped, in nnsight's
+`modeling/mixins/remotable.py` (`CheckpointInfo` at `:52`,
+`describe_checkpoint` at `:373`, `max_tp_size` still separate at `:394`):
 
 ```python
 @dataclass

@@ -56,19 +56,19 @@ def cli(env_file):
     config.load_env_files(env_file)
 
 
-for _command in (start, stop, restart, deploy, evict, status, queue, kill, export,
-                 env, logs, info, doctor):
+for _command in (start, stop, restart, deploy, scale, evict, status, queue, kill,
+                 export, env, logs, info, doctor, version):
     cli.add_command(_command)
 ```
 
-(`src/ndif/cli/main.py:26`.) There is no plugin discovery and no lazy command loading;
+(`src/ndif/cli/main.py:44`.) There is no plugin discovery and no lazy command loading;
 the group's docstring carries the four-line cheat sheet shown by `ndif --help`. Because
 the callback runs before any subcommand, `--env-file` must precede the verb:
 `ndif --env-file prod.env deploy gpt2`.
 
 **Import discipline.** `main.py` imports every command module at startup, so those
 modules must stay cheap. `ray`, `nnsight`, `redis`, and `yaml` are imported *inside*
-functions in `lib/` (e.g. `lib/deploy.py:57`, `lib/models.py:24`) precisely so that
+functions in `lib/` (e.g. `lib/deploy.py:58`, `lib/models.py:24`) precisely so that
 `ndif --help` and the service-lifecycle commands don't drag in the compute stack.
 Keep that up: a top-level `import ray` in a command module slows down every invocation.
 
@@ -158,7 +158,7 @@ Three conventions make this work for both callers:
 resolve) and `normalize_specs`, the single place a deploy spec's shape is defined.
 The CLI populates every field the deploy path supports — `envoy_class`,
 `padding_factor`, `execution_timeout_seconds`, `trusted`, `dtype`, `model_key` — via
-`load_model_config` (`cli/lib/model_config.py:42-95`) and `ndif deploy`'s `--trusted` /
+`load_model_config` (`cli/lib/model_config.py:34`) and `ndif deploy`'s `--trusted` /
 `--dtype` flags, so a `models.yaml` entry can set any of them.
 
 ## Model keys and models.yaml
@@ -187,8 +187,8 @@ paying for resolution twice.
 (`checkpoint`, `revision`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
 `padding_factor`, `execution_timeout_seconds`, `envoy_class`, `model_key`), filling the
 rest from the caller's defaults; `save_model_config` writes the inverse, collapsing to the
-bare-string form when an entry carries no non-default options. Nothing `normalize_specs`
-accepts is unreachable from `ndif deploy -f` anymore.
+bare-string form when an entry carries no non-default options. Every field `normalize_specs`
+accepts is reachable from `ndif deploy -f`.
 
 ## The doctor checks
 
@@ -197,15 +197,37 @@ one that returns nothing:
 
 | Function | What it does |
 |---|---|
-| `_check_environment` (`:30`) | Python ≥ 3.12; `importlib.metadata.version` for `ndif` and `nnsight` |
-| `_check_binaries` (`:46`) | `shutil.which` for `ray`, `redis-server`, `minio`, each with an install hint |
-| `_check_gpu` (`:62`) | `nvidia-smi --query-gpu=name,memory.total`, 3s timeout |
-| `_report_connectivity` (`:82`) | `lib/checks.py` probes; **never** counted as failures |
+| `_check_environment` (`:31`) | Python ≥ 3.12, then `importlib.metadata.version` for `ndif` and `nnsight` as hard requirements. It then reports `torch` (with its CUDA line), `transformers` and `ray` from `commands/version.py:collect` — informational, though a missing one still counts, since the `ray` extra is what makes a GPU node work |
+| `_check_binaries` (`:56`) | `shutil.which` for `ray`, `redis-server`, `minio`, each with an install hint |
+| `_check_gpu` (`:72`) | `nvidia-smi --query-gpu=name,memory.total`, 3s timeout |
+| `_report_connectivity` (`:92`) | `lib/checks.py` probes; **never** counted as failures |
 
 The split matters: connectivity returning `False` is a normal answer (the service is
 just stopped), so folding it into the exit code would make `ndif doctor` useless as a
 pre-flight check. `lib/checks.py` functions must keep that property — return a bool,
 never raise, never mutate anything.
+
+## Version reporting
+
+Two different things answer "what version is this?".
+
+- **`ndif --version`** is click's own, wired by `@click.version_option(package_name="ndif")`
+  (`main.py:31`). It prints the installed `ndif` distribution version and nothing else.
+- **`ndif version`** (`commands/version.py`) prints the *stack*: `python`, then `ndif`,
+  `nnsight`, `torch`, `transformers`, `ray`, `peft`, `accelerate` from
+  `importlib.metadata`, plus `cuda` read off `torch.version.cuda` when torch imports
+  (`collect`, `version.py:22`). A package that isn't installed renders
+  `(not installed)` rather than failing. `--json-output` emits the same dict as JSON.
+
+`collect()` is the shared primitive: `doctor` imports it to report torch/transformers/ray
+(`commands/doctor.py:18`), so the two never drift.
+
+`--write <path>` writes the JSON to a file instead of printing it (`version.py:48`).
+That is how the image records what it resolved to: `docker/Dockerfile` runs
+`ndif version --write /etc/ndif/build.json` *after* the dependency layers, because the
+versions that decide the server's behaviour are only known once pip has resolved them.
+The build-time *inputs* (`TORCH_CUDA`, `TORCH_SPEC`, the git ref) go on OCI labels
+instead. `BUILD_FILE` (`version.py:17`) names that path.
 
 ## Adding a command
 
@@ -229,7 +251,7 @@ never raise, never mutate anything.
 7. **Handle errors the house way**: catch `NDIFConnectivityError` and `Exception`,
    `click.echo(f"✗ Error: {e}", err=True)`, then `raise click.Abort()`. Argument
    validation that the click types can't express raises `click.ClickException` before
-   any work starts (see `commands/deploy.py:43`).
+   any work starts (see `commands/deploy.py:63`).
 8. **Update `docs/operating/cli.md`** — the command table and a section.
 
 If the verb manages a *process* rather than a model, add a `Service` to `service.py`
@@ -239,14 +261,13 @@ instead of a command; `start`, `stop`, and `logs` pick it up automatically from
 ## Gotchas
 
 - `commands/queue.py:85` renders a `status_changed_at` field that
-  `Processor.snapshot()` never emits, so the "(for HH:MM:SS)" suffix on a processor's
-  status never appears. Harmless, but don't assume the CLI's render is a schema.
-- `commands/export.py:96` (`_build_models_list`) duplicates the serialization logic in
-  `lib/model_config.py:72` (`save_model_config`) for the `--stdout` path. Change both.
+  `Processor.snapshot()` (`queue/processor.py:504`) never emits, so the
+  "(for HH:MM:SS)" suffix on a processor's status never appears. Harmless, but don't
+  assume the CLI's render is a schema.
 - `lib/events.py:25` constructs its Redis client with `socket_timeout=None` on purpose:
   redis-py 8.0+ otherwise applies a 5s socket timeout against Redis 8 servers, which
   would abort the blocking `brpop` before the dispatcher replies.
-- `notify_reconcile` swallows every exception (`lib/events.py:74`). A deploy that
+- `notify_reconcile` swallows every exception (`lib/events.py:59`). A deploy that
   succeeded on the controller must not fail because Redis hiccuped — but it also means
   a silently-missed reconcile leaves a live Processor with a stale replica pool until
   its next natural refresh.
@@ -255,10 +276,12 @@ instead of a command; `start`, `stop`, and `logs` pick it up automatically from
 
 ## Testing
 
-There is no CI in this repo and no unit tests for the CLI. The only suite is the
-live-server one under `tests/`, which skips unless the stack is already up at
-`localhost:8001`. Bring the stack up, then run `pytest` — that is the whole story
-today. See `docs/developing/testing.md`.
+There are no unit tests for the CLI. The only suite is the live-server one under
+`tests/`, which skips unless the stack is already up at `localhost:8001`. Bring the
+stack up, then run `pytest` — that is the whole story today. CI
+(`.github/workflows/`) builds and publishes images and wheels; no workflow runs the
+suite, so a CLI change is only ever exercised by hand. See
+`docs/developing/testing.md`.
 
 ## Related
 

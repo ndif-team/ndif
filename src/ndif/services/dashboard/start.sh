@@ -61,7 +61,7 @@ if command -v cron >/dev/null 2>&1 && [ -w /etc/cron.d ]; then
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 NDIF_DASHBOARD_DATA_DIR=$DATA_DIR
-NDIF_API_URL=${NDIF_API_URL:-http://api:8001}
+NDIF_API_URL=${NDIF_API_URL:-http://localhost:8001}
 NDIF_API_KEY=${NDIF_API_KEY:-}
 NDIF_RAY_ADDRESS=${NDIF_RAY_ADDRESS:-}
 NDIF_REDIS_URL=${NDIF_REDIS_URL:-}

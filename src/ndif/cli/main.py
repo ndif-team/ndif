@@ -22,6 +22,7 @@ from .commands.restart import restart
 from .commands.start import start
 from .commands.status import status
 from .commands.stop import stop
+from .commands.version import version
 
 
 @click.group()
@@ -41,5 +42,5 @@ def cli(env_file):
 
 
 for _command in (start, stop, restart, deploy, scale, evict, status, queue, kill,
-                 export, env, logs, info, doctor):
+                 export, env, logs, info, doctor, version):
     cli.add_command(_command)

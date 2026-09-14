@@ -59,7 +59,7 @@ sequenceDiagram
     R-->>C: QUEUED (via A's websocket)
     D->>K: get_deployment(model_key)
     alt no HOT replica
-        D->>K: deploy({model_key: replicas=1})
+        D->>K: scale(model_key, 1, DeploymentConfig(trusted=...))
         D->>R: PUBLISH PROVISIONING / DEPLOYING
         K->>M: create actor, load weights onto assigned GPUs
     end
@@ -73,10 +73,15 @@ sequenceDiagram
         M->>M: hand the blob to a fresh runner process; drive the forward pass over a socket
     end
     M->>R: PUBLISH LOG (per print line)
-    M->>S: PUT <request_id>.pt (torch.save, zstd)
-    M->>R: PUBLISH COMPLETED + presigned url
-    R-->>C: COMPLETED (via A's websocket)
-    C->>S: GET presigned url
+    alt result <= NDIF_MAX_SOCKET_RESULT_BYTES and session_id
+        M->>R: PUBLISH COMPLETED carrying the blob itself
+        R-->>C: COMPLETED (binary frame via A's websocket)
+    else large, or non-blocking
+        M->>S: PUT <request_id>.pt (torch.save, zstd)
+        M->>R: PUBLISH COMPLETED + presigned url
+        R-->>C: COMPLETED (via A's websocket)
+        C->>S: GET presigned url
+    end
     C->>C: decompress, torch.load, push saves into the frame
 ```
 
@@ -92,7 +97,7 @@ and a per-request `env` dict (e.g. a PEFT adapter to swap in).
 **2. Subscribe, then POST.** The client opens `ws://…/subscribe` *first* and
 takes the server-minted `session_id` from the first frame; the API subscribes to
 the Redis channel of that name before handing the id over
-(`src/ndif/services/api/app.py:385`), so no update can be published before
+(`src/ndif/services/api/app.py:394`), so no update can be published before
 anyone is listening. Only then does the client POST — multipart, with the JSON
 envelope as the `data` form field and the block as the `blob` file.
 
@@ -101,24 +106,26 @@ three gates before it does any work: `require_ray_connection` (503 if the
 `ray:connected` Redis flag is absent), `validate_request` (parse the envelope,
 verify the API key, stamp `email` / `trusted` / `priority` onto the request),
 and `validate_client_versions` (`app.py:140`). Then it reads the blob into
-`request.payload` (`app.py:147`), advances the request to `RECEIVED`, and
+`request.payload` (`app.py:150`), advances the request to `RECEIVED`, and
 `LPUSH`es the *pickled* request onto the Redis list named by `NDIF_QUEUE_KEY`
-(default `queue`, `app.py:180`). The `RECEIVED` response is what the HTTP call
+(default `queue`, `app.py:183`). The `RECEIVED` response is what the HTTP call
 returns; everything after this is asynchronous.
 
 **4. Dispatcher pops.** The dispatcher is a separate spawned process started by
 gunicorn's `on_starting` hook. Its loop `BRPOP`s the queue with a 10s timeout
 and then drains up to 31 more with non-blocking `RPOP`
-(`src/ndif/services/api/queue/dispatcher.py:121`) — so the shared list is FIFO
+(`src/ndif/services/api/queue/dispatcher.py:141`) — so the shared list is FIFO
 and one pop amortizes into a batch. Each request is routed by `model_key` to a
-lazily created `Processor` (`dispatcher.py:143`).
+lazily created `Processor` (`dispatcher.py:162`).
 
 **5. Processor queues and provisions.** `Processor.enqueue`
-(`src/ndif/services/api/queue/processor.py:93`) stamps `enqueued_at`, appends
-to that model's in-memory priority queue (a `priority` key sorts ahead of normal traffic),
-calls `ensure_started`, and publishes `QUEUED` with the queue position. If no
+(`src/ndif/services/api/queue/processor.py:100`) hands the request to
+`RequestQueue.put`, which stamps `enqueued_at` and orders by
+`(group, prepend, enqueued_at)` — so a `priority` request sorts ahead of normal
+traffic and stays FIFO against its peers. `enqueue` then calls `ensure_started`
+and publishes `QUEUED` with the position the queue reports. If no
 replica exists, `start()` asks the controller for existing replicas and adopts
-them, or asks for a new one — the client sees `PROVISIONING`, then `DEPLOYING`.
+them, or asks `controller.scale` for one more — the client sees `PROVISIONING`, then `DEPLOYING`.
 
 **6. Controller places a replica.** `deploy` sizes the model on the meta device,
 picks the best node/GPUs, evicts if it must, and creates a detached Ray actor
@@ -128,12 +135,12 @@ named `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. See
 **7. Replica dispatches.** `Replica.wait` polls `__ray_ready__` until the actor
 answers, then a worker task pulls from the shared per-model queue. For each
 request it publishes `DISPATCHED` and makes the Ray call
-`handle.run.remote(request)` (`src/ndif/services/api/queue/replica.py:203`).
+`handle.run.remote(request)` (`src/ndif/services/api/queue/replica.py:228`).
 The pickled `BackendRequestModel` — payload and all — crosses the Ray boundary
 here.
 
 **8. The actor runs the block.** `BaseModelDeployment.run`
-(`src/ndif/services/ray/deployments/modeling/base.py:244`) refuses immediately
+(`src/ndif/services/ray/deployments/modeling/base.py:300`) refuses immediately
 if its weights are on CPU (WARM), publishes `RUNNING`, applies `request.env` to
 the model, and runs `execute` on a worker thread raced against
 `execution_timeout` and a cancel event. `print()` inside the block becomes `LOG`
@@ -143,16 +150,22 @@ block is the fork below.
 **8a. The trusted fork.** The deployed actor class is
 `NDIF_DEFAULT_MODEL_ACTOR_CLASS`; compose sets it to `SandboxModelActor`
 (`src/ndif/services/ray/sandbox/model.py`). Its `execute`
-(`SandboxModelDeployment.execute`, `sandbox/model.py:232`) branches on the flag
-ingress stamped:
+(`SandboxModelDeployment.execute`, `sandbox/model.py:207`) is the whole fork:
 
 ```python
 if request.trusted:
     return super().execute(request)
-...
-sandbox = self.pool.acquire()
-connection = sandbox.connection()
-connection.send((request.payload, request.compress))
+return self.run_in_runner(request, None)
+```
+
+`run_in_runner` (`SandboxHost.run_in_runner`, `sandbox/model.py:97`) takes a
+runner from the pool, opens its socket, and sends the block plus everything the
+runner needs to reproduce this actor's conditions:
+
+```python
+connection.send(
+    (request.payload, request.compress, str(self.dtype), seed, request.env)
+)
 ```
 
 - **Trusted** — the base implementation runs: deserialize the block against the
@@ -168,16 +181,24 @@ connection.send((request.payload, request.compress))
 Both paths produce the same bytes and both feed the same upload step. See
 [Sandbox Execution](sandbox-execution.md).
 
-**9. Result to the object store.** `upload_bytes` (`base.py:536`) compresses to
-match `request.compress`, PUTs the blob at `{request.id}.pt`, and returns a
-presigned GET url. The `COMPLETED` response carries that url in `data`
-(`base.py:370`).
+**9. Result back, by one of two routes.** `prepare_result` (`base.py:662`)
+compresses the `torch.save` output to match `request.compress` and meters it, so
+the blob is byte-identical whichever route it takes. Then `run` picks
+(`base.py:423`): if the request has a `session_id` and the blob is at or under
+`NDIF_MAX_SOCKET_RESULT_BYTES` (4 MiB, `0` = no cap), it rides back *on the
+response*; otherwise `upload_bytes` (`base.py:688`) PUTs it at `{request.id}.pt`
+and presigns a GET valid for an hour. The `COMPLETED` response carries either
+the bytes or the url in `data`, with `pickled` set when it is the bytes
+(`base.py:460`) — that flag is what tells `/subscribe` to forward a binary
+frame.
 
-**10. Client collects.** Each published response is a JSON `ResponseModel` on
-the Redis channel named `session_id`; the API's `/subscribe` handler forwards
-the raw string down the websocket. On `COMPLETED` the client streams the
-presigned url, decompresses, `torch.load(..., map_location="cpu")`, and pushes
-the values into the caller's frame so `h = ....save()` populates. A non-blocking
+**10. Client collects.** Each published response goes to the Redis channel
+named `session_id`; the API's `/subscribe` handler forwards it down the
+websocket — a text frame for a JSON response, a binary one for a pickled
+response carrying the result itself. On `COMPLETED` the client either takes the
+bytes off the frame or streams the presigned url, decompresses,
+`torch.load(..., map_location="cpu")`, and pushes the values into the caller's
+frame so `h = ....save()` populates. A non-blocking
 job has no `session_id`, so responses are written to `responses/{id}.json` in
 the object store and polled via `GET /response/{id}` instead — see
 [Status and Results](status-and-results.md).
@@ -198,8 +219,9 @@ the object store and polled via `GET /response/{id}` instead — see
 | 8 | Block exceeds the timeout | `ERROR` "exceeded the execution timeout of Ns" | [Auth and Limits](auth-and-limits.md) |
 | 8 | Missing module in the block | `ModuleNotFoundError` at deserialize | [Client-side failures](../errors/client-side-failures.md) |
 | 8a | Runner process dies mid-run | `ERROR` carrying the runner's formatted traceback | [Sandbox internals](../developing/sandbox-internals.md) |
-| 9 | Object store unreachable | `ERROR` from the upload, after a successful run | [Providers](../developing/providers.md) |
+| 9 | Object store unreachable | `ERROR` from the upload, after a successful run (only on the object-store route) | [Providers](../developing/providers.md) |
 | 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Compose networking](../gotchas/networking-and-compose.md) |
+| 10 | `NDIF_MAX_SOCKET_RESULT_BYTES` raised or set to `0` | a large result exceeds Redis's pubsub output-buffer limit, the subscriber is dropped, and `COMPLETED` never arrives | [Status and Results](status-and-results.md) |
 
 > **Gotcha:** the presigned url is an HMAC over the request *including the host*,
 > so it must be signed with the address the client will actually hit.

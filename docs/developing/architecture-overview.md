@@ -19,15 +19,20 @@ before changing anything that spans two subsystems.
 Four facts frame the whole design:
 
 1. **One image, one service per container.** Every service is the same Docker
-   image; `NDIF_SERVICE` selects which one a container runs, via
-   `ndif start <service>` as the entrypoint. There is no per-service build.
+   image, whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
+   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` — one
+   name, a space/comma list, or the image's default `all` (redis, minio, ray,
+   api) — selects which service(s) that container runs
+   (`cli/service.py:88`). There is no per-service build.
 2. **The API process cannot talk to Ray.** Only the dispatcher — a *separate
    process* spawned by gunicorn's `on_starting` hook — holds a Ray client. Every
    API endpoint that appears to know about the cluster is really reading a
    Redis-backed cache that the dispatcher refreshes.
 3. **Execution forks on one boolean.** `request.trusted` decides whether a user's
    traced block runs inside the model actor process or in a separate runner
-   process driven over a Unix socket. With auth off, everything is trusted.
+   process driven over a Unix socket. With auth off a client-supplied `trusted`
+   is honored, and an unspecified one defaults to trusted
+   (`services/api/auth.py:180`-`184`).
 4. **Redis is the only durable handoff.** Once a request leaves the Redis list it
    is a Python object in the dispatcher's memory until it reaches a terminal
    response. Nothing in between survives a restart.
@@ -117,8 +122,9 @@ subclass overrides only five hooks — `execute`, `execution_scope`, `interrupt`
 `format_error`, `cleanup`.
 
 `SandboxModelDeployment` (`src/ndif/services/ray/sandbox/model.py`) overrides
-exactly those five to implement the untrusted path. Trusted requests fall through
-to the base and run in-process. See [Model Actor](model-actor.md),
+those five — plus `restart`, which discards the request's runner before the actor
+is killed (`sandbox/model.py:174`) — to implement the untrusted path. Trusted
+requests fall through to the base and run in-process (`sandbox/model.py:218`). See [Model Actor](model-actor.md),
 [Sandbox Internals](sandbox-internals.md), and the sandbox's own
 `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
 

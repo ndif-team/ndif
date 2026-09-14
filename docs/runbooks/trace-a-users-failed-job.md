@@ -111,7 +111,7 @@ as an `EXCEPTION` event:
 ```
 
 — `src/ndif/services/ray/sandbox/nns.py:514-522`. The host turns that event into
-a `RunnerError` carrying the text (`sandbox/model.py:228-229`), and
+a `RunnerError` carrying the text (`sandbox/model.py:161-168`), and
 `SandboxModelDeployment.format_error` returns it verbatim and marks it
 **non-fatal — it's user code** (`sandbox/model.py:188-194`). `run()` then sends it
 as the `Status.ERROR` description (`modeling/base.py:344-346`), and nnsight's
@@ -160,7 +160,7 @@ mapping:
 
 `ndif.modeling` records come from the model actor, whose Loki `service` label is
 **`model`**, not `ray` — the controller overrides `NDIF_SERVICE` in each actor's
-`runtime_env` (`cluster/deployment.py:184-187`). Filtering `{service="ray"}` will
+`runtime_env` (`cluster/deployment.py:200-205`). Filtering `{service="ray"}` will
 miss them.
 
 > **Not an error, but it looks like one in the logs:** user `print()` output
@@ -232,7 +232,7 @@ print(O.presigned_get('probe.pt'))"
 ```
 
 The compose default is `NDIF_OBJECT_STORE_URL=http://minio:9000` with
-`NDIF_OBJECT_STORE_PUBLIC_URL=http://localhost:9000` (`docker-compose.yml:223-224` for the ray service, `:150-151` for the api)
+`NDIF_OBJECT_STORE_PUBLIC_URL=http://localhost:9000` (`docker-compose.yml:247-248` for the ray service, `:159-160` for the api)
 — correct for a client on the same machine, wrong for anyone else. In a real
 deployment `public_url` must be the externally-routable object-store address.
 

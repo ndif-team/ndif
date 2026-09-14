@@ -48,12 +48,12 @@ stateDiagram-v2
 
 | Status | Published by | When |
 |---|---|---|
-| `RECEIVED` | API, returned over HTTP | the request was accepted and pushed to Redis (`app.py:174`) |
+| `RECEIVED` | API, returned over HTTP | the request was accepted and pushed to Redis (`app.py:177`) |
 | `QUEUED` | `Processor.enqueue` | joined a model's queue; description carries the position |
 | `PROVISIONING` | `Processor.reply` | no replica exists; the controller is being asked for one |
 | `DEPLOYING` | `Processor.reply` | a replica exists and is coming up |
-| `DISPATCHED` | `Replica.dispatch` | handed to a specific actor (`queue/replica.py:198`) |
-| `RUNNING` | model actor | execution started (`modeling/base.py:261`) |
+| `DISPATCHED` | `Replica.dispatch` | handed to a specific actor (`queue/replica.py:224`) |
+| `RUNNING` | model actor | execution started (`modeling/base.py:317`) |
 | `LOG` | model actor | one line the block printed (`LogStream` in `modeling/util.py`) |
 | `COMPLETED` | model actor | `data` is the result itself, or a presigned URL to download it — see below |
 | `ERROR` | any of the above | terminal failure; `description` is the message |
@@ -70,15 +70,15 @@ pool is serving, and an evicted replica silently pushes a request from
 
 Two methods on `BackendRequestModel` do related but different jobs:
 
-- `response(status, description, data)` (`schema/request.py:75`) *advances* the
+- `response(status, description, data)` (`schema/request.py:100`) *advances* the
   request's lifecycle state and builds the response object. Advancing is what
   emits telemetry: `_advance_status` records how long the previous phase lasted
   as a `RequestStatusTimeMetric` point and logs one structured lifecycle event.
-- `respond` / `arespond` (`schema/request.py:134`, `:161`) call `response` and
+- `respond` / `arespond` (`schema/request.py:161`, `:203`) call `response` and
   then *deliver* it.
 
 `_advance_status` ignores `LOG` and ignores a repeat of the current status
-(`request.py:99`), so a chatty block's prints don't reset the phase clock and a
+(`request.py:124`), so a chatty block's prints don't reset the phase clock and a
 re-`QUEUED` request doesn't produce a spurious zero-length phase. `arespond` is
 the async form used by the queue's workers; the model actor uses the sync one.
 
@@ -87,7 +87,7 @@ the async form used by the queue's workers; the model actor uses the sync one.
 **Blocking (`session_id` set).** The client opened `/subscribe` first and got a
 server-minted `session_id`; the response JSON is `PUBLISH`ed to the Redis
 channel of that name and the API's websocket handler forwards the raw string
-down the socket (`app.py:390`). Nothing is stored — an update published while
+down the socket (`app.py:407`). Nothing is stored — an update published while
 no one is listening is simply lost, which is why the API subscribes *before*
 handing the client its session id.
 
@@ -95,19 +95,24 @@ handing the client its session id.
 (except `LOG`) is written to `responses/{id}.json` in the object store,
 overwriting the previous one. The client polls `GET /response/{id}`, which
 returns the stored JSON or 404 if nothing has landed yet
-(`app.py:304`). Only the *latest* status is available — intermediate
+(`app.py:307`). Only the *latest* status is available — intermediate
 transitions are not replayed.
 
 ```python
 if self.session_id:
-    RedisProvider.sync_client.publish(self.session_id, response.model_dump_json())
+    RedisProvider.sync_client.publish(
+        self.session_id,
+        response.pickle() if pickled else response.model_dump_json(),
+    )
 elif status != Status.LOG:
-    ObjectStoreProvider.put(_response_key(self.id),
-                            response.model_dump_json().encode(),
-                            content_type="application/json")
+    ObjectStoreProvider.put(
+        _response_key(self.id),
+        response.model_dump_json().encode(),
+        content_type="application/json",
+    )
 ```
 
-(`src/ndif/common/schema/request.py:148`)
+(`src/ndif/common/schema/request.py:189`)
 
 ## How the result gets back
 
@@ -122,8 +127,8 @@ few kilobytes to many gigabytes of tensors. Both routes start the same way:
 
 Then the actor picks a route by size, against `NDIF_MAX_SOCKET_RESULT_BYTES`:
 
-**On the response.** Under the limit — and unset means no limit, so this is the
-default — the bytes ride on the `COMPLETED` response as `data`. That response is
+**On the response.** Under the limit — 4 MiB unless set, which covers most
+traces — the bytes ride on the `COMPLETED` response as `data`. That response is
 published as `torch.save` output rather than a JSON dump, and `/subscribe`
 forwards it as a binary frame. The client loads it directly, with no second
 round trip.
@@ -139,9 +144,10 @@ on the blocking path — pushes the values back into the caller's frame so
 `h = ....save()` populates.
 
 Redis is what bounds the first route: pub/sub is a fan-out bus, and a subscriber
-whose output buffer exceeds `client-output-buffer-limit pubsub` (32 MB hard by
-default) is disconnected, taking the response with it. Set the limit below that
-on a deployment whose results can be large.
+whose output buffer exceeds `client-output-buffer-limit pubsub` is disconnected,
+taking the response with it. On stock redis:7 a single message is delivered at
+28 MiB and lost at 29 MiB, and the 8 MiB soft limit catches a subscriber that is
+slow to drain. The 4 MiB default stays under both. `0` removes the cap.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually
@@ -162,7 +168,7 @@ terminal, an updating element in Jupyter). Beyond display:
 - `ERROR` — raises `RemoteError` with the server's `description`. For a failure
   inside the user's block that description is the user's own traceback: the
   actor strips nnsight internals and its own wrapper frames before formatting
-  (`format_error`, `modeling/base.py:444`).
+  (`format_error`, `modeling/base.py:545`).
 - `COMPLETED` — triggers the download above and ends the wait.
 
 Everything else is informational. A non-blocking client sees the same statuses

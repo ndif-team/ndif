@@ -10,26 +10,34 @@ sources: [tests/conftest.py, tests/test_nnsight_remote.py, tests/test_tensor_par
 
 ## What this covers
 
-The honest current state: **there is no CI in this repo, and there is essentially
-one test suite.** It lives in `tests/`, it drives the real `nnsight` client against
-a real running NDIF over HTTP, and it skips itself entirely if nothing answers at
-`http://localhost:8001`. "Bring the stack up, run pytest" is the whole story.
+The honest current state: **no workflow runs the tests, and the suite that
+matters needs a live server.** CI (`.github/workflows/`) builds and publishes —
+ECR images on a push to `main` (`build_images.yml`), Docker Hub images and a PyPI
+wheel on a `v*` tag (`publish_docker.yml`, `publish.yml`) — and none of the three
+runs `pytest`. So a change is only exercised when someone brings a stack up and
+runs it.
 
-Three files, and only the first needs a server for every test:
+Everything lives in `tests/`. Three files drive the real `nnsight` client against
+a real running NDIF over HTTP and skip themselves if nothing answers at
+`http://localhost:8001`; four are pure-Python and run anywhere:
 
 | File | Needs | Covers |
 |---|---|---|
 | `test_nnsight_remote.py` | a stack + gpt2 | the remote trace surface, end to end |
+| `test_sandbox_conformance.py` | a stack + gpt2 | trusted and untrusted run the same script and get the same bytes |
 | `test_tensor_parallel_remote.py` | a stack + a **deployed tensor-parallel replica** | a model split across GPUs — see the module docstring for the deploy |
-| `test_placement.py` | nothing (skips without `boto3`) | placement arithmetic and shard-group bookkeeping, over synthetic objects |
+| `test_placement.py` | nothing | placement arithmetic and eviction bookkeeping, over a synthetic node |
+| `test_replica_wait.py` | nothing | what counts as "not yet" versus "never" when waiting on a replica |
+| `test_fanout.py` | nothing | the `Fanout` barrier that lets one runner drive several ranks |
+| `test_node_registry.py` | nothing | the two regressions behind the 2026-09-08 prod outage: a stale node registry and a swallowed trace error |
 
 `test_tensor_parallel_remote.py` skips itself unless a replica of its model is
-actually HOT, so it costs nothing when you have not set one up. `test_placement.py`
-is the odd one out — pure functions over a fake node, no server, no GPUs — and is
-the only file here that will run in a checkout with nothing else going.
+actually HOT, so it costs nothing when you have not set one up. The four
+pure-Python files are the ones that run in a checkout with nothing else going.
 
-That shape is deliberate rather than accidental: almost everything NDIF does is a
-cross-process, cross-container interaction — a serialized traced block leaving a
+That shape is deliberate rather than accidental: the parts that can be tested
+without a server are the ones that are pure arithmetic or pure protocol.
+Everything else NDIF does is a cross-process, cross-container interaction — a serialized traced block leaving a
 client, crossing Redis, crossing Ray, running against real weights, coming back as
 a presigned blob. Mocking that proves nothing. So the suite tests the seam that
 actually matters and accepts needing a GPU box to run.
@@ -37,7 +45,7 @@ actually matters and accepts needing a GPU box to run.
 ## Running it
 
 Install the test dependencies (the `dev` extra — `ruff`, `httpx`, `pytest`,
-`pytest-asyncio`; `pyproject.toml:90`) plus a client `nnsight`:
+`pytest-asyncio`; `pyproject.toml:119`) plus a client `nnsight`:
 
 ```bash
 pip install -e ".[dev]"
@@ -60,21 +68,21 @@ pytest tests/
 You do **not** need to `ndif deploy` anything first. The suite uses
 `openai-community/gpt2`, and the queue's `Processor` provisions a replica on
 demand for any model key it hasn't seen; the first test pays the deploy time and
-the module-scoped `model` fixture (`tests/conftest.py:60`) keeps it deployed for
+the module-scoped `model` fixture (`tests/conftest.py:68`) keeps it deployed for
 the rest of the run.
 
 > **Gotcha:** run `pytest tests/`, not a bare `pytest`. There is no
-> `[tool.pytest.ini_options]` in `pyproject.toml` and no `testpaths`, so if a
-> local `nnsight/` checkout is present, a bare invocation from the repo root also
-> collects its `nnsight/tests/` (hundreds of client-side tests that have nothing
-> to do with the server).
+> `[tool.pytest.ini_options]` in `pyproject.toml` and no `testpaths`, so a bare
+> invocation from the repo root collects whatever else is under it — including an
+> nnsight checkout you have parked there for `just up` to bind-mount, whose
+> hundreds of client-side tests have nothing to do with the server.
 
 If the stack is down, collection still succeeds and every test is skipped —
-`conftest.py:44` probes `GET /ping` once at import and builds a module-level
-`requires_server` marker from the answer. A full skip therefore means "no server",
+`conftest.py:53` probes `GET /ping` once at import and `conftest.py:62` builds
+the module-level `requires_server` marker from the answer. A full skip therefore means "no server",
 never "nothing to run".
 
-Pointing at a non-default host means editing `HOST` in `tests/conftest.py:21`;
+Pointing at a non-default host means editing `HOST` in `tests/conftest.py:28`;
 there is no environment variable for it.
 
 ## What the suite covers
@@ -139,10 +147,9 @@ xfail marker plus its `reason` should be deleted in the same change that made it
 pass. That is how gradients and `tracer.cache()` were retired (`git show
 c6a0292`), each flip carrying the explanation into an inline comment.
 
-**There are currently no xfail classes** — the suite is fully green. The module
-docstring at `tests/test_nnsight_remote.py:8` still refers to "the `xfail` classes
-at the bottom"; that text is stale. Add one when you find a genuine server-side
-limitation, rather than deleting or `skip`ping the test.
+**There are currently no xfail classes** — the suite is fully green. Add one when
+you find a genuine server-side limitation, rather than deleting or `skip`ping the
+test.
 
 ## Testing the untrusted / sandbox path
 
@@ -153,21 +160,20 @@ Two independent things have to be true for a request's Python to run in a runner
 process rather than in the model actor:
 
 1. **The request must be untrusted.** The fork is `if request.trusted:` in
-   `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:242`),
+   `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:207`),
    which defers straight to the base in-process implementation. Under auth-off
-   (`NDIF_POSTGRES_URL` unset, which the dev compose leaves commented out) a
-   request's `trusted` **defaults** to `True`, so a plain local request is trusted —
-   but the client can now override that. `validate_request` honors an explicitly
-   supplied `trusted` when auth is off (it checks `model_fields_set` to tell
-   "unspecified" from an explicit value, `src/ndif/services/api/auth.py:170,184`),
-   so **sending `trusted: false` in the request forces the sandbox path with no
-   Postgres and no code patch.**
+   (`NDIF_POSTGRES_URL` unset, which the dev compose leaves commented out) an
+   *unspecified* `trusted` **defaults** to `True`, so a plain local request is
+   trusted — but `validate_request` honors an explicitly supplied one (it checks
+   `model_fields_set` to tell "unspecified" from an explicit value,
+   `src/ndif/services/api/auth.py:170`, `:180`), so **sending `trusted: false` in
+   the request forces the sandbox path with no Postgres and no code patch.**
 2. **The deployed actor class must be the sandbox one.** The controller's code
    default is the plain in-process actor —
    `ndif.services.ray.deployments.modeling.base.ModelActor`
-   (`controller.py:558`). The dev compose selects the sandbox actor via
+   (`controller.py:745`). The dev compose selects the sandbox actor via
    `NDIF_DEFAULT_MODEL_ACTOR_CLASS: ndif.services.ray.sandbox.model.SandboxModelActor`
-   (`docker/docker-compose.yml:228`, the fallback for `NDIF_MODEL_IMPORT_PATH`), but
+   (`docker/docker-compose.yml:252`, the fallback for `NDIF_MODEL_IMPORT_PATH`), but
    a hand-rolled `ndif start ray` that sets neither gets the base actor, where
    `trusted` is irrelevant because there is no sandbox to skip.
 
@@ -175,44 +181,44 @@ So: with compose you already have condition 2. Condition 1 is a change to the
 **request**, not the server — but note that nnsight's `RequestModel` has no
 `trusted` field (the server reads it from the request body, where an API key
 would normally stamp it), so a client cannot set it through the nnsight API. It
-has to be injected into the envelope. `tests/conftest_untrusted.py` does exactly
-that, in about ten lines:
+has to be injected into the envelope — patch `RequestModel.metadata` to add
+`"trusted": false` to the JSON body. `tests/conftest_untrusted.py` does exactly
+that, in about ten lines, as a pytest plugin that forces the *whole* suite
+untrusted:
 
 ```bash
 PYTHONPATH=tests pytest tests/test_nnsight_remote.py -p conftest_untrusted
 ```
 
-Every test must produce the same result as the trusted run, and as of the
-autocast fix below they do — bar `TestRemoteGradients`, which is a real sandbox
-limitation (see `sandbox/ARCHITECTURE.md`). **46 passed, 2 failed, 2 skipped**
-through runner processes.
+Every test must produce the same result as the trusted run, bar
+`TestRemoteGradients`, which is a real sandbox limitation (see
+`sandbox/ARCHITECTURE.md`).
 
-Worth knowing what "the same result" turned out to mean. The two paths were not
-observationally identical, in two compounding ways, and neither failed anything —
-the numbers were just different:
+`tests/test_sandbox_conformance.py` is the same invariant as an assertion rather
+than a manual comparison: it runs one script both ways against a live server and
+compares the bytes. It refuses to run beneath `-p conftest_untrusted`, because
+that plugin patches the same method the file toggles, and the two together would
+compare untrusted against untrusted — passing the equality tests for the wrong
+reason. If you are checking this by hand, run the same path twice first: trusted
+against trusted is bit-exact, which is what makes a trusted-vs-untrusted
+difference mean anything.
 
-* the runner had no autocast region, so a tensor the *block* made came back
-  `float32` untrusted and `bfloat16` in-process;
-* and the host had none around the forward it drives on the runner's behalf, so
-  the *model's own* arithmetic ran uncast. Measured on gpt2: identical token ids
-  and identical embeddings, diverging inside the first transformer block, ending
-  at a relative difference of 6.5e-3 in the logits.
-
-Both now use one `request_dtype` bracket and the paths are bit-identical. If you
-are checking this yourself, run the same path twice first — trusted against
-trusted is bit-exact, which is what makes a trusted-vs-untrusted difference mean
-anything.
+Both paths bracket their work in one `request_dtype` region
+(`deployments/modeling/nns.py:75`) — the runner around the block, the
+`SandboxDriver` around the forward it drives — which is what makes them
+bit-identical. Without the host half the *model's own* arithmetic runs uncast:
+measured on gpt2, identical token ids and embeddings, diverging inside the first
+transformer block, 6.5e-3 relative in the logits, and nothing raises.
 
 That invariant — the two paths are observationally identical — is the whole
-reason the sandbox is shaped the way it is, so the suite doubles as the sandbox's
-conformance test. Any divergence is a sandbox bug (or a new xfail), and
-`src/ndif/services/ray/sandbox/ARCHITECTURE.md`'s "Current simplifications"
-section is where the deliberate ones are listed. Read that list against the code
-before believing it: `tracer.cache()` is listed as unsupported but is in fact
-served over IPC now (`sandbox/model.py:133`, `sandbox/nns.py:316`).
+reason the sandbox is shaped the way it is. Any divergence is a sandbox bug (or a
+new xfail), and `src/ndif/services/ray/sandbox/ARCHITECTURE.md`'s "Current
+simplifications" section is where the deliberate ones are listed. Read that list
+against the code before believing it: `tracer.cache()` is listed as unsupported
+but is in fact served over IPC (`sandbox/driver.py:38`, `sandbox/nns.py:349`).
 
 **The faithful way**, if you want the real trust plumbing rather than a client-set
-flag: uncomment `NDIF_POSTGRES_URL` in `docker/docker-compose.yml:156`, insert a
+flag: uncomment `NDIF_POSTGRES_URL` in `docker/docker-compose.yml:165`, insert a
 user and a key into the compose Postgres (`docker/postgres/init.sql` creates the
 schema but seeds nothing), and *don't* grant that key the `trusted` user_tag. Then
 set `NDIF_API_KEY` for the client. With auth on, the key's `trusted` user_tag
@@ -239,11 +245,15 @@ docker compose -f docker/docker-compose.yml exec ray \
   a deserialization error, not a version message unless `NDIF_MIN_NNSIGHT_VERSION`
   is set. See [nnsight-integration.md](./nnsight-integration.md).
 - **`shm_size`.** Ray's plasma store lives in `/dev/shm`; compose sets `4gb`
-  (`docker/docker-compose.yml:256`) because the Docker default of 64MB is far too
+  (`docker/docker-compose.yml:280`) because the Docker default of 64MB is far too
   small.
-- **No unit tests exist** for the queue, the controller's placement math, or the
-  providers. Changing those means either exercising them through the live suite or
-  writing the first unit test for them — both are welcome, neither is set up.
+- **No unit tests exist** for the dispatcher, the API app, the providers, or the
+  CLI. The controller's placement math, the replica wait, and the fan-out barrier
+  *are* covered without a server (`test_placement.py`, `test_replica_wait.py`,
+  `test_fanout.py`); everything else means exercising it through the live suite or
+  writing the first unit test for it.
+- **Nothing in CI runs any of this.** A green `publish_docker.yml` means the image
+  built, not that the server works.
 
 ## Related
 
