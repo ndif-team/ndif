@@ -25,6 +25,12 @@
 nnsight_path := env("NNSIGHT_PATH", `python -c "import nnsight, os; p = os.path.dirname(nnsight.__file__); print('' if 'site-packages' in p or 'dist-packages' in p else p)" 2>/dev/null || true`)
 export NNSIGHT_PATH := nnsight_path
 
+# The package version is the git tag (setuptools-scm); the image build has no
+# .git, so hand it the same string setuptools-scm would derive.
+# setuptools-scm if the shell has it, else a PEP 440 rendering of `git describe`
+# (v0.0.1-441-g0ac4463 -> 0.0.1.post441+g0ac4463), else empty.
+export NDIF_VERSION := env("NDIF_VERSION", `python -m setuptools_scm 2>/dev/null || git describe --tags 2>/dev/null | sed -E 's/^v//; s/-([0-9]+)-g/.post\1+g/' || true`)
+
 compose := "docker compose -f docker/docker-compose.yml" + if nnsight_path != "" { " -f docker/docker-compose.nnsight.yml" } else { "" }
 
 # Show the available recipes.

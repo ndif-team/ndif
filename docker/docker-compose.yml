@@ -143,6 +143,10 @@ services:
       # Repo root, so the Dockerfile can COPY src/ and nnsight/.
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        # The justfile sets this from `git describe`; a bare `docker compose
+        # build` leaves it empty and the image reports the fallback version.
+        NDIF_VERSION: ${NDIF_VERSION:-}
     environment:
       NDIF_SERVICE: api
       # The API reaches redis/ray by service name on the compose network.
@@ -192,6 +196,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        NDIF_VERSION: ${NDIF_VERSION:-}
     environment:
       NDIF_SERVICE: dashboard
       NDIF_DASHBOARD_PORT: "8081"
@@ -229,6 +235,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        NDIF_VERSION: ${NDIF_VERSION:-}
     environment:
       NDIF_SERVICE: ray
       # The controller and model actors publish responses to redis by service

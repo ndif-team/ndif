@@ -187,7 +187,7 @@ The workflows publish; they do not check. So this is on you:
    or other non-`.py` file a service needs, update `[tool.setuptools.package-data]`
    in `pyproject.toml` — otherwise it works from a checkout and breaks from a wheel.
 
-This is a young repo at version `0.1.0` (`pyproject.toml:7`). Nothing here is a
+This is a young repo; the version is the git tag (setuptools-scm, `pyproject.toml` `dynamic = ["version"]`), 0.1.0 at this writing. Nothing here is a
 stable public API, and a change that deletes a concept is worth more than one that
 adds a flag.
 

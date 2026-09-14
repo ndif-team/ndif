@@ -210,7 +210,7 @@ installed package; `backend/config.py` then defaults `frontend_dist` to
 `<package>/frontend/dist`. A new service that ships a `start.sh` must add its own
 entry here or it will work from a source checkout and break from a wheel.
 
-**Version is `0.1.0`** (`pyproject.toml:7`). Nothing here is a stable public API.
+**The version is the git tag** (setuptools-scm; `pyproject.toml` declares it `dynamic`), 0.1.0 at this writing. Nothing here is a stable public API.
 
 ## nnsight as a dependency
 

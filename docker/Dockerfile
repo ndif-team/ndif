@@ -88,9 +88,15 @@ RUN pip install -r requirements.txt
 # script. --no-deps because every dependency is already pinned in requirements.txt
 # above (extras only select what to declare), so a src change reinstalls only the
 # package itself.
+# The build context has no .git (see .dockerignore), so setuptools-scm cannot
+# read the version from the tag; NDIF_VERSION carries it in (the publish
+# workflow passes the tag, the justfile `git describe`). Unset, the package
+# reports pyproject's fallback_version.
+ARG NDIF_VERSION=
 COPY pyproject.toml ./
 COPY src/ ./src/
-RUN pip install --no-deps ".[api,ray,metrics,postgres,dashboard]"
+RUN SETUPTOOLS_SCM_PRETEND_VERSION_FOR_NDIF="${NDIF_VERSION}" \
+    pip install --no-deps ".[api,ray,metrics,postgres,dashboard]"
 
 # The `ext` extra: packages user-submitted traced blocks are allowed to import,
 # rather than ones NDIF itself needs. Read out of pyproject.toml and installed as
@@ -110,9 +116,8 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
 # record of what it was built with. The build-time inputs go on OCI labels.
 RUN ndif version --write /etc/ndif/build.json
 
-# Build-time inputs. NDIF_VERSION / VCS_REF / BUILD_DATE are passed by the
-# publish workflow; a local `docker build` leaves them unset, which is fine.
-ARG NDIF_VERSION=
+# Build-time inputs. VCS_REF / BUILD_DATE are passed by the publish workflow;
+# a local `docker build` leaves them unset, which is fine.
 ARG VCS_REF=
 ARG BUILD_DATE=
 LABEL org.opencontainers.image.title="NDIF" \

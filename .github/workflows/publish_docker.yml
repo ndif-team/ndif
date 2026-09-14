@@ -2,8 +2,8 @@ name: Publish to Docker Hub
 
 # Publishes ndif/ndif on Docker Hub when a release tag is pushed (v0.1.0 ->
 # 0.1.0). Creating a GitHub release with a new tag pushes that tag, so one
-# release fires this and publish.yml (PyPI) together; the tag must match
-# pyproject.toml's version or this job stops before building. One image per CUDA line, because the torch wheel is chosen at build
+# release fires this and publish.yml (PyPI) together, and both take the
+# version from the tag (setuptools-scm on the PyPI side). One image per CUDA line, because the torch wheel is chosen at build
 # time from the host's CUDA driver (see docker/Dockerfile):
 #
 #   ndif/ndif:0.1.0-cu126   ndif/ndif:0.1.0   ndif/ndif:latest   (cu126 = default)
@@ -59,17 +59,15 @@ jobs:
           docker system prune -af
           df -h /
 
-      # The version is the tag with its `v` stripped (or the dispatch input). It
-      # must equal pyproject.toml's, which is what the PyPI workflow publishes —
-      # otherwise the two artefacts of one release would disagree, so fail here.
+      # The version is the tag with its `v` stripped (or the dispatch input);
+      # the same string is what setuptools-scm derives for the wheel, and it is
+      # passed into the image build so the package inside reports it too.
       # `latest` and the bare version tag only move for a final release
       # (X.Y.Z); a pre-release like 0.2.0rc1 gets only its own tags.
       - name: Resolve version
         id: v
         run: |
           if [ -n "${{ inputs.version }}" ]; then v="${{ inputs.version }}"; else v="${GITHUB_REF_NAME#v}"; fi
-          p=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          if [ "$v" != "$p" ]; then echo "::error::tag/input version $v != pyproject.toml version $p"; exit 1; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.latest }}" != "false" ] && echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then latest=true; else latest=false; fi
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
