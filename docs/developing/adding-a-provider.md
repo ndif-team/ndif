@@ -31,7 +31,7 @@ Two constraints shape the pattern:
 
 ## The base-class contract
 
-`src/ndif/common/providers/base.py` is 76 lines. The whole surface:
+`src/ndif/common/providers/base.py` is 68 lines. The whole surface:
 
 ```python
 # attr name -> (ENV_VAR, typed default, caster applied to the env string)
@@ -79,7 +79,7 @@ Rules the existing providers all follow:
 - **Declare the attribute annotations under `CONFIG`.** They're documentation for
   readers and type checkers — `from_env` sets them at runtime.
 - **Comment each entry with what it does and what empty means.** The object store's
-  `CONFIG` (`objectstore.py:38`) is the model: seven entries, each with the reason
+  `CONFIG` (`objectstore.py:77`) is the model: eight entries, each with the reason
   it exists, including why `region` is set explicitly (so presigning never
   round-trips to discover it over an endpoint the server can't reach).
 - **Empty string means off** for an optional subsystem. Add a separate `_ENABLED`
@@ -102,7 +102,7 @@ so **importing the module establishes the singleton**. That's why
 services nobody asked for, at import of anything under `common/`.
 
 `connect()` must be **cheap and idempotent**. Cheap: `RedisProvider.connect`
-(`redis.py:31`) and `ObjectStoreProvider.connect` (`objectstore.py:90`) construct
+(`redis.py:31`) and `ObjectStoreProvider.connect` (`objectstore.py:157`) construct
 client objects that open no socket until the first call. Idempotent: every process
 entry point — each uvicorn worker, each Ray actor — calls it without coordinating,
 and it must be a no-op the second time (`influx.py:112` returns early if
@@ -110,7 +110,7 @@ and it must be a no-op the second time (`influx.py:112` returns early if
 
 Two shapes deviate, both for good reasons you may need to copy:
 
-- **Postgres does not connect at import** (`postgres.py:158` runs only
+- **Postgres does not connect at import** (`postgres.py:159` runs only
   `from_env()`). An `asyncpg` pool can only be built inside a running event loop,
   which doesn't exist yet in a fresh worker. It connects lazily on first use via
   `ensure()`, guarded by an `asyncio.Lock` so concurrent first requests build
@@ -176,7 +176,7 @@ Fail-open is a property of **best-effort telemetry**, not a house rule. Two
 counter-examples in the tree:
 
 **Postgres fails loud, deliberately.** If `NDIF_POSTGRES_URL` is set but `asyncpg`
-is missing, `connect` raises (`postgres.py:91`) — because silently disabling auth
+is missing, `connect` raises (`postgres.py:93`) — because silently disabling auth
 is a security hole, the exact opposite of a dropped metric. And if the DB is
 configured but unreachable, `verify_api_key` returns **503** rather than letting
 the request through (`services/api/auth.py:126`): it fails *closed*.
@@ -205,7 +205,7 @@ metrics = [
 ```
 
 Then, if it should be in the image: add the group to the Dockerfile's install
-list (`docker/Dockerfile:45`) and **pin the package in `requirements.txt`** — the
+list (`docker/Dockerfile:91`) and **pin the package in `requirements.txt`** — the
 Dockerfile installs with `--no-deps`, so extras only declare intent;
 `requirements.txt` is what actually installs.
 

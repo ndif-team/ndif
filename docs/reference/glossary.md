@@ -107,10 +107,12 @@ with the dashboard's `jobs/` directory, which holds cron entry points.
 
 The Ray actor class serving one replica, named
 `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace
-(`cluster/deployment.py:105`). Two ship in-tree: `ModelActor`
-(`modeling/base.py:565`), which runs everything in-process, and
-`SandboxModelActor` (`sandbox/model.py:387`), which routes untrusted requests to a
-runner. Selected per deployment by `DeploymentConfig.actor_class`, defaulting to
+(`cluster/deployment.py:123-124`). Two ship in-tree: `ModelActor`
+(`modeling/base.py:702`), which runs everything in-process, and
+`SandboxModelActor` (`sandbox/model.py:224`), which routes untrusted requests to a
+runner. A third, `TPModelActor` / `SandboxedTPModelActor`
+(`ray/tp/model.py`), serves a tensor-parallel replica and is used only when
+`NDIF_TP_MODEL_ACTOR_CLASS` names it. Selected per deployment by `DeploymentConfig.actor_class`, defaulting to
 `NDIF_MODEL_IMPORT_PATH` (which itself falls back to `NDIF_DEFAULT_MODEL_ACTOR_CLASS`,
 then the base `ModelActor`). See
 [model-actor.md](../developing/model-actor.md).
@@ -231,13 +233,13 @@ every log line and metric point. See [adding-a-service.md](../developing/adding-
 ## Trusted / untrusted
 
 The most consequential flag in the system. `BackendRequestModel.trusted`
-(`common/schema/request.py:57`, default `False`) decides how a request executes:
+(`common/schema/request.py:56`, default `False`) decides how a request executes:
 **trusted** runs the traced block in-process in the model actor, next to the
 weights; **untrusted** ships it to a fresh runner and interleaves over a socket
-(`sandbox/model.py:242`). It is stamped at ingress from the API key's `trusted`
-user_tag — and, when auth is off (`NDIF_POSTGRES_URL` unset), defaulted to `True`
-but honoring a client-supplied value, so a caller can send `trusted: false`
-(`services/api/auth.py:184`). The same flag rides `DeploymentConfig.trusted` into
+(`sandbox/model.py:207-221`). It is stamped at ingress from the API key's
+`trusted` user_tag — and, when auth is off (`NDIF_POSTGRES_URL` unset), defaulted
+to `True` but honoring a client-supplied value, so a caller can send
+`trusted: false` (`services/api/auth.py:170`, `:180-184`). The same flag rides `DeploymentConfig.trusted` into
 `trust_remote_code=` at model load.
 
 > **For self-hosters:** no Postgres configured ⇒ no auth ⇒ a caller's arbitrary

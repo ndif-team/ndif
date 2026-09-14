@@ -32,7 +32,7 @@ fallback. Static serving is registered last, deliberately: `dist/assets` mounts 
 if it exists and `index.html` otherwise, which is what makes `/schedule` survive a
 hard refresh. FastAPI matches in registration order, so every `/api/*` route wins
 over the catch-all. If `dist/index.html` is missing the catch-all isn't registered
-and `GET /` returns a JSON hint (`app.py:70`). `app = create_app()` (`:88`) is what
+and `GET /` returns a JSON hint (`app.py:71`). `app = create_app()` (`:88`) is what
 `start.sh` gives uvicorn.
 
 ## Endpoints
@@ -60,13 +60,14 @@ which is a no-op under `NDIF_DASHBOARD_DEV_MODE=true`.
 | `POST` | `/api/deployments/restart` | yes | Restart one `model_key`, optionally one `replica` |
 | `GET` | `/api/cache` | yes | The autocomplete MRU lists |
 
-Two files, confusingly named: `routers/deploy.py` owns the bare `/api` prefix
-(now just `/api/status`); `routers/deployments.py` owns `/api/deployments/*`. The
-SPA calls the singular-model endpoints plus `/api/status`.
+Two files, confusingly named: `routers/deploy.py` serves only `/api/status`;
+`routers/deployments.py` owns `/api/deployments/*`. (`routers/cache.py` sits on
+the same bare `/api` prefix as `deploy.py`, serving `/api/cache`.) The SPA calls
+the singular-model endpoints plus `/api/status`.
 
 ### `/api/status`
 
-`status_endpoint` (`routers/deploy.py:57`) is the most transformed response in the
+`status_endpoint` (`routers/deploy.py:23`) is the most transformed response in the
 backend. It calls `ndif_client.status()` — a direct Ray RPC to the controller
 actor, **not** the API service's `/status` — then applies three transforms:
 
@@ -74,7 +75,7 @@ actor, **not** the API service's `/status` — then applies three transforms:
    listing as COLD entries, so a repo fetched under two casings appears twice. A
    COLD entry is dropped when a non-COLD entry exists for the same
    case-insensitive `(repo_id, revision)`.
-2. **Replica aggregation.** `_aggregate_by_model_key` (`:142`) collapses the
+2. **Replica aggregation.** `_aggregate_by_model_key` (`:108`) collapses the
    controller's one-entry-per-replica payload into one card per `model_key` with a
    `replicas: [...]` array; card-level fields take the best value across siblings
    (`HOT > WARM > COLD`, `RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY`,
@@ -98,20 +99,21 @@ individual models fail and the only other record is a toast the user dismisses.
 
 ### Every dashboard deploy is `trusted: True`
 
-`ModelSpec.trusted` and `DeployRequest.trusted` default to `True`
-(`routers/deploy.py:34`, `routers/deployments.py:38`), and `_spec_from_event`
-hardcodes it for scheduled deploys (`jobs/reconcile.py:62`). It rides through
-`DeploymentConfig.trusted` (`common/schema/controller.py:36`) into
+`DeployRequest.trusted` defaults to `True` (`routers/deployments.py:38`), and
+`_spec_from_event` hardcodes it for scheduled deploys (`jobs/reconcile.py:62`).
+It rides through `DeploymentConfig.trusted` (`common/schema/controller.py:36`) into
 `trust_remote_code=` for both the controller's size evaluator
-(`controller/cluster/cluster.py:169`) and the actor's model load
-(`controller/controller.py:280`) — which must agree or GPU accounting is wrong —
+(`controller/cluster/cluster.py:183`) and the actor's model load
+(`controller/controller.py:450`) — which must agree or GPU accounting is wrong —
 so a checkpoint with custom modeling code runs that code in the model actor.
 
 A *different* flag shares the name: `BackendRequestModel.trusted`
-(`common/schema/request.py:57`) decides whether a user's block runs in-process or
-in a runner subprocess (`services/ray/sandbox/model.py:242`), and is set at
-ingress from the API key's `trusted` tag (`services/api/auth.py:75`) or to `True`
-when auth isn't configured (`:174`) — never from the dashboard's deploy flag.
+(`common/schema/request.py:56`) decides whether a user's block runs in-process or
+in a runner subprocess (`services/ray/sandbox/model.py:218`), and is set at
+ingress from the API key's `trusted` tag (`Identity.trusted`,
+`services/api/auth.py:75`, stamped at `:178`). With auth off it is whatever the
+client sent, and defaults to `True` only when the client left it unspecified
+(`:180`) — never from the dashboard's deploy flag.
 
 ## Config and auth
 
@@ -119,7 +121,7 @@ when auth isn't configured (`:174`) — never from the dashboard's deploy flag.
 `env_prefix="NDIF_DASHBOARD_"` (`config.py:33`), so every field reads from a
 `NDIF_DASHBOARD_*` variable. Derived paths (`logs_dir`,
 `schedule_path`, `reconcile_state_path`, `monitor_config_path`, `cache_path`) are
-properties hung off `data_dir`, and `get_settings()` (`:86`) is `lru_cache`d and
+properties hung off `data_dir`, and `get_settings()` (`:72`) is `lru_cache`d and
 creates the directories as a side effect — so importing config guarantees the tree
 exists, and env changes after the first call don't take effect.
 
@@ -171,7 +173,7 @@ collapse to the form HF serves. Only successful deploys land in the cache.
 
 ## log_reader and the monitor JSONL format
 
-`backend/log_reader.py` is 45 lines. `parse_log_files(log_dir, pattern)` globs,
+`backend/log_reader.py` is 46 lines. `parse_log_files(log_dir, pattern)` globs,
 sorts by filename (chronological — files are `*_YYYY-MM-DD.log`), and parses one
 JSON object per line, skipping blanks and unparseable lines; `read_connected` /
 `read_models` / `read_cluster` are the three patterns. No pagination, no time
@@ -179,15 +181,22 @@ filter, no cap — the router returns the whole 30-day window and the SPA slices
 client-side. The shapes, from `jobs/monitor.py`:
 
 ```jsonc
-// connected_*.log (monitor.py:260) — one per tick; status is "ok" or the reason
+// connected_*.log (monitor.py:279) — one per tick; status is "ok" or the reason
 {"timestamp": "2026-07-22T18:00:00+00:00", "status": "ok"}
-// models_*.log (monitor.py:266) — one per trace pass; "degraded" if any failed
+// models_*.log (monitor.py:285) — one per trace pass; "degraded" if any failed
 {"timestamp": "...", "status": "ok", "ok": 3, "total": 4,
  "results": [{"model": "openai-community/gpt2", "status": "ok", "latency_s": 1.23},
-             {"model": "…", "status": "error", "latency_s": 4.5, "error": "..."}]}
+             {"model": "…", "status": "error", "latency_s": 4.5, "error": "...",
+              "traceback": "...", "request_id": "..."}]}
 ```
 
-`cluster_*.log` (`monitor.py:253`) adds `nodes`, `total_gpus`, `total_memory_bytes`,
+A failed result carries two error fields on purpose (`monitor.py:198`): `error` is
+`summarize_error`'s single line, which is what the Discord ping renders, and
+`traceback` is the full local stack, whose last frame carries the remote one.
+`request_id` is present whenever the job reached the API (`:208`), so a failure
+can be grepped out of the API logs.
+
+`cluster_*.log` (`monitor.py:272`) adds `nodes`, `total_gpus`, `total_memory_bytes`,
 `available_memory_bytes` and a `node_details` array of `{node_id, gpus,
 memory_bytes, available_bytes, deployments}`.
 
@@ -196,7 +205,7 @@ reconstructed) or `timeout`.
 
 ## ndif_client
 
-55 lines of adaptation over `src/ndif/cli/lib/`. The lib functions stream
+56 lines of adaptation over `src/ndif/cli/lib/`. The lib functions stream
 progress through an `on_message` callback (the CLI passes `click.echo`);
 `_with_logs` (`:31`) injects a list-appending callback and stitches the lines into
 `result["logs"]`, so an HTTP response or cron log carries the transcript the CLI
@@ -207,21 +216,21 @@ re-exported. Ray connection and address resolution live in the lib — see
 
 ## jobs/monitor.py
 
-A one-shot script. `main()` (`:399`) arms a `SIGALRM` for
+A one-shot script. `main()` (`:425`) arms a `SIGALRM` for
 `SCRIPT_TIMEOUT = 480`s that `os._exit(2)`s a wedged run, then takes a
 non-blocking flock on `logs/.monitor.lock` and exits 0 if held (`acquire_lock`,
-`:381`) — a slow tick skips rather than overlapping. `probe_health` (`:129`) does
+`:407`) — a slow tick skips rather than overlapping. `probe_health` (`:131`) does
 `GET /connected` then `GET /status`, calling the deployment down for an
 unreachable API, a 503, an unreachable `/status`, **or zero HOT models**;
 `/connected` alone is too shallow, since the Ray client can be alive while the
 controller is wedged. A cluster snapshot is written whenever `/status` answered,
-healthy or not. If healthy and `model_check_due` (`:222`) — first run, recovery
+healthy or not. If healthy and `model_check_due` (`:241`) — first run, recovery
 from down, or `--model-interval` (default 7200s) elapsed — it runs one remote
 trace per HOT model. Finally it writes the connectivity datapoint, applies the
-up/down transition (`record_status_transition`, `:350`), saves `.state.json`,
+up/down transition (`record_status_transition`, `:376`), saves `.state.json`,
 rotates logs, and `os._exit(1 if not is_ok else 0)`.
 
-`_run_trace` (`:155`) needs nnsight installed in the dashboard environment: it
+`_run_trace` (`:157`) needs nnsight installed in the dashboard environment: it
 reconstructs the wrapper from the full `model_key` via `Remotable.from_model_key`
 rather than hardcoding a class (so VLM and PEFT deployments are exercised under
 their own envoy class), then runs
@@ -229,14 +238,17 @@ their own envoy class), then runs
 `CONFIG.API.HOST` from `--api-host or --url`; without that nnsight defaults to
 `https://api.ndif.us` and the probe silently tests the public deployment. Each
 trace runs in a one-worker thread pool so `--model-timeout` (default 60s) can
-abandon a hung request (`check_model`, `:194`).
+abandon a hung request (`check_model`, `:213`).
 
-Discord notification is edge-triggered: `notify_if_failures_changed` (`:342`)
+Discord notification is edge-triggered: `notify_if_failures_changed` (`:368`)
 compares the sorted failed-model set to the one in `.state.json` and posts only on
-a change, and `notify_status` (`:285`) posts on up→down, down→up and still-down.
-`notify_model_failures` (`:304`) adds models one at a time and stops before
-Discord's 2000-char limit — server-side tracebacks in `error` easily exceed the
-whole budget alone.
+a change, and `notify_status` (`:304`) posts on up→down, down→up and still-down.
+`notify_model_failures` (`:323`) adds models one at a time and stops before
+Discord's 2000-char limit, truncating each line's error to 120 characters. The
+line carries `summarize_error`'s one-liner (`jobs/util.py:45`) and the job's
+`request_id` when there is one; the full traceback stays in `models_*.log`,
+because a couple of them would push every other failed model out of the
+message.
 
 ## jobs/reconcile.py
 
@@ -252,7 +264,7 @@ diff against it, and the last writer would win, leaking deployments or dropping
 evictions. The critical section spans the whole read-diff-act-write sequence
 including the deploy/evict RPCs, so it can be held for tens of seconds.
 
-The diff (`:195`–`:230`):
+The diff (`:193`–`:229`):
 
 ```python
 new_keys = {e.model_key: e for e in filter_active(store.list())}
@@ -300,8 +312,8 @@ frontend: `npm ci && npm run build` in `frontend/`, then `just build dashboard`.
 The `dashboard` extra is web-app only: `fastapi`, `uvicorn[standard]`,
 `pydantic-settings`, `itsdangerous`, `bcrypt`, `python-multipart`, `requests`.
 Both crons need more: reconcile drives `cli/lib`, which uses the Ray and redis
-clients, so it needs the `ray` extra (`requirements.in` pins
-`ray[client]==2.55.1` to match `services/ray`), and the monitor's probe needs
+clients, so it needs the `ray` extra (`requirements.txt:40` pins
+`ray[default]==2.55.1` to match `services/ray`), and the monitor's probe needs
 nnsight plus `peft` / `torchvision` for PEFT and VLM checkpoints. The container
 sidesteps this by installing every extra into one image.
 

@@ -28,22 +28,30 @@ Two consequences that will mislead you if you don't know them:
 
 - A local stack **doesn't exercise the sandbox path by default** — auth-off
   defaults to trusted, *and* the code-default actor class is the in-process one
-  (only compose sets `SandboxModelActor`). But you no longer need Postgres to
-  reach the untrusted path: send `trusted: false` in the request and auth-off
-  honors it, forcing the runner path; see
+  (only compose sets `SandboxModelActor`). Reaching the untrusted path needs no
+  Postgres: send `trusted: false` in the request and auth-off honors it, forcing
+  the runner path; see
   [docs/developing/testing.md](docs/developing/testing.md).
 - Sandboxing is **process-based and still in progress**. The runner is an ordinary
   OS process with no hardening; each request gets a fresh one, stopped afterward,
   so nothing leaks between requests. It inherits an **allowlist** of environment
-  variables rather than the actor's environment, so a block cannot read the
-  operator's `HF_TOKEN` or database URL out of `os.environ` — but that is one hole
-  closed, not a boundary. Don't describe it as a security boundary.
+  variables rather than the actor's environment (`RUNNER_ENV`,
+  `src/ndif/services/ray/sandbox/host.py:29-69` — loader/locale basics,
+  `CUDA_VISIBLE_DEVICES`, cache locations, thread knobs, and nothing else), so a
+  block cannot read the operator's `HF_TOKEN` or database URL out of
+  `os.environ` — but that is one hole closed, not a boundary. Don't describe it
+  as a security boundary.
 
 ---
 
 ## By task
 
 ### "Get NDIF running / I'm setting up my own"
+Pick the route first — they are three different pages:
+- **Run the published image** → [docker/README.md](docker/README.md) — `docker run --gpus all ndif/ndif`, the whole stack in one container
+- **Run the compose stack** (this checkout, telemetry included) → [docs/operating/quickstart.md](docs/operating/quickstart.md)
+- **Install from source** (`pip install 'ndif[api,ray]'`, then `ndif start`) → [docs/operating/quickstart.md](docs/operating/quickstart.md)
+
 - [docs/operating/quickstart.md](docs/operating/quickstart.md) — `just up` to a working `remote=True` trace
 - [docs/operating/compose-stack.md](docs/operating/compose-stack.md) — the ten containers, ports, volumes, GPU requirements
 - [docs/operating/configuration.md](docs/operating/configuration.md) — env-only config and how it layers
@@ -56,15 +64,22 @@ Two consequences that will mislead you if you don't know them:
 - [docs/concepts/deployments-and-eviction.md](docs/concepts/deployments-and-eviction.md) — HOT/WARM/COLD, pinning, GPU accounting
 
 ### "Run a command against the cluster"
-- [docs/operating/cli.md](docs/operating/cli.md) — every `ndif` command with flags and real output
+- [docs/operating/cli.md](docs/operating/cli.md) — every `ndif` command with flags and real output, including `ndif version` (the resolved ndif/nnsight/torch+CUDA/transformers/ray stack) and `ndif doctor`
 - [docs/operating/dashboard.md](docs/operating/dashboard.md) — the admin UI, its auth, its crons
 
 ### "Something is broken"
 - [docs/operating/troubleshooting.md](docs/operating/troubleshooting.md) — stack-level triage, start here
+- [docs/errors/index.md](docs/errors/index.md) — the error tree; `ndif version` first if a version mismatch is plausible
 - [docs/errors/client-side-failures.md](docs/errors/client-side-failures.md) — a user pasted an nnsight error
 - [docs/errors/server-exceptions.md](docs/errors/server-exceptions.md) — you're reading server logs
 - [docs/runbooks/debug-a-stuck-request.md](docs/runbooks/debug-a-stuck-request.md) — a hung job, end to end
 - [docs/runbooks/trace-a-users-failed-job.md](docs/runbooks/trace-a-users-failed-job.md) — reconstruct a past failure
+
+### "It runs, but it's doing something inexplicable"
+- [docs/gotchas/index.md](docs/gotchas/index.md) — the traps that produce confusing behavior instead of an error
+- [docs/gotchas/networking-and-compose.md](docs/gotchas/networking-and-compose.md) — service names vs localhost, the Redis/Ray GCS collision, presigned-URL hosts
+- [docs/gotchas/gpu-and-memory.md](docs/gotchas/gpu-and-memory.md) — `shm_size`, the two memory budgets, sizing and eviction
+- [docs/gotchas/client-server-versions.md](docs/gotchas/client-server-versions.md) — the nnsight coupling
 
 ### "Secure it / turn on auth"
 - [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md) — the procedure, and what you're exposed to until you run it
@@ -144,7 +159,7 @@ Read the first two if a behavior seems inexplicable:
 - [env-vars.md](docs/reference/env-vars.md) — every `NDIF_*` variable
 - [ports.md](docs/reference/ports.md) — every port
 - [glossary.md](docs/reference/glossary.md) — the vocabulary
-- [external-resources.md](docs/reference/external-resources.md) — where to go next
+- [external-resources.md](docs/reference/external-resources.md) — where to go next (Docker Hub, PyPI, nnsight, Ray)
 
 ---
 
@@ -155,8 +170,9 @@ Read the first two if a behavior seems inexplicable:
   to the weights *with* `trust_remote_code`. But a client-supplied `trusted` is
   honored — send `trusted: false` to force the sandbox path with no Postgres.
 - **NDIF does not use Ray Serve.** Deployments are detached Ray actors named
-  `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. The README says
-  otherwise; the README is wrong.
+  `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. The dependency
+  is `ray[default]`; nothing in `src/` imports `ray.serve`. Ignore every Serve
+  page a search hands you.
 - **You cannot catch an actor's exception by type across the Ray boundary.** An
   exception raised inside an actor reaches the caller wrapped in a
   `RayTaskError`; the dual class that would make `isinstance` work is only built
@@ -167,8 +183,8 @@ Read the first two if a behavior seems inexplicable:
   looks correct. The exception is `ActorUnavailableError` — Ray raises that
   itself, so it *does* arrive bare and is matched directly.
 - **The sandbox runner pool costs memory per model actor.** `NDIF_SANDBOX_POOL_SIZE`
-  (7) pre-warms that many runners per actor at ~420 MB each — ~2.9 GB per
-  resident model, whether or not anything is running. Sized for throughput on
+  (7) pre-warms that many runners per actor at ~480 MB each (gpt2; more for a
+  bigger architecture) — ~3.4 GB per resident model, whether or not anything is running. Sized for throughput on
   one model; turn it down on a node hosting several.
 - **`NDIF_MODEL_CACHE_PERCENTAGE` scales host RAM**, not GPU memory — it's the WARM
   cache budget. Wrong lever for a GPU OOM.
@@ -179,11 +195,15 @@ Read the first two if a behavior seems inexplicable:
 - **`priority` is a strict group, not a queue jump, and there is no aging.**
   Priority requests sort ahead of all normal traffic and stay FIFO among
   themselves; sustained priority load starves normal traffic indefinitely, with
-  autoscaling (max 3 replicas) the only relief. `prepend` is now only for
+  autoscaling (max 3 replicas) the only relief. `prepend` is only for
   re-queueing an evicted request to the front of *its own* group.
 - **`NDIF_RAY_METRICS_PORT` is Ray's `--metrics-export-port`** (the Prometheus
-  scrape target, default 8080). Nothing to do with Ray Serve. Formerly
-  `NDIF_RAY_SERVE_PORT` — renamed, no alias.
+  scrape target, default 8080). Nothing to do with Ray Serve.
+- **The published image defaults to `NDIF_SERVICE=all`** (`docker/Dockerfile:34`),
+  so a bare `docker run --gpus all ndif/ndif` runs api + ray + redis + minio +
+  dashboard *in one container* — the image carries its own `redis-server` and
+  `minio` binaries. Compose overrides it per container and runs redis/minio as
+  their own services, so those two copies never start there.
 - **The API process can't reach Ray.** Only the dispatcher — a child of the gunicorn
   master — holds a Ray client. Endpoints read Redis caches instead.
 - **`ray:connected` has no TTL**, so `/ping`, `/connected`, `/status` and `/env`
@@ -208,10 +228,13 @@ Read the first two if a behavior seems inexplicable:
 - **The dashboard SPA is committed** — `frontend/dist/` is checked in, so a clean
   clone + `just up` serves the UI with no host-side build. Rebuild only if you
   change the frontend.
-- **CLI deploys can now be trusted and set `dtype`.** `ndif deploy` has `--trusted`
-  and `--dtype` flags, and `models.yaml` passes every `DeploymentConfig` field
-  (`trusted`, `dtype`, `padding_factor`, `execution_timeout_seconds`,
-  `envoy_class`, `model_key`).
+- **CLI deploys can be trusted and set `dtype`.** `ndif deploy` has `--trusted`
+  and `--dtype` flags (`--dtype` also takes a quantization name — `nf4`/`int4`/
+  `4bit`, `fp4`, `int8`/`8bit`, `fp8`), plus `--gpus`, `--size-bytes`,
+  `--padding-factor`, `--padding-bias` and `--max-tp`; `models.yaml` passes every
+  `DeploymentConfig` field (`trusted`, `dtype`, `size_bytes`, `padding_factor`,
+  `padding_bias`, `gpus`, `max_tp`, `execution_timeout_seconds`, `envoy_class`,
+  `actor_class`, `model_key`).
 - **Only `dashboard_data` persists.** Result blobs, metrics, logs, Postgres data and
   downloaded weights all vanish on `just down`.
 - **A single-GPU model must be loaded with `device=`, not a device map.** Models
@@ -263,6 +286,8 @@ just ps            # what's running
 pytest tests/      # the live-server suite (skips unless localhost:8001 is up)
 ```
 
-There is no CI. The only test suite requires a running stack. See
+CI publishes but does not test: `.github/workflows/build_images.yml` (ECR on push to `main`), `publish_docker.yml` (Docker Hub on a `v*` tag), `publish.yml` (PyPI on a GitHub release). No workflow runs `pytest`; the only suite requires a running stack. See
 [docs/developing/testing.md](docs/developing/testing.md) and
-[docs/developing/contributing.md](docs/developing/contributing.md).
+[docs/developing/contributing.md](docs/developing/contributing.md). What the
+0.1.0 release pass found, fixed and left open:
+[docs/developing/release-audit-2026-09.md](docs/developing/release-audit-2026-09.md).

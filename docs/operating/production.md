@@ -26,10 +26,11 @@ true.
 ## 1. Turn on auth — this is the one that matters
 
 `NDIF_POSTGRES_URL` is commented out in the compose file
-(`docker-compose.yml:156`). With it empty, `PostgresProvider.enabled()` is False,
+(`docker-compose.yml:165`), and unset in the published image and a from-source
+install. With it empty, `PostgresProvider.enabled()` is False,
 `verify_api_key` returns `None`, and `validate_request` defaults
 **`request.trusted` to `True`** for any request that doesn't set it
-(`src/ndif/services/api/auth.py:180`).
+(`src/ndif/services/api/auth.py:180-184`).
 
 `trusted` is the most consequential flag in the system:
 
@@ -37,8 +38,8 @@ true.
   in the same process as the weights — no runner subprocess, no socket
   (`src/ndif/services/ray/sandbox/model.py`). Whatever Python the caller
   submitted executes with the actor's privileges.
-- The same flag becomes **`trust_remote_code=`** when the model is loaded
-  (`cluster/cluster.py:169`, `controller/controller.py:280`), so a request naming
+- The same flag becomes **`trust_remote_code=`** when the model is sized and
+  loaded (`cluster/cluster.py:183`, `:225`, `:296`), so a request naming
   an arbitrary Hugging Face repo can run that repo's code on your GPU node.
 
 So: an unauthenticated NDIF is not "an NDIF anyone can use", it is "an NDIF
@@ -66,7 +67,7 @@ Two related knobs worth setting at the same time: `NDIF_MIN_NNSIGHT_VERSION` and
 
 ## 2. Lock down the dashboard
 
-Compose sets `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml:192`), which
+Compose sets `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml:216`), which
 makes `require_auth` return the configured username without checking a cookie
 (`dashboard/backend/auth.py:73`). The dashboard can deploy, evict and restart
 models — it is a control plane, not a viewer.
@@ -79,7 +80,7 @@ python -m ndif.services.dashboard.backend.auth hash '<your password>'
 Set `NDIF_DASHBOARD_USERNAME`, the resulting bcrypt hash as
 `NDIF_DASHBOARD_PASSWORD_HASH`, and a random 32+ byte
 `NDIF_DASHBOARD_SESSION_SECRET` — the default is the literal string
-`change-me-please-this-is-not-secure` (`dashboard/backend/config.py:42`), and
+`change-me-please-this-is-not-secure` (`dashboard/backend/config.py:37`), and
 anyone who knows it can forge a session cookie. `NDIF_DASHBOARD_SESSION_TTL_DAYS`
 (7) bounds how long a stolen cookie is useful.
 
@@ -147,7 +148,7 @@ The controller runs on the head and only the head: it is pinned with
 advertises `head=10` when invoked with `--head`. Each node also advertises
 `cuda_memory_bytes` and `cpu_memory_bytes`, which the controller reads back for
 placement (`resources.py:37-49`). A node with no GPU is ignored entirely
-(`cluster/cluster.py:91-92`).
+(`cluster/cluster.py:106`).
 
 **Ports that must be reachable from every worker to the head:**
 
@@ -183,7 +184,8 @@ node, not the dev defaults; the detail lives in the runbooks and
   `docs/gotchas/gpu-and-memory.md`.
 - **The WARM cache is CPU RAM.** `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`) is
   the fraction of the node's **total system RAM** the controller may use to hold
-  evicted models off-GPU (`cluster/cluster.py:106-108`) — not a GPU setting. Lower
+  evicted models off-GPU (`services/ray/resources.py:18-22`, scaled by the
+  controller) — not a GPU setting. Lower
   it on a node that runs anything else.
 - **Replicas are the unit of concurrency.** A replica serves one request at a
   time; `NDIF_AUTOSCALING_MAX_REPLICAS` caps how many per model autoscaling adds.
@@ -194,8 +196,13 @@ node, not the dev defaults; the detail lives in the runbooks and
 
 ## 6. Timeouts and retention
 
-Several timeouts (`NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`,
-`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`, `NDIF_API_TIMEOUT`,
+**`NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` is unset by default, meaning no
+execution cap at all** (`controller/controller.py:773-778`): a block runs until it
+finishes and holds its replica for the duration. Right for a box only you submit
+to, wrong for a shared one — set it, or a per-model `execution_timeout_seconds`,
+before other people can submit.
+
+Several other timeouts (`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`, `NDIF_API_TIMEOUT`,
 `NDIF_POSTGRES_COMMAND_TIMEOUT_S`, the `/status` and `/env` cache timeouts) carry
 defaults tuned for a single-host dev stack. Review them against your workload —
 each is documented with its default in `docs/reference/env-vars.md`.
@@ -223,9 +230,11 @@ State this plainly to yourself before you deploy:
   fork, and no accounting.
 - **No secret management.** Credentials are environment variables. Bring your own
   secret store.
-- **No CI and no compatibility guarantees.** The only test suite is the
-  live-server one under `tests/`, which skips unless a stack is reachable at
-  `localhost:8001`. This is v0.0.1; there is no stable public API.
+- **No test CI and no compatibility guarantees.** `.github/workflows/` builds and
+  publishes images (`build_images.yml`, `publish_docker.yml`) and the PyPI package
+  (`publish.yml`); none of them run tests. The only test suite is the live-server
+  one under `tests/`, which skips unless a stack is reachable at `localhost:8001`.
+  This is v0.1.0; there is no stable public API.
 - **No horizontal API tier.** `NDIF_API_WORKERS` scales gunicorn workers in one
   process group, and the queue dispatcher is started exactly once by the gunicorn
   master (`gunicorn_conf.py:61-66`). Running two API *containers* against one

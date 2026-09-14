@@ -38,6 +38,15 @@ A surprising amount of NDIF debugging is deciding whether a failure is the
 
 If the user's traceback names their own frames, stop looking at the server.
 
+There is a third shape, and it is the one people misread: an `ERROR` whose
+`description` is **one prose sentence with no frames**. That is a *rejected*
+request — the payload couldn't be read, or its module paths don't resolve against
+the server's model — and it is deliberate: every frame at those points is
+server-side, so a traceback would leak module layout while telling the caller
+nothing (`src/ndif/common/errors.py:19-28`). Traceback ⇒ their code ran and
+failed; sentence ⇒ we refused it before their code existed. See
+[A sentence instead of a traceback](client-side-failures.md#a-sentence-instead-of-a-traceback).
+
 ## Two failures that look like something else
 
 **A job that never gets a status at all** usually isn't a queue problem — it's
@@ -48,6 +57,19 @@ still reports healthy. `ray:connected` has no TTL, so `/ping`, `/connected`,
 **`COMPLETED` followed by a failed download** is almost always the presigned-URL
 host mismatch: the blob is signed with `NDIF_OBJECT_STORE_PUBLIC_URL`, and if that
 isn't an address the client can reach, the job succeeded and the download can't.
+(A result under `NDIF_MAX_SOCKET_RESULT_BYTES`, 4 MiB, rides back on the response
+itself and never touches a URL — so this only bites above that, and always for a
+non-blocking job.)
+
+## Before anything else, check the versions
+
+`ndif version` prints the resolved ndif / nnsight / torch (+ CUDA line) /
+transformers / ray of a running install, and `ndif doctor` prints the same set
+alongside its connectivity probes. A large share of the failures on both pages —
+unreadable payloads, unresolvable module paths, a 400 from the version gate — are
+a client and a server disagreeing about one of those five. Run it on both sides
+(`ndif env` vs `ndif env --local`) before reading a traceback closely. See
+[Client/server versions](../gotchas/client-server-versions.md).
 
 ## Related
 

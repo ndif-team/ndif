@@ -40,11 +40,11 @@ A remote run is one multipart `POST /request` plus, for a blocking run, one
 | Part | Content | Read by |
 |---|---|---|
 | form field `data` | `RequestModel.metadata()` — the JSON envelope: `model_key`, `session_id`, `compress`, `env` | `validate_request` parses it into a `BackendRequestModel` |
-| file field `blob` | the serialized execution payload | `request.payload = await blob.read()` (`api/app.py:147`) |
+| file field `blob` | the serialized execution payload | `request.payload = await blob.read()` (`api/app.py:150`) |
 | header `ndif-api-key` | the caller's key | `verify_api_key` |
 | header `nnsight-version` | the client's installed nnsight version | `validate_client_versions` (`app.py:140`) |
 | header `python-version` | the client's full `sys.version` | same |
-| header `ndif-timestamp` | client send time, for the `SENT` latency bucket | `app.py:157-170` |
+| header `ndif-timestamp` | client send time, for the `SENT` latency bucket | `app.py:160-173` |
 
 The envelope's `compress` flag is bidirectional — the payload is zstd-compressed
 *and* the result blob should come back compressed. `env` is a per-request dict
@@ -71,9 +71,14 @@ sequenceDiagram
     M->>M: _remoteable_set_env(request.env)
     M->>M: RequestModel.deserialize(payload, persistent_objects)
     M->>M: tracer.execute(tracer.info.code) under inc()/dec()
-    M->>S: PUT {request.id}.pt
-    M-->>C: COMPLETED + presigned url (via Redis → websocket)
-    C->>S: GET presigned url
+    M->>M: prepare_result — compress, meter
+    opt result over the socket cap, or non-blocking
+        M->>S: PUT {request.id}.pt
+    end
+    M-->>C: COMPLETED + the blob or a presigned url (via Redis → websocket)
+    opt url
+        C->>S: GET presigned url
+    end
     C->>U: push saved values into the caller's frame
 ```
 
@@ -93,7 +98,7 @@ Client side, `RequestModel.serialize(tracer, compress)` does three things:
 3. Optionally zstd-compresses (level 6).
 
 So the payload is the tracer object graph, the block's source, its captured
-scope, and *holes* where the model used to be.
+scope, and *holes* where the model would otherwise be.
 
 ## Deserialization: what the server does with it
 
@@ -102,19 +107,20 @@ is the inverse, and it is a **static method on nnsight's class that NDIF calls
 directly** from two places:
 
 ```python
-persistent_objects = self.model._remoteable_persistent_objects()
-tracer = RequestModel.deserialize(
-    request.payload, persistent_objects, compress=request.compress
-)
+persistent_objects = model._remoteable_persistent_objects()
+tracer = deserialize(payload, persistent_objects, compress=compress)
 ```
 
-(`.../deployments/modeling/base.py:391-394` — the in-process path.) The sandbox
+(`prepare_traced_block`, `.../deployments/modeling/nns.py:156-158` — the
+in-process path, which passes `BackendRequestModel.deserialize`.) The sandbox
 runner calls the same function with its own unpickler and its own map — built once
-per runner from a meta model, not from loaded weights (`.../sandbox/nns.py:487`):
+per runner from a meta model, not from loaded weights (`.../sandbox/nns.py:520`):
 
 ```python
-tracer = RequestModel.deserialize(blob, persistent_objects=PERSISTENT_OBJECTS,
-                                  compress=compress, unpickler=IPCCloudUnpickler)
+tracer = BackendRequestModel.deserialize(
+    blob, persistent_objects=PERSISTENT_OBJECTS,
+    compress=compress, unpickler=IPCCloudUnpickler,
+)
 ```
 
 Inside, nnsight decompresses, unpickles (resolving persistent ids from the map),
@@ -123,17 +129,20 @@ result as `tracer.info.code`, restores the captured globals/locals onto the
 tracer's frame, and **registers the source in `linecache`** so a traceback can
 show the offending line even though the user's file doesn't exist on the server.
 
-That `linecache` write is why the actor snapshots and restores three
-process-global dicts around every request (`base.py:273-275`, restored in the
-`finally` at `:359-364`): `linecache.cache`, and nnsight's `SOURCES` and `BLOCKS`
-memo tables, which are keyed by `(filename, line)` and never re-validated.
+That `linecache` write is why every request runs inside `block_scope()`
+(`.../deployments/modeling/nns.py:37`) — entered at `base.py:327`, exited in the
+`finally` at `:450`, and used by the runner too (`sandbox/nns.py:501`). It
+snapshots and restores three process-global dicts: `linecache.cache`, and
+nnsight's `SOURCES` and `BLOCKS` memo tables, which are keyed by
+`(filename, line)` and never re-validated.
 Without the restore, a later request reusing the same trace-site coordinates
 would run the *previous* request's compiled block — a real cross-request
 correctness hazard on a long-lived actor, caused by nnsight memoizing globally.
 
 ## Running the block, and collecting the saves
 
-Execution is three lines of nnsight protocol (`base.py:411-421`):
+Execution is a few lines of nnsight protocol, shared by both paths in
+`execute_traced_block` (`.../deployments/modeling/nns.py:181-191`):
 
 ```python
 inc()
@@ -161,8 +170,8 @@ and append raw values into it — and why `.save()` is the only channel out of a
 remote trace.
 
 The result dict is written with `torch.save(saved, buffer,
-pickle_module=cpu_pickle_module())` (`base.py:424`). `cpu_pickle_module`
-(`.../modeling/util.py:269`) is a synthesized module that clones `pickle` and
+pickle_module=cpu_pickle_module())` (`base.py:501`). `cpu_pickle_module`
+(`.../modeling/util.py:287`) is a synthesized module that clones `pickle` and
 replaces `Pickler` with one whose `reducer_override` relocates any non-CPU tensor
 to CPU before serializing — GPU tensors otherwise carry CUDA storage metadata and
 produce larger, less compressible blobs. The sandbox runner uses the same helper,
@@ -176,21 +185,21 @@ Every one of these is an internal that a nnsight refactor can break. Grepping fo
 
 | Symbol | Imported by | What breaks if it changes |
 |---|---|---|
-| `schema.request.RequestModel` | `common/schema/request.py:7`, actor, runner | the request envelope and both directions of (de)serialization |
+| `schema.request.RequestModel` | `common/schema/request.py:8`, actor, runner | the request envelope and both directions of (de)serialization |
 | `schema.response.ResponseModel`, `Status` | `common/schema/response.py:1` | the entire status wire format (see below) |
-| `modeling.huggingface.HuggingFaceModel` | `.../modeling/base.py:31` | model loading — `from_model_key(..., device_map, max_memory, dispatch, torch_dtype)` |
-| `modeling.mixins.remotable.Remotable` | `.../cluster/evaluator.py:7`, dashboard monitor | meta-device sizing and model-key round-tripping |
-| `tracing.globals.BLOCKS`, `SOURCES` | `.../modeling/base.py:34` | the per-request snapshot/restore that stops block reuse |
-| `tracing.tracer._saves`, `inc`, `dec` | `.../modeling/base.py:35`, `.../sandbox/nns.py:51` | collecting saved values at all |
-| `tracing.util.clean_traceback`, `filter_traceback` | `.../modeling/base.py:36` | the user-facing traceback in an `ERROR` response |
-| `intervention.serialization.CustomCloudUnpickler` | `.../sandbox/nns.py:47` | the sandbox's persistent-id resolution |
-| `intervention.interleaver.{Interleaver, Mediator, Event, EarlyStopException, OutOfOrderError}` | `.../sandbox/nns.py:40-46`, `.../sandbox/model.py:29` | **the split interleaver** — see below |
-| `intervention.envoy.Envoy` | `.../sandbox/nns.py:39` | the whole-class patch that routes model calls over IPC |
-| `intervention.source.SourceEnvoy`, `install_source`, `SourceNotAvailable` | `.../sandbox/nns.py:48`, `.../sandbox/model.py:286` | `.source` support inside a sandboxed trace |
-| `intervention.batching.Batcher` | `.../sandbox/model.py:27` | host-side input assembly for multi-invoke traces |
-| `intervention.cache.Cache` | `.../sandbox/{nns,model}.py` | `tracer.cache()` over the socket |
-| `intervention.tracer.InterleavingTracer` | `.../sandbox/nns.py:49` | the `cache` patch |
-| `util.from_import_path`, `util.apply` | CLI, sandbox | model-key resolution and nested-structure mapping |
+| `modeling.huggingface.HuggingFaceModel` | `.../modeling/base.py:27`, `.../tp/model.py`, `.../tp/common.py` | model loading — `from_model_key(..., device_map, max_memory, dispatch, torch_dtype)` |
+| `modeling.mixins.remotable.Remotable`, `bytes_per_element` | `.../cluster/evaluator.py:23`, `.../sandbox/nns.py:53`, dashboard monitor | meta-device sizing and model-key round-tripping |
+| `tracing.globals.BLOCKS`, `SOURCES` | `.../modeling/nns.py:30` | the per-request snapshot/restore that stops block reuse |
+| `tracing.tracer._saves`, `inc`, `dec` | `.../modeling/nns.py:31` — both paths share it | collecting saved values at all |
+| `tracing.util.clean_traceback`, `filter_traceback` | `.../modeling/base.py:29`, `.../sandbox/nns.py:549` | the user-facing traceback in an `ERROR` response |
+| `intervention.serialization.CustomCloudUnpickler` | `.../sandbox/nns.py:50` | the sandbox's persistent-id resolution |
+| `intervention.interleaver.{Interleaver, Mediator, Event, EarlyStopException, OutOfOrderError, Pending}` | `.../sandbox/nns.py:42-49`, `.../sandbox/driver.py:27` | **the split interleaver** — see below |
+| `intervention.envoy.Envoy` | `.../sandbox/nns.py:41` | the whole-class patch that routes model calls over IPC |
+| `intervention.source.SourceEnvoy`, `install_source`, `SourceNotAvailable` | `.../sandbox/nns.py:51`, `.../sandbox/driver.py:293` | `.source` support inside a sandboxed trace |
+| `intervention.batching.Batcher` | `.../sandbox/driver.py:25` | host-side input assembly for multi-invoke traces |
+| `intervention.cache.Cache` | `.../sandbox/nns.py:40`, `.../sandbox/driver.py:26` | `tracer.cache()` over the socket |
+| `intervention.tracer.InterleavingTracer` | `.../sandbox/nns.py:52` | the `cache` patch |
+| `util.from_import_path`, `util.apply` | `cli/lib/models.py:24`, `.../sandbox/driver.py:28` | model-key resolution and nested-structure mapping |
 
 ### The interleaver contract is the deepest coupling
 
@@ -231,10 +240,10 @@ extension points; prefer them over reaching further in.
 | Seam | Shape | NDIF's use |
 |---|---|---|
 | `deserialize(..., unpickler=)` | the unpickler class is a parameter; it is constructed as `unpickler(file, persistent_objects)` | the sandbox passes `IPCCloudUnpickler`, which resolves `"Interleaver"` to a socket-backed `IPCInterleaver`, other ids from its meta model's map, and **unknown ids to `None`** instead of raising |
-| `_remoteable_persistent_objects()` | model wrapper → `{persistent_id: live object}` | the in-process actor passes it straight to `deserialize`; the runner builds the same map from a meta model (`load_meta_model`, `.../sandbox/nns.py:352`); subclasses extend it (tokenizer, pipeline) |
-| `_remoteable_get_env()` / `_remoteable_set_env(env)` | client produces a dict, server applies it before the run | PEFT adapter swap; applied off the event loop inside `run`'s try block so a bad adapter id becomes a normal user-facing `ERROR` (`base.py:294`). The sandbox applies the same dict a second time, in the runner, so its meta model's paths match the adapted tree (`set_env`, `.../sandbox/nns.py:389`) |
+| `_remoteable_persistent_objects()` | model wrapper → `{persistent_id: live object}` | the in-process actor passes it straight to `deserialize`; the runner builds the same map from a meta model (`load_meta_model`, `.../sandbox/nns.py:385`); subclasses extend it (tokenizer, pipeline) |
+| `_remoteable_get_env()` / `_remoteable_set_env(env)` | client produces a dict, server applies it before the run | PEFT adapter swap; applied off the event loop inside `run`'s try block so a bad adapter id becomes a normal user-facing `ERROR` (`base.py:350`). The sandbox applies the same dict a second time, in the runner, so its meta model's paths match the adapted tree (`set_env`, `.../sandbox/nns.py:422`) |
 | `to_model_key()` / `from_model_key(key, **kwargs)` | `"import.path.ClassName:{...}"` | the deployment identity used everywhere — queue keys, actor names, `models.yaml` |
-| `Remotable.from_model_key(..., dispatch=False)` | build on the meta device | the controller's size estimate, before any weights exist |
+| `Remotable.describe_checkpoint(key, dtype, trust_remote_code=)` / `Remotable.max_tp_size(key, ...)` | one call each, answering from the checkpoint's published metadata | the controller's size estimate and shardability, before any weights exist (`.../cluster/evaluator.py:155`, `:161`) |
 | `_saves()` / `inc()` / `dec()` | thread-local save set | collecting the values to return |
 | `cloudpickle.register_pickle_by_value` (via `nnsight.register`) | ship a local module's source | lets user code reference modules the server doesn't have installed |
 
@@ -246,8 +255,12 @@ weights.
 
 ## Developing against a local nnsight
 
-The server declares `nnsight` as an ordinary dependency (`pyproject.toml`), so
-pointing it at a working copy is a normal editable install:
+The server declares `nnsight` as an ordinary dependency — `nnsight` in
+`pyproject.toml:24`, pinned to `nnsight>=0.8.0rc1,<0.9` from PyPI in
+`requirements.txt:25`. The specifier names the pre-release explicitly because pip
+only considers pre-releases when the specifier does (or with `--pre`); a bare
+`nnsight` would resolve to the newest 0.7. Pointing the server at a working copy
+is a normal editable install:
 
 ```bash
 pip install -e /path/to/nnsight        # before installing ndif
@@ -256,11 +269,12 @@ pip install -e ".[api,ray,metrics,postgres,dashboard]"
 
 Order matters: the `ndif` install resolves its `nnsight` requirement against
 whatever is already present, so installing it afterwards can pull a PyPI release
-over your checkout. A compiler must also be present at install time, or
-setuptools silently skips nnsight's optional `nnsight._c.py_mount` extension and
-`some_list.save()` inside a *remote* block raises `AttributeError` — the block
-runs on the server, so the mount is a server-side dependency. The image installs
-`gcc` and `libc6-dev` for exactly this (`docker/Dockerfile`).
+over your checkout. The published wheels ship nnsight's compiled
+`nnsight._c.py_mount` extension, so a wheel install needs no compiler. An **sdist**
+install does: without one setuptools silently skips the extension and
+`some_list.save()` inside a *remote* block raises `AttributeError` — the block runs
+on the server, so the mount is a server-side dependency. The image keeps `gcc` and
+`libc6-dev` for that fallback (`docker/Dockerfile:47`).
 
 For the compose stack, `just up` / `just ta` **auto-bind-mount** your installed
 nnsight over the image's copy: they resolve `NNSIGHT_PATH` from
@@ -299,8 +313,12 @@ When you move the server to a newer nnsight, check these in order:
    `models.yaml` and every pinned `NDIF_DEPLOYMENTS` entry.
 6. **Set `NDIF_MIN_NNSIGHT_VERSION`** to the oldest client that still works.
 
-There is no CI here (v0.0.1). `pytest tests/` against a running stack is the
-whole test story — see [Testing](testing.md).
+To run against an unreleased nnsight fix, replace the `nnsight` line in
+`requirements.txt` with a git ref (`git+https://github.com/ndif-team/nnsight.git@<ref>`)
+— the image carries `git` for exactly that.
+
+No workflow runs the tests. `pytest tests/` against a running stack is the whole
+test story — see [Testing](testing.md).
 
 ## Server behaviors that are really nnsight behaviors
 
@@ -313,7 +331,7 @@ a remote trace comes back empty, because the appends hit the server's copy;
 is a stdout redirect into `LogStream` (`.../modeling/util.py:16`), one response
 per complete line; a `ModuleNotFoundError` naming the user's own module means an
 unregistered local module, not a broken server; and a traceback that stops at
-the user's frames is deliberate (`format_error`, `base.py:444`).
+the user's frames is deliberate (`format_error`, `base.py:545`).
 
 ## Related
 

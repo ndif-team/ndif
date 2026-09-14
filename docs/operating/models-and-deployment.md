@@ -19,7 +19,7 @@ this page is the model lifecycle. Two facts frame it:
 1. **A deployment is a set of detached Ray actors, one per replica** — not Ray
    Serve, not a container. `Deployment.create` calls
    `actor_class.options(name=..., namespace="NDIF", lifetime="detached")`
-   (`.../cluster/deployment.py:192`); it's looked back up with
+   (`.../cluster/deployment.py:210-215`); it's looked back up with
    `ray.get_actor(name, namespace="NDIF")` (`:110`), named
    `{replica_id}:ModelActor:{model_key}`.
 2. **Deploy is additive** — every call places `replicas` *new* replicas
@@ -70,7 +70,7 @@ user's first `remote=True` trace pulls the model down and loads it. Pre-deployin
 and pinning controls *which* models stay warm; it is not a precondition.
 `NDIF_DEPLOYMENTS`, meanwhile, is a `|`-separated list of **model keys**, not
 checkpoints — read raw into `ControllerDeploymentArgs.deployments`
-(`controller/controller.py:533`), every entry deployed pinned; a bare checkpoint
+(`controller/controller.py:108-109`), every entry deployed pinned; a bare checkpoint
 string there becomes a bogus key that fails to evaluate.
 
 ### models.yaml
@@ -116,7 +116,7 @@ model key.
 
 | Field | Default | Falls back to | Effect | Set by |
 |---|---|---|---|---|
-| `pinned` | `False` | — | Exempt from controller-initiated eviction (`cluster/node.py:314`). | CLI `--pinned`, yaml, dashboard |
+| `pinned` | `False` | — | Exempt from controller-initiated eviction (`cluster/node.py:327-330`). | CLI `--pinned`, yaml, dashboard |
 | `replicas` | `1` | — | How many **new** replicas this call places. | CLI `--replicas`, yaml, dashboard |
 | `trusted` | `False` | — | Becomes `trust_remote_code` at load. See below. | CLI `--trusted`, yaml, dashboard, `lib.deploy` API, implicit deploy |
 | `padding_factor` | `None` | `NDIF_DEFAULT_PADDING_FACTOR` = `0.15` | Headroom added on top of weight size when sizing. | yaml, dashboard, `lib.deploy` API |
@@ -142,7 +142,7 @@ Two more cluster-wide knobs shape every deploy: `NDIF_DEFAULT_PADDING_BIAS`
 every deploy before anything else (`controller.py:127`) so the evaluator's
 estimate and the actor's load agree. The compose stack overrides the actor class
 to `ndif.services.ray.sandbox.model.SandboxModelActor`
-(`docker/docker-compose.yml:228`) — model on the host, user code in a separate
+(`docker/docker-compose.yml:252`) — model on the host, user code in a separate
 process.
 
 ## `dtype` — quantization is a dtype name
@@ -188,7 +188,7 @@ untrusted one runs in a fresh runner subprocess interleaved over a Unix socket
 (`docs/concepts/sandbox-execution.md`). **At load**, `DeploymentConfig.trusted`
 becomes `BaseModelDeploymentArgs(trust_remote_code=deployment.trusted)`
 (`controller/controller.py:280`) and `trust_remote_code=config.trusted` on the
-evaluator's meta build (`cluster/cluster.py:169`), reaching the actor's load via
+evaluator's meta build (`cluster/cluster.py:183`), reaching the actor's load via
 `HuggingFaceModel.from_model_key(..., **self.kwargs)` (`modeling/base.py:159`).
 
 So **an untrusted deploy of a model whose HF repo ships custom modelling code
@@ -307,9 +307,9 @@ released), **COLD** (present only in the local HF cache). Only HOT replicas are
 returned by `get_deployment` (`controller.py:346`), which is what the queue asks;
 an actor told to run while cached raises `CachedActorError`
 (`modeling/base.py:259`). A HOT→WARM demotion **keeps the replica_id**
-(`cluster/node.py:302`) so the actor name stays stable, and a WARM→HOT promotion
+(`cluster/node.py:316`) so the actor name stays stable, and a WARM→HOT promotion
 reuses it (`:200`). What the controller may evict is decided by `Node.evictable`
-(`cluster/node.py:314`):
+(`cluster/node.py:327-338`):
 
 ```python
 if deployment.pinned:
@@ -333,7 +333,7 @@ would otherwise evict each other every request. It also means a fresh non-pinned
 deploy can be blocked for an hour behind another — if you need room now, pin the
 incoming model or evict by hand. Evicting a HOT replica releases its GPU bytes
 and demotes it to WARM if CPU cache room exists or can be freed by dropping
-smaller cached entries; with no room it is removed outright (`node.py:250`).
+smaller cached entries; with no room it is removed outright (`node.py:257-268`).
 
 ## Evicting, checking, exporting
 

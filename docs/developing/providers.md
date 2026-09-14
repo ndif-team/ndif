@@ -38,21 +38,22 @@ class RedisProvider(Provider):
 `to_env()` (`base.py:46`) is the inverse, rendering the current values back into an
 `{ENV_VAR: str}` dict; that is how config crosses a process boundary.
 
-Lifecycle: `connect` / `connected` / `reset` / `disconnect`. All classmethods;
-nothing is instantiated — call `RedisProvider.sync_client` or
+Lifecycle: `connect` / `connected` / `reset` / `disconnect` (`base.py:54` onward).
+All classmethods; nothing is instantiated — call `RedisProvider.sync_client` or
 `ObjectStoreProvider.put(...)` directly. Base implementations are permissive
 (`connect`/`disconnect`/`reset` no-op, `connected()` returns `True`), so a provider
-overrides only what it needs. The base `ensure` has no in-tree callers today —
-`PostgresProvider` defines its own async version.
+overrides only what it needs. That is the whole base surface — there is no base
+`ensure`; `PostgresProvider` defines its own async one (`postgres.py:115`) because
+its pool is built lazily inside an event loop.
 
 ### Importing is connecting
 
 Four modules run `from_env(); connect()` at the bottom of the file, so **importing
 the module establishes the connection in that process**: `redis.py:72` and
-`objectstore.py:171` (cheap — the clients open no socket until the first command),
+`objectstore.py:238` (cheap — the clients open no socket until the first command),
 `influx.py:224` and `loki.py:231` (both start a background shipper thread). Two
-only load config: `ray.py:130` (`ray.init()` is expensive, and only the dispatcher
-and CLI want it) and `postgres.py:158` (an asyncpg pool needs a running event loop,
+only load config: `ray.py:139` (`ray.init()` is expensive, and only the dispatcher
+and CLI want it) and `postgres.py:159` (an asyncpg pool needs a running event loop,
 which doesn't exist at import). Hence `providers/__init__.py` exports only the base
 class — importing the package must not connect you to services nobody asked for.
 Always import the concrete module:
@@ -69,10 +70,10 @@ Always import the concrete module:
 A Ray worker inherits only its node's ambient environment, so config must be shipped
 explicitly — that's what `to_env()` is for. `Deployment.create` exports Redis,
 object-store, Loki and Influx config into a model actor's `runtime_env`
-(`_provider_runtime_env`, `.../cluster/deployment.py:37`), then overrides
+(`_provider_runtime_env`, `.../cluster/deployment.py:16`), then overrides
 `NDIF_SERVICE` to `"model"` so the actor's telemetry attributes to the model, not
-the controller (`deployment.py:187`). The controller actor is launched the same way
-with just `LokiProvider.to_env()` (`controller.py:578`).
+the controller (`deployment.py:205`). The controller actor is launched the same way
+with just `LokiProvider.to_env()` (`controller.py:818`).
 
 ## Zero configuration, and what each URL turns on
 
@@ -96,12 +97,12 @@ With `NDIF_POSTGRES_URL` unset, `validate_request` defaults
 client-supplied `trusted: false` is honored (`src/ndif/services/api/auth.py:184`).
 `trusted` is not only an auth outcome — it is read in two other places:
 
-- `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:242`)
+- `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:219`)
   returns `super().execute(request)` for a trusted request — the caller's traced
   Python runs **in-process inside the model actor, next to the model weights**,
   instead of in a separate runner subprocess.
 - `Cluster.deploy` passes it as `trust_remote_code=config.trusted` when sizing and
-  loading a model (`.../controller/cluster/cluster.py:169`), so models load with
+  loading a model (`.../controller/cluster/cluster.py:183`), so models load with
   Hugging Face `trust_remote_code` enabled.
 
 So "no Postgres ⇒ unauthenticated" is really "⇒ unauthenticated **and** every
@@ -137,8 +138,8 @@ sets `socket_timeout=5`, shorter than the dispatcher's `brpop(queue, timeout=10)
 without it, every idle dispatch iteration raises a spurious `TimeoutError`
 (`redis.py:32`).
 
-**Used by:** the API app (`app.py:114`, `:180`, `:221`, `:385`), the dispatcher, and
-`BackendRequestModel.respond` / `arespond` (`common/schema/request.py:149`, `:173`)
+**Used by:** the API app (`app.py:114`, `:183`, `:224`, `:393`), the dispatcher, and
+`BackendRequestModel.respond` / `arespond` (`common/schema/request.py:190`, `:222`)
 — every process that publishes a status update, model actors included. See
 [the Redis layer](redis-layer.md).
 
@@ -148,27 +149,27 @@ without it, every idle dispatch iteration raises a spurious `TimeoutError`
 One var: `NDIF_RAY_ADDRESS`, default `ray://localhost:10001`. Only the dispatcher
 and the CLI connect to Ray — API workers never do, and that constraint is what
 produces the whole Redis cache layer. (A URL with no port falls back to **6379**,
-Redis's port, with a warning: `RayProvider.get_host_port`, `ray.py:51`.)
+Redis's port, with a warning: `RayProvider.get_host_port`, `ray.py:60`.)
 
-`RayProvider.connected` (`ray.py:90`) is stricter than `ray.is_initialized()`: it
+`RayProvider.connected` (`ray.py:99`) is stricter than `ray.is_initialized()`: it
 requires initialization, a TCP connect to the parsed host/port (`verify_connection`,
 `providers/util.py:4`, 2s timeout), **and** that the `Controller` actor exists in
 the `NDIF` namespace — so the dispatcher's connect loop won't proceed until the
-control plane is serving. `RayProvider.is_connection_error` (`ray.py:120`)
-string-matches an exception against `CONNECTION_ERROR_PATTERNS` (`ray.py:108`); a
-match triggers purge-and-reconnect (`Dispatcher.handle_errors`, `dispatcher.py:181`).
+control plane is serving. `RayProvider.is_connection_error` (`ray.py:129`)
+string-matches an exception against `CONNECTION_ERROR_PATTERNS` (`ray.py:117`); a
+match triggers purge-and-reconnect (`Dispatcher.handle_errors`, `dispatcher.py:183`).
 
 The module also holds the actor lookups `get_named_actor` /
-`get_controller_actor_handle` / `get_model_actor_handle` (`ray.py:199`, `:212`,
-`:217`), which name actors `"Controller"` and
+`get_controller_actor_handle` / `get_model_actor_handle` (`ray.py:208`, `:221`,
+`:226`), which name actors `"Controller"` and
 `"{replica_id}:ModelActor:{model_key}"` in namespace `NDIF`; `CachedActorError`
 (`ray.py:25`), raised when a dispatch lands on an actor moved to CPU cache (WARM);
-and `NDIFActorHandle` (`ray.py:181`), a lean `ClientActorHandle` that skips stock
+and `NDIFActorHandle` (`ray.py:190`), a lean `ClientActorHandle` that skips stock
 Ray's first-access RPC for method signatures — that RPC unpickles annotations
 client-side, dragging in `BackendRequestModel` and its deps, which breaks on a slim
 `--no-deps` install. `handle.method.remote(...)` is unchanged.
 
-**Used by:** `Dispatcher.connect` (`dispatcher.py:97`) and `ensure_ray_connected`
+**Used by:** `Dispatcher.connect` (`dispatcher.py:79`) and `ensure_ray_connected`
 (`cli/lib/_common.py:23`), which overwrites `RayProvider.ray_url` from
 `--ray-address` before connecting.
 
@@ -186,22 +187,23 @@ URL on the COMPLETED response.
 | `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients. `_make_client` passes them only when both are set; both empty → boto3's own credential chain (on AWS, the host's IAM role) |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket for result blobs and non-blocking responses |
 | `NDIF_OBJECT_STORE_REGION` / `_VERIFY` | `us-east-1` / `true` | Region is explicit so presigning never round-trips to discover it; set verify false for self-signed MinIO over https |
+| `NDIF_MAX_SOCKET_RESULT_BYTES` | `4194304` (4 MiB) | The size at which a result stops riding on the COMPLETED response and is staged here instead. `0` removes the cap; an unparseable value keeps the default (`objectstore.py:54`) |
 
 Two clients, because upload and download happen from different networks
-(`ObjectStoreProvider.connect`, `objectstore.py:92`). A presigned URL is a local
+(`ObjectStoreProvider.connect`, `objectstore.py:157`). A presigned URL is a local
 HMAC over the request *including the host*, so it must be signed with the host the
 downloader will hit — `minio:9000` from the compose network, `localhost:9000` from
 the user's machine. A custom endpoint also forces path-style addressing, since
-`bucket.minio:9000` wouldn't resolve (`_make_client`, `objectstore.py:67`). Methods:
+`bucket.minio:9000` wouldn't resolve (`_make_client`, `objectstore.py:119`). Methods:
 `put(key, data, content_type)` (creates the bucket on first use,
-`objectstore.py:97`), `get(key)` → `bytes | None` (deliberately does *not* ensure
+`objectstore.py:192`), `get(key)` → `bytes | None` (deliberately does *not* ensure
 the bucket — a missing key or bucket just means "nothing yet",
-`objectstore.py:138`), `presigned_get(key, expires=1h)` (`objectstore.py:160`).
+`objectstore.py:205`), `presigned_get(key, expires=1h)` (`objectstore.py:227`).
 
-**Used by:** `BaseModelDeployment.upload_bytes` (`modeling/base.py:550`, key
+**Used by:** `BaseModelDeployment.upload_bytes` (`modeling/base.py:688`, key
 `{request.id}.pt`), `BackendRequestModel.respond` for non-blocking requests
-(`common/schema/request.py:153`, key `responses/{request_id}.json`), and
-`GET /response/{id}` (`app.py:314`).
+(`common/schema/request.py:195`, key `responses/{request_id}.json`), and
+`GET /response/{id}` (`app.py:316`).
 
 ## PostgresProvider
 
@@ -224,13 +226,13 @@ lives in `services/api/auth.py`.
 `PostgresProvider.enabled` is a cheap `bool(cls.url)` with no I/O; `verify_api_key`
 (`auth.py:94`) short-circuits on it. `connect()` is async and idempotent and builds
 the pool under an `asyncio.Lock` with a double-check, so concurrent first requests
-create exactly one pool (`postgres.py:97`). `fetch` / `fetchrow` / `fetchval` each
+create exactly one pool (`postgres.py:98`). `fetch` / `fetchrow` / `fetchval` each
 `await ensure()` first. Optional-dependency handling is the **opposite** of the telemetry providers:
-`asyncpg` is imported in a `try/except` at module top (`postgres.py:40`) so the
+`asyncpg` is imported in a `try/except` at module top (`postgres.py:41`) so the
 module always imports, but with a URL set and the package missing, `connect()`
-raises `RuntimeError` pointing at `pip install '.[postgres]'` (`postgres.py:91`).
+raises `RuntimeError` pointing at `pip install '.[postgres]'` (`postgres.py:93`).
 Silently disabling auth would be a security hole; a missing metrics sink is
-harmless. Same spirit at `auth.py:120`: a query failure becomes a 503, never an
+harmless. Same spirit at `auth.py:126`: a query failure becomes a 503, never an
 unverified request. **Used by** `services/api/auth.py` only.
 
 ## InfluxProvider
@@ -257,14 +259,14 @@ flush, and points sharing measurement+tag-set+timestamp overwrite each other
 (`influx.py:188`).
 
 Fail-open is layered: `influxdb-client` not importable → `_HAS_CLIENT` is `False`
-and every `write` no-ops (`influx.py:45`, `:112`); construction failure → debug
+and every `write` no-ops (`influx.py:55`, `:112`); construction failure → debug
 log, provider disabled (`influx.py:137`); a failed batch flush → `_on_write_error`
-logs at **debug** only, and `max_retries=0` drops the batch, keeping the buffer
-bounded and `close()` non-blocking (`influx.py:131`).
+logs at **debug** only (`influx.py:156`), and `max_retries=0` drops the batch,
+keeping the buffer bounded and `close()` non-blocking (`influx.py:131`).
 
 **Used by:** `Metric._emit` (`common/metrics.py:58`). Connected in the API's
-`post_fork`, the dispatcher's `__main__` (`dispatcher.py:393`), and each model
-actor's `__init__` (`modeling/base.py:121`).
+`post_fork`, the dispatcher's `__main__` (`dispatcher.py:411`), and each model
+actor's `__init__` (`modeling/base.py:133`).
 
 ## LokiProvider
 
@@ -297,8 +299,8 @@ handler's `handleError` becomes a no-op (`loki.py:124`), since stock behavior du
 a traceback to stderr *per record*.
 
 **Used by:** the API's `post_fork` (`gunicorn_conf.py:35`), the dispatcher's
-`__main__` (`dispatcher.py:394`), the controller actor and its launcher
-(`controller.py:63`, `:566`), and each model actor (`modeling/base.py:120`).
+`__main__` (`dispatcher.py:412`), the controller actor and its launcher
+(`controller.py:71`, `:804`), and each model actor (`modeling/base.py:132`).
 
 ## Gotchas
 

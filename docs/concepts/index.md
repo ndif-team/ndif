@@ -26,8 +26,9 @@ routes it to a per-model queue, provisions a GPU replica if none is HOT, and han
 the block to the actor that holds the weights. The block and the model's forward
 pass then run **interleaved** — the user's code parks whenever it reads or writes
 an activation, the model runs until it reaches that point, the value crosses, and
-the block resumes. Saved values are `torch.save`d to an object store and returned
-as a presigned URL.
+the block resumes. Saved values are `torch.save`d and come back either on the
+`COMPLETED` response itself or, when they are too large for that, as a presigned
+URL into an object store.
 
 ## Read in this order
 
@@ -37,8 +38,8 @@ as a presigned URL.
    and seven supporting containers; what talks to what, what holds state, what
    degrades when a piece is missing.
 3. **[Queue and Scheduling](queue-and-scheduling.md)** — one Redis list feeding
-   per-model in-memory queues in a single dispatcher process; when a second
-   replica appears, and what "fair" does and doesn't mean here.
+   per-model in-memory priority queues in a single dispatcher process; when a
+   second replica appears, and what "fair" does and doesn't mean here.
 4. **[Deployments and Eviction](deployments-and-eviction.md)** — what "the model is
    deployed" actually means, the HOT/WARM/COLD levels, GPU accounting, pinning,
    and what the controller may throw away.
@@ -66,10 +67,12 @@ actually verify.
 **Where user code runs depends on one boolean.** `request.trusted` is stamped at
 ingress from the API key. A trusted block runs *inside the model actor process*,
 next to the weights; an untrusted one runs in a separate runner process driven
-over a Unix socket. **With auth off — no `NDIF_POSTGRES_URL` — every request is
-trusted**, so a default `just up` runs all user code in-process and loads models
-with `trust_remote_code`. If you read one thing in this folder before exposing an
-NDIF to anyone, make it [Auth and Limits](auth-and-limits.md).
+over a Unix socket. **With auth off — no `NDIF_POSTGRES_URL` — a client-supplied
+`trusted` is honored and an unspecified one defaults to trusted**, so a default
+`just up` runs all user code in-process and loads models with `trust_remote_code`,
+while a request sent with `trusted: false` still takes the runner path. If you
+read one thing in this folder before exposing an NDIF to anyone, make it
+[Auth and Limits](auth-and-limits.md).
 
 ## Related
 

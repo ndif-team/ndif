@@ -21,17 +21,19 @@ actor lifecycle operations. Three facts frame the design:
    set*. Every deployment change is event-driven: a `deploy`/`evict` call mutates the cluster model,
    then `apply()` diffs it against the last-applied state and fires the Ray calls.
 3. **Deploy is additive.** `DeploymentConfig.replicas` means "add this many new replicas", never
-   "make the total this many" (`src/ndif/common/schema/controller.py:20`). Shrinking is `evict`'s
-   job.
+   "make the total this many" (`src/ndif/common/schema/controller.py:31`). Shrinking is `evict`'s
+   job. `scale` is additive too — it differs only in where the unspecified fields come from: a live
+   replica (`_like_existing`, `controller.py:202`) rather than the controller's defaults, so growing
+   a tensor-parallel model gives you more tensor-parallel replicas.
 
 ## The actor
 
 `ControllerActor` is `_ControllerActor` wrapped in `@ray.remote(num_cpus=1, num_gpus=0,
-max_restarts=-1, resources={"head": 1})` (`controller.py:527`). `resources={"head": 1}` pins it to
+max_restarts=-1, resources={"head": 1})` (`controller.py:729`). `resources={"head": 1}` pins it to
 the head node — `resources.py` puts `head=10` only there (`docs/developing/ray-service.md`).
 `num_gpus=0` because it never touches a GPU itself.
 
-`app()` (`controller.py:585`) resolves the controller class from
+`app()` (`controller.py:794`) resolves the controller class from
 `NDIF_CONTROLLER_IMPORT_PATH` (`_import_from_path`, defaulting to this module's own
 `ControllerActor`) and launches it as `name="Controller"`, `namespace="NDIF"`,
 `lifetime="detached"`, `get_if_exists=True`. `detached` keeps it alive after the one-shot launching
@@ -51,20 +53,20 @@ that event-loop thread and never interleave.
 
 | Class | Defined at | Responsibility |
 |---|---|---|
-| `_ControllerActor` | `controller.py:36` | The RPC surface. Owns `self.state` (last-applied replicas) and drives Ray actor lifecycle via `build()`/`apply()`. Makes **no** placement decisions. |
+| `_ControllerActor` | `controller.py:43` | The RPC surface. Owns `self.state` (last-applied replicas) and drives Ray actor lifecycle via `build()`/`apply()`. Makes **no** placement decisions. |
 | `Cluster` | `cluster/cluster.py:25` | The node set. Syncs nodes from Ray, ranks candidate nodes for a placement, fans an evict across nodes. Owns the `ModelEvaluator`. |
-| `Node` | `cluster/node.py:108` | One GPU node: `GPUResources`, `CPUResources`, its HOT `deployments` and its WARM `cache`. All memory arithmetic and eviction *selection* lives here. |
+| `Node` | `cluster/node.py:115` | One GPU node: `GPUResources`, `CPUResources`, its HOT `deployments` and its WARM `cache`. All memory arithmetic and eviction *selection* lives here. |
 | `Deployment` | `cluster/deployment.py:49` | One replica. Placement bookkeeping (gpus, size, pinned, trusted, `deployed` timestamp) **plus** the Ray ops `create`/`delete`/`cache`/`from_cache`. |
-| `ModelEvaluator` | `cluster/evaluator.py:37` | Estimates a model's padded byte footprint, memoized per `model_key`. |
-| `Candidate` | `cluster/node.py:30` | A node's answer to "can you take this model": a `CandidateLevel`, the GPU allocation it would use, and the evictions required. |
+| `ModelEvaluator` | `cluster/evaluator.py:95` | Estimates a model's padded byte footprint, memoized per `model_key`. |
+| `Candidate` | `cluster/node.py:31` | A node's answer to "can you take this model": a `CandidateLevel`, the GPU allocation it would use, and the evictions required. |
 
 ## DeploymentLevel
 
 | Level | Where it lives | Meaning |
 |---|---|---|
-| `HOT` | `node.deployments[model_key][replica_id]` | Weights on GPU, actor serving requests. Holds a GPU-memory allocation. The only level `get_deployment` returns (`controller.py:351`). |
-| `WARM` | `node.cache[model_key][replica_id]` | Same actor process, weights offloaded to CPU RAM (`BaseModelDeployment.to_cache`, `modeling/base.py:186`). Holds a CPU allocation, no GPU. Dispatching to it raises `CachedActorError`. |
-| `COLD` | nowhere | Never attached to a `Deployment`. `status()` synthesizes COLD entries from `get_downloaded_models()` for repos in the HF cache but not deployed (`controller.py:491`). |
+| `HOT` | `node.deployments[model_key][replica_id]` | Weights on GPU, actor serving requests. Holds a GPU-memory allocation. The only level `get_deployment` returns (`controller.py:516`). |
+| `WARM` | `node.cache[model_key][replica_id]` | Same actor process, weights offloaded to CPU RAM (`BaseModelDeployment.to_cache`, `modeling/base.py:237`). Holds a CPU allocation, no GPU. Dispatching to it raises `CachedActorError`. |
+| `COLD` | nowhere | Never attached to a `Deployment`. `status()` synthesizes COLD entries from `get_downloaded_models()` for repos in the HF cache but not deployed (`controller.py:696`). |
 
 ## Sizing a model
 
@@ -83,13 +85,13 @@ Both are overridable per deploy (`DeploymentConfig.padding_factor` / `.padding_b
 controller-wide only.
 
 The estimate is cached by `model_key` and recomputed when the request's `dtype` or
-`trust_remote_code` differs from the cached entry (`evaluator.py:87`) — element sizes change the
+`trust_remote_code` differs from the cached entry (`evaluator.py:146`) — element sizes change the
 number, and repo code can build a different architecture. This is why `_deploy` pins `config.dtype`
-to `NDIF_DEFAULT_DTYPE` before evaluating (`controller.py:128`): the estimate and the actor's actual
+to `NDIF_DEFAULT_DTYPE` before evaluating (`controller.py:179`): the estimate and the actor's actual
 load must use the same dtype, or the accounting is wrong from the start. An evaluator failure (bad
 repo id, gated model, missing trust) is *returned*, not raised — `Cluster.deploy` turns it into
-`ModelDeployResult.error` with the full traceback (`cluster.py:171`). Note also that
-`ModelEvaluator.__init__` calls `torch.set_default_dtype(torch.bfloat16)` (`evaluator.py:51`), a
+`ModelDeployResult.error` with the full traceback (`cluster.py:199`). Note also that
+`ModelEvaluator.__init__` calls `torch.set_default_dtype(torch.bfloat16)` (`evaluator.py:114`), a
 process-global side effect.
 
 ## The `trusted` flag
@@ -101,11 +103,11 @@ decides whether a deploy *works at all*.
 | Step | Code |
 |---|---|
 | The API stamps `request.trusted` from the API key's `trusted` tag — and with auth off (`NDIF_POSTGRES_URL` unset) it **defaults to trusted, honoring a client-supplied `trusted: false`** | `services/api/auth.py:184` |
-| The queue forwards it when provisioning a replica | `queue/replica.py:103` |
-| `Cluster.deploy` feeds it to the size estimate as `trust_remote_code` | `cluster/cluster.py:169` |
-| It is stored on the placed replica | `node.py:221`, `deployment.py:79` |
-| `apply()` passes it as `BaseModelDeploymentArgs.trust_remote_code` | `controller.py:280` |
-| `status()` reports it back per deployment | `controller.py:447` |
+| The queue forwards it when provisioning a replica, on the `DeploymentConfig` it hands `controller.scale` | `queue/replica.py:120` |
+| `Cluster.deploy` feeds it to the size estimate as `trust_remote_code` | `cluster/cluster.py:183` |
+| It is stored on the placed replica | `node.py:228`, `deployment.py:79` |
+| `apply()` passes it as `BaseModelDeploymentArgs.trust_remote_code` | `controller.py:450` |
+| `status()` reports it back per deployment | `controller.py:617` |
 
 So **the same checkpoint can deploy for one caller and fail for another**: a repo shipping custom
 modelling code needs `trust_remote_code=True` merely to *build* the architecture, so an untrusted
@@ -117,11 +119,11 @@ and therefore a different byte count.
 
 **The trust level of a deployment depends on who deployed it.** The dashboard hard-codes
 `trusted: True` as an admin action (`routers/deployments.py:38`, `jobs/reconcile.py:62`), the API
-queue carries the request's own flag (`queue/replica.py:103`), and the CLI can set it explicitly:
+queue carries the request's own flag (`queue/replica.py:120`), and the CLI can set it explicitly:
 `ndif deploy` has a `--trusted` flag (`commands/deploy.py:23`), and `load_model_config` passes
 **every** `DeploymentConfig` field through — `trusted`, `dtype`, `padding_factor`,
 `execution_timeout_seconds`, `envoy_class`, `model_key`, on top of `checkpoint`/`revision`/`pinned`/
-`replicas`/`actor_class` (`cli/lib/model_config.py:42-95`) — so a `trusted: true` (or a `dtype:`) line
+`replicas`/`actor_class` (`load_model_config`, `cli/lib/model_config.py:34`) — so a `trusted: true` (or a `dtype:`) line
 in `models.yaml` takes effect. `ndif deploy --dtype` likewise overrides `NDIF_DEFAULT_DTYPE` for that
 deploy.
 
@@ -135,7 +137,7 @@ process — process-based isolation, still in progress; see
 `DeploymentConfig.gpus` if given — and more than the node has is an immediate `CANT_ACCOMMODATE`. A
 model that will be tensor-parallel has its count rounded **up** to a degree it actually shards into,
 because an uneven split does not run at all. Each card is then charged `ceil(size / gpus_needed)`:
-its share, not all of it. `GPUResources.fitting` (`node.py:76`)
+its share, not all of it. `GPUResources.fitting` (`node.py:83`)
 returns the GPUs with room sorted by *least* free memory first: best-fit, so small models pack into
 partly-used cards rather than fragmenting empty ones.
 
@@ -148,20 +150,20 @@ partly-used cards rather than fragmenting empty ones.
 | `FULL` | 4 | Evictions are needed. |
 | `CANT_ACCOMMODATE` | 5 | Impossible on this node even with every legal eviction. |
 
-Lower is better. `Cluster.deploy` (`cluster.py:212`) keeps only the best-level candidates and breaks
-ties with `random.choice` (`cluster.py:223`) — cheap spreading across identical nodes. Preferring a node that already
+Lower is better. `Cluster.deploy` (`cluster.py:157`) keeps only the best-level candidates (`:241`) and breaks
+ties with `random.choice` (`cluster.py:250`) — cheap spreading across identical nodes. Preferring a node that already
 holds the model WARM is what makes a WARM→HOT promotion (a CPU→GPU copy) beat a cold disk load.
 
 ## Choosing and executing evictions
 
-**GPU** — `Node.find_evictions` (`node.py:327`). For each GPU it needs, it lists the *evictable*
+**GPU** — `Node.find_evictions` (`node.py:340`). For each GPU it needs, it lists the *evictable*
 occupants, sorts them smallest-allocation-first, and takes them until the shortfall is covered.
 Per-GPU plans are then sorted by how many evictions they cost, and the cheapest `gpus_needed` plans
 win. If any needed GPU can't be freed it returns `([], {})` and the node grades `CANT_ACCOMMODATE`.
 Each `(model_key, replica_id)` is an independent occupant — evicting one replica of a model does not
 pull its sibling on the same card.
 
-`Node.evictable` (`node.py:314`) is the whole policy:
+`Node.evictable` (`node.py:327`) is the whole policy:
 
 ```python
 def evictable(self, deployment: Deployment, pinned: bool) -> bool:
@@ -181,18 +183,18 @@ A pinned deployment is never auto-evicted, and one younger than
 itself pinned* — the `pinned` argument describes the request, not the victim. That age rule exists
 to stop thrashing: without it, two models that each need most of a GPU would evict each other on
 alternating requests and neither would ever serve. `Cluster.deploy` also passes
-`exclude=all_model_keys` (`cluster.py:209`), the models in *this* request, so a batch deploy can't
+`exclude=all_model_keys` (`cluster.py:234`), the models in *this* request, so a batch deploy can't
 evict its own members for each other.
 
-**CPU** — `Node.find_cache_evictions` (`node.py:226`) frees WARM-cache room by dropping cached
+**CPU** — `Node.find_cache_evictions` (`node.py:233`) frees WARM-cache room by dropping cached
 deployments smallest-first, returning `None` if it can't free enough — the signal that a HOT→WARM
-demotion isn't possible. `Node.evict` (`node.py:250`) then executes one eviction: a **WARM** replica
+demotion isn't possible. `Node.evict` (`node.py:257`) then executes one eviction: a **WARM** replica
 is dropped and its CPU bytes released; a **HOT** replica releases its GPU bytes and, if
 `find_cache_evictions` can supply CPU room, is **demoted to WARM** with the *same* `replica_id` and
 a fresh `Deployment` — otherwise it is removed outright. Preserving `replica_id` matters because the
 actor's Ray name is `f"{replica_id}:ModelActor:{model_key}"` (`Deployment.name`,
-`deployment.py:105`), so the same process survives the transition and a later promotion reuses it
-(`Node.deploy`, `node.py:199`).
+`deployment.py:123`), so the same process survives the transition and a later promotion reuses it
+(`Node.deploy`, `node.py:181`).
 
 > **Gotcha:** `Node.evict` does **not** consult `evictable`. Pinning and the minimum-deployment-time
 > rule only gate *automatic* eviction during placement. An explicit `ndif evict gpt2` always
@@ -202,7 +204,7 @@ actor's Ray name is `f"{replica_id}:ModelActor:{model_key}"` (`Deployment.name`,
 
 ```mermaid
 flowchart TB
-  REQ["deploy(configs)<br/>Replica.provision / ndif deploy"]
+  REQ["_deploy(configs)<br/>ndif deploy, or scale() from Replica.provision"]
   EV["_deploy: pin dtype, then ModelEvaluator<br/>-> padded size, or error for this model"]
   LOOP{"biggest model first,<br/>for each of config.replicas"}
   GRADE["Node.evaluate on every node -> Candidate;<br/>keep best level, random.choice among ties"]
@@ -216,19 +218,19 @@ flowchart TB
   RESP -->|change is True| APPLY
 ```
 
-Separately, `_ControllerActor.check_nodes` (`controller.py:109`) loops forever calling
+Separately, `_ControllerActor.check_nodes` (`controller.py:128`) loops forever calling
 `Cluster.update_nodes()` every `NDIF_CONTROLLER_SYNC_INTERVAL_S` seconds (default 30): it adds
 newly-joined GPU nodes and, for a node that has left Ray, pops it and calls `Node.purge()`, killing
 every actor on it. It never calls `apply()` or refreshes an existing node's capacity.
 
 ## build() and apply()
 
-`build()` (`controller.py:169`) diffs the live cluster model against `self.state`, keyed by
-`(node_id, model_key, replica_id)`, into a `DeploymentDelta` (`controller.py:28`) with four lists:
+`build()` (`controller.py:339`) diffs the live cluster model against `self.state`, keyed by
+`(node_id, model_key, replica_id)`, into a `DeploymentDelta` (`controller.py:36`) with four lists:
 `deployments_to_cache` (was HOT in state, now in `node.cache`), `deployments_from_cache` (was WARM,
 now in `node.deployments`), `deployments_to_create` (`(node_name, deployment)` pairs with no state
 entry) and `deployments_to_delete` (in state, gone from the cluster model). `apply()`
-(`controller.py:218`) executes them in order:
+(`controller.py:388`) executes them in order:
 
 1. **delete** — `ray.kill(actor, no_restart=True)`.
 2. **cache** (HOT→WARM) — `actor.to_cache.remote()`, then **blocks** on every future with `ray.get`.
@@ -238,10 +240,10 @@ entry) and `deployments_to_delete` (in state, gone from the cluster model). `app
    `trust_remote_code`), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
    self.gpus`, then awaits `actor.__ray_ready__`.
 
-Steps 3 and 4 are awaited off the main path by `_monitor_deployment` (`controller.py:298`) —
+Steps 3 and 4 are awaited off the main path by `_monitor_deployment` (`controller.py:468`) —
 awaiting the `ObjectRef` directly is legal in an async actor and non-blocking, so a multi-minute
 load doesn't stall the controller. On failure it kills the actor and calls
-`_remove_deployment_from_state` (`controller.py:325`), dropping the entry from `self.state` *and*
+`_remove_deployment_from_state` (`controller.py:495`), dropping the entry from `self.state` *and*
 releasing the node's GPU/CPU bytes — the only thing keeping a failed load from leaking accounted
 memory.
 
@@ -249,17 +251,18 @@ memory.
 
 | Method | Called by | Argument | Returns |
 |---|---|---|---|
-| `deploy` (async) | `Replica.provision` (`queue/replica.py:102`) | `str` / `list` / `{model_key: DeploymentConfig}` | `DeployResponse` |
-| `_deploy` | `ndif deploy` (`cli/lib/deploy.py:120`) | same | `DeployResponse` |
+| `deploy` (async) | nothing in this repo — `_describe` + `_deploy`, for a caller that wants the checkpoints described first | `str` / `list` / `{model_key: DeploymentConfig}` | `DeployResponse` |
+| `_deploy` | `ndif deploy` and the dashboard, both through `cli/lib/deploy.py:131` | same | `DeployResponse` |
+| `scale` | `Replica.provision` (`queue/replica.py:120`) and `ndif scale` (`cli/lib/scale.py:74`) | `model_key`, `n`, optional `DeploymentConfig` | `DeployResponse` |
 | `evict` | `ndif evict`, `deploy --sync` | `model_key`, optional `replica_id` | `ReplicaStates` (pre-eviction snapshots) |
-| `get_deployment` | `Processor` (`queue/processor.py:184`) | `model_key`, optional `replica_id` | `ReplicaStates` (HOT only) |
+| `get_deployment` | `Processor` (`queue/processor.py:195`) | `model_key`, optional `replica_id` | `ReplicaStates` (HOT only) |
 | `status` | dispatcher, dashboard, `ndif status` | — | `{"deployments": {...}, "cluster": {...}}` |
 | `get_state` | `ndif status --verbose` | `include_ray_state` | raw cluster + evaluator + config dump |
-| `env` | dispatcher (`queue/dispatcher.py:277`) | — | `{"python_version", "packages"}` for client version gating |
+| `env` | dispatcher (`queue/dispatcher.py:273`) | — | `{"python_version", "packages"}` for client version gating |
 
 Schemas live in `src/ndif/common/schema/controller.py` because both sides speak them
 (`docs/reference/schemas.md`); `ModelDeployResult` guarantees exactly one of `replicas` / `error` is
-meaningful (`schema/controller.py:61`). `status()` (`controller.py:385`) is the odd one: it starts
+meaningful (`schema/controller.py:87`). `status()` (`controller.py:555`) is the odd one: it starts
 from Ray's `list_actors()`, collapses duplicate records for an actor name to the healthiest state
 (`RUNNING` < `DEPLOYING` < `UNHEALTHY`), then enriches from the controller's own view — so an actor
 Ray knows about but the controller doesn't ends up with **only** `application_state` set.
@@ -275,34 +278,35 @@ while its actor is gone.
 
 ## Environment
 
-Every var below is read in `ControllerDeploymentArgs` (`controller.py:532`) at module import in the
+Every var below is read in `ControllerDeploymentArgs` (`controller.py:734`) at module import in the
 launching driver — the ray container's environment — and passed to the actor as constructor
 arguments. `NDIF_CONTROLLER_SYNC_INTERVAL_S` is the exception: read inside the actor each loop.
 
 | Name | Default | Read at | What it does |
 |---|---|---|---|
-| `NDIF_DEPLOYMENTS` | *(empty)* | `controller.py:533` | `\|`-separated model keys deployed **pinned** at controller start |
-| `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | `controller.py:113` | Seconds between node-set syncs |
-| `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | `3600` | `controller.py:537` | Per-request execution cap handed to a new actor when the config doesn't set one |
-| `NDIF_MODEL_IMPORT_PATH` | falls back to `NDIF_DEFAULT_MODEL_ACTOR_CLASS`, then the base `ModelActor` | `controller.py:554` | Dotted path the controller builds each deployment's actor from when `DeploymentConfig.actor_class` is `None`. Stored on the actor as `default_model_actor_class` |
-| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | `controller.py:556` | Fallback for `NDIF_MODEL_IMPORT_PATH`. Compose sets it to `ndif.services.ray.sandbox.model.SandboxModelActor`, which — absent `NDIF_MODEL_IMPORT_PATH` — is what wins |
-| `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller.ControllerActor` | `controller.py:563` | Dotted path of the controller actor class `app()` launches (`_import_from_path`, `controller.py:597`) |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `controller.py:543` | Age below which a deployment is exempt from automatic eviction |
-| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | `controller.py:546` | Fraction of a node's **CPU** RAM (`cpu_memory_bytes`) usable as WARM cache |
-| `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | `controller.py:549` | Multiplicative size padding |
-| `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | `controller.py:552` | Flat size padding |
-| `NDIF_DEFAULT_DTYPE` | `bfloat16` | `controller.py:555` | Dtype used for both the size estimate and the actor's load |
+| `NDIF_DEPLOYMENTS` | *(empty)* | `controller.py:735` | `\|`-separated model keys deployed **pinned** at controller start |
+| `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | `controller.py:164` | Seconds between node-set syncs |
+| `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | *(unset — no cap)* | `controller.py:773` | Per-request execution cap handed to a new actor when the config doesn't set one |
+| `NDIF_MODEL_IMPORT_PATH` | falls back to `NDIF_DEFAULT_MODEL_ACTOR_CLASS`, then the base `ModelActor` | `controller.py:741` | Dotted path the controller builds each deployment's actor from when `DeploymentConfig.actor_class` is `None`. Stored on the actor as `default_model_actor_class` |
+| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | `controller.py:744` | Fallback for `NDIF_MODEL_IMPORT_PATH`. Compose sets it to `ndif.services.ray.sandbox.model.SandboxModelActor`, which — absent `NDIF_MODEL_IMPORT_PATH` — is what wins |
+| `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller.ControllerActor` | `controller.py:764` | Dotted path of the controller actor class `app()` launches (`_import_from_path`, `controller.py:29`) |
+| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | `controller.py:779` | Age below which a deployment is exempt from automatic eviction |
+| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | `controller.py:782` | Fraction of a node's **CPU** RAM (`cpu_memory_bytes`) usable as WARM cache |
+| `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | `controller.py:785` | Multiplicative size padding |
+| `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | `controller.py:788` | Flat size padding |
+| `NDIF_DEFAULT_DTYPE` | `bfloat16` | `controller.py:791` | Dtype used for both the size estimate and the actor's load |
+| `NDIF_TP_MODEL_ACTOR_CLASS` | *(unset)* | `controller.py:759` | Dotted path of the actor class a tensor-parallel replica gets. **Unset turns tensor parallelism off entirely** — no degree is worked out, no GPU count is rounded up to a shardable one, and per-model `max_tp` is inert (`evaluator.py:98`) |
 
 ## Failure modes
 
 **Deploy rejected for memory.** `ModelDeployResult.error` reads `"CANT_ACCOMMODATE: placed N of M
-new replicas before the cluster ran out of room."` (`cluster.py:233`) — every node graded
+new replicas before the cluster ran out of room."` (`cluster.py:266`) — every node graded
 `CANT_ACCOMMODATE`, so either the padded size exceeds every GPU on every node or the only occupants
 big enough to free are pinned or too young. Raising `NDIF_MODEL_CACHE_PERCENTAGE` won't help; that
 budget is CPU cache. Evict something explicitly, lower `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`,
 deploy `--pinned` (which waives the age check), or lower `padding_factor` for that model. `ndif
 status` shows each GPU's `available_memory_bytes` as the controller believes it — the number the
-rejection was computed against. The neighbouring **"No GPU nodes available."** (`cluster.py:220`) is
+rejection was computed against. The neighbouring **"No GPU nodes available."** (`cluster.py:247`) is
 different: `Cluster.nodes` is empty because `update_nodes` skips every Ray node without a `GPU`
 resource, so check the ray container's GPU passthrough. See `docs/runbooks/model-oom-on-deploy.md`.
 
@@ -324,9 +328,9 @@ over-commits a GPU into a CUDA OOM. Recovery: kill the orphaned actors directly 
 find them) and let the controller re-place.
 
 **A node blip kills its deployments.** If a node disappears from `list_nodes` even briefly, the next
-`check_nodes` pass pops it and `purge()`s every actor on it (`cluster.py:137`, `node.py:432`) — no
+`check_nodes` pass pops it and `purge()`s every actor on it (`cluster.py:154`, `node.py:485`) — no
 grace period. Relatedly, `status()` skips enrichment for any deployment whose `model_key` is missing
-from `evaluator.cache` (`controller.py:428`), so entries render bare.
+from `evaluator.cache` (`controller.py:598`), so entries render bare.
 
 ## Related
 

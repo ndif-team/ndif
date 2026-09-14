@@ -48,30 +48,30 @@ Redis and Ray connection settings are not here — they come from
 
 ## The Dispatcher
 
-`Dispatcher.start()` (`dispatcher.py:65`) constructs one and runs
+`Dispatcher.start()` (`dispatcher.py:67`) constructs one and runs
 `dispatch_worker()` under `asyncio.run` forever. `__init__` calls `connect()`
 *before* the loop exists, so that method is deliberately synchronous
-(`dispatcher.py:103`). A `__main__` block (`dispatcher.py:390`) lets you run it
+(`dispatcher.py:79`). A `__main__` block (`dispatcher.py:408`) lets you run it
 detached from gunicorn for debugging —
 `python -m ndif.services.api.queue.dispatcher`, pointed at the stack with
 `NDIF_REDIS_URL` and `NDIF_RAY_ADDRESS`. Never run two: both `BRPOP` the same
 list, so each would hold half of every model's queue in its own memory.
 
-`connect()` (`dispatcher.py:77`) is the reconnect primitive, used on boot and on
+`connect()` (`dispatcher.py:79`) is the reconnect primitive, used on boot and on
 every connection error. It deletes `ray:connected`, then `status`,
 `status:requested`, `env`, `env:requested`, then retries `RayProvider.reset()` +
 `RayProvider.connect()` every second until `RayProvider.connected()`, then sets
 `ray:connected` back to `"1"`. Dropping every cluster-derived key, including the
 coalescing locks, means the first `/status` after a reconnect triggers a fresh
 refresh rather than briefly serving a cluster we are no longer attached to.
-`RayProvider.connected()` (`providers/ray.py:90`) is true only when the cluster
+`RayProvider.connected()` (`providers/ray.py:99`) is true only when the cluster
 is reachable *and* the `Controller` actor exists.
 
 ### The dispatch loop
 
 ```mermaid
 flowchart TB
-  subgraph DW["dispatch_worker (dispatcher.py:364)"]
+  subgraph DW["dispatch_worker (dispatcher.py:382)"]
     G["get(): BRPOP queue (fetch_timeout_s)<br/>then RPOP up to fetch_batch_max-1 more"]
     D["dispatch(request) per request<br/>Processor per model_key<br/>enqueue(request)"]
     H["handle_errors(): drain error_queue"]
@@ -86,21 +86,21 @@ flowchart TB
   DW -.-> SW
 ```
 
-`get()` (`dispatcher.py:112`) blocks on `brpop` for up to `fetch_timeout_s`, then
+`get()` (`dispatcher.py:132`) blocks on `brpop` for up to `fetch_timeout_s`, then
 non-blockingly `rpop`s until the batch is full or the list is empty. The blocking
 pop bounds idle latency so `handle_errors` still runs when nothing is arriving;
 the batched pops amortize round-trips under load. Both use `async_bytes_client`
 because the values are pickles.
 
-`dispatch()` (`dispatcher.py:135`) creates a `Processor` per `model_key` on first
+`dispatch()` (`dispatcher.py:155`) creates a `Processor` per `model_key` on first
 sight and never removes one — an idle Processor is a cheap object with an empty
 pool and a sleeping autoscaling task.
 
-`handle_errors()` (`dispatcher.py:165`) drains the shared `asyncio.Queue` of
+`handle_errors()` (`dispatcher.py:183`) drains the shared `asyncio.Queue` of
 `(name, exception)` tuples that Processors and Replicas push onto. Its only real
 decision is connection-level: if any error matches
 `RayProvider.is_connection_error` (a substring match against
-`CONNECTION_ERROR_PATTERNS`, `providers/ray.py:108`) *or* `RayProvider.connected()`
+`CONNECTION_ERROR_PATTERNS`, `providers/ray.py:117`) *or* `RayProvider.connected()`
 is now False, it purges every Processor with a user-facing message and
 reconnects. Per-request errors have already been reported to their users by the
 Replica; the dispatcher just logs them.
@@ -108,13 +108,13 @@ Replica; the dispatcher just logs them.
 ### The side workers
 
 `dispatch_worker` spawns three long-lived tasks before entering the loop
-(`dispatcher.py:370`). All three `XREAD ... BLOCK 0`:
+(`dispatcher.py:388`). All three `XREAD ... BLOCK 0`:
 
 | Worker | Stream | Does |
 |---|---|---|
-| `status_worker` (`:213`) | `status:trigger` | `controller.status.remote()` under `STATUS_TIMEOUT_S`, `SET status` with `STATUS_TTL_S`, `DEL status:requested`, `PUBLISH status:ready ok` |
-| `env_worker` (`:255`) | `env:trigger` | Same shape for `controller.env.remote()` |
-| `events_worker` (`:292`) | `dispatcher:events` | Dispatches by `event_type` to a handler |
+| `status_worker` (`:231`) | `status:trigger` | `controller.status.remote()` under `STATUS_TIMEOUT_S`, `SET status` with `STATUS_TTL_S`, `DEL status:requested`, `PUBLISH status:ready ok` |
+| `env_worker` (`:273`) | `env:trigger` | Same shape for `controller.env.remote()` |
+| `events_worker` (`:310`) | `dispatcher:events` | Dispatches by `event_type` to a handler |
 
 On failure the status/env workers report to `error_queue`, clear the coalescing
 lock, and `PUBLISH ... error` so waiting HTTP callers get a 503 instead of
@@ -125,22 +125,22 @@ unlike status/env it acts on the dispatcher's *own* state, not the controller's:
 
 | `event_type` | Handler | Shape |
 |---|---|---|
-| `queue_state_request` | `_handle_queue_state` (`:332`) | Request/response — replies `{"processors": {mk: snapshot}}` to the caller's `response_key`. Powers `ndif queue`. |
-| `kill_request` | `_handle_kill` (`:338`) | Request/response — `_kill(request_id)` removes it from a queue (erroring the user) or cancels the executing replica. Powers `ndif kill`. |
-| `reconcile_model` | `_handle_reconcile` (`:359`) | Fire-and-forget — `processor.reconcile()`. Emitted after an out-of-band `ndif deploy` / `ndif evict`. |
+| `queue_state_request` | `_handle_queue_state` (`:350`) | Request/response — replies `{"processors": {mk: snapshot}}` to the caller's `response_key`. Powers `ndif queue`. |
+| `kill_request` | `_handle_kill` (`:356`) | Request/response — `_kill(request_id)` removes it from a queue (erroring the user) or cancels the executing replica. Powers `ndif kill`. |
+| `reconcile_model` | `_handle_reconcile` (`:377`) | Fire-and-forget — `processor.reconcile()`. Emitted after an out-of-band `ndif deploy` / `ndif evict`. |
 
 Replies are `LPUSH`ed to the caller-supplied `response_key` and expired after
 `EVENT_RESPONSE_TTL_S` (30s, `events.py:27`) so an orphaned reply is reaped.
 
 ## The Processor
 
-One `Processor` per `model_key` (`processor.py:57`), owning a
+One `Processor` per `model_key` (`processor.py:64`), owning a
 `RequestQueue` (the per-model line), a
 `Dict[REPLICA_ID, Replica]` pool sharing it, a `trusted` flag (whether this
 model's deployment loads with `trust_remote_code`, taken from the request that
 kicked off provisioning), an autoscaling task created in `__init__` and never
 cancelled, and a `status`: `UNINITIALIZED` / `PROVISIONING` / `DEPLOYING` /
-`READY` / `CANCELLED` (`processor.py:41`). There is no BUSY — busy-ness lives per
+`READY` / `CANCELLED` (`ProcessorStatus`, `processor.py:48`). There is no BUSY — busy-ness lives per
 replica, and a Processor is READY whenever at least one replica serves.
 
 It is lazy and self-healing, with no teardown: an idle Processor sits with an
@@ -154,17 +154,17 @@ timestamp and the autoscaler still sees how long it has really waited. Then
 `ensure_started(request.trusted)` and a QUEUED reply carrying the request's
 1-based position, read back from the queue rather than assumed to be the depth.
 
-`prepend=True` now means "front of my own priority group" and is used only when
-an evicted replica returns its in-flight request (`replica.py`). A `priority`
+`prepend=True` means "front of my own priority group" and is used only when an
+evicted replica returns its in-flight request (`replica.py:280`). A `priority`
 key does **not** prepend — it sorts ahead by group. See `RequestQueue` below.
 
-`ensure_started` (`processor.py:140`) no-ops if any replica exists or setup is
+`ensure_started` (`processor.py:151`) no-ops if any replica exists or setup is
 already underway, which is why it is safe to call on every enqueue and on every
 replica exit. Otherwise it flips to `PROVISIONING` and fires `start()` as a task.
 
 It also carries the request's `trusted` flag into the Processor:
-`self.trusted = trusted` when the argument is not `None` (`processor.py:153`).
-`Replica.provision` puts that on the `DeploymentConfig` (`replica.py:103`) and
+`self.trusted = trusted` when the argument is not `None` (`processor.py:164`).
+`Replica.provision` puts that on the `DeploymentConfig` (`replica.py:107`) and
 the controller turns it into `trust_remote_code` on the model load. Since a
 *re*-provision passes `None`, **the first request to deploy a model fixes that
 deployment's `trust_remote_code` for its lifetime** — a trusted caller's request
@@ -188,10 +188,13 @@ tiebreaks on `enqueued_at`, so each is FIFO and nothing starves *within* a group
 `seq` is a monotonic counter that stops tuple comparison before it reaches the
 `BackendRequestModel`, which is not orderable.
 
-Priority used to be a `deque.appendleft`, which made the priority group LIFO: a
-closed-loop client that won the head kept winning it. On a 16-client run two
-priority clients completed 73 requests each while the other fourteen completed
-one apiece.
+Ordering is a key rather than an insertion side because pushing a priority
+request onto the *front* of a plain FIFO makes the priority group LIFO, which
+starves under load: a closed-loop client that wins the head keeps winning it.
+Measured on a 16-client run, two priority clients completed 73 requests each
+while the other fourteen completed one apiece. It also blinds the autoscaler,
+which reads the head's wait — and the head is then always the newest request,
+with a wait of roughly zero (`request_queue.py:3`).
 
 Callers go through the class rather than touching `_queue`, because a heap's
 list is only partially sorted — reading it raw gives a plausible-looking wrong
@@ -215,7 +218,7 @@ autoscaling is the only relief and it caps at `autoscaling_max_replicas`.
 
 ### start
 
-`start()` (`processor.py:168`) asks the controller for the model's current
+`start()` (`processor.py:179`) asks the controller for the model's current
 replicas. If any exist it adopts **all** of them as `Replica` objects; otherwise
 `Replica.provision()` deploys exactly one. Either way it goes `DEPLOYING`, then
 for each replica: `await replica.wait()`, `replica.start()`, status `READY`.
@@ -227,7 +230,7 @@ traceback, pushed to `error_queue` (so a connection error triggers a dispatcher
 reconnect), and — if we never reached READY — passed to `purge()`, which errors
 every queued user and clears the pool so nothing hangs.
 
-`reply()` (`processor.py:314`) with `request=None` broadcasts to every queued
+`reply()` (`processor.py:347`) with `request=None` broadcasts to every queued
 request, annotating each with its position (`"Moved to position N in Queue."`),
 resolving a `None` description from the current phase. It walks the queue
 publishing one Redis message per request, so a deep queue means a burst of
@@ -235,7 +238,7 @@ pubsub traffic on every phase change.
 
 ### Autoscaling
 
-`autoscaling_loop()` (`processor.py:229`) is a single long-lived task per
+`autoscaling_loop()` (`processor.py:259`) is a single long-lived task per
 Processor:
 
 ```python
@@ -262,7 +265,7 @@ saw a wait near zero at exactly the moment normal requests were starving. It onl
 Each tick is individually guarded so one transient error can't kill the task and
 leave the model unable to scale for the dispatcher's remaining life.
 
-`scale_up` (`processor.py:264`) calls `Replica.deploy`, which registers the new
+`scale_up` (`processor.py:296`) calls `Replica.deploy`, which registers the new
 replica in the pool *before* starting its worker so it counts against the cap
 while coming up, then waits for readiness. That `await` blocks the autoscaling
 loop for the whole model load — acceptable because the loop backs off for
@@ -274,7 +277,7 @@ There is no scale-*down* here. Shrinking is eviction, driven by the controller
 
 ### reconcile and purge
 
-`reconcile()` (`processor.py:351`) re-reads the controller's replica list. It
+`reconcile()` (`processor.py:378`) re-reads the controller's replica list. It
 **adopts** what the controller has gained — registered, then waited on and
 started by `adopt()` in a background task — and deliberately **does nothing**
 about what the controller has dropped beyond logging it.
@@ -296,8 +299,8 @@ served by a fresh replica.
 
 Adoption is the only path that picks up a replica while the model is already
 serving: `ensure_started` no-ops on a non-empty pool and `start` only runs on an
-empty one. Without it, an out-of-band `ndif deploy` that added a second replica
-to a busy model contributed no capacity at all until the dispatcher restarted.
+empty one. It is what makes an out-of-band `ndif deploy` of a second replica
+contribute capacity to a busy model without restarting the dispatcher.
 
 Two details worth keeping if you touch this. `adopt` runs as a task rather than
 inline because `reconcile` is *awaited* by the events worker and `Replica.wait`
@@ -307,47 +310,50 @@ reconcile and `ndif kill`, on one unready actor. And adoption is skipped while
 adopts the same list and the two would race into two workers on one replica.
 
 `purge()`
-(`processor.py:428`) errors every queued request, **clears the queue first**,
+(`processor.py:479`) errors every queued request, **clears the queue first**,
 then cancels every replica — the ordering matters, otherwise the cancelled
 workers' `finally` blocks would re-provision against requests that were just
 errored. It ends with `replicas.clear()` and status `UNINITIALIZED`.
 
 ## The Replica
 
-A `Replica` (`replica.py:55`) is a `(model_key, replica_id)` pair plus one
+A `Replica` (`replica.py:68`) is a `(model_key, replica_id)` pair plus one
 `asyncio.Task` pulling from the Processor's queue. It is *not* a Ray Serve
 replica — NDIF does not use Ray Serve. The thing it addresses is a plain detached
 Ray actor named `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace,
 looked up with `ray.get_actor` through `get_model_actor_handle`
-(`common/providers/ray.py:217`). The Replica holds no readiness state beyond its
-task: `dropped` is `task is None or task.done()` (`replica.py:84`), so there is
+(`common/providers/ray.py:226`). The Replica holds no readiness state beyond its
+task: `dropped` is `task is None or task.done()` (`replica.py:97`), so there is
 no flag to keep in sync.
 
-`provision()` (`replica.py:94`) calls
-`controller.deploy.remote({model_key: DeploymentConfig(replicas=1, trusted=...)})`;
+`provision()` (`replica.py:107`) calls
+`controller.scale.remote(model_key, 1, DeploymentConfig(trusted=...))` — `scale`,
+not `deploy`, so the new replica is a copy of one already running (a sharded
+model stays sharded) rather than whatever the controller's defaults would pick;
+with nothing running there is nothing to copy and it behaves as a bare deploy.
 `DeploymentConfig.replicas` is **additive** controller-side, so this always adds
-one more. `deploy()` (`replica.py:113`) is provision + register + wait + start,
-de-registering on a setup failure. `wait()` (`replica.py:130`) polls the actor's
+one more. `deploy()` (`replica.py:131`) is provision + register + wait + start,
+de-registering on a setup failure. `wait()` (`replica.py:148`) polls the actor's
 `__ray_ready__` every second, treating a lookup `ValueError` as "the controller
 hasn't created the actor yet" and letting anything else propagate. **There is no
 timeout on this loop.**
 
-`worker()` (`replica.py:151`) loops `while not self.dropped`, awaiting
+`worker()` (`replica.py:176`) loops `while not self.dropped`, awaiting
 `self.queue.get()` and dispatching. Its `finally` — which runs even under
 cancellation — pops this replica from `processor.replicas` and then either calls
 `ensure_started()` (queue non-empty: re-provision) or `mark_idle()` (queue empty:
 back to `UNINITIALIZED`).
 
-`dispatch()` (`replica.py:182`) sends DISPATCHED, then
+`dispatch()` (`replica.py:207`) sends DISPATCHED, then
 `await handle.run.remote(request)`. Three failure classes, and the split is the
 most consequential logic in this package:
 
 | Caught | Meaning | Result |
 |---|---|---|
-| `asyncio.CancelledError` (`:225`) | Deliberate cancel — operator kill, reconcile, or purge | Error the user, then re-raise to exit the worker. `CancelledError` is a `BaseException`, so without this branch the user would sit on DISPATCHED forever |
-| `EVICTED_ERRORS` (`:269`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
-| `ActorUnavailableError` (`:312`) | The actor killed itself to clear an unrecoverable CUDA fault (`modeling.base.restart`) and Ray is respawning the *same* replica (`max_restarts=-1`) | Error the user, then `await self.wait()` — the worker parks until the replica is serving again instead of erroring every queued request for the length of the reload. Nothing is re-queued and the replica is not dropped |
-| `Exception` (`:251`) | Anything else | Error the user, push to `error_queue`, keep serving |
+| `asyncio.CancelledError` (`:230`) | Deliberate cancel — operator kill, reconcile, or purge | Error the user, then re-raise to exit the worker. `CancelledError` is a `BaseException`, so without this branch the user would sit on DISPATCHED forever |
+| `EVICTED_ERRORS` (`:274`) | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM) | `self.task = None` drops this replica, request goes back to the **front** of the queue via `enqueue(prepend=True)`; the worker loop condition flips and it exits |
+| `ActorUnavailableError` (`:317`) | The actor killed itself to clear an unrecoverable CUDA fault (`modeling.base.restart`) and Ray is respawning the *same* replica (`max_restarts=-1`) | Error the user, then `await self.wait()` — the worker parks until the replica is serving again instead of erroring every queued request for the length of the reload. Nothing is re-queued and the replica is not dropped |
+| `Exception` (`:256`) | Anything else | Error the user, push to `error_queue`, keep serving |
 
 `EVICTED_ERRORS` (`replica.py:52`) is matched by type, but **not by a bare
 `isinstance`** — the check in `dispatch` also reads the wrapper's `.cause`.
@@ -360,7 +366,7 @@ demotion; the symptom is an actor log showing `CachedActorError` raised as
 designed while the dispatcher logs `error_type=RayTaskError` and takes the
 generic branch.
 
-`cancel()` (`replica.py:279`) errors the in-flight
+`cancel()` (`replica.py:347`) errors the in-flight
 request *before* cancelling the task, because a teardown only notifies queued
 requests via `Processor.reply` — the running one would otherwise hang.
 
@@ -368,7 +374,7 @@ requests via `Processor.reply` — the running one would otherwise hang.
 
 | Key | Type | Written by | Read by |
 |---|---|---|---|
-| `queue` (`NDIF_QUEUE_KEY`) | LIST of pickled `BackendRequestModel` | API `LPUSH` (`app.py:180`) | dispatcher `BRPOP`/`RPOP` (`dispatcher.py:121`) |
+| `queue` (`NDIF_QUEUE_KEY`) | LIST of pickled `BackendRequestModel` | API `LPUSH` (`app.py:183`) | dispatcher `BRPOP`/`RPOP` (`dispatcher.py:141`, `:148`) |
 | `ray:connected` | STRING `"1"`, no TTL | dispatcher `connect` | API `require_ray_connection` |
 | `status` / `env` (+ `:requested`, `:trigger`, `:ready`) | STRING / STREAM / channel | both sides of the coalesced cache | see `docs/developing/api-service.md` |
 | `dispatcher:events` | STREAM | CLI | dispatcher `events_worker` |
@@ -383,14 +389,14 @@ terminal response. Those are Python objects in the dispatcher's heap.
 
 > **A dispatcher restart loses every in-flight and queued request.** The Redis
 > list is only the multi-producer/single-consumer handoff; once popped, a request
-> waits in a `Processor.queue` (`asyncio.Queue`) or sits in
+> waits in a `Processor.queue` (a `RequestQueue`) or sits in
 > `Replica.current_request` — both plain Python objects. Restarting the API
 > restarts the dispatcher with it (it is a child of the gunicorn master), so
 > `docker compose restart api` drops them all. A client on a blocking websocket
 > gets no further status at all — no ERROR, just silence. Only requests still
 > sitting in the Redis `queue` list survive.
 
-> **`Replica.wait()` has no timeout** (`replica.py:130`). If the controller
+> **`Replica.wait()` has no timeout** (`replica.py:148`). If the controller
 > reports a successful deploy but the actor never becomes ready, `start()` is
 > stuck awaiting it, `status` stays `DEPLOYING`, `ensure_started` no-ops
 > forever, and the model's queue grows without bound. Check with `ndif queue`:
@@ -399,14 +405,14 @@ terminal response. Those are Python objects in the dispatcher's heap.
 > **One event loop for all models.** The dispatcher is a single asyncio process,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
 > queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Related:
-> `ensure_started` keys off `self.replicas` being empty (`processor.py:149`), so
+> `ensure_started` keys off `self.replicas` being empty (`processor.py:160`), so
 > a Processor with one wedged replica will not provision a second no matter how
 > deep its queue gets — autoscaling requires `READY`, `ensure_started` requires an
 > empty pool. Deploying one out-of-band is the way out: `reconcile` adopts it.
 
 > **`Processor.trusted` is sticky.** It is set from the first request that
 > triggers provisioning and only overwritten when `ensure_started` is called with
-> a non-`None` argument (`processor.py:153`) — a re-provision passes `None`. Given
+> a non-`None` argument (`processor.py:164`) — a re-provision passes `None`. Given
 > that `trusted` becomes `trust_remote_code` on the deployment, a single trusted
 > caller can leave a `trust_remote_code=True` deployment serving everyone else
 > until it is evicted.
@@ -417,10 +423,15 @@ terminal response. Those are Python objects in the dispatcher's heap.
 > whose replicas then fail their next dispatch with `EVICTED_ERRORS` and
 > re-provision — a thrash loop between two models both under pressure.
 
-> **Private asyncio APIs.** `queue._queue`, `queue._getters`, and
-> `queue._wakeup_next` are used in `enqueue`, `reply`, `snapshot`, `pop_queued`,
-> and `autoscaling_loop`. A CPython change to `asyncio.Queue` internals breaks
-> the queue subsystem silently at import or subtly at runtime.
+> **A private asyncio API.** `RequestQueue` reaches into
+> `asyncio.PriorityQueue._queue` — the heap's backing list — in `snapshot`
+> (`request_queue.py:86`), `oldest` (`:97`), `position` (`:105`), `remove`
+> (`:113`) and `clear` (`:122`), because there is no public way to read or
+> mutate a queue's contents without consuming them. A CPython change to
+> `asyncio.Queue` internals breaks the queue subsystem silently at import or
+> subtly at runtime. Everything outside `RequestQueue` goes through its
+> methods — a heap's list is only partially sorted, so reading it raw gives a
+> plausible-looking wrong order.
 
 ## Related
 

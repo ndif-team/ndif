@@ -62,7 +62,7 @@ What happened, in order (`src/ndif/cli/lib/deploy.py:64-193`):
    (`cluster/cluster.py:143`).
 3. The controller creates a **detached Ray actor** named
    `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace
-   (`cluster/deployment.py:105`, `:192-198`). Weights load inside that actor.
+   (`cluster/deployment.py:122-128`, `:210-215`). Weights load inside that actor.
 4. The CLI blocks per replica on `__ray_ready__` with no deadline
    (`cli/lib/models.py`). A large model simply sits here while it loads; if it
    cannot come up, the actor's own error is what you get, not a timeout.
@@ -150,11 +150,11 @@ ndif status --json-output | jq '.deployments[] | select(.repo_id=="openai-commun
 
 ### What pinned does
 
-`pinned` is a single boolean on the `Deployment` (`cluster/deployment.py:65`,
+`pinned` is a single boolean on the `Deployment` (`cluster/deployment.py:60`, `:72`,
 `:78`) and it is consulted in exactly one place:
 `Node.evictable` returns `False` for any pinned deployment
-(`cluster/node.py:314-317`). `find_evictions` builds its candidate set only from
-evictable deployments (`node.py:350`), so a pinned replica is never chosen as the
+(`cluster/node.py:327-330`). `find_evictions` builds its candidate set only from
+evictable deployments (`node.py:340-346`), so a pinned replica is never chosen as the
 victim when the controller is making room for another model. If nothing else can
 be freed, the incoming model gets `CANT_ACCOMMODATE` and *its* deploy fails
 instead.
@@ -182,7 +182,7 @@ unpinned deployments only.
 The complementary lever is `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600):
 an *unpinned* deployment younger than that is also not evictable — but only by
 another *unpinned* deploy. A pinned deploy ignores the age guard
-(`node.py:318-324`). That asymmetry is what lets an operator push a pinned model
+(`node.py:331-338`). That asymmetry is what lets an operator push a pinned model
 in immediately while ordinary demand-driven deploys wait their turn.
 
 ## 4. Make it come back on its own
@@ -279,7 +279,7 @@ Eviction reports what it freed:
 Evicting a HOT replica releases its GPU memory and **demotes it to WARM on the
 same node** if there is CPU headroom, keeping the weights in host RAM for a fast
 re-promotion; otherwise the replica is dropped outright
-(`cluster/node.py:250-312`). `ndif evict` without `--replica` drains both the HOT
+(`cluster/node.py:257-325`). `ndif evict` without `--replica` drains both the HOT
 and WARM copies (`cluster.py:296-315`). If the model is in a dashboard schedule,
 evict it there too — otherwise the next reconcile tick puts it straight back.
 

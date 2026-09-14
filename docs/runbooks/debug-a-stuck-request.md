@@ -189,7 +189,7 @@ Combinations and what they mean:
 **Look at the actor directly.** Deployments are plain detached Ray actors, not
 Ray Serve applications. Open the Ray dashboard at `http://<head>:8265` → Actors,
 and filter for the name `{replica_id}:ModelActor:{model_key}` in the `NDIF`
-namespace (`cluster/deployment.py:105`). The Actors view gives you the actor's
+namespace (`cluster/deployment.py:122-128`). The Actors view gives you the actor's
 state, its node, its pid, and its logs. There is no `serve status` here and no
 Serve deployment to inspect.
 
@@ -204,12 +204,12 @@ timeout and the kill switch (`modeling/base.py:298-328`). Whether the thread is
 in the forward pass or waiting on the runner depends on `request.trusted`:
 
 - **trusted** → `execute` runs the traced block in-process, in the model actor
-  (`sandbox/model.py:242-243` falls through to `modeling/base.py:379`). One
+  (`sandbox/model.py:218-219` falls through to `modeling/base.py:473`). One
   thread, no socket. A hang here is user code (an infinite loop, a huge
   generation) or the forward pass itself.
 - **untrusted** → a fresh runner subprocess deserializes and runs the block; the
   actor drives the forward pass and the two interleave over a Unix socket
-  (`sandbox/model.py:244-260`). A hang can be on either side: the runner waiting
+  (`sandbox/model.py:97-148`). A hang can be on either side: the runner waiting
   for a model location the forward pass never reaches, or the actor blocked in
   `connection.recv()` waiting for a park that never comes.
 
@@ -254,7 +254,7 @@ Loki stream labels are `service`, `environment` (static per process,
 — lives in the JSON line and needs `| json`. `service` is `api` (API +
 dispatcher), `ray` (raylet + controller), or **`model`** — the controller
 overrides `NDIF_SERVICE` in each actor's `runtime_env`
-(`cluster/deployment.py:184-187`), so actor logs are *not* under `service="ray"`.
+(`cluster/deployment.py:200-205`), so actor logs are *not* under `service="ray"`.
 
 The one query that matters, in Grafana Explore — it crosses every service, which
 is the point, and it's exactly the derived-field link the Loki datasource

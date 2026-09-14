@@ -31,19 +31,23 @@ built to be checked — but the **code** is always the authority.
 
 The reference pages were built from the code and then diffed against
 `README.md`. Where they disagree, these pages document the code's actual behavior
-and flag the difference. The ones most likely to mislead:
+and flag the difference. Two rows of the README's `NDIF_*` table still mislead:
 
-- **`NDIF_MODEL_CACHE_PERCENTAGE` scales host RAM**, not GPU memory — it is the
-  WARM cache budget. The README calls it GPU memory.
-- **`NDIF_RAY_METRICS_PORT` is not a Ray Serve port.** It is Ray's
-  `--metrics-export-port`, the Prometheus scrape target. NDIF does not use Ray
-  Serve at all; model deployments are detached Ray actors.
-- **`NDIF_API_KEY` is not read by the CLI**, despite the README saying so; only
-  the dashboard's monitor cron uses it.
-- **`NDIF_CONTROLLER_SYNC_INTERVAL_S` does not reconcile deployments** — it
-  re-syncs the node set. Deployment changes are event-driven.
-- **`NDIF_RAY_HEAD_PORT`** defaults to `6385` both via the CLI and via
-  `start.sh`'s own fallback, deliberately offset from Redis's 6379.
+- **`NDIF_API_KEY` is not read by the CLI.** `README.md:160` calls it "Client API
+  key used by the `ndif` CLI"; nothing under `src/ndif/cli/` reads it. Its only
+  reader is the dashboard's monitor cron, whose synthetic traces need a key to
+  authenticate (`dashboard/jobs/monitor.py:404`, `dashboard/start.sh:65`).
+- **`NDIF_CONTROLLER_SYNC_INTERVAL_S` does not reconcile deployments.**
+  `README.md:200` calls it the "reconcile cadence for the deployment
+  controller"; the loop it paces calls `Cluster.update_nodes()` and nothing else
+  (`controller.py:161-165`), so it re-syncs the **node set**. Deployment changes
+  are event-driven.
+
+Two things the README gets right, listed because search results and older notes
+still get them wrong: `NDIF_MODEL_CACHE_PERCENTAGE` scales **host RAM** and is
+not a GPU knob (`README.md:202`), and `NDIF_RAY_METRICS_PORT` is Ray's
+`--metrics-export-port` and has nothing to do with Ray Serve, which NDIF does not
+use at all (`README.md:112, 188`).
 
 ## Related
 

@@ -27,7 +27,7 @@ Three pieces, and they compose in one direction:
 
 ```mermaid
 flowchart TB
-    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT: ndif start --foreground<br/>(docker/Dockerfile:49)"]
+    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT ndif + CMD start --foreground<br/>(docker/Dockerfile:138)"]
     B --> C["env_services() reads NDIF_SERVICE<br/>(cli/service.py:83)"]
     C --> D["resolve_targets() maps name -> Service<br/>via SERVICE_MAP (cli/service.py:80)"]
     D --> E["_script_command builds ['bash', '<pkg>/services/myservice/start.sh']"]
@@ -39,6 +39,14 @@ flowchart TB
 once by `env_services()` (`src/ndif/cli/service.py:83`). Also the value the Loki
 and InfluxDB providers use as the `service` stream label / base tag, so it doubles
 as your telemetry identity — pick the name you want to see in Grafana.
+
+The image defaults it to `all` (`docker/Dockerfile:34`), and `all` expands, in
+`resolve_targets` (`cli/service.py:88`), to whatever `ndif start` would have brought
+up on its own: the `SERVICES` list — redis, minio, ray, api — or just `ray` on a
+worker node, where `NDIF_RAY_HEAD_ADDRESS` is set (`cli/commands/start.py:134`). An
+opt-in service is never in that expansion, so a container running yours sets
+`NDIF_SERVICE` explicitly (`NDIF_SERVICE: myservice`, or `"all myservice"` to add it
+to the core stack in one container).
 
 **2. `start.sh`.** The only launch surface. Every knob is env-driven, so the CLI
 passes no arguments at all: `_script_command` (`cli/service.py:23`) builds
@@ -92,10 +100,10 @@ Four things matter here and all four are load-bearing:
   running the script by hand.
 
 If your service needs something that isn't a foreground process — the dashboard
-needs cron for its two scheduled jobs — do it *before* the `exec`, and guard it so
-running the script on a laptop degrades instead of failing
-(`dashboard/start.sh:48` checks `command -v cron` and that `/etc/cron.d` is
-writable, and prints a note when it can't).
+needs cron for its three scheduled jobs (monitor, reconcile, report) — do it
+*before* the `exec`, and guard it so running the script on a laptop degrades
+instead of failing (`dashboard/start.sh:51` checks `command -v cron` and that
+`/etc/cron.d` is writable, and prints a note when it can't).
 
 ## Step 2 — register it with the CLI
 
@@ -138,7 +146,7 @@ them. Use it for third-party naming, not for your own config.
 
 `start.sh` is not a `.py` file, so setuptools will not put it in the wheel unless
 you say so. Add your package to `[tool.setuptools.package-data]`
-(`pyproject.toml:115`):
+(`pyproject.toml:144`):
 
 ```toml
 [tool.setuptools.package-data]
@@ -162,7 +170,7 @@ dependency:
 myservice = ["some-server-lib"]
 ```
 
-Then add it to the image's install list in `docker/Dockerfile:45` and pin the
+Then add it to the image's install list in `docker/Dockerfile:91` and pin the
 package in `requirements.txt` — the Dockerfile installs with `--no-deps`, so
 extras only *declare* what's needed; `requirements.txt` is what actually provides
 it.
@@ -195,8 +203,10 @@ and differs only by env. Copy the pattern:
 ```
 
 There is no `command:` and no `entrypoint:` — `NDIF_SERVICE` is the whole
-selection mechanism, on top of the image's `ENTRYPOINT ["ndif", "start",
-"--foreground"]` (`docker/Dockerfile:49`).
+selection mechanism, on top of the image's `ENTRYPOINT ["ndif"]` plus
+`CMD ["start", "--foreground"]` (`docker/Dockerfile:138`). The split is what lets
+`docker run ndif/ndif doctor` run any other CLI command against the same image: the
+argument replaces the CMD, not the entrypoint.
 
 > **Gotcha:** service-name hosts. Provider defaults point at `localhost`, which
 > inside a container is the container itself. Set every URL your service uses

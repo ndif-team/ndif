@@ -34,7 +34,7 @@ Plus one plain flag, `ray:connected`. The queue itself is configured in
 **Only the dispatcher process holds a Ray client.** API workers are forked
 gunicorn workers that never call `ray.init()`; the dispatcher is a separate
 spawned process (`gunicorn_conf.py:61`) and is the sole owner of the connection
-(`dispatcher.py:97`). So an endpoint like `/status`, whose data lives on the Ray
+(`Dispatcher.connect`, `dispatcher.py:79`). So an endpoint like `/status`, whose data lives on the Ray
 controller actor, has no way to fetch it directly.
 
 Two more facts follow from that. The API runs `NDIF_API_WORKERS` processes, so any
@@ -65,25 +65,25 @@ TTLs. Per subject:
 ### The read path
 
 Both endpoints call one helper, `_coalesced_fetch`
-(`src/ndif/services/api/app.py:202`):
+(`src/ndif/services/api/app.py:205`):
 
 1. `GET cache_key`. Hit → return the bytes as `application/json`, done
-   (`app.py:223`).
-2. Miss → subscribe to `ready_channel` **first** (`app.py:228`), then `GET` again
-   (`app.py:232`). The re-check closes the race where a refresh landed between the
+   (`app.py:226`).
+2. Miss → subscribe to `ready_channel` **first** (`app.py:231`), then `GET` again
+   (`app.py:235`). The re-check closes the race where a refresh landed between the
    first GET and the subscribe.
-3. `SET requested_key "1" NX EX timeout_s` (`app.py:237`). Exactly one concurrent
+3. `SET requested_key "1" NX EX timeout_s` (`app.py:240`). Exactly one concurrent
    caller wins; the winner appends one entry to `trigger_stream` with
-   `maxlen=16, approximate=True` (`app.py:238`). Losers skip straight to waiting.
-4. Wait up to `timeout_s` on the pub/sub listen loop (`app.py:243`). A `"ok"`
+   `maxlen=16, approximate=True` (`app.py:241`). Losers skip straight to waiting.
+4. Wait up to `timeout_s` on the pub/sub listen loop (`app.py:246`). A `"ok"`
    message means re-`GET` the cache and return it; `"error"` raises **503**; the
    `asyncio.timeout` firing raises **504**.
 
 ### The refresh path
 
-`Dispatcher.status_worker` (`dispatcher.py:213`) and `env_worker`
-(`dispatcher.py:255`) are structurally identical tasks started by
-`dispatch_worker` (`dispatcher.py:370`). Each blocks on `xread` with
+`Dispatcher.status_worker` (`dispatcher.py:231`) and `env_worker`
+(`dispatcher.py:273`) are structurally identical tasks started by
+`dispatch_worker` (`dispatcher.py:382`). Each blocks on `xread` with
 `block=0, count=1`, so one refresh happens per trigger, not per waiting request:
 
 ```python
@@ -97,7 +97,7 @@ await client.delete(STATUS_REQUESTED_KEY)
 await client.publish(STATUS_READY_CHANNEL, "ok")
 ```
 
-The failure branch (`dispatcher.py:246`) matters as much as the success one: it
+The failure branch (`dispatcher.py:264`) matters as much as the success one: it
 logs, pushes the exception onto the dispatcher's `error_queue` — which makes the
 dispatcher recheck the Ray connection and possibly reconnect — **deletes the lock**
 so the next request can retry immediately, and publishes `"error"` so waiters get
@@ -161,7 +161,7 @@ is woken by the same `PUBLISH`. That is the entire point.
 
 `events.py` is a different shape: these events act on the dispatcher's **own
 in-memory state** (its `Processor` objects), not on the controller. The CLI
-produces them; `Dispatcher.events_worker` (`dispatcher.py:292`) consumes them.
+produces them; `Dispatcher.events_worker` (`dispatcher.py:310`) consumes them.
 
 Everything rides `dispatcher:events` (`EVENTS_STREAM`), with the entry's
 `event_type` field selecting a handler:
@@ -184,17 +184,17 @@ client.xadd(EVENTS_STREAM, {"event_type": event_type,
 result = client.brpop(response_key, timeout=timeout)
 ```
 
-The dispatcher replies with `_respond` (`dispatcher.py:326`): one `lpush` of the
+The dispatcher replies with `_respond` (`dispatcher.py:344`): one `lpush` of the
 JSON payload, then `expire(response_key, EVENT_RESPONSE_TTL_S)` — 30 seconds
-(`events.py:27`) — so a reply nobody collected (caller already timed out) is
+(`common/redis/events.py:27`) — so a reply nobody collected (caller already timed out) is
 reaped rather than leaked. The CLI's default timeout is 5s
-(`cli/lib/events.py:50`).
+(`cli/lib/events.py:51`).
 
-`notify_reconcile` (`cli/lib/events.py:58`) is best-effort and swallows every
+`notify_reconcile` (`cli/lib/events.py:59`) is best-effort and swallows every
 error: a Redis hiccup must not fail a deploy that already succeeded on the
 controller.
 
-Handlers are individually try/excepted (`dispatcher.py:318`) so one malformed
+Handlers are individually try/excepted (`dispatcher.py:336`) so one malformed
 event can't kill the worker.
 
 ## Response publishing
@@ -202,9 +202,9 @@ event can't kill the worker.
 A request carries a `session_id` when the client opened a `/subscribe` websocket.
 That id **is** the pub/sub channel name — there is no prefix.
 `BackendRequestModel.respond` / `arespond`
-(`src/ndif/common/schema/request.py:134`, `:161`) publish the serialized
+(`src/ndif/common/schema/request.py:161`, `:203`) publish the serialized
 `BackendResponseModel` to it; the API's websocket handler forwards every message
-straight down the socket (`app.py:391`).
+straight down the socket (`app.py:398`).
 
 ```python
 if self.session_id:
@@ -215,37 +215,39 @@ elif status != Status.LOG:
 
 Non-blocking requests have no `session_id` and therefore no live channel, so the
 latest response is written to the object store instead and polled via
-`GET /response/{id}` (`app.py:304`). `LOG` updates are dropped on that path —
+`GET /response/{id}` (`app.py:307`). `LOG` updates are dropped on that path —
 only real status transitions are persisted.
 
 Publishers include the queue's processor and replica workers, the dispatcher
-(when an operator kills a request, `dispatcher.py:346`), the model actor
-(`modeling/base.py:261` onward), and the sandbox's stdout forwarder
-(`SandboxModelDeployment.next_event`, `sandbox/model.py:226`). The API itself does
-*not* publish `RECEIVED` — it returns that response over HTTP (`app.py:174`).
+(when an operator kills a request, `dispatcher.py:364`), the model actor
+(`modeling/base.py:317` onward), and the sandbox's stdout forwarder — the
+`on_log` callback `SandboxHost.run_in_runner` hands the driver
+(`sandbox/model.py:134`), fired from `SandboxDriver.next_event`
+(`sandbox/driver.py:254`). The API itself does
+*not* publish `RECEIVED` — it returns that response over HTTP (`app.py:177`).
 
 A channel is not one message per request. Besides the status transitions, every
 line the user's code prints becomes a separate `Status.LOG` publish —
 `LogStream.write` (`modeling/util.py:31`) emits one per complete line, and the
 sandboxed path republishes each `PRINT` event from the runner subprocess the same
-way. A chatty block produces hundreds of publishes on one channel.
+way (`sandbox/driver.py:254`). A chatty block produces hundreds of publishes on one channel.
 
 > **Gotcha:** Redis pub/sub has no persistence or replay. A message published
 > while nobody is subscribed is gone. That is why `/subscribe` subscribes to the
-> channel *before* it sends the client its `session_id` (`app.py:385`) — the client
+> channel *before* it sends the client its `session_id` (`app.py:394`) — the client
 > can't POST `/request` until it has the id, so the channel is guaranteed live
 > before any status can be published.
 
 ## The `ray:connected` flag
 
 A plain string key, no TTL, owned entirely by the dispatcher's `connect()`
-(`dispatcher.py:77`). It is deleted on entry, set to `"1"` once Ray is reachable
+(`dispatcher.py:79`). It is deleted on entry, set to `"1"` once Ray is reachable
 and the Controller actor answers. The API uses it as a route dependency,
 `require_ray_connection` (`app.py:106`), to 503 early rather than enqueue work the
 backend can't serve — it guards `/request`, `/status`, `/env` and `/connected`.
 
 The same `connect()` also deletes `status`, `status:requested`, `env` and
-`env:requested` (`dispatcher.py:93`) before reconnecting. Those blobs describe a
+`env:requested` (`dispatcher.py:113`) before reconnecting. Those blobs describe a
 cluster the dispatcher is no longer attached to; clearing the locks too means the
 first request after a reconnect triggers a fresh refresh instead of briefly
 serving stale data or waiting out a lock TTL.
@@ -253,7 +255,7 @@ serving stale data or waiting out a lock TTL.
 ## Gotchas
 
 > **The workers start at `$`.** Both cache workers and the events worker begin
-> with `last_id = "$"` (`dispatcher.py:224`, `:263`, `:300`), meaning "only
+> with `last_id = "$"` (`dispatcher.py:242`, `:281`, `:318`), meaning "only
 > entries added from now on". Triggers or CLI events appended while the dispatcher
 > was down are never seen. A waiting `/status` then 504s after `STATUS_TIMEOUT_S`,
 > and the lock expires at the same moment, so the *next* request retries cleanly.

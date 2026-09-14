@@ -95,8 +95,9 @@ produces the per-route chunks under `dist/assets`.
   `end: null`.
 - **`LoginView`** posts to `/api/auth/login` and follows `?next`.
 
-`composables/useCache.ts` owns the `/api/cache` autocomplete state shared by
-`DeployModal` and `EventModal`; it fetches on mount and swallows errors, since
+`composables/useCache.ts` owns the `/api/cache` autocomplete state. `DeploymentsView`
+and `ScheduleView` each call it and pass the values down as the `cache` prop on
+`DeployModal` / `EventModal`; it fetches on mount and swallows errors, since
 autocomplete is a convenience and no deploy depends on it. `AutocompleteInput`
 replaces a native `<datalist>` (OS-skinned, clashes with the theme):
 case-insensitive substring filter, 50 visible max, arrow/Enter/Esc keys.
@@ -137,7 +138,7 @@ serves.
 the backend mounts (`backend/app.py:61`).
 
 > **The built SPA is committed.** `frontend/dist/` is tracked despite the blanket
-> `dist/` rule (`.gitignore:9`), because `.gitignore:13-15` explicitly un-ignores
+> `dist/` rule (`.gitignore:9`), because `.gitignore:14-15` explicitly un-ignores
 > `src/ndif/services/dashboard/frontend/dist/`. So `git ls-files` returns the
 > hashed assets, `docker/Dockerfile`'s `COPY src/ ./src/` carries them into the
 > image, and a wheel picks them up as package-data — no host-side `npm` is needed.
@@ -146,8 +147,8 @@ the backend mounts (`backend/app.py:61`).
 `pyproject.toml`'s `[tool.setuptools.package-data]` ships `"frontend/dist/*"` and
 `"frontend/dist/**/*"` for the `ndif.services.dashboard` package, and
 `NDIF_DASHBOARD_FRONTEND_DIST` defaults to that same directory
-(`backend/config.py:42`). Both halves now agree — the committed `dist/` is present
-for the package-data entry to ship. The upshot:
+(`backend/config.py:42`). Both halves agree — the committed `dist/` is what the
+package-data entry ships. The upshot:
 
 - **`just up` from a fresh clone serves the UI.** The backend's `dist` check
   passes and the SPA catch-all is registered; `GET /` serves `index.html`.

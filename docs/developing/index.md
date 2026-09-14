@@ -29,7 +29,8 @@ Replicas are **detached Ray actors** — not Ray Serve deployments — each owni
 model's weights. The actor's `run()` is a template that races `execute()` against a
 timeout; `execute()` either runs the user's block **in-process** (trusted) or ships
 it to a **fresh runner subprocess** and drives the forward pass over a Unix socket
-(untrusted). Results go to an object store; the client gets a presigned URL.
+(untrusted). A result small enough rides back on the `COMPLETED` response; anything
+larger goes to an object store and the client gets a presigned URL.
 
 ## Start here
 
@@ -57,6 +58,10 @@ it to a **fresh runner subprocess** and drives the forward pass over a Unix sock
   protocol, the split interleaver, and one proxy per worker. The densest page in
   the tree; the subsystem also has its own
   `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
+- [Untrusted code on a tensor-parallel model](sandboxed-tensor-parallel-proposal.md)
+  — the design record behind the sandboxed TP actor: why one runner serves a whole
+  rank group, and why the barrier is shaped as it is. Shipped; read it for the
+  argument, not the API.
 
 ### Shared foundations
 - [Providers](providers.md) — the provider pattern and each backing service, with
@@ -77,8 +82,8 @@ it to a **fresh runner subprocess** and drives the forward pass over a Unix sock
 
 ## Extending
 
-- [Adding a Model Actor](adding-a-model-actor.md) — the five hooks that are the
-  real extension points.
+- [Adding a Model Actor](adding-a-model-actor.md) — the five hooks `run()` calls,
+  plus the `commit()` seam.
 - [Adding a Provider](adding-a-provider.md) — the base-class contract and
   fail-open discipline.
 - [Adding a Service](adding-a-service.md) — the `NDIF_SERVICE` + `start.sh` + CLI
@@ -86,9 +91,13 @@ it to a **fresh runner subprocess** and drives the forward pass over a Unix sock
 
 ## Working on the code
 
-- [Testing](testing.md) — the live-server suite, and how to force the untrusted
-  path that local dev never exercises.
+- [Testing](testing.md) — the live-server suite, the four files that run without a
+  server, and how to force the untrusted path that local dev never exercises. No
+  workflow runs any of it.
 - [Contributing](contributing.md) — the conventions this codebase actually follows.
+- [Release audit, September 2026](release-audit-2026-09.md) — what the 0.1.0
+  pass found across the three self-host routes, the image and the docs; what
+  was fixed and what is still open.
 
 ## Two things that catch everyone
 
@@ -103,12 +112,18 @@ identical results — that invariant is why the sandbox is shaped as it is, and
 new entry point that imports them too early gets neither console formatting nor
 telemetry, silently.
 
-## Proposals (not implemented)
+## Design records
 
-- [Checkpoint Description](checkpoint-description-proposal.md) — the controller
-  asks nnsight four separate questions before placing a model, fetches the same
-  config twice doing it, and blocks its own event loop on un-timed-out Hub calls.
-  The last of those is a live availability problem; the interface change is not.
+Both pages are named "proposal" and both have shipped. They are kept for the
+reasoning, which is not written down in the code; neither describes current
+behaviour, so read the subsystem page first and these for the *why*.
+
+- [One call to describe a checkpoint](checkpoint-description-proposal.md) — why
+  `ModelEvaluator` asks nnsight one question about a checkpoint instead of four,
+  and why `max_tp_size` deliberately isn't one of them.
+- [Untrusted code on a tensor-parallel model](sandboxed-tensor-parallel-proposal.md)
+  — one runner holding one set of workers, talking to every rank over the sandbox
+  protocol unchanged.
 
 ## Related
 

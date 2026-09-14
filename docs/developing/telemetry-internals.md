@@ -36,14 +36,14 @@ nowhere else; every module takes a dotted child so records carry a meaningful
 
 | Logger | Used by |
 |---|---|
-| `ndif` | every provider (`providers/base.py:20`, `redis.py:19`, `ray.py:20`, `objectstore.py:30`, `postgres.py:34`, `influx.py:40`, `loki.py:45`) |
+| `ndif` | every provider (`providers/base.py:20`, `redis.py:19`, `ray.py:20`, `objectstore.py:30`, `postgres.py:35`, `influx.py:40`, `loki.py:45`) |
 | `ndif.api` | the FastAPI app and auth (`services/api/app.py:48`, `auth.py:40`) |
-| `ndif.request` | request lifecycle transitions (`common/schema/request.py:21`) |
-| `ndif.queue.dispatcher` | `services/api/queue/dispatcher.py:49` |
-| `ndif.queue.processor` | `services/api/queue/processor.py:38` |
+| `ndif.request` | request lifecycle transitions (`common/schema/request.py:20`) |
+| `ndif.queue.dispatcher` | `services/api/queue/dispatcher.py:51` |
+| `ndif.queue.processor` | `services/api/queue/processor.py:39` |
 | `ndif.queue.replica` | `services/api/queue/replica.py:43` |
-| `ndif.controller` | `controller.py:25` and every `cluster/*.py` module |
-| `ndif.modeling` | the model actor and its helpers (`modeling/base.py:66`, `modeling/util.py:13`) |
+| `ndif.controller` | `controller.py:26` and every `cluster/*.py` module |
+| `ndif.modeling` | the model actor and its helpers (`modeling/base.py:62`, `modeling/util.py:13`) |
 | `ndif.dashboard.reconcile` | `services/dashboard/jobs/reconcile.py:48` |
 
 ### `configure_console` and `NDIF_LOG_LEVEL`
@@ -53,7 +53,7 @@ four things:
 
 1. `logger.propagate = False` — so records aren't *also* printed by a root
    handler (gunicorn's, or the `logging.basicConfig(level=logging.INFO)` the
-   dispatcher's `__main__` installs at `dispatcher.py:396`).
+   dispatcher's `__main__` installs at `dispatcher.py:414`).
 2. Reads `NDIF_LOG_LEVEL` (default `INFO`, upper-cased; unparseable falls back to
    `INFO`) and applies it — but **only if the logger's current level is NOTSET or
    higher** (`logging_setup.py:131`), so a Loki handler that already lowered it
@@ -79,7 +79,7 @@ two can never disagree about what a record means:
 `ConsoleFormatter` (`:75`) renders all of that as one line:
 
 ```
-2026-07-06 12:00:01 INFO    [ndif.queue.replica] request completed model_key=gpt2 request_id=ab12 exec_ms=1200.5 (replica.py:281)
+2026-07-06 12:00:01 INFO    [ndif.queue.replica] request completed model_key=gpt2 request_id=ab12 exec_ms=1200.5 (replica.py:309)
 ```
 
 Values longer than `_MAX_VALUE_LEN = 200` are truncated on the console only
@@ -87,7 +87,7 @@ Values longer than `_MAX_VALUE_LEN = 200` are truncated on the console only
 
 ### How Loki shipping is attached
 
-`LokiProvider.connect()` (`loki.py:158`) configures the console, then returns
+`LokiProvider.connect()` (`loki.py:159`) configures the console, then returns
 unless `NDIF_LOKI_URL` is set (`loki.py:179`). When it is, it lazily imports
 `logging_loki`, builds a `LokiQueueHandler` subclass, adds it to the `ndif` logger
 (`loki.py:200`), and lowers the logger's level if needed so records at the
@@ -129,7 +129,7 @@ What it adds over raw `logger.log`:
 - `level=` and `exc_info=` are keyword-only knobs; `exc_info=True` is what
   produces the split `exception_type` / `exception_message` / `stacktrace`.
 
-`elapsed_ms(start)` (`telemetry.py:67`) — milliseconds since a `time.time()`
+`elapsed_ms(start)` (`telemetry.py:87`) — milliseconds since a `time.time()`
 value, rounded to 2 decimals. Every `*_ms` field comes from it.
 
 Field names are conventions, not a schema, and Grafana queries key off them —
@@ -138,7 +138,7 @@ keep them stable. Established ones: `model_key`, `replica_id`, `request_id`,
 `duration_ms`, `exec_ms`, `queue_size`, `replicas_before`, `replicas_after`,
 `error_type`.
 
-`error_type` is built by `error_type_name` (`common/telemetry.py`) wherever the
+`error_type` is built by `error_type_name` (`common/telemetry.py:67`) wherever the
 exception may have crossed the Ray boundary. An exception raised inside an actor
 arrives wrapped in a `RayTaskError` whose own type describes nothing, so the
 helper reads `.cause` and renders `RayTaskError[CachedActorError]`. Query on the
@@ -146,7 +146,7 @@ bracketed part when you want the thing that actually failed — a bare
 `error_type=RayTaskError` means the cause was absent, not that Ray itself broke.
 
 The densest emitter is `BackendRequestModel._advance_status`
-(`common/schema/request.py:121`): one event per lifecycle transition carrying
+(`common/schema/request.py:115`): one event per lifecycle transition carrying
 `stage`, `prev_stage`, and `prev_stage_ms` — enough to reconstruct a request's
 whole timeline from logs alone.
 
@@ -154,7 +154,7 @@ whole timeline from logs alone.
 
 `metrics.py` is one class per chartable thing. `Metric` (`metrics.py:45`) fixes
 an Influx *measurement* name and forwards to `InfluxProvider.write` via `_emit`
-(`:51`); each subclass's `update()` is keyword-only and decides the tag/field
+(`:52`); each subclass's `update()` is keyword-only and decides the tag/field
 split.
 
 **Tags vs fields.** Tags are indexed and are your Grafana group-by dimensions,
@@ -169,12 +169,12 @@ rejects a point conflicting with an existing series, hence the explicit casts.
 
 | Metric class | Measurement | Tags | Fields | Emitted by |
 |---|---|---|---|---|
-| `ModelLoadTimeMetric` (`metrics.py:61`) | `model_load_time` | `model_key`, `load_type` (`initial` \| `from_cache`) | `duration_ms`, `num_gpus` | `modeling/base.py:177` (disk load), `modeling/base.py:237` (WARM→HOT restore) |
-| `GPUMemMetric` (`:85`) | `gpu_mem` | `model_key`, `api_key`, `email`, `gpu_index` | `request_id`, `baseline_bytes`, `peak_bytes`, `extra_bytes` | `modeling/base.py:333` — one point per device, from `gpu_baselines`/`gpu_peaks` |
-| `RequestSizeMetric` (`:126`) | `request_size` | `model_key`, `api_key`, `email` | `request_id`, `session_id`, `ip_address`, `user_agent`, `payload_bytes` | `services/api/app.py:188`, at ingress |
-| `RequestResponseSizeMetric` (`:163`) | `response_size` | `model_key`, `api_key`, `email` | `request_id`, `response_bytes`, `compressed` | `modeling/base.py:552`, in `upload_bytes` |
-| `ExecutionTimeMetric` (`:189`) | `execution_time` | `model_key`, `api_key`, `email`, `status` (`completed` \| `error` \| `timeout` \| `cancelled`) | `request_id`, `replica_id`, `exec_ms`, `deserialize_ms`, `upload_ms` | `modeling/base.py:494`, in `BaseModelDeployment.report` |
-| `RequestStatusTimeMetric` (`:241`) | `status_time` | `model_key`, `api_key`, `email`, `status` | `request_id`, `duration_ms` | `common/schema/request.py:112` (every transition), `services/api/app.py:163` (the synthetic `SENT` hop) |
+| `ModelLoadTimeMetric` (`metrics.py:61`) | `model_load_time` | `model_key`, `load_type` (`initial` \| `from_cache`) | `duration_ms`, `num_gpus` | `modeling/base.py:228` (disk load), `modeling/base.py:293` (WARM→HOT restore) |
+| `GPUMemMetric` (`:85`) | `gpu_mem` | `model_key`, `api_key`, `email`, `gpu_index` | `request_id`, `baseline_bytes`, `peak_bytes`, `extra_bytes` | `modeling/base.py:410` — one point per device, from `gpu_baselines`/`gpu_peaks` |
+| `RequestSizeMetric` (`:126`) | `request_size` | `model_key`, `api_key`, `email` | `request_id`, `session_id`, `ip_address`, `user_agent`, `payload_bytes` | `services/api/app.py:191`, at ingress |
+| `RequestResponseSizeMetric` (`:163`) | `response_size` | `model_key`, `api_key`, `email` | `request_id`, `response_bytes`, `compressed` | `modeling/base.py:677`, in `prepare_result` |
+| `ExecutionTimeMetric` (`:189`) | `execution_time` | `model_key`, `api_key`, `email`, `status` (`completed` \| `error` \| `timeout` \| `cancelled`) | `request_id`, `replica_id`, `exec_ms`, `deserialize_ms`, `upload_ms` | `modeling/base.py:612`, in `BaseModelDeployment.report` |
+| `RequestStatusTimeMetric` (`:241`) | `status_time` | `model_key`, `api_key`, `email`, `status` | `request_id`, `duration_ms` | `common/schema/request.py:139` (every transition), `services/api/app.py:166` (the synthetic `SENT` hop) |
 
 Notes on the two that need them:
 
@@ -183,13 +183,14 @@ Notes on the two that need them:
   (staging the result blob) — so a slow request is attributable. Any field may
   be absent (a request that errored before deserialize finished has no
   `deserialize_ms`) and absent fields are simply dropped. `replica_id` is
-  declared but `report()` never passes it, so today it is always dropped.
+  declared but `report()` (`modeling/base.py:612`) never passes it, so it is
+  always dropped.
 - **`status_time` is the whole latency breakdown, recorded centrally.** Each
   transition emits one point for the status being *left*, tagged with it, so a
   request walking `SENT → RECEIVED → QUEUED → DISPATCHED → RUNNING → COMPLETED`
   produces one point per hop with no per-call-site instrumentation: `SENT` is
   client→server transit (from the `ndif-timestamp` header, skipped when it looks
-  like clock skew — `app.py:162`), `QUEUED` is queue wait, `RUNNING` is execution.
+  like clock skew — `app.py:165`), `QUEUED` is queue wait, `RUNNING` is execution.
 
 ### Adding a new metric
 
@@ -262,7 +263,7 @@ must not import the providers before it forks.**
   and before the worker loads the app — so every worker gets its own live
   shipper threads instead of a dead inherited one.
 - `on_starting` (`:61`) launches the queue dispatcher with a **spawn** context
-  (`:64`), and its target `_run_dispatcher` (`:46`) imports everything lazily
+  (`:63`), and its target `_run_dispatcher` (`:46`) imports everything lazily
   inside the child. A fresh interpreter, so nothing provider-related is ever
   imported into the master.
 
@@ -270,23 +271,23 @@ This assumes gunicorn's default `preload_app = False`; turning preload on would
 import the app — and its providers — into the master before the fork and
 reintroduce the dead-thread problem. Run standalone (`python -m
 ndif.services.api.queue.dispatcher`), the dispatcher does the same imports itself
-at `dispatcher.py:393`.
+at `dispatcher.py:411`.
 
 ### Ray
 
 `services/ray/start.sh:17` exports `NDIF_SERVICE=ray` before `ray start`, so the
 raylet and every actor process it spawns inherit it. Each Ray actor is its own
 process and must connect in its own `__init__`: the controller connects **Loki
-only** (`controller.py:61`) since it emits events but no metrics, while
-`BaseModelDeployment.__init__` connects **both** (`modeling/base.py:117`).
+only** (`controller.py:71`) since it emits events but no metrics, while
+`BaseModelDeployment.__init__` connects **both** (`modeling/base.py:132`).
 
 Ray workers only inherit the node's ambient environment, so the controller
 propagates its own provider config into each actor's `runtime_env`
 (`_provider_runtime_env`, `cluster/deployment.py:16`) and then overrides
-`NDIF_SERVICE` to `"model"` (`cluster/deployment.py:187`) so a model actor's
+`NDIF_SERVICE` to `"model"` (`cluster/deployment.py:205`) so a model actor's
 logs and metrics attribute to the model service rather than to the controller.
 The controller's launcher does the same for the controller actor
-(`controller.py:566`).
+(`controller.py:818`).
 
 ## Configuration
 

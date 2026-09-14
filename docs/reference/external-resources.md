@@ -1,9 +1,9 @@
 ---
 title: External Resources
-one_liner: Where to go when the answer isn't in this repo — nnsight's docs and source, the NDIF site and Discord, the paper, the specific Ray topics NDIF leans on, and the in-repo documents that are authoritative.
+one_liner: Where to go when the answer isn't in this repo — where NDIF is published (Docker Hub, PyPI), nnsight's docs and source, the NDIF site and Discord, the paper, the specific Ray topics NDIF leans on, and the in-repo documents that are authoritative.
 tags: [reference]
 related: [docs/developing/nnsight-integration.md, docs/gotchas/client-server-versions.md, docs/developing/sandbox-internals.md, docs/developing/ray-service.md, docs/reference/ports.md, docs/developing/controller-internals.md]
-sources: [README.md, src/ndif/services/ray/sandbox/ARCHITECTURE.md, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
+sources: [README.md, docker/Dockerfile, .github/workflows/publish_docker.yml, .github/workflows/publish.yml, pyproject.toml, requirements.txt, src/ndif/services/ray/sandbox/ARCHITECTURE.md, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
 ---
 
 # External Resources
@@ -40,6 +40,21 @@ The paper's citation, as committed in `README.md`:
 }
 ```
 
+## Where NDIF itself is published
+
+| Artifact | Where | Go there when |
+|---|---|---|
+| NDIF server image | [hub.docker.com/r/ndif/ndif](https://hub.docker.com/r/ndif/ndif) | You want to *run* a server rather than build one. `docker run --gpus all ndif/ndif` starts the whole stack in one container (`NDIF_SERVICE=all`). Tags are one per CUDA line — `<version>-cu126`, `<version>-cu130` — plus a bare `<version>` and `latest` that both point at the cu126 build, pushed by `.github/workflows/publish_docker.yml` on a `v*` tag. The page's README is `docker/README.md` in this repo, pushed by the same workflow. |
+| `ndif` on PyPI | [pypi.org/project/ndif](https://pypi.org/project/ndif/) | You are installing the server (or just its CLI) into an existing environment: `pip install ndif[api,ray]`, then `ndif start`. Published by `.github/workflows/publish.yml` on a GitHub release. `torch` is deliberately **not** a dependency — the right wheel depends on your CUDA driver, so install it yourself first. |
+| `nnsight` on PyPI | [pypi.org/project/nnsight](https://pypi.org/project/nnsight/) | You need the client, or you are checking what version range this server accepts — `requirements.txt` pins `nnsight>=0.8.0rc1,<0.9`, and 0.8 is a pre-release, so `pip` only picks it up because the specifier names it explicitly. |
+| ECR images | private, AWS | The hosted deployment. Built by `.github/workflows/build_images.yml`, a separate workflow from the Docker Hub one; nothing outside the NDIF AWS account can pull them. |
+
+The versions a published image actually resolved to are baked in at build time
+(`ndif version --write /etc/ndif/build.json`, `docker/Dockerfile:108`) and the
+build inputs are OCI labels (`Dockerfile:115-125`), so
+`docker run --rm ndif/ndif version` and `docker image inspect` between them
+answer "what is in this tag" without a rebuild.
+
 ## Ray
 
 NDIF uses a narrow slice of Ray, and reading around it wastes time. **NDIF does
@@ -48,7 +63,7 @@ every Serve page you find.
 
 | Ray topic | Go there when |
 |---|---|
-| Ray Core: actors, `lifetime="detached"`, namespaces, `ray.get_actor` | You are reading the controller. Deployments are `actor_class.options(name=..., namespace="NDIF", lifetime="detached")` (`.../cluster/deployment.py:192-197`); every deploy/evict is an actor create or `ray.kill`. |
+| Ray Core: actors, `lifetime="detached"`, namespaces, `ray.get_actor` | You are reading the controller. Deployments are `actor_class.options(name=..., namespace="NDIF", lifetime="detached")` (`.../cluster/deployment.py:210-216`); every deploy/evict is an actor create or `ray.kill`. |
 | Ray Client (`ray://`) | You are debugging why the API can't reach the cluster. The dispatcher holds the one client connection; port 10001 is Ray's own default and NDIF never overrides it. |
 | `ray start` flags and the cluster port map | You are adding a node. `services/ray/start.sh` passes five port flags and lets Ray default the rest — the raylet, node-manager, and worker port range are Ray's business, and Ray's port documentation is the only place they're enumerated. |
 | Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes`, `head=10` and an optional node label, and the controller reads them back off the node list. |
@@ -56,8 +71,9 @@ every Serve page you find.
 | The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [GPU and memory gotchas](../gotchas/gpu-and-memory.md) for the `shm_size` requirement. |
 | Ray metrics / Prometheus export | You are wiring monitoring. `--metrics-export-port` is what Prometheus scrapes; the NDIF variable that sets it is `NDIF_RAY_METRICS_PORT` (`start.sh:66`). |
 
-Ray's version is pinned in `requirements.txt`; read the docs for **that** version,
-not `latest` — port defaults and actor options have moved between releases.
+Ray's version is pinned in `requirements.txt` (`ray[default]==2.55.1`); read the
+docs for **that** version, not `latest` — port defaults and actor options have
+moved between releases.
 
 ## Other upstream projects worth reading at the source
 
@@ -85,7 +101,9 @@ alongside the code.
 | `src/ndif/services/ray/sandbox/ARCHITECTURE.md` | The design note for the split interleaver and the runner protocol. Current and good; the authority on *why* the sandbox is shaped this way. [Sandbox internals](../developing/sandbox-internals.md) summarizes it and adds request-level context. |
 | `README.md` | Quickstart and the `NDIF_*` table. Mostly accurate, with known drift: it describes Ray Serve (NDIF uses detached actors) and calls `NDIF_MODEL_CACHE_PERCENTAGE` a GPU knob (it scales CPU RAM). |
 | `docker/docker-compose.yml` | The most honest description of how the services are wired; its comments explain several non-obvious settings. |
-| `pyproject.toml` / `requirements.txt` | What is actually installed, and comments explaining why each non-obvious dependency is there (`zstandard`, `peft`). |
+| `pyproject.toml` / `requirements.txt` | What is actually installed, and comments explaining why each non-obvious dependency is there (`zstandard`, `peft`), plus the `ext` extra — the packages a *user's* block may import, which the server has to provide or the import dies on the far side. |
+| `docker/Dockerfile` | Why each layer is ordered as it is, why torch comes from a build arg rather than `requirements.txt`, and where the `minio` and `redis-server` binaries in the image come from. |
+| `docker/README.md` | The Docker Hub page: how to run the published image. Pushed to Docker Hub by `publish_docker.yml`, so it and the listing cannot drift. |
 | `justfile` | Every supported operational command against the dev stack. |
 
 ## Material that looks relevant and isn't
@@ -95,18 +113,21 @@ an afternoon:
 
 - **Ray Serve tutorials and `serve.deployment` examples.** NDIF's model
   deployments are detached Ray actors created and killed by the controller.
-  `ray[serve]` appears only as an install hint in `ndif doctor`. Nothing in this
-  repo calls Serve.
+  Nothing in this repo imports `ray.serve`, and the dependency is `ray[default]`
+  (`pyproject.toml:46`, `requirements.txt:40`) — `ray[serve]` is not installed at
+  all.
 - **Writeups of NDIF's previous server.** An older design used Ray Serve
   applications and sandboxed user code *in-process* behind an import/attribute
   whitelist. Both are gone: execution is a detached actor, and isolation is
   process-based — a separate runner process per request, driven over a Unix
   socket. Mine old material for motivation only, and verify every structural
   claim against the code here.
-- **Anything describing VM or microVM isolation.** That approach was removed.
-  A few stale docstrings under `src/ndif/services/ray/sandbox/` still mention a
-  "VM twin"; ignore them and read
-  [Sandbox internals](../developing/sandbox-internals.md).
+- **Anything describing VM or microVM isolation.** NDIF's isolation is a
+  separate OS process per request, driven over a Unix socket — no VM, no
+  hardening beyond the process boundary and an environment allowlist
+  (`sandbox/host.py:29-69`). Read
+  [Sandbox internals](../developing/sandbox-internals.md), and do not describe
+  the sandbox as a security boundary.
 
 ## Related
 

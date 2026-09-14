@@ -40,9 +40,11 @@ Postgres needed.
 **`NDIF_MODEL_CACHE_PERCENTAGE` is host RAM, not GPU.** It sizes the WARM cache.
 Turning it down to free GPU memory does nothing.
 
-**Inside the `ray` container, `localhost:6379` is Ray's own GCS, not Redis.** This
-is why the compose file sets `NDIF_REDIS_URL` explicitly on that service, and it's
-a classic wrong turn while debugging.
+**There is no Redis inside the `ray` container**, and every provider defaults to
+`redis://localhost:6379`. This is why the compose file sets `NDIF_REDIS_URL`
+explicitly on that service; without it the controller and every model actor run
+fine, finish the work, and then cannot publish the result. Ray's own GCS default
+is 6379 too, which is why `ray/start.sh:60` moves it to `6385`.
 
 **The dashboard SPA is committed.** `frontend/dist/` is checked in, so a clean
 clone + `just up` serves the UI with no host-side build. You only need to rebuild

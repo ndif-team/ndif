@@ -31,7 +31,7 @@ every trap below:
     shm_size: "4gb"
 ```
 
-(`docker/docker-compose.yml:254-256`.)
+(`docker/docker-compose.yml:278-280`.)
 
 Docker gives a container **64 MB** of `/dev/shm` unless told otherwise. Ray puts
 its plasma object store there. At 64 MB Ray either spills every object to disk —
@@ -50,15 +50,15 @@ Two things follow:
   plasma — those live in the actor's process — but everything Ray passes between
   processes does go through it.
 
-The GPU reservation in the same block (`docker-compose.yml:257-263`,
+The GPU reservation in the same block (`docker-compose.yml:281-287`,
 `driver: nvidia, count: all`) is the compose equivalent of `--gpus all` and needs
 the NVIDIA container toolkit on the host; without it the `ray` container fails to
 create. Only `ray` gets GPUs.
 
 ## `NDIF_MODEL_CACHE_PERCENTAGE` is a CPU-RAM knob
 
-This is the most consequential piece of documentation drift in the repo, because
-it is the variable people reach for during a GPU OOM.
+The name reads like a GPU knob, and it is the variable people reach for during a
+GPU OOM. It is not one.
 
 ```python
     model_cache_percentage: Optional[float] = float(
@@ -66,15 +66,14 @@ it is the variable people reach for during a GPU OOM.
     )
 ```
 
-(`.../controller/controller.py:546-548`.) The controller multiplies it by the
+(`.../controller/controller.py:782-784`.) The controller multiplies it by the
 node's `cpu_memory_bytes` Ray resource — total host RAM, reported by
 `psutil.virtual_memory().total` at `ray start`
-(`src/ndif/services/ray/resources.py:20-24`) — to get the node's **WARM cache
-budget** (`.../cluster/cluster.py:106-109`).
+(`src/ndif/services/ray/resources.py:18-22`) — to get the node's **WARM cache
+budget** (`.../cluster/cluster.py:118-122`).
 
 It never touches GPU memory. Lowering it frees nothing on any card; it only makes
-the node hold fewer offloaded (WARM) models in host RAM. **The README describes
-this variable as GPU memory; the code is authoritative.**
+the node hold fewer offloaded (WARM) models in host RAM.
 
 The levers that actually move GPU allocation are `NDIF_DEFAULT_PADDING_FACTOR`
 and `NDIF_DEFAULT_PADDING_BIAS` (below), plus adding cards.
@@ -92,9 +91,9 @@ and `NDIF_DEFAULT_PADDING_BIAS` (below), plus adding cards.
 deployment.
 
 The transitions are actor methods, not restarts.
-`to_cache` (`.../modeling/base.py:186`) cancels any in-flight execution, moves the
+`to_cache` (`.../modeling/base.py:237`) cancels any in-flight execution, moves the
 module to CPU in one pass, lifts the per-process GPU caps, and empties the CUDA
-cache. `from_cache` (`:206`) re-applies the caps for the (possibly *different*)
+cache. `from_cache` (`:262`) re-applies the caps for the (possibly *different*)
 GPUs, recomputes a balanced device map, strips accelerate's previous hooks, and
 re-dispatches. The replica keeps its `replica_id` across a HOT→WARM demotion, so
 the Ray actor name is stable.
@@ -117,7 +116,7 @@ Two traps live here:
 
 `ModelEvaluator` builds the architecture on the **meta device** through nnsight
 (no weights downloaded), sums parameter and buffer bytes at the target dtype, and
-pads (`.../cluster/evaluator.py:134-138`):
+pads (`.../cluster/evaluator.py:234-236`):
 
 ```python
 padded_size = math.ceil(
@@ -154,11 +153,11 @@ Things that consume real GPU memory and are **absent from the ledger**:
   actors still hold their weights.
 - **Fragmentation.** Actors run with
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-  (`.../cluster/deployment.py:179`) to blunt it, not remove it.
+  (`.../cluster/deployment.py:197`) to blunt it, not remove it.
 
 > **The actor sees every GPU on the node.** Deployment sets
 > `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1`
-> (`.../cluster/deployment.py:175-177`) so Ray does *not* mask
+> (`.../cluster/deployment.py:193-195`) so Ray does *not* mask
 > `CUDA_VISIBLE_DEVICES`; targeting is done entirely by `max_memory` and the
 > per-process caps. Device indices in NDIF's logs are therefore real,
 > node-global indices — but nothing stops user code inside the block from
@@ -169,14 +168,14 @@ Things that consume real GPU memory and are **absent from the ledger**:
 `gpus_needed = ceil(size / per_gpu_memory)`, and each card the replica lands on is
 charged `ceil(size / gpus_needed)` — its share. So a model 1% over a card's
 capacity takes two cards at about half each, and the other half of both stays
-usable. It is still a step (you now occupy two cards, and a tensor-parallel model
-rounds up again to a degree it splits into evenly), but it is no longer a cliff:
-this used to reserve **100%** of every GPU spanned, wasting half the memory.
+usable. It is still a step — you now occupy two cards, and a tensor-parallel
+model rounds up again to a degree it splits into evenly — but it is not a cliff:
+the unused share of every card a replica spans stays available to other models.
 
 Set `gpus` on the deployment if you want a specific count rather than whatever the
 padded size implies.
 
-`per_gpu_memory` is `cuda_memory_bytes // total_gpus` (`cluster.py:103-105`),
+`per_gpu_memory` is `cuda_memory_bytes // total_gpus` (`cluster.py:114-117`),
 computed once when the node first appears. **Nodes with mixed card sizes are
 mis-accounted**: every GPU is assumed to be the average.
 
@@ -198,7 +197,7 @@ model does not — pass `--dtype` or a `models.yaml` entry.
 
 The dtype also feeds the actor's autocast: user-created tensors inside a trusted
 (in-process) block are autocast to the model's dtype when it is `float16` or
-`bfloat16` (`.../modeling/base.py:400-406`). The sandboxed runner does **not**
+`bfloat16` (`.../modeling/nns.py:100-107`). The sandboxed runner does **not**
 autocast, so a block that relies on it behaves differently across the
 trusted/untrusted fork.
 
@@ -206,7 +205,7 @@ trusted/untrusted fork.
 
 Eviction happens only to make room. Per GPU the controller sorts evictable
 occupants by allocated bytes ascending and takes the smallest ones until enough
-is freed. Two rules decide what counts as evictable (`.../cluster/node.py:314`):
+is freed. Two rules decide what counts as evictable (`.../cluster/node.py:327`):
 
 ```python
 def evictable(self, deployment: Deployment, pinned: bool) -> bool:

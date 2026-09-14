@@ -42,17 +42,17 @@ Before any of this applies, one flag decides whether a sandbox is involved at al
 | `True` | the block runs **in the model actor process**, next to the weights — the plain in-process path, no runner, no socket |
 
 The fork is in `SandboxModelDeployment.execute`
-(`src/ndif/services/ray/sandbox/model.py:242`). With auth on the flag is stamped
+(`src/ndif/services/ray/sandbox/model.py:207`). With auth on the flag is stamped
 at ingress from the API key's `trusted` user_tag. With auth off (no
 `NDIF_POSTGRES_URL`, so there is no key database) a client-supplied `trusted` is
 honored and an unspecified one **defaults to trusted**
 (`src/ndif/services/api/auth.py:180`).
 
 > **Gotcha:** a default local stack has no Postgres, so a `just up` dev server
-> runs every request in-process and never exercises the sandbox *by default*. But
-> you no longer need Postgres to reach the sandbox path: because auth-off honors
-> an explicit flag, sending `trusted: false` in the request forces the runner path
-> on a plain dev stack. See [testing](../developing/testing.md).
+> runs every request in-process and never exercises the sandbox *by default*.
+> Reaching the sandbox path needs no Postgres though: auth-off honors an explicit
+> flag, so sending `trusted: false` in the request forces the runner path on a
+> plain dev stack. See [testing](../developing/testing.md).
 
 Both paths are meant to produce the same result for the same request. That
 invariant is why the sandbox reuses nnsight's own mediator, batching, and cache
@@ -96,7 +96,7 @@ worker asked for something the model already ran past.
 | ad-hoc module calls (`model.lm_head(h)`) as a request/response | the module itself — the host runs its forward and returns the output |
 | `tracer.cache()` hits, filtered and moved off-device on the host | untargeted locations — a cache never ships what it wouldn't keep |
 | the block's stdout, one line at a time, surfaced as `LOG` responses | — |
-| the final `torch.save` blob of saved values (runner → host, uploaded as-is) | — |
+| the final `torch.save` blob of saved values (runner → host; the host compresses and returns it, same as the trusted path) | — |
 
 The runner holds **no weights**. It does hold a *meta* model — built from the model
 key when the runner starts — so when the request is deserialized there, the module
@@ -125,9 +125,12 @@ serialized by nnsight's source-based pickler (see
 the sandbox socket is cloudpickled. A closure over an unpicklable object fails
 here even if it would have worked in-process.
 
-**Your code is ordinary Python otherwise.** It runs in a real Python process with
-the actor's environment: it can import, allocate, and print. What it cannot do is
-reach into the actor's memory.
+**Your code is ordinary Python otherwise.** It runs in a real Python process: it
+can import, allocate, and print. It does *not* get the actor's environment — the
+runner starts with an allowlist (`RUNNER_ENV`,
+`src/ndif/services/ray/sandbox/host.py:53`) covering the loader and locale
+basics, `CUDA_VISIBLE_DEVICES`, the cache locations, and the thread-count knobs,
+and nothing else. What it cannot do is reach into the actor's memory.
 
 ## What the isolation boundary is — and is not
 
@@ -138,9 +141,14 @@ Isolation on NDIF is **process-based and still in progress**.
 - **It is** fresh per request: the pool hands out a runner that has never run user
   code and stops it when the request ends, so compiled blocks, globals, and module
   state do not leak from one request to the next.
-- **It is not** hardened. The runner is a plain child process with a copy of the
-  actor's environment — same user, filesystem, network, and visible GPUs. There
-  are no namespaces, seccomp filters, rlimits, or filesystem jail today.
+- **It is** started with an allowlisted environment rather than a copy of the
+  actor's (`RUNNER_ENV`, `src/ndif/services/ray/sandbox/host.py:53`), so a block
+  cannot read the operator's `HF_TOKEN`, `NDIF_INFLUX_TOKEN`,
+  `NDIF_POSTGRES_URL` or object-store credentials out of `os.environ`. That is
+  one hole closed, not a boundary.
+- **It is not** hardened. The runner is a plain child process — same user,
+  filesystem, network, and visible GPUs. There are no namespaces, seccomp
+  filters, rlimits, or filesystem jail today.
 
 Treat it as a seam that hardening can be added behind, not as a boundary you can
 lean on for adversarial code.

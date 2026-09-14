@@ -35,11 +35,11 @@ The nnsight client stamps two headers on every `POST /request`:
 `nnsight-version` (from its installed distribution metadata) and `python-version`
 (the full `sys.version` string). `validate_client_versions`
 (`src/ndif/services/api/versioning.py:77`) runs before any other work in the
-handler (`src/ndif/services/api/app.py:140`).
+handler (`src/ndif/services/api/app.py:141`).
 
 | Variable | Example | Unset / empty |
 |---|---|---|
-| `NDIF_MIN_NNSIGHT_VERSION` | `0.5.0` | no nnsight gating at all |
+| `NDIF_MIN_NNSIGHT_VERSION` | `0.8.0` | no nnsight gating at all |
 | `NDIF_MIN_PYTHON_VERSION` | `3.10` | no python gating at all |
 
 Both default to unset, so **an out-of-the-box NDIF gates nothing** — an ancient
@@ -58,7 +58,7 @@ Not a bare status line. The client's `_post` unpacks FastAPI's `{"detail": ...}`
 body and raises `RemoteError` with the sentence, so the user gets:
 
 ```
-RemoteError: Client nnsight version 0.4.1 is below the minimum supported 0.5.0.
+RemoteError: Client nnsight version 0.7.2 is below the minimum supported 0.8.0.
 Please `pip install --upgrade nnsight`.
 ```
 
@@ -97,7 +97,7 @@ rather than an unknown-status warning.
 If you need to convey something new without a client release, put it in
 `description` on an existing status, or emit it as a `LOG` — `LOG` is explicitly
 "a transient server message, not a lifecycle stage", it is skipped by
-`_advance_status` (`src/ndif/common/schema/request.py:99`) so it does not disturb
+`_advance_status` (`src/ndif/common/schema/request.py:115-124`) so it does not disturb
 phase timing, and clients already render it as output.
 
 Everything else on the response is equally shared: `id`, `status`,
@@ -173,11 +173,12 @@ the server loaded.
 **PEFT.** Adapters are per-request, not per-deployment: the client instantiates
 `TransformersModel(repo, peft="<adapter repo id>")`, nnsight puts `{"peft": ...}`
 in the request's `env`, and the actor applies it before every run via
-`_remoteable_set_env` (`.../modeling/base.py:294`). Both sides need `peft`
+`_remoteable_set_env` (`.../modeling/base.py:350`). Both sides need `peft`
 installed, for different reasons:
 
 - **Server** — `peft` is a hard dependency of the `ray` extra
-  (`pyproject.toml`), so the model container has it. The adapter is fetched from
+  (`pyproject.toml:56-57`) and pinned in `requirements.txt:48`, so the model
+  container has it. The adapter is fetched from
   the Hub *by id*; a local adapter directory on the user's machine is invisible
   to the server.
 - **Client** — without `peft` the user's meta model has no adapter modules, so
@@ -198,16 +199,26 @@ packages are *not* registered — the server is expected to have them.
 **`.save()` on non-tensors needs a compiled extension — on the server.** The
 user's block executes server-side, so `some_list.save()` runs in the model actor
 or the runner process, and that form depends on nnsight's optional
-`nnsight._c.py_mount` C extension being built at install time. The image installs
-`gcc` and `libc6-dev` for exactly this reason (`docker/Dockerfile`); on an image
-without a compiler, `x.save()` on a non-tensor raises `AttributeError` remotely
-while working fine locally. `nnsight.save(x)` never depends on the mount and is
-the portable form.
+`nnsight._c.py_mount` C extension. The PyPI wheels for `nnsight>=0.8.0rc1` ship it
+prebuilt, so a normal install is fine. It only matters when nnsight installs from
+an **sdist or a git ref** — then setuptools compiles it, and silently skips it
+with no compiler present. The image keeps `gcc` and `libc6-dev` for exactly that
+fallback (`docker/Dockerfile:38-49`); without the extension, `x.save()` on a
+non-tensor raises `AttributeError` remotely while working fine locally.
+`nnsight.save(x)` never depends on the mount and is the portable form.
 
 ## Bumping either side
 
-There is no CI and no compatibility matrix in this repo (v0.0.1) — the only
-suite is the live-server one under `tests/`, which skips unless the stack is up.
+There is no compatibility matrix in this repo (v0.1.0), and no CI that tests one:
+`.github/workflows/` only builds and publishes images and the PyPI package. The
+only suite is the live-server one under `tests/`, which skips unless the stack is
+up.
+
+The server pins its client as a range, not a ref: `nnsight>=0.8.0rc1,<0.9`
+(`requirements.txt:25`), from PyPI. 0.8 is a pre-release, so the specifier names
+it explicitly — pip only considers pre-releases when the specifier does, or with
+`--pre`. To run the server against an unreleased nnsight fix, replace that line
+with a git ref; the image carries `git` for exactly this (`Dockerfile:45`).
 The practical checklist when you bump the server's nnsight lives in
 [nnsight integration](../developing/nnsight-integration.md#bumping-the-client);
 the short version:
