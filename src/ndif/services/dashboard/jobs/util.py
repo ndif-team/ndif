@@ -1,6 +1,4 @@
-"""Shared utilities for the dashboard cron jobs.
-
-Mirrors ``services/monitor/jobs/util.py`` but anchored to the dashboard's
+"""Shared utilities for the dashboard cron jobs, anchored to the dashboard's
 ``data_dir`` (``~/ndif_dashboard`` by default).
 """
 

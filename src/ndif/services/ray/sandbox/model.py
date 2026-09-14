@@ -37,12 +37,13 @@ if TYPE_CHECKING:
 # already-warm request takes ~0.7s. A pool only keeps up if refills — which run
 # concurrently, one thread each — cover the drain rate, so it needs to be at
 # least spawn/execute ~= 6. At the old default of 2 a saturated queue drained
-# the pool immediately and every other request paid the full ~4s spawn inline,
-# which cost roughly 5x throughput on the untrusted path.
+# the pool immediately and every other request paid the full ~4s spawn inline.
 #
-# The costs of raising it: each warm runner holds ~420 MB (PSS) whether or not
-# it is used, so 7 is ~2.9 GB per model actor, and concurrent refills contend
-# for CPU on the node hosting the actor. On a memory- or core-tight node, or
+# The costs of raising it: each warm runner holds ~480 MB (PSS, measured with
+# gpt2 on 2026-09-14) whether or not it is used — more for a larger
+# architecture, since a runner builds a meta model before it binds — so 7 is
+# ~3.4 GB per model actor, and concurrent refills contend for CPU on the node
+# hosting the actor. On a memory- or core-tight node, or
 # with many models resident at once, turn this down.
 DEFAULT_POOL_SIZE = int(os.environ.get("NDIF_SANDBOX_POOL_SIZE", "7"))
 

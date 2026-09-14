@@ -11,13 +11,18 @@
 # Recipes taking *services accept zero or more compose service names; with none
 # they apply to the whole stack.
 #
-# For local client development, an installed nnsight is bind-mounted over the
-# image's copy (docker-compose.nnsight.yml) so changes are picked up without a
-# rebuild. Install it editable — `pip install -e /path/to/nnsight` — so this
-# resolves to your source tree; if nnsight isn't importable the mount is skipped
-# and the image's own nnsight (from requirements.txt) is used.
+# For local client development, an *editable* nnsight checkout is bind-mounted
+# over the image's copy (docker-compose.nnsight.yml) so changes are picked up
+# without a rebuild. Install it editable — `pip install -e /path/to/nnsight` —
+# in the shell you run `just` from, or set NNSIGHT_PATH to the package
+# directory explicitly. A non-editable nnsight (one living under site-packages,
+# e.g. the wrong conda env's copy of an older release) is deliberately NOT
+# mounted: it would silently replace the image's pinned nnsight with whatever
+# your shell happens to have, and the api/ray containers die on import with
+# errors that don't mention nnsight at all. `just nnsight` shows what would be
+# mounted.
 
-nnsight_path := `python -c "import nnsight, os; print(os.path.dirname(nnsight.__file__))" 2>/dev/null || true`
+nnsight_path := env("NNSIGHT_PATH", `python -c "import nnsight, os; p = os.path.dirname(nnsight.__file__); print('' if 'site-packages' in p or 'dist-packages' in p else p)" 2>/dev/null || true`)
 export NNSIGHT_PATH := nnsight_path
 
 compose := "docker compose -f docker/docker-compose.yml" + if nnsight_path != "" { " -f docker/docker-compose.nnsight.yml" } else { "" }
@@ -25,6 +30,10 @@ compose := "docker compose -f docker/docker-compose.yml" + if nnsight_path != ""
 # Show the available recipes.
 default:
     @just --list
+
+# Show which nnsight (if any) would be bind-mounted over the image's copy.
+nnsight:
+    @if [ -n "{{nnsight_path}}" ]; then echo "mounting editable nnsight from {{nnsight_path}}"; else echo "no editable nnsight found; the image's own nnsight will be used"; fi
 
 # Build service image(s).
 build *services:

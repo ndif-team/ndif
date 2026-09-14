@@ -1,8 +1,8 @@
 """Configuration for the queue subsystem.
 
-A frozen, typed snapshot loaded once from the environment at import. Replaces
-the old mutable ``QueueConfig`` class attributes; Redis connection lives in
-``common.providers.redis`` (NDIF_REDIS_URL), so it isn't repeated here.
+A frozen, typed snapshot loaded once from the environment at import. The Redis
+connection lives in ``common.providers.redis`` (NDIF_REDIS_URL), so it isn't
+repeated here.
 """
 
 import os

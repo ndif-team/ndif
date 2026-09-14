@@ -1,6 +1,12 @@
 # One image, one service per container — selected with NDIF_SERVICE.
 #   docker compose -f docker/docker-compose.yml up --build
 #
+# This is the development stack: it builds the image from this checkout and
+# runs each service in its own container next to the full telemetry set
+# (Loki, InfluxDB, Prometheus, Grafana) and Postgres. To just *run* NDIF from
+# the published image, `docker run --gpus all ndif/ndif` starts the whole
+# stack in one container instead — see docker/README.md.
+#
 # The `ray` service needs a GPU + the NVIDIA container toolkit on the host.
 
 # Project name: containers/networks are prefixed with this (dev-api-1, ...)
@@ -114,8 +120,11 @@ services:
       retries: 10
 
   # S3-compatible object store for result blobs. 9000 = S3 API, 9001 = console.
+  # Pulled from quay.io and pinned: the Docker Hub repository no longer lists
+  # tags, and MinIO stopped shipping standalone binaries. The same release is
+  # what the image copies its `minio` binary from (docker/Dockerfile).
   minio:
-    image: minio/minio
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -156,6 +165,15 @@ services:
       # NDIF_POSTGRES_URL: postgresql://ndifapi:admin@postgres:5432/ndif
     ports:
       - "8001:8001"
+    # /ping only proves the web process is up; /connected is the real readiness
+    # signal but depends on ray, which is slow to boot, so the healthcheck stays
+    # on /ping. The image has no curl; python does the request.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/ping', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     depends_on:
       redis:
         condition: service_healthy
@@ -214,8 +232,8 @@ services:
     environment:
       NDIF_SERVICE: ray
       # The controller and model actors publish responses to redis by service
-      # name; without this they'd default to localhost:6379 — which inside this
-      # container is Ray's own GCS, not redis (the handshake fails there).
+      # name; without this they'd default to localhost:6379 — and inside this
+      # container nothing listens there (redis is its own container).
       NDIF_REDIS_URL: redis://redis:6379
       # Ship logs to Loki (reached by service name on the compose network).
       NDIF_LOKI_URL: http://loki:3100/loki/api/v1/push

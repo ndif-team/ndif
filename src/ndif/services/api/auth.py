@@ -43,8 +43,8 @@ logger = logging.getLogger("ndif.api")
 # deploy the model with trust_remote_code); see Identity.trusted.
 TRUSTED_TAG = "trusted"
 
-# A key granted this user_tag jumps the queue: its requests are prepended to the
-# front of the model's queue rather than appended; see Identity.priority.
+# A key granted this user_tag sorts ahead of all normal traffic and stays FIFO
+# among its peers (RequestQueue.rank); see Identity.priority.
 PRIORITY_TAG = "priority"
 
 # One row per user_tag granted to the key; no rows means the key doesn't exist.
