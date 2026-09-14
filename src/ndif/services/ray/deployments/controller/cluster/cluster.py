@@ -88,7 +88,18 @@ class Cluster:
         """
         logger.info("Updating nodes...")
 
-        nodes = list_nodes(detail=True)
+        # ALIVE only. Ray keeps DEAD nodes in the state API with their
+        # ``resources_total`` fully populated — a departed GPU node still
+        # reports ``"GPU": 4.0`` — so the ``"GPU" not in resources_total``
+        # skip below never drops one and the purge at the end never fires.
+        # On 2026-09-08 a slurm walltime kill took all eight GPU nodes and
+        # this loop kept re-registering them for the length of the outage:
+        # placement saw phantom capacity and returned CANT_ACCOMMODATE, and
+        # /status kept reporting a full cluster, so the down alert never
+        # fired. Filtering server-side also keeps the result well inside
+        # ``list_nodes``' default limit of 100, which accumulated dead
+        # records would otherwise creep towards on a long-lived head.
+        nodes = list_nodes(detail=True, filters=[("state", "=", "ALIVE")])
         current_nodes = set()
 
         for node in nodes:
