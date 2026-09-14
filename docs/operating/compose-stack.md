@@ -163,14 +163,14 @@ comment spells out the production alternative: drop dev mode, set
 
 `api`, `ray` and `dashboard` are the same build (`context: ..`, `docker/Dockerfile`).
 The image's entrypoint is the `ndif` CLI with `start --foreground` as its command
-(`Dockerfile:138-139`), and with no argument `ndif start` resolves its targets
+(`Dockerfile:141-142`), and with no argument `ndif start` resolves its targets
 from `$NDIF_SERVICE` — which the image defaults to `all` (`Dockerfile:34`)
 (`env_services`, `src/ndif/cli/service.py:83-85`). A single target is `exec`'d so it becomes PID 1
 and gets signals directly (`cli/commands/start.py:59-66`).
 
 This is why the heavy layers — torch (its own layer, from the `TORCH_CUDA` build
-arg, `cu126` by default, `Dockerfile:74-77`) and `requirements.txt` (Ray,
-transformers, nnsight, `Dockerfile:81-82`) — are shared across all three
+arg, `cu126` by default, `Dockerfile:76-79`) and `requirements.txt` (Ray,
+transformers, nnsight, `Dockerfile:83-84`) — are shared across all three
 containers, and why the compose
 `environment:` blocks are the entire difference between them. `NDIF_SERVICE`
 accepts a space/comma list and expands `all` in place
@@ -178,9 +178,9 @@ accepts a space/comma list and expands `all` in place
 services — `"all dashboard"` is the core stack plus the admin UI.
 
 The image installs `ndif` with the `api,ray,metrics,postgres,dashboard` extras and
-`--no-deps`, since `requirements.txt` already pins everything (`Dockerfile:91`).
+`--no-deps`, since `requirements.txt` already pins everything (`Dockerfile:93`).
 It then installs the `ext` extra — the packages a user's traced block is allowed
-to import — by reading the list back out of `pyproject.toml` (`Dockerfile:100-102`).
+to import — by reading the list back out of `pyproject.toml` (`Dockerfile:102-104`).
 
 Two things that only the all-in-one image needs are in there too: `redis-server`
 from apt and the `minio` binary copied out of

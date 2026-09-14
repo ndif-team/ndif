@@ -167,9 +167,9 @@ dependencies.
 | `dev` (`:119`) | ruff, httpx, pytest, pytest-asyncio | The live-server test suite under `tests/`. |
 
 The docker image takes `[api,ray,metrics,postgres,dashboard]` in a single install
-so one image can play any role (`docker/Dockerfile:91`), plus the `ext` extra —
+so one image can play any role (`docker/Dockerfile:93`), plus the `ext` extra —
 the packages a user's block may import — installed from the same list
-(`Dockerfile:100-102`). It uses `--no-deps`
+(`Dockerfile:102-104`). It uses `--no-deps`
 because `requirements.txt` already pins every transitive dependency — the extras
 there only declare intent, so a source change reinstalls the package alone rather
 than re-resolving multiple GB of wheels.

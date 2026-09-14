@@ -82,7 +82,7 @@ curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher recon
 ## A service won't start
 
 Every NDIF container is the **same image** with a different `NDIF_SERVICE`, whose
-default command is `ndif start --foreground` (`docker/Dockerfile:138-139`). So a startup
+default command is `ndif start --foreground` (`docker/Dockerfile:141-142`). So a startup
 crash is almost always in that service's `start.sh` or its first import.
 
 ```bash

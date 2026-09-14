@@ -20,7 +20,7 @@ Four facts frame the whole design:
 
 1. **One image, one service per container.** Every service is the same Docker
    image, whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
-   `start --foreground` (`docker/Dockerfile:138`-`139`); `NDIF_SERVICE` — one
+   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` — one
    name, a space/comma list, or the image's default `all` (redis, minio, ray,
    api) — selects which service(s) that container runs
    (`cli/service.py:88`). There is no per-service build.

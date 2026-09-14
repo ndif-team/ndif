@@ -27,7 +27,7 @@ Three pieces, and they compose in one direction:
 
 ```mermaid
 flowchart TB
-    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT ndif + CMD start --foreground<br/>(docker/Dockerfile:138)"]
+    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT ndif + CMD start --foreground<br/>(docker/Dockerfile:141)"]
     B --> C["env_services() reads NDIF_SERVICE<br/>(cli/service.py:83)"]
     C --> D["resolve_targets() maps name -> Service<br/>via SERVICE_MAP (cli/service.py:80)"]
     D --> E["_script_command builds ['bash', '<pkg>/services/myservice/start.sh']"]
@@ -170,7 +170,7 @@ dependency:
 myservice = ["some-server-lib"]
 ```
 
-Then add it to the image's install list in `docker/Dockerfile:91` and pin the
+Then add it to the image's install list in `docker/Dockerfile:93` and pin the
 package in `requirements.txt` — the Dockerfile installs with `--no-deps`, so
 extras only *declare* what's needed; `requirements.txt` is what actually provides
 it.
@@ -204,7 +204,7 @@ and differs only by env. Copy the pattern:
 
 There is no `command:` and no `entrypoint:` — `NDIF_SERVICE` is the whole
 selection mechanism, on top of the image's `ENTRYPOINT ["ndif"]` plus
-`CMD ["start", "--foreground"]` (`docker/Dockerfile:138`). The split is what lets
+`CMD ["start", "--foreground"]` (`docker/Dockerfile:141`). The split is what lets
 `docker run ndif/ndif doctor` run any other CLI command against the same image: the
 argument replaces the CMD, not the entrypoint.
 

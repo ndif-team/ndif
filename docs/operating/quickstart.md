@@ -50,11 +50,14 @@ opt-in and not included (`service.py:75`); `all` expands in place inside a list,
 so `NDIF_SERVICE="all dashboard"` adds it.
 
 ```bash
-docker run --gpus all \
+docker run --gpus all --shm-size 4g \
   -p 8001:8001 -p 9000:9000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   ndif/ndif:0.1.0
 ```
+
+- **`--shm-size 4g`**: Ray's object store lives in `/dev/shm`, and Docker's
+  64 MB default makes Ray fall back to `/tmp` with a performance warning.
 
 - **8001** is the API — the only port a client posts to.
 - **9000** is MinIO's S3 API. Publish it: a result over
@@ -63,7 +66,7 @@ docker run --gpus all \
   `NDIF_OBJECT_STORE_URL`, `http://localhost:9000` by default —
   `providers/objectstore.py:80-82`). Unpublished, large results fail to download.
 - The **HF cache mount** is what makes weights survive the container. The image
-  declares `VOLUME ["/root/.cache/huggingface"]` (`Dockerfile:134`), so an
+  declares `VOLUME ["/root/.cache/huggingface"]` (`Dockerfile:137`), so an
   anonymous volume is created if you don't bind one — bind your own and a
   checkpoint downloaded once is reused everywhere.
 - `--gpus all` needs the NVIDIA container toolkit.
@@ -85,7 +88,7 @@ fail loudly — `torch.cuda.is_available()` just returns `False`
 (`docker/Dockerfile:52-57`).
 
 **Other commands.** `ENTRYPOINT` is `ndif` and `CMD` is `start --foreground`
-(`Dockerfile:138-139`), so replacing the command runs any other CLI command:
+(`Dockerfile:141-142`), so replacing the command runs any other CLI command:
 
 ```bash
 docker run --rm ndif/ndif:0.1.0 version          # what this image actually carries
@@ -94,7 +97,7 @@ docker run --rm -e NDIF_SERVICE=api ndif/ndif:0.1.0   # one service (what compos
 ```
 
 The build also records its resolved versions at `/etc/ndif/build.json`
-(`Dockerfile:108`) and its build inputs as OCI labels (`Dockerfile:115-125`), so a
+(`Dockerfile:111`) and its build inputs as OCI labels (`Dockerfile:118-128`), so a
 tagged image can always say what it is.
 
 **Deploy a model** into a running container the same way as anywhere else:
@@ -142,10 +145,13 @@ No Docker. The CLI spawns each service as a host process and tracks it by PID
 file under `NDIF_HOME` (`~/.ndif`).
 
 ```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # before requirements.txt
 pip install -r requirements.txt
-pip install torch --index-url https://download.pytorch.org/whl/cu126
 pip install ".[api,ray,metrics,postgres,dashboard]"
 ```
+
+torch first: `requirements.txt` pulls torch in through nnsight, and with no
+wheel installed yet pip would take PyPI's default, which is the CUDA 13 build.
 
 torch is deliberately **not** in `requirements.txt` — the right wheel is a
 property of your driver, not of this repo (`requirements.txt:38-39`). Pick the
@@ -168,10 +174,11 @@ bare `ndif start` never pulls in (`service.py:75`).
 - **`redis-server`** — your package manager, or conda-forge. Straightforward.
 - **`minio`** — awkward. MinIO no longer publishes standalone server binaries:
   `dl.min.io` returns 410 and the GitHub releases carry no assets, so doctor's
-  hint ("install the MinIO server binary") has no download to point at. Two
-  realistic options: the `minio-server` package on conda-forge (unverified here),
-  or lift the binary out of the official image, which is exactly what
-  `docker/Dockerfile:26-27`, `:50` does for the published image:
+  hint names the conda-forge package. Two options: `conda install -c
+  conda-forge minio-server` (verified 2026-09-14 on a fresh Python 3.12 env;
+  it installs `minio` on `PATH`), or lift the binary out of the official image,
+  which is exactly what `docker/Dockerfile:26-27`, `:50` does for the published
+  image:
 
   ```bash
   cid=$(docker create quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z)
@@ -364,7 +371,7 @@ limiting).
   `ray` service bind-mounts the host HF cache. `just down -v` additionally drops
   the dashboard's state volume.
 - **`docker run` without a volume for `/root/.cache/huggingface`** gets an
-  anonymous one from the image's `VOLUME` (`Dockerfile:134`), so weights survive
+  anonymous one from the image's `VOLUME` (`Dockerfile:137`), so weights survive
   a restart of that container but not a `docker rm`. Bind the host cache.
 - **Publish 9000 as well as 8001** on the `docker run` route, or any result over
   `NDIF_MAX_SOCKET_RESULT_BYTES` completes server-side and then fails to

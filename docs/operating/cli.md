@@ -118,7 +118,7 @@ $ ndif start
 ```
 
 **As the container entrypoint.** The image's `ENTRYPOINT` is `["ndif"]` and its
-`CMD` is `["start", "--foreground"]` (`docker/Dockerfile:138-139`), with
+`CMD` is `["start", "--foreground"]` (`docker/Dockerfile:141-142`), with
 `NDIF_SERVICE=all` as the image default (`Dockerfile:34`) — so a bare
 `docker run ndif/ndif` brings up redis, minio, ray and api in one container, and
 `docker run ndif/ndif doctor` (or `version`) runs that command instead. Compose
@@ -258,7 +258,7 @@ cuda          12.6
 ```
 
 The published image runs `ndif version --write /etc/ndif/build.json` at build
-time (`docker/Dockerfile:108`), so a tagged image records what it resolved to
+time (`docker/Dockerfile:111`), so a tagged image records what it resolved to
 even before you start it, and `docker run --rm ndif/ndif version` answers the
 question without a GPU, a volume, or a port.
 

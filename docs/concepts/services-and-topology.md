@@ -15,7 +15,7 @@ shape:
 
 1. **One image, one service per container.** `docker/Dockerfile` builds a single
    image whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
-   `start --foreground` (`docker/Dockerfile:138`-`139`); `NDIF_SERVICE` picks
+   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` picks
    which service that container becomes — `api`, `ray`, `dashboard`, `redis`,
    `minio`, or a space/comma list of those (`env_services`,
    `src/ndif/cli/service.py:83`). The image's default is `all`, which expands to

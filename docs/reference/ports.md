@@ -80,7 +80,7 @@ guessing, since this repo doesn't pin them.
 ## The published image
 
 `docker/Dockerfile` declares the seven ports a container may need in **any**
-`NDIF_SERVICE` mode (`Dockerfile:131`):
+`NDIF_SERVICE` mode (`Dockerfile:134`):
 
 ```dockerfile
 EXPOSE 8001 9000 9001 8081 8265 10001 6379
@@ -103,7 +103,7 @@ as the union of two different deployments:
 the in-image copies never start there.
 
 The image's only other port-adjacent declaration is `VOLUME
-["/root/.cache/huggingface"]` (`Dockerfile:134`) — weights, not a port, but the
+["/root/.cache/huggingface"]` (`Dockerfile:137`) — weights, not a port, but the
 other thing a `docker run` has to supply.
 
 > **Not exposed, and deliberately:** 8080 (Ray's metrics export), 8076 (Ray's

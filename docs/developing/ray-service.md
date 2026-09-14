@@ -283,7 +283,7 @@ environment, so anything the launcher configured must be forwarded explicitly.
 The image is a single `python:3.12-slim` build shared by every service
 (`docker/Dockerfile:29`), selected at runtime by `NDIF_SERVICE` (which the image
 defaults to `all`, `Dockerfile:34`). `ENTRYPOINT ["ndif"]` with
-`CMD ["start", "--foreground"]` (`Dockerfile:138`), so compose overrides
+`CMD ["start", "--foreground"]` (`Dockerfile:141`), so compose overrides
 `NDIF_SERVICE: ray` and the container runs `ndif start --foreground`. For the
 `ray` service that means:
 

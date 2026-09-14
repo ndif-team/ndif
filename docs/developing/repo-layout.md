@@ -16,7 +16,7 @@ of the layout:
 1. **One package, one image, three services.** `src/ndif/` is a single installable
    package (`pip install ndif`). `docker/Dockerfile` builds *one* image whose
    `ENTRYPOINT` is the `ndif` CLI and whose default command is
-   `start --foreground` (`docker/Dockerfile:138`-`139`); which service a container
+   `start --foreground` (`docker/Dockerfile:141`-`139`); which service a container
    runs is decided at runtime by `NDIF_SERVICE` — one name, a space/comma list, or
    the image's default `all`, which expands to redis, minio, ray and api
    (`cli/service.py:88`). `ndif start` resolves each name to a launcher: a

@@ -50,8 +50,8 @@ The paper's citation, as committed in `README.md`:
 | ECR images | private, AWS | The hosted deployment. Built by `.github/workflows/build_images.yml`, a separate workflow from the Docker Hub one; nothing outside the NDIF AWS account can pull them. |
 
 The versions a published image actually resolved to are baked in at build time
-(`ndif version --write /etc/ndif/build.json`, `docker/Dockerfile:108`) and the
-build inputs are OCI labels (`Dockerfile:115-125`), so
+(`ndif version --write /etc/ndif/build.json`, `docker/Dockerfile:111`) and the
+build inputs are OCI labels (`Dockerfile:118-128`), so
 `docker run --rm ndif/ndif version` and `docker image inspect` between them
 answer "what is in this tag" without a rebuild.
 

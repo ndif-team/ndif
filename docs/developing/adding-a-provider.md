@@ -205,7 +205,7 @@ metrics = [
 ```
 
 Then, if it should be in the image: add the group to the Dockerfile's install
-list (`docker/Dockerfile:91`) and **pin the package in `requirements.txt`** — the
+list (`docker/Dockerfile:93`) and **pin the package in `requirements.txt`** — the
 Dockerfile installs with `--no-deps`, so extras only declare intent;
 `requirements.txt` is what actually installs.
 

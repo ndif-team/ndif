@@ -42,7 +42,7 @@ it, work through [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md).
 ### 1. `docker run` — the published image, whole stack in one container
 
 ```bash
-docker run --gpus all -p 8001:8001 -p 9000:9000 \
+docker run --gpus all --shm-size 4g -p 8001:8001 -p 9000:9000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   ndif/ndif:0.1.0
 ```
@@ -74,17 +74,18 @@ just down          # tear it down
 ### 3. From source — the `ndif` CLI, no Docker
 
 ```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # first: requirements.txt would otherwise pull PyPI's default (CUDA 13) wheel
 pip install -r requirements.txt
-pip install torch --index-url https://download.pytorch.org/whl/cu126
 pip install ".[api,ray,metrics,postgres,dashboard]"
 ndif doctor        # versions, binaries, GPU, connectivity
 ndif start         # redis, minio, ray, api — detached
 ```
 
-`ndif doctor` also wants `redis-server` and `minio` on `PATH`. Redis comes from
-your package manager; the MinIO server binary is harder to get — MinIO no longer
-publishes standalone binaries, so see
-[docs/operating/quickstart.md](docs/operating/quickstart.md) for the options.
+`ndif doctor` also wants `redis-server` and `minio` on `PATH`:
+`conda install -c conda-forge redis-server minio-server` provides both (MinIO no
+longer publishes standalone binaries; the other option is copying the binary out
+of the `quay.io/minio/minio` image — see
+[docs/operating/quickstart.md](docs/operating/quickstart.md)).
 
 ### Then run a remote trace
 
