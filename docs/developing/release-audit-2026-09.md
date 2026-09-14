@@ -88,7 +88,10 @@ The routes, and how each was verified:
 14. **nnsight was installed from the tip of a git branch**, so two images built
     from the same ndif commit could carry different nnsight code, and the image
     reported `0.7.1.dev243`. `requirements.txt` pins `nnsight>=0.8.0rc1,<0.9`
-    from PyPI (the 0.8 branch tip is contained in the rc1 tag).
+    from PyPI (the 0.8 branch tip is contained in the rc1 tag). ndif's own
+    version was a hardcoded `0.0.1` in `pyproject.toml`; it is now derived from
+    the git tag by setuptools-scm, as nnsight's is, and passed into the image
+    build (`NDIF_VERSION`) since the build context has no `.git`.
 
 ### The compose route
 
@@ -209,12 +212,15 @@ in order; `CLAUDE.md` routes "run the published image" to `docker/README.md`.
 1. Merge `release/0.1.0` into `dev`, then `dev` into `main`.
 2. Add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token
    with read/write on the `ndif` organisation) as repository secrets.
-3. Push the tag: `git tag v0.1.0 && git push origin v0.1.0`. The
-   `publish_docker.yml` workflow builds cu126 and cu130 on GitHub's runners and
-   pushes `ndif/ndif:0.1.0-cu126`, `0.1.0-cu130`, `0.1.0`, `latest` and the
-   README. A first build is ~25 minutes per line; later ones hit the GHA cache.
-4. Create the GitHub release from the tag; `publish.yml` builds the sdist and
-   wheel and publishes `ndif==0.1.0` to PyPI (needs `PYPI_API_TOKEN`).
+   `PYPI_API_TOKEN` and `AWS_IAM_ROLE` already exist.
+3. Publish a GitHub release with a new tag `v0.1.0`. The tag is the version:
+   there is nothing to bump in `pyproject.toml`. Creating the release pushes
+   the tag, which runs `publish_docker.yml` (cu126 and cu130 on GitHub's
+   runners; pushes `ndif/ndif:0.1.0-cu126`, `0.1.0-cu130`, `0.1.0`, `latest`
+   and the README; ~25 minutes per line the first time), and the release event
+   runs `publish.yml` (sdist + wheel, `ndif==0.1.0` to PyPI). A pre-release
+   tag such as `v0.2.0rc1` publishes only its own image tags and leaves
+   `latest` alone.
 5. Images built here are equivalent to what the workflow produces
    (`ndif/ndif:0.1.0-cu126`, `0.1.0-cu130`, `0.1.0`, `latest` are tagged
    locally) and can be pushed by hand with `docker push` after `docker login`
