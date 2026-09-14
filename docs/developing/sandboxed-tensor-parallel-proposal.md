@@ -54,13 +54,13 @@ gather a value depends on where the user's workers are parked**, and every rank
 has to reach that decision identically or NCCL deadlocks. Today the ranks agree
 because each runs the block.
 
-They can also agree without running it. `Interleaver.observed` reads only
-`mediator.pending`, `mediator.iterations` and `mediator.caches`
-(`nnsight/intervention/interleaver.py`), and under the sandbox those mediators are
-`MediatorProxy` objects living in the **host** process
+They can also agree without running it. `Interleaver._ready(provider)` reads only
+each mediator's `pending` and its `occurrence(provider)` count
+(`nnsight/intervention/interleaver.py:690-698`), and under the sandbox those
+mediators are `MediatorProxy` objects living in the **host** process
 (`sandbox/driver.py:72-188`) — mirrors of the runner's workers, updated by `adopt`
 the moment a park arrives. So if the runner sends the same parks to every rank,
-every rank holds the same mirror and answers `observed()` **locally**.
+every rank holds the same mirror and answers `_ready()` **locally**.
 
 That is the whole reason this design is cheap:
 
@@ -160,8 +160,8 @@ The sequence at a location must be the same on every rank:
 
 Two ranks must never be on opposite sides of that — one inside an all-gather
 waiting for a peer that is blocked on the runner. It holds because both the
-gather condition (`observed() and fragmented()`) and the barrier condition
-(`observed()`) are computed from the mirrored proxy state, so all ranks take the
+gather condition (`fragmented(provider) and (observers or _ready(provider))`,
+`interleaver.py:799`) and the barrier condition (`_ready(provider)`) are computed from the mirrored proxy state, so all ranks take the
 same branch. **This invariant is the design**, and it deserves an explicit test
 rather than a comment.
 
