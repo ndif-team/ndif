@@ -42,7 +42,7 @@ from typing import Optional
 
 from ..backend.config import get_settings
 from ..backend.schedule_store import ScheduleEvent, ScheduleStore, filter_active
-from .util import get_mention, load_config, send_discord
+from .util import get_mention, load_config, send_discord, summarize_error
 
 
 logger = logging.getLogger("ndif.dashboard.reconcile")
@@ -122,7 +122,7 @@ def _notify_failures(failed: list[dict]) -> None:
         or "⚠️ **Scheduled deployment failed** {mention}\n{model_list}"
     )
     lines = [
-        f"> **{f['checkpoint']}** — `{f['status']}`: {f.get('error', 'unknown')}"
+        f"> **{f['checkpoint']}** — `{f['status']}`: {summarize_error(f.get('error'))}"
         for f in failed
     ]
     send_discord(webhook, template.format(
