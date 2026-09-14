@@ -17,6 +17,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # The wheel's version is pyproject.toml's; the release tag must agree
+      # (vX.Y.Z -> X.Y.Z), or PyPI and Docker Hub would carry different numbers
+      # for one release. Skipped for a manual dispatch, which has no tag.
+      - name: Check the tag matches pyproject.toml
+        if: github.event_name == 'release'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          p=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "$v" != "$p" ]; then echo "::error::release tag $v != pyproject.toml version $p"; exit 1; fi
       
       - name: Install build dependencies
         run: |
