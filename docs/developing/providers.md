@@ -243,7 +243,7 @@ unverified request. **Used by** `services/api/auth.py` only.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `NDIF_INFLUX_URL` | `http://localhost:8086` | InfluxDB 2.x endpoint |
+| `NDIF_INFLUX_URL` | `""` (metrics off) | InfluxDB 2.x endpoint; set it to turn metrics on |
 | `NDIF_INFLUX_TOKEN` | `""` | Auth token |
 | `NDIF_INFLUX_ORG` / `NDIF_INFLUX_BUCKET` | `ndif` / `metrics` | Target org and bucket |
 | `NDIF_INFLUX_ENABLED` | `true` | `0/false/no/off` disables the provider outright |

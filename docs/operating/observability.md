@@ -234,7 +234,7 @@ stream. If you only have an email, the Users & Usage dashboard
 | `NDIF_LOKI_LEVEL` | `INFO` | Minimum level shipped (console keeps its own) |
 | `NDIF_LOKI_QUEUE_MAX` | `10000` | In-memory queue bound; records drop when full |
 | `NDIF_LOG_LEVEL` | `INFO` | Console handler level |
-| `NDIF_INFLUX_URL` | `http://localhost:8086` | InfluxDB 2.x endpoint |
+| `NDIF_INFLUX_URL` | `""` (metrics off) | InfluxDB 2.x endpoint; set it to turn metrics on |
 | `NDIF_INFLUX_TOKEN` / `_ORG` / `_BUCKET` | *(empty)* / `ndif` / `metrics` | Auth and destination |
 | `NDIF_INFLUX_ENABLED` | `true` | Hard off switch |
 | `NDIF_INFLUX_BATCH_SIZE` | `500` | Flush at N points… |
