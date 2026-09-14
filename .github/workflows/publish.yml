@@ -5,6 +5,10 @@ on:
     types: [published]
   workflow_dispatch:
 
+# No job gets a token scope it doesn't ask for. The publish job takes id-token
+# (OIDC, for Trusted Publishing); the build job needs nothing at all.
+permissions: {}
+
 jobs:
   build:
     name: Build distribution
@@ -39,15 +43,22 @@ jobs:
     name: Publish to PyPI
     runs-on: ubuntu-latest
     needs: build
+    # Trusted Publishing: PyPI mints a short-lived token from this job's OIDC
+    # identity, so there is no API token to store or rotate. PyPI checks the
+    # claim against the publisher registered for the project — owner/repo and
+    # this workflow's filename (publish.yml), with no environment.
+    permissions:
+      id-token: write
     steps:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
-      
+
+      # Pinned to the commit behind v1.14.2: this is the one step in the repo
+      # that can publish, so it doesn't track a moving branch.
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
           packages-dir: dist
