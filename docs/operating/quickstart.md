@@ -144,14 +144,26 @@ will be.
 No Docker. The CLI spawns each service as a host process and tracks it by PID
 file under `NDIF_HOME` (`~/.ndif`).
 
+From PyPI, no checkout:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # first
+pip install "ndif[api,ray,metrics,postgres,dashboard]"
+```
+
+From a checkout, when you want the exact pinned set the image is built from:
+
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu126   # before requirements.txt
 pip install -r requirements.txt
 pip install ".[api,ray,metrics,postgres,dashboard]"
 ```
 
-torch first: `requirements.txt` pulls torch in through nnsight, and with no
-wheel installed yet pip would take PyPI's default, which is the CUDA 13 build.
+torch first either way: nnsight pulls torch in, and with no wheel installed yet
+pip would take PyPI's default, which is the CUDA 13 build. `pyproject.toml`
+pins `nnsight>=0.8.0rc1,<0.9` itself, so a plain `pip install ndif` gets a 0.8
+server; the sdist also ships `requirements.txt` and `docs/` if you want them
+without cloning.
 
 torch is deliberately **not** in `requirements.txt` — the right wheel is a
 property of your driver, not of this repo (`requirements.txt:38-39`). Pick the
@@ -174,9 +186,11 @@ bare `ndif start` never pulls in (`service.py:75`).
 - **`redis-server`** — your package manager, or conda-forge. Straightforward.
 - **`minio`** — awkward. MinIO no longer publishes standalone server binaries:
   `dl.min.io` returns 410 and the GitHub releases carry no assets, so doctor's
-  hint names the conda-forge package. Two options: `conda install -c
-  conda-forge minio-server` (verified 2026-09-14 on a fresh Python 3.12 env;
-  it installs `minio` on `PATH`), or lift the binary out of the official image,
+  hint names the conda-forge package. Two options: `conda install
+  --override-channels -c conda-forge minio-server` (verified 2026-09-14 on a
+  fresh Python 3.12 env; `--override-channels` because a stock miniconda
+  otherwise stops on the anaconda channels' terms-of-service prompt), or lift
+  the binary out of the official image,
   which is exactly what `docker/Dockerfile:26-27`, `:50` does for the published
   image:
 
