@@ -1,149 +1,235 @@
-from __future__ import annotations
-
+import asyncio
 import logging
-import uuid
-from typing import ClassVar, Coroutine, Dict, Optional, Union
+import time
+from typing import Any, Optional
+from uuid import uuid4
 
-import ray
-from fastapi import Request
-from pydantic import ConfigDict
-from typing_extensions import Self
-
+from nnsight.intervention.serialization import UnknownPersistentIdError
 from nnsight.schema.request import RequestModel
-from nnsight.schema.response import ResponseModel
+from pydantic import Field
 
-from ..types import API_KEY, MODEL_KEY, REQUEST_ID, SESSION_ID
-from .mixins import ObjectStorageMixin
-from .response import BackendResponseModel
+from ..errors import ArchitectureMismatchError, PayloadError
+from ..telemetry import event
+from .response import BackendResponseModel, Status
+
+# Object-store key holding a non-blocking request's latest status response.
+def _response_key(request_id: str) -> str:
+    return f"responses/{request_id}.json"
+
+# Request lifecycle logs are emitted under this component.
+logger = logging.getLogger("ndif.request")
 
 
-class BackendRequestModel(ObjectStorageMixin):
+class BackendRequestModel(RequestModel):
+    """Server-side request.
+
+    Subclasses the client's ``RequestModel`` (which carries ``model_key`` /
+    ``session_id`` and the (de)serialization of the blob) and adds the
+    server-side concerns: a request ``id`` and the ``api_key``.
+
+    ``id`` is a fresh uuid minted per request — distinct from ``session_id``
+    (which addresses the client's websocket) — so every request is identifiable
+    on its own. It is what responses are stamped with.
+
+    ``payload`` is the serialized interventions blob. It rides on the request
+    through the queue and is handed to the model actor through Ray (it is not
+    part of the client's JSON envelope). ``enqueued_at`` is stamped when the
+    request joins a model's queue; the autoscaler reads it to spot a stale queue
+    head. The request's ingress time isn't a separate field — it's the initial
+    ``last_status_time`` (seeded at RECEIVED), and per-stage latency is recovered
+    from the ``status_time`` metric rather than threaded through here.
     """
 
-    Attributes:
-        - model_config: model configuration.
-        - graph (Union[bytes, ray.ObjectRef]): intervention graph object, could be in multiple forms.
-        - model_key (str): model key name.
-        - session_id (Optional[str]): connection session id.
-        - format (str): format of the request body.
-        - zlib (bool): is the request body compressed.
-        - id (str): request id.
-        - received (datetime.datetime): time of the request being received.
-        - api_key (str): api key associated with this request.
-        - _bucket_name (str): request result bucket storage name.
-        - _file_extension (str): file extension.
-    """
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    api_key: Optional[str] = None
+    # The owning user's email, resolved once at ingress from the api_key (auth
+    # lookup) and carried with the request — including across the Ray boundary
+    # via pickling — so every downstream log/metric can be attributed to a human
+    # user, not just an opaque key. ``None`` when auth is off or the key has no
+    # user (the "if exists" case).
+    email: Optional[str] = None
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, protected_namespaces=())
+    # Whether this request's code may run without sandbox isolation. When True the
+    # sandbox deployment executes it in-process (the base, unsandboxed path) rather
+    # than shipping it to a runner. Default False: sandbox everything. (How trust is
+    # decided at ingress is set elsewhere.)
+    trusted: bool = False
 
-    _folder_name: ClassVar[str] = "requests"
-    _file_extension: ClassVar[str] = "pickle"
+    # Whether this request jumps the queue. When True it's prepended to the front
+    # of its model's queue at enqueue rather than appended. Default False. (Set at
+    # ingress from the api key's ``priority`` tag.)
+    priority: bool = False
 
-    last_status: Optional[ResponseModel.JobStatus] = None
-    last_status_time: Optional[float] = None
-    # Unix timestamp at which the Processor took ownership of this request
-    # (i.e. ``Processor.enqueue`` ran). Used by the autoscaling loop on the
-    # Processor to decide when queue-head wait time has crossed the
-    # scale-up threshold. None on requests we never queued.
+    payload: Optional[bytes] = None
     enqueued_at: Optional[float] = None
 
-    request: Optional[Union[Coroutine, bytes, ray.ObjectRef]] = None
+    # Status-timing state, carried with the request (including across the Ray
+    # boundary via pickling) so ``respond`` can record how long the request
+    # spent in each status. ``last_status`` is the status it currently sits in;
+    # ``last_status_time`` is when it entered that status. ``last_status_time`` is
+    # seeded at ingress (RECEIVED), so it doubles as the request's received time.
+    last_status: Optional[Status] = None
+    last_status_time: Optional[float] = None
 
-    model_key: Optional[MODEL_KEY] = None
-    session_id: Optional[SESSION_ID] = None
-    compress: Optional[bool] = True
-    api_key: Optional[API_KEY] = ""
-    callback: Optional[str] = ""
-    hotswapping: Optional[bool] = False
-    python_version: Optional[str] = ""
-    nnsight_version: Optional[str] = ""
-    content_length: Optional[int] = 0
-    ip_address: Optional[str] = ""
-    user_agent: Optional[str] = ""
-    id: REQUEST_ID
-    trace_context: Optional[Dict[str, str]] = None
+    @staticmethod
+    def deserialize(*args: Any, **kwargs: Any) -> Any:
+        """:meth:`RequestModel.deserialize`, with caller-facing failures.
 
-    def deserialize(self, persistent_objects: dict = None) -> RequestModel:
-        request = self.request
+        Every way reading a request can fail is classified here, so callers of
+        deserialize need no error handling of their own and both server-side
+        deserialization sites agree on what a given failure means.
 
-        if isinstance(self.request, ray.ObjectRef):
-            request = ray.get(request)
+        ``UnknownPersistentIdError`` is the interesting one. The block records
+        each module it touches as a persistent id (``Module:<path>``) resolved
+        against the server's live model, so an id with no entry means the two
+        model trees were built differently — nearly always package drift, and
+        usually ``transformers``, which decides a checkpoint's module layout.
+        Raw, it names a module the caller never mentioned: the block references
+        the whole envoy tree, so it fails at the *first* path where the trees
+        diverge rather than the layer they were reaching for.
 
-        return RequestModel.deserialize(request, persistent_objects, self.compress)
+        Anything else means the bytes themselves were unreadable.
+        """
+        try:
+            return RequestModel.deserialize(*args, **kwargs)
+        except UnknownPersistentIdError as error:
+            raise ArchitectureMismatchError(str(error)) from error
+        except Exception as error:
+            raise PayloadError(error) from error
 
-    @classmethod
-    def from_request(cls, request: Request) -> Self:
-        headers = request.headers
-
-        sent = headers.get("ndif-timestamp", None)
-
-        if sent is not None:
-            sent = float(sent)
-
-        request_id = (
-            uuid.uuid4()
-            if headers.get("ndif-request_id") is None
-            else headers.get("ndif-request_id")
-        )
-
-        model_key = headers.get("nnsight-model-key", None)
-
-        if model_key is not None:
-            model_key = model_key.replace('"revision": "main"', '"revision": null')
-
-        return BackendRequestModel(
-            id=str(request_id),
-            request=request.body(),
-            model_key=model_key,
-            session_id=headers.get("ndif-session_id", None),
-            compress=headers.get("nnsight-compress", True),
-            last_status_time=sent,
-            api_key=headers.get("ndif-api-key"),
-            callback=headers.get("ndif-callback", ""),
-            python_version=headers.get("python-version", ""),
-            nnsight_version=headers.get("nnsight-version", ""),
-            content_length=int(headers.get("content-length", 0)),
-            ip_address=request.client.host if request.client else "",
-            user_agent=headers.get("user-agent", ""),
-        )
-
-    def create_response(
-        self,
-        status: ResponseModel.JobStatus,
-        logger: logging.Logger,
-        description: str = "",
-        data: bytes = None,
+    def response(
+        self, status: Status, description: str = "", data: Optional[Any] = None
     ) -> BackendResponseModel:
-        """Generates a BackendResponseModel given a change in status to an ongoing request."""
+        """Advance the request's lifecycle status, then build the response for it.
 
-        log_msg = f"{self.id} - {status.name}: {description}"
-
-        logging_level = "debug"
-
-        if status == ResponseModel.JobStatus.ERROR:
-            logging_level = "exception"
-
-        response = BackendResponseModel(
-            id=str(self.id),
-            session_id=str(self.session_id) if self.session_id else None,
-            status=status,
-            description=description,
-            data=data,
-            callback=self.callback,
-        ).backend_log(
-            logger=logger,
-            message=log_msg,
-            level=logging_level,
+        :meth:`_advance_status` records the phase just left and logs the transition
+        (a no-op for ``LOG`` or a repeated status). The returned
+        :class:`BackendResponseModel` carries this request's id; ``data`` rides on
+        COMPLETED responses to hand the client a small payload (e.g. a presigned url).
+        """
+        self._advance_status(status, description)
+        return BackendResponseModel(
+            id=self.id, status=status, description=description, data=data
         )
 
-        logger.info(
-            f"Request status: {status}, Last status: {self.last_status}, Last status time: {self.last_status_time}"
+    def _advance_status(self, status: Status, description: str = "") -> None:
+        """Advance the request's lifecycle status and emit its telemetry.
+
+        On a genuine status change (``LOG`` updates and repeats of the current
+        status are ignored), this records a :class:`RequestStatusTimeMetric`
+        point for the phase just left and logs one structured lifecycle event
+        for the new status, carrying that phase's duration as ``prev_stage_ms``.
+        ``ERROR`` transitions log at WARNING; the phase is metered either way.
+        """
+        if status == Status.LOG or status == self.last_status:
+            return
+
+        from ..metrics import RequestStatusTimeMetric
+
+        now = time.time()
+        previous_status = self.last_status
+        previous_time = self.last_status_time
+
+        self.last_status = status
+        self.last_status_time = now
+
+        prev_stage_ms = None
+        if previous_status is not None and previous_time is not None:
+            prev_stage_ms = round((now - previous_time) * 1000, 2)
+            RequestStatusTimeMetric.update(
+                model_key=self.model_key,
+                request_id=self.id,
+                api_key=self.api_key,
+                email=self.email,
+                status=previous_status.value,
+                duration_ms=prev_stage_ms,
+            )
+
+        event(
+            logger,
+            description or f"status: {status.value.lower()}",
+            level=logging.WARNING if status == Status.ERROR else logging.INFO,
+            model_key=self.model_key,
+            request_id=self.id,
+            api_key=self.api_key,
+            email=self.email,
+            stage=status.value.lower(),
+            prev_stage=previous_status.value.lower() if previous_status else None,
+            prev_stage_ms=prev_stage_ms,
         )
 
-        # Record time spent in previous status BEFORE updating last_status
-        if status != self.last_status and status != ResponseModel.JobStatus.LOG:
-            response.update_metric(self)
-            logger.info(f"Updating last status: {status}")
-            self.last_status = status
+    def respond(
+        self,
+        status: Status,
+        description: str = "",
+        data: Optional[Any] = None,
+        pickled: bool = False,
+    ) -> BackendResponseModel:
+        """Build a response and publish it to the client's websocket channel.
+
+        Advances the status and builds the response (see :meth:`response`). A
+        blocking request (has a ``session_id``) is published to that Redis
+        channel; the API app's ``/subscribe`` websocket forwards it. A
+        non-blocking request (no ``session_id``) has no live channel, so the
+        latest response is saved to the object store instead, where the client
+        reads it via ``GET /response/{id}`` (LOG updates are skipped).
+
+        ``pickled`` publishes ``torch.save`` bytes rather than a JSON dump, so
+        ``data`` can carry the result blob itself instead of a url to fetch it
+        from. Only meaningful for a blocking request: the object store path
+        keeps serving JSON, which is what ``GET /response/{id}`` returns.
+        ``/subscribe`` tells the two apart by their first byte and forwards a
+        pickled response as a binary frame.
+        """
+        from ..providers.objectstore import ObjectStoreProvider
+        from ..providers.redis import RedisProvider
+
+        response = self.response(status, description, data)
+
+        if self.session_id:
+            RedisProvider.sync_client.publish(
+                self.session_id,
+                response.pickle() if pickled else response.model_dump_json(),
+            )
+        elif status != Status.LOG:
+            ObjectStoreProvider.put(
+                _response_key(self.id),
+                response.model_dump_json().encode(),
+                content_type="application/json",
+            )
+
+        return response
+
+    async def arespond(
+        self,
+        status: Status,
+        description: str = "",
+        data: Optional[Any] = None,
+        pickled: bool = False,
+    ) -> BackendResponseModel:
+        """Async counterpart of :meth:`respond`.
+
+        Used by the queue's async workers (dispatcher / processor / replica) so
+        publishing a status update doesn't block the event loop on a sync Redis
+        round-trip.
+        """
+        from ..providers.objectstore import ObjectStoreProvider
+        from ..providers.redis import RedisProvider
+
+        response = self.response(status, description, data)
+
+        if self.session_id:
+            await RedisProvider.async_client.publish(
+                self.session_id,
+                response.pickle() if pickled else response.model_dump_json(),
+            )
+        elif status != Status.LOG:
+            # Non-blocking: persist the latest response for GET /response/{id}.
+            await asyncio.to_thread(
+                ObjectStoreProvider.put,
+                _response_key(self.id),
+                response.model_dump_json().encode(),
+                content_type="application/json",
+            )
 
         return response

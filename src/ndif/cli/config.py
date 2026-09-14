@@ -1,64 +1,70 @@
-"""NDIF CLI Configuration Defaults.
+"""CLI configuration: NDIF_* defaults and environment assembly.
 
-This file contains all configurable environment variables and their default values.
-Override any of these by setting the corresponding environment variable.
-
-Example:
-    export NDIF_BROKER_URL=redis://localhost:6379/
-    export NDIF_RAY_HEAD_PORT=6380
+The services read every knob straight from the environment (provider ``CONFIG``
+specs and the ``start.sh`` scripts). The CLI only reads the handful it needs
+directly — ports and URLs for ``info``/``doctor`` — and guarantees a few
+local-run defaults that differ from the service defaults tuned for docker's
+per-container network.
 """
 
+from __future__ import annotations
+
 import os
-import sys
 from pathlib import Path
+
+import click
 from dotenv import load_dotenv
 
-# Find the repo root (where .env.example / .env live). For an editable install,
-# config.py lives at <repo>/src/ndif/cli/config.py — three parents up from
-# <repo>/src/ndif/cli gets us to <repo>. For a non-editable/site-packages
-# install this points inside site-packages, where there is no .env file; that
-# is fine — load_dotenv is a no-op when the file is absent.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Overlaid *beneath* the real environment: anything set in the shell or a .env
+# wins. These make single-host ``ndif start`` work out of the box, where the
+# service defaults either collide (Ray's own GCS port is 6379, same as Redis)
+# or assume docker service-name hosts.
+DEFAULTS: dict[str, str] = {
+    "NDIF_HOME": str(Path("~/.ndif").expanduser()),
+    "NDIF_REDIS_URL": "redis://localhost:6379",
+    "NDIF_OBJECT_STORE_URL": "http://localhost:9000",
+    "NDIF_API_URL": "http://localhost:8001",
+    "NDIF_API_PORT": "8001",
+    "NDIF_RAY_ADDRESS": "ray://localhost:10001",
+    "NDIF_RAY_HEAD_PORT": "6385",
+    "NDIF_RAY_DASHBOARD_PORT": "8265",
+}
 
-# Layered load (later sources override earlier ones):
-#   1. <repo>/.env.example  — committed defaults (only present in editable installs)
-#   2. <repo>/.env          — user's repo-local overrides (editable installs only)
-#   3. ./.env               — CWD-relative .env, works in any install mode
-#                             (pip-installed users drop a .env in their project dir)
-# A `--env-file` flag on the CLI group can layer on top of these at command-run
-# time (see ``cli/cli.py``).
-load_dotenv(_PROJECT_ROOT / ".env.example")
-load_dotenv(_PROJECT_ROOT / ".env", override=True)
-load_dotenv(Path.cwd() / ".env", override=True)
-
-# =============================================================================
-# Session Management
-# =============================================================================
-
-NDIF_SESSION_ROOT = os.path.expanduser("~/.ndif/sessions")
-
-# Client defaults — used when neither the process env nor a .env file sets these.
-NDIF_RAY_ADDRESS = "ray://localhost:10001"
+# CLI options that each set a single env var the services read.
+ENV_OPTIONS = {
+    "redis_url": "NDIF_REDIS_URL",
+    "ray_address": "NDIF_RAY_ADDRESS",
+    "api_port": "NDIF_API_PORT",
+    "ray_head_address": "NDIF_RAY_HEAD_ADDRESS",
+}
 
 
-# =============================================================================
-# Helper: Build ENV_VARS dict from module variables
-# =============================================================================
-
-def _build_env_vars():
-    """Build ENV_VARS dict from NDIF_* variables in this module and os.environ."""
-    module = sys.modules[__name__]
-    env_vars = {}
-    # First, get from os.environ (includes vars loaded from .env files)
-    for name, value in os.environ.items():
-        if name.startswith("NDIF_"):
-            env_vars[name] = value
-    # Then, override with module-level defaults (these are fallbacks)
-    for name in dir(module):
-        if name.startswith("NDIF_") and name not in env_vars:
-            value = getattr(module, name)
-            env_vars[name] = str(value)
-    return env_vars
+def load_env_files(env_file: str | None = None) -> None:
+    """Load a CWD-relative ``.env``, then an explicit ``--env-file`` on top."""
+    load_dotenv(Path.cwd() / ".env")
+    if env_file:
+        load_dotenv(env_file, override=True)
 
 
-ENV_VARS = _build_env_vars()
+def get(name: str) -> str | None:
+    """Value for an NDIF_* var: the environment, else the CLI default."""
+    return os.environ.get(name, DEFAULTS.get(name))
+
+
+def build_env(env_pairs: tuple[str, ...] = (), typed: dict | None = None) -> dict:
+    """The environment to hand a spawned service.
+
+    ``DEFAULTS`` underneath, the real environment on top, then CLI overrides
+    last: ``-e KEY=VALUE`` pairs and the typed shortcuts (``--redis-url`` etc.).
+    """
+    env = {**DEFAULTS, **os.environ}
+    for pair in env_pairs:
+        if "=" not in pair:
+            raise click.BadParameter(f"expected KEY=VALUE, got {pair!r}", param_hint="-e")
+        key, value = pair.split("=", 1)
+        env[key] = value
+    for opt, var in ENV_OPTIONS.items():
+        value = (typed or {}).get(opt)
+        if value is not None:
+            env[var] = str(value)
+    return env

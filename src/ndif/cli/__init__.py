@@ -1,7 +1,5 @@
-"""NDIF - National Deep Inference Fabric CLI"""
-from importlib.metadata import PackageNotFoundError, version
-  
-try:
-    __version__ = version("ndif")
-except PackageNotFoundError:
-    __version__ = "unknown version"
+"""NDIF command-line interface."""
+
+from .main import cli
+
+__all__ = ["cli"]

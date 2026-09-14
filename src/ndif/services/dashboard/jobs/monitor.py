@@ -31,6 +31,7 @@ import os
 import signal
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import requests
@@ -44,10 +45,11 @@ from .util import (
     load_config,
     rotate_logs,
     send_discord,
+    summarize_error,
 )
 
 
-DEFAULT_URL = "http://localhost:5001"
+DEFAULT_URL = "http://localhost:8001"
 DEFAULT_MODEL_TIMEOUT = 60
 DEFAULT_MODEL_INTERVAL = 7200  # 2 hours
 SCRIPT_TIMEOUT = 480
@@ -156,12 +158,12 @@ def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dic
     """Trace a remote ``"Hello"`` against the given model.
 
     Reconstructs the nnsight wrapper from the full ``model_key`` via
-    ``RemoteableMixin.from_model_key``, which handles class + repo_id +
-    revision in one shot. This avoids hardcoding ``LanguageModel`` so VLMs
-    and other envoy types are exercised under their own wrapper class.
+    ``Remotable.from_model_key``, which handles class + repo_id + revision in
+    one shot. This avoids hardcoding a wrapper class so VLMs and other envoy
+    types are exercised under their own class.
     """
     from nnsight import CONFIG
-    from nnsight.modeling.mixins import RemoteableMixin
+    from nnsight.modeling.mixins.remotable import Remotable
 
     CONFIG.API.APIKEY = api_key
     # Point traces at this deployment's API; otherwise nnsight defaults to
@@ -171,22 +173,39 @@ def _run_trace(model_key: str, api_key: str, api_host: str | None = None) -> dic
     result = {"model": model_key}
 
     try:
-        model = RemoteableMixin.from_model_key(model_key, trust_remote_code=True)
+        model = Remotable.from_model_key(model_key)
     except Exception as e:
         result["status"] = "load_error"
-        result["error"] = str(e)
+        result["error"] = summarize_error(e)
+        result["traceback"] = traceback.format_exc()
         return result
 
     start = time.perf_counter()
+    tracer = None
     try:
-        with model.trace("Hello", remote=True):
+        with model.trace("Hello", remote=True) as tracer:
             model.output.save()
         result["status"] = "ok"
         result["latency_s"] = round(time.perf_counter() - start, 3)
     except Exception as e:
         result["status"] = "error"
         result["latency_s"] = round(time.perf_counter() - start, 3)
-        result["error"] = str(e)
+        # Two fields, deliberately: ``error`` is the single line the Discord
+        # ping renders, ``traceback`` is the full local stack (whose last frame
+        # carries the remote one) and is what makes models_*.log diagnosable.
+        # Collapsing them is how the ping ended up showing nothing but
+        # "Traceback (most recent call last):" for every model.
+        result["error"] = summarize_error(e)
+        result["traceback"] = traceback.format_exc()
+    finally:
+        # NDIF assigns the request id once the job is submitted, so it is
+        # available on the remote backend even when execution later errors —
+        # which is exactly when someone wants to grep the API logs for it. It
+        # stays None for failures that never reached submission, and those
+        # simply omit it downstream.
+        request_id = getattr(getattr(tracer, "backend", None), "job_id", None)
+        if request_id:
+            result["request_id"] = request_id
 
     return result
 
@@ -304,9 +323,11 @@ def notify_status(config: dict, was_ok: bool, down_since: str | None, is_ok: boo
 def notify_model_failures(config: dict, failed: list, total: int) -> None:
     """Discord-notify the set of failed models, capped at Discord's 2000-char limit.
 
-    Per-model error strings can be huge (full Python tracebacks from the
-    server side) — cap each line and the whole message so the webhook
-    always succeeds. Verbose tracebacks remain in models_*.log.
+    Each line carries the error *message* (via ``summarize_error``) and, when
+    the job reached the API, its request id — enough to grep the API logs from.
+    The traceback stays in models_*.log; a webhook is the wrong place for it,
+    and Discord's 2000-char limit means a few tracebacks would silently push
+    every other failed model out of the message.
     """
     webhook_url = config.get("discord_webhook")
     if not webhook_url or not failed:
@@ -318,11 +339,16 @@ def notify_model_failures(config: dict, failed: list, total: int) -> None:
     PER_LINE_ERR_CHARS = 120
 
     def _summarize(err) -> str:
-        s = str(err or "unknown").splitlines()[0].strip()
+        s = summarize_error(err)
         return (s[:PER_LINE_ERR_CHARS] + "…") if len(s) > PER_LINE_ERR_CHARS else s
 
+    def _fmt_line(r) -> str:
+        req = r.get("request_id")
+        req_part = f" (req `{req}`)" if req else ""
+        return f"> **{r['model']}** — `{r['status']}`{req_part}: {_summarize(r.get('error'))}"
+
     def _build(included, dropped):
-        lines = [f"> **{r['model']}** — `{r['status']}`: {_summarize(r.get('error'))}" for r in included]
+        lines = [_fmt_line(r) for r in included]
         if dropped:
             lines.append(f"> …and {dropped} more (see models_*.log)")
         return messages["models_failed"].format(

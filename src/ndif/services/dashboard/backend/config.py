@@ -16,12 +16,7 @@ NDIF_DASHBOARD_FRONTEND_DIST      built Vue frontend dir to serve
                                   (default: <package>/frontend/dist)
 NDIF_DASHBOARD_DEV_MODE           "true" disables auth (frontend dev only)
 
-NDIF_API_URL                      reused from the rest of the stack — the
-                                  dashboard reads this directly via Pydantic
-                                  ``validation_alias`` to proxy ``/api/status``
-                                  back through the public NDIF API.
-
-NDIF_RAY_ADDRESS / NDIF_BROKER_URL inherited by the cli/lib calls (deploy /
+NDIF_RAY_ADDRESS / NDIF_REDIS_URL inherited by the cli/lib calls (deploy /
                                   evict / restart / reconcile).
 """
 
@@ -30,7 +25,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,14 +37,6 @@ class Settings(BaseSettings):
     session_secret: str = Field(default="change-me-please-this-is-not-secure")
     session_ttl_days: int = Field(default=7)
     dev_mode: bool = Field(default=False)
-
-    # The NDIF API URL the dashboard's /api/status proxy hits. Reuses the
-    # standard NDIF_API_URL set by docker-compose for the rest of the stack;
-    # falls back to NDIF_DASHBOARD_API_URL if set, then the default.
-    ndif_api_url: str = Field(
-        default="http://localhost:5001",
-        validation_alias=AliasChoices("NDIF_DASHBOARD_API_URL", "NDIF_API_URL"),
-    )
 
     data_dir: Path = Field(default_factory=lambda: Path.home() / "ndif_dashboard")
     frontend_dist: Path = Field(

@@ -1,41 +1,10 @@
-import uuid
-from enum import Enum
-from typing import TypeAlias, Union
+"""Shared type aliases used across services."""
 
-HF_REPO_ID: TypeAlias = str
-"""Hugging Face repository ID.
+# A model identifier (e.g. "nnsight.modeling.LanguageModel:openai-community/gpt2").
+MODEL_KEY = str
 
-Example:
-openai-community/gpt2
-"""
+# A replica identifier, unique across the cluster.
+REPLICA_ID = str
 
-MODEL_KEY: TypeAlias = str
-"""Model key identifier. Used to specify the NNsight class, huggingface repo and revision for a deployment.
-
-Example:
-nnsight.modeling.language.LanguageModel:{"repo_id": "openai-community/gpt2", "revision": "main"}
-"""
-
-RAY_APP_NAME: TypeAlias = str
-"""Ray application name. Can be derived directly from MODEL_KEY
-
-Example:
-Model:nnsight-modeling-language-languagemodel-repo-id-openai-community-gpt2-revision-main
-"""
-
-API_KEY: TypeAlias = str
-
-REQUEST_ID: TypeAlias = str
-
-SESSION_ID: TypeAlias = str
-
-NODE_ID: TypeAlias = str
-
-REPLICA_ID: TypeAlias = str
-
-
-class TIER(Enum):
-    """Tier identifier for API keys"""
-
-    TIER_405B = "405b"
-    TIER_HOTSWAP = "hotswapping"
+# A Ray node identifier.
+NODE_ID = str

@@ -1,10 +1,15 @@
-"""Schemas for Controller / Cluster RPCs (deploy, evict, get_deployment)."""
+"""Data contracts for the Controller / Cluster RPCs (deploy, evict, get_deployment).
+
+These live in common/ because both the queue (API side) and the controller
+(Ray side) speak them. The queue is written against the deploy / get_deployment
+shapes; the controller produces the full replica/deploy state.
+"""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..types import MODEL_KEY, REPLICA_ID
 
@@ -12,18 +17,79 @@ from ..types import MODEL_KEY, REPLICA_ID
 # ---------- deploy ----------------------------------------------------------
 
 
+class DeploymentConfig(BaseModel):
+    """Configuration for deploying a model.
+
+    ``replicas`` is **additive**: every deploy places that many *new* replicas
+    regardless of what's already running (use evict to shrink). ``pinned``
+    marks a deployment exempt from autoscaling/cache eviction.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    pinned: bool = False
+    replicas: int = 1
+    # Whether this deployment may run the model's own repo code (HF
+    # trust_remote_code). Inherited from the trusted flag of the request that
+    # kicked off the deployment; the controller threads it into the evaluator's
+    # size estimate and the actor's model load, which must agree.
+    trusted: bool = False
+    # --- placement overrides -------------------------------------------------
+    # Everything about where a replica goes is derived from one number: the
+    # model's padded size. These let an operator supply any part of that
+    # derivation directly and have the rest filled in as usual, rather than
+    # working backwards through it. Without them the only lever is
+    # padding_factor, which means expressing "give this model four cards" as a
+    # fudge factor computed against the cluster's card size -- backwards, and
+    # wrong the moment the hardware changes.
+    #
+    # The model's own weights in bytes, measured rather than estimated. Skips
+    # the Hub round-trip that sizes a checkpoint, so a deploy still works with
+    # the Hub unreachable. Padding still applies on top.
+    size_bytes: Optional[int] = None
+    padding_factor: Optional[float] = None
+    # Per-model override of NDIF_DEFAULT_PADDING_BIAS -- the flat term for
+    # per-process overhead (CUDA context, NCCL buffers, the runner pool), which
+    # is genuinely per-deployment rather than a property of the cluster.
+    padding_bias: Optional[int] = None
+    # Place on exactly this many GPUs, instead of deriving the count from the
+    # padded size. Still checked against what the model can actually shard into:
+    # a count no tensor-parallel degree divides is refused rather than run
+    # unevenly, because transformers will not run it.
+    gpus: Optional[int] = None
+    # Cap (or supply) the largest tensor-parallel degree, overriding what
+    # nnsight reads from the checkpoint's config. `0` forces a model to be
+    # placed without tensor parallelism at all.
+    max_tp: Optional[int] = None
+    execution_timeout_seconds: Optional[float] = None
+    # torch dtype name (e.g. "bfloat16") to load the model in and estimate its
+    # size with. None -> the controller's default_dtype.
+    dtype: Optional[str] = None
+    actor_class: Optional[Union[str, type]] = None
+    """Ray actor class serving this deployment: a dotted import path resolvable
+    inside the Ray actor's Python path, or an already-``@ray.remote`` class.
+    ``None`` defers to the controller's ``default_model_actor_class``."""
+
+    @staticmethod
+    def normalize(
+        deployments: Union[
+            MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, "DeploymentConfig"]
+        ],
+    ) -> Dict[MODEL_KEY, "DeploymentConfig"]:
+        """Coerce a model key / list / dict into ``{model_key: DeploymentConfig}``."""
+        if isinstance(deployments, dict):
+            return deployments
+        if isinstance(deployments, str):
+            deployments = [deployments]
+        return {key: DeploymentConfig() for key in deployments}
+
+
 class ModelDeployResult(BaseModel):
     """Per-model outcome from a Cluster.deploy call.
 
-    ``config.replicas`` is additive — every Cluster.deploy adds that many new
-    replicas regardless of what's already running — so ``replicas`` lists
-    only the replica_ids placed by this call.
-
-    Attributes:
-        replicas: replica_ids placed during this call.
-        error: human-readable error text if size evaluation or placement
-            failed. When set, no further replicas of this model were
-            attempted on this call.
+    ``replicas`` lists only the replica_ids placed by this call (deploy is
+    additive). The contract guarantees exactly one of ``replicas`` / ``error``
+    is meaningful, so callers only need to check ``error``.
     """
 
     replicas: List[REPLICA_ID] = Field(default_factory=list)
@@ -35,11 +101,9 @@ class DeployResponse(BaseModel):
 
     Attributes:
         results: per-model outcomes keyed by model_key.
-        evictions: (model_key, replica_id) pairs evicted during the call to
-            free GPU memory for new placements.
-        change: whether any cluster state changed (new replicas placed or
-            replicas evicted). Used by the controller to decide whether to
-            run apply().
+        evictions: (model_key, replica_id) pairs evicted to free GPU memory.
+        change: whether any cluster state changed — the controller uses this to
+            decide whether to run apply().
     """
 
     results: Dict[MODEL_KEY, ModelDeployResult] = Field(default_factory=dict)
@@ -53,8 +117,7 @@ class DeployResponse(BaseModel):
 class ReplicaState(BaseModel):
     """Snapshot of a single Deployment replica.
 
-    Mirrors ``Deployment.get_state()``'s shape. Constructed via
-    ``ReplicaState(**deployment.get_state())``.
+    Mirrors ``Deployment.get_state()``; built via ``ReplicaState(**state)``.
     """
 
     model_key: MODEL_KEY
@@ -70,12 +133,6 @@ class ReplicaState(BaseModel):
 
 
 class ReplicaStates(BaseModel):
-    """Wrapper for zero-or-more replica states.
-
-    Return type for Controller.get_deployment and Controller.evict. Both
-    methods accept ``(model_key, replica_id=None)`` and surface the matching
-    replicas as a list — even when the caller scoped the request to a single
-    replica (in which case the list has 0 or 1 entries).
-    """
+    """Zero-or-more replica states; return type for get_deployment and evict."""
 
     replicas: List[ReplicaState] = Field(default_factory=list)

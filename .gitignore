@@ -1,14 +1,22 @@
-.config
+# Provisioned by setup.sh — large, regenerable, not version-controlled.
+artifacts/
+
+# Python
 __pycache__/
-creds.json
-*.nfs*
-ndif.egg-info
+*.pyc
 *.egg-info/
 build/
 dist/
-.env
 
-# dashboard frontend
+# The dashboard's built Vue SPA is shipped, not regenerated at deploy time: it's
+# packaged into the wheel and served by the dashboard backend, and the image has
+# no npm to build it. So it's committed, overriding the blanket dist/ rule above.
+!src/ndif/services/dashboard/frontend/dist/
+!src/ndif/services/dashboard/frontend/dist/**
+
+# Node dependencies for the dashboard's frontend dev loop (npm install). The
+# built dist/ above is what ships; these are not.
 node_modules/
-.vite/
-*.tsbuildinfo
+
+# Runtime sockets / scratch
+*.sock

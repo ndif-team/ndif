@@ -1,0 +1,91 @@
+# Install into the ndif env (Python 3.12):
+#   pip install -r requirements.txt
+#
+# transformers / numpy / accelerate are left unpinned, for nnsight to resolve, so
+# a server install can't contradict the client library it runs blocks for. torch
+# is installed by docker/Dockerfile instead — see the note below.
+#
+# The cost is that the image is only as reproducible as the day it was built.
+# What a build resolved to is recoverable after the fact:
+#   docker run --rm --entrypoint pip <image> freeze
+# The 2026-08-04 test image resolved torch 2.13.0, transformers 5.14.1,
+# numpy 2.5.1, accelerate 1.14.0.
+
+# The client library the server runs traced blocks for. Tracked to the 0.8
+# branch rather than a PyPI release: 0.8 has no tag yet, so setuptools-scm
+# derives 0.7.1.devN from v0.7.0 and the release on PyPI is the older line.
+# Installing from git is why the image needs `git` (see docker/Dockerfile).
+# For local development `just up` bind-mounts your working nnsight checkout over
+# this install (see the justfile / compose), so a code change on the client side
+# is picked up without a rebuild.
+# This tracks the branch tip, so every rebuild ships whatever 0.8 holds at
+# build time. That keeps the server on the client library it is developed
+# against while both move, and it costs reproducibility: two images built from
+# the same ndif commit can carry different nnsight code. The 2026-08-04 rebuild
+# moved 3 commits and touched intervention/serialization.py and
+# tracing/util.py — the serialization path the server depends on — with nothing
+# in this file to show it. Recover what a build actually resolved with
+#   docker run --rm --entrypoint pip <image> freeze | grep nnsight
+# and pin this line to that commit for anything that has to be reproducible.
+git+https://github.com/ndif-team/nnsight.git@0.8
+
+# The one exception to leaving transformers unpinned, and it is a floor, not a
+# pin. Before 5.15 tensor parallelism does not shard a tied LM head's weight
+# while still gathering its output, so any model with `tie_word_embeddings=True`
+# — Llama-3.2, Qwen2.5, most small checkpoints — serves logits `tp_size` times
+# too wide. Reproduced on this stack: a degree-4 Llama-3.2-3B returned width
+# 513024 for a 128256 vocabulary, with the argmax still correct, so nothing
+# short of checking the shape catches it. nnsight refuses to shard below this
+# version (nnsight.modeling.tp.MINIMUM_TRANSFORMERS); the floor is here so the
+# image never gets built into that state in the first place.
+transformers>=5.15.0
+
+# torch is NOT here — the right wheel depends on the host's CUDA driver, which is
+# not a property of this repo. docker/Dockerfile installs it from a build arg.
+ray[default]==2.55.1
+
+pydantic==2.13.4
+
+# The model actor applies PEFT adapters requested per-request via the model's
+# _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
+# dependency the server install must provide.
+peft==0.19.1
+cloudpickle==3.1.2
+click==8.1.8
+# The CLI layers ./.env (and an explicit --env-file) over the environment.
+python-dotenv==1.0.1
+# The CLI reads/writes models.yaml deployment configs (deploy -f / export).
+pyyaml==6.0.2
+# Request payloads arrive zstd-compressed (nnsight compresses by default); the
+# model actor needs this to decompress them.
+zstandard==0.25.0
+
+# API service
+fastapi==0.138.1
+uvicorn[standard]==0.49.0
+gunicorn==23.0.0
+python-multipart==0.0.32
+redis==8.0.1
+
+# Object store client (boto3/S3) — result blobs are staged there. boto3 speaks
+# S3 to both MinIO (dev) and AWS S3 (prod).
+boto3==1.35.49
+
+# Telemetry sinks (the `metrics` extra) — bundled in the image so the
+# compose-provisioned Loki + InfluxDB work out of the box. Both providers fail
+# open, so these are only exercised when NDIF_LOKI_URL / NDIF_INFLUX_URL are set.
+influxdb-client==1.49.0
+python-logging-loki==0.3.1
+
+# Postgres auth (the `postgres` extra) — async driver for API-key verification
+# against the user/keys DB. Only exercised when NDIF_POSTGRES_URL is set; the
+# API runs unauthenticated otherwise.
+asyncpg==0.30.0
+
+# Dashboard backend (the `dashboard` extra) — admin UI + schedule/monitor crons.
+# fastapi/uvicorn/python-multipart above are shared with the API; these are the
+# dashboard-only additions. Only exercised by `ndif start dashboard`.
+pydantic-settings==2.14.2
+itsdangerous==2.2.0
+bcrypt==5.0.0
+requests==2.34.2

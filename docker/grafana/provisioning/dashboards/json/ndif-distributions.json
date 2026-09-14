@@ -1,0 +1,510 @@
+{
+  "uid": "ndif-distributions",
+  "title": "NDIF \u2014 Latency Distributions (InfluxDB)",
+  "tags": [
+    "ndif",
+    "influxdb",
+    "metrics"
+  ],
+  "editable": true,
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "environment",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influxdb"
+        },
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"environment\")",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"environment\")",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "service",
+        "label": "service",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influxdb"
+        },
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"service\")",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"service\")",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "model_key",
+        "label": "model_key",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influxdb"
+        },
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"model_key\")",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"model_key\")",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "email",
+        "label": "email",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influxdb"
+        },
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"email\")",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"email\")",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0
+      },
+      {
+        "name": "api_key",
+        "label": "api_key",
+        "type": "query",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "influxdb"
+        },
+        "query": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"api_key\")",
+        "definition": "import \"influxdata/influxdb/schema\"\nschema.tagValues(bucket: \"metrics\", tag: \"api_key\")",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "ndif"
+      ],
+      "title": "NDIF",
+      "asDropdown": true,
+      "includeVars": false,
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "external link"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "heatmap",
+      "title": "Total request time \u2014 distribution over time",
+      "description": "Per-request end-to-end time (sum of all lifecycle phases), bucketed over time. Bright bands = where most requests land; high outliers show a stretching tail.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"status_time\" and (r._field == \"duration_ms\" or r._field == \"request_id\") and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> group(columns: [\"request_id\"])\n  |> reduce(\n      identity: {total: 0.0, _time: 1970-01-01T00:00:00Z},\n      fn: (r, accumulator) => ({\n        total: accumulator.total + r.duration_ms,\n        _time: r._time,\n      }),\n  )\n  |> group()\n  |> rename(columns: {total: \"_value\"})\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "yBuckets": {
+            "mode": "count",
+            "value": "20"
+          }
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "ms"
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "heatmap",
+      "title": "Queued time \u2014 distribution over time",
+      "description": "Time requests waited in the model queue.",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"status_time\" and r._field == \"duration_ms\" and r.status == \"QUEUED\" and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "yBuckets": {
+            "mode": "count",
+            "value": "20"
+          }
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "ms"
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "heatmap",
+      "title": "Execution time \u2014 distribution over time",
+      "description": "Pure model execution time (successful runs).",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"execution_time\" and r._field == \"exec_ms\" and r.status == \"completed\" and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "yBuckets": {
+            "mode": "count",
+            "value": "20"
+          }
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "ms"
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "heatmap",
+      "title": "Dispatched\u2192run time \u2014 distribution over time",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"status_time\" and r._field == \"duration_ms\" and r.status == \"DISPATCHED\" and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": true,
+        "calculation": {
+          "yBuckets": {
+            "mode": "count",
+            "value": "20"
+          }
+        },
+        "color": {
+          "mode": "scheme",
+          "scheme": "Turbo",
+          "steps": 64
+        },
+        "yAxis": {
+          "unit": "ms"
+        },
+        "cellGap": 1,
+        "tooltip": {
+          "show": true,
+          "yHistogram": true
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "histogram",
+      "title": "Total request time \u2014 histogram",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"status_time\" and (r._field == \"duration_ms\" or r._field == \"request_id\") and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_field\"], valueColumn: \"_value\")\n  |> group(columns: [\"request_id\"])\n  |> reduce(\n      identity: {total: 0.0, _time: 1970-01-01T00:00:00Z},\n      fn: (r, accumulator) => ({\n        total: accumulator.total + r.duration_ms,\n        _time: r._time,\n      }),\n  )\n  |> group()\n  |> rename(columns: {total: \"_value\"})\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "combine": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "histogram",
+      "title": "Queued time \u2014 histogram",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 18,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"status_time\" and r._field == \"duration_ms\" and r.status == \"QUEUED\" and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "combine": true
+      }
+    },
+    {
+      "id": 7,
+      "type": "histogram",
+      "title": "Execution time \u2014 histogram",
+      "description": "",
+      "datasource": {
+        "type": "influxdb",
+        "uid": "influxdb"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 18,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "influxdb"
+          },
+          "query": "from(bucket: \"metrics\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"execution_time\" and r._field == \"exec_ms\" and r.status == \"completed\" and r.model_key =~ /${model_key:regex}/ and r.service =~ /${service:regex}/ and r.environment =~ /${environment:regex}/ and (not exists r.api_key or r.api_key =~ /${api_key:regex}/) and (not exists r.email or r.email =~ /${email:regex}/))\n  |> keep(columns: [\"_time\", \"_value\"])",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "showLegend": false
+        },
+        "combine": true
+      }
+    }
+  ]
+}

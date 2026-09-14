@@ -1,0 +1,22 @@
+# Provisions the InfluxDB datasource so Grafana's Explore view can query the
+# NDIF metrics immediately. Loaded by Grafana at startup from
+# /etc/grafana/provisioning (mounted in docker-compose.yml).
+#
+# Uses Flux (InfluxDB 2.x). The org/token/bucket match the influxdb service's
+# DOCKER_INFLUXDB_INIT_* setup, so charts work out of the box against the
+# measurements written by ndif.common.metrics (request_size, execution_time,
+# gpu_mem, model_load_time, response_size, status_time).
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    type: influxdb
+    uid: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: ndif
+      defaultBucket: metrics
+    secureJsonData:
+      token: ndif-dev-token
