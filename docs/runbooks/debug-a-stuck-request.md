@@ -232,7 +232,7 @@ still printing means the block is running, not blocked. And the actor's own logs
 | Ingress queue wait | none | — | a request can sit in `queue` indefinitely if the dispatcher is down |
 | Per-model queue wait | none | — | unbounded; autoscaling is the only relief |
 | Waiting for a replica to be ready | none (`Replica.wait` polls forever) | — | the Processor stays `deploying` |
-| **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **3600 s** | `interrupt()`, then `Status.ERROR` "Your job exceeded the execution timeout of Ns." (`modeling/base.py:321-328`) |
+| **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **unset — no cap** (`controller.py:773-778`) | `interrupt()`, then `Status.ERROR` "Your job exceeded the execution timeout of Ns." (`modeling/base.py:321-328`) |
 | CLI deploy readiness | `wait_for_replica_ready` | none | blocks until the actor serves, or raises why it never will (a constructor that failed reaches the CLI as its own error) |
 | `ndif queue` / `ndif kill` | event round-trip | 5 s | `No response from the dispatcher` |
 

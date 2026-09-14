@@ -34,6 +34,7 @@ knowing which job a command belongs to is most of the battle:
 | `ndif deploy [CHECKPOINTS...]` | Place model replicas | Ray controller, Redis |
 | `ndif evict [CHECKPOINTS...]` | Remove model replicas | Ray controller, Redis |
 | `ndif restart CHECKPOINT` | Kill + await respawn of a model's replicas | Ray controller + actors |
+| `ndif scale CHECKPOINT` | Add replicas matching the ones already running (`--count`) | Ray controller |
 | `ndif status` | Deployments by level + cluster GPU resources | Ray controller |
 | `ndif export` | Dump HOT deployments as `models.yaml` | Ray controller |
 | `ndif queue` | Processor status, queue depth, in-flight requests | Redis → dispatcher |

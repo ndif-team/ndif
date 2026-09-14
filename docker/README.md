@@ -117,7 +117,7 @@ ones you are likely to want:
 | `NDIF_SERVICE` | `all` | Which services to run: `all`, or a space/comma list of `redis minio ray api dashboard`. `all dashboard` adds the admin UI. |
 | `HF_TOKEN` | unset | Hugging Face token for gated checkpoints (Llama, Gemma, ...). |
 | `HF_HOME` | `/root/.cache/huggingface` | Model weight cache. Mount your host cache there so weights persist. |
-| `NDIF_DEPLOYMENTS` | unset | Models to load at start, `|`-separated: `meta-llama/Llama-3.1-8B|openai-community/gpt2`. Otherwise models load on first request. |
+| `NDIF_DEPLOYMENTS` | unset | Model *keys* (the long `TransformersModel:{"repo_id": ...}` strings `ndif status --verbose` prints) to load pinned at start, `\|`-separated. Repo ids are not accepted here; to pre-load a checkpoint by name run `docker exec ndif ndif deploy <repo-id>` once the container is up. Otherwise models load on first request. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | The MinIO address **as the client sees it**. Set it to `http://<this-host>:9000` when clients run on other machines, or large results fail to download. |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Head-room added to a model's memory estimate when placing it. It also caps how much GPU memory a block may allocate beyond the weights; raise it if your interventions die with `CUDA out of memory ... MiB allowed`. |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Share of host RAM evicted models may occupy before being dropped. |

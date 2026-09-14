@@ -73,7 +73,7 @@ curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher recon
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
 | `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status` per-GPU `available_memory_bytes` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
-| `ndif deploy` errors with an HF `trust_remote_code` message | Every CLI deploy is `trusted=False` | the evaluator traceback in the error | Deploy from the dashboard, which hard-codes `trusted: True` |
+| `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are `trusted=False` unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>` (`cli/commands/deploy.py:23`), or the dashboard, which deploys trusted |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision is part of the key), or the replica is only WARM | `ndif status --show-cold` | Name the exact revision, or `--all` |
 | `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not | `curl localhost:8001/ping` | Restart `api` |
 | Code changes have no effect | The source is baked into the image; there is no bind mount | — | `just ta` (down → build → up) |
@@ -184,16 +184,17 @@ stuck further down the path — go to
 ```json
 {"ok": true, "hint": "Frontend dist not found. Either run `npm run build` in
  src/ndif/services/dashboard/frontend, or use `npm run dev` ...",
- "frontend_dist": "/app/src/ndif/services/dashboard/frontend/dist"}
+ "frontend_dist": "..."}
 ```
 
 The backend mounts the built Vue app only if `frontend_dist` exists and contains
 `index.html` (`dashboard/backend/app.py:57`); otherwise it registers that hint
-route instead. And **`dist/` is gitignored and untracked** (`.gitignore:9`), while
-`docker/Dockerfile` installs no Node toolchain — it `COPY src/ ./src/` and pip
-installs. So a fresh clone plus `just up` produces a dashboard backend whose API
-works and whose UI does not exist. It looks like a broken deploy; it is a missing
-build step.
+route. The build is **committed** — `.gitignore:14-15` re-includes
+`src/ndif/services/dashboard/frontend/dist/` and `pyproject.toml` packages it —
+so a fresh clone, the image and a `pip install` all carry it. Seeing the hint
+therefore means one of: `NDIF_DASHBOARD_FRONTEND_DIST` points somewhere else, a
+checkout where `dist/` was deleted, or an `npm run build` that failed halfway.
+Rebuild it with
 
 ```bash
 cd src/ndif/services/dashboard/frontend
@@ -202,14 +203,13 @@ cd - && just ta dashboard          # rebuild the image so dist/ is copied in
 ```
 
 For iterating on the UI, `npm run dev` runs Vite and proxies `/api` to the
-backend, so you don't rebuild the image at all. `NDIF_DASHBOARD_FRONTEND_DIST`
-overrides the location if you serve a build from elsewhere.
+backend, so you don't rebuild the image at all.
 
 Two neighbouring dashboard symptoms:
 
 | Symptom | Cause |
 |---|---|
-| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml:216`) makes `require_auth` return the configured username unchecked |
+| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml`) makes `require_auth` return the configured username unchecked |
 | The reconcile/monitor crons never run | `start.sh` wires cron only when `cron` is on PATH and `/etc/cron.d` is writable — true in the container, false outside it |
 
 ## Presigned URLs are unreachable from the client

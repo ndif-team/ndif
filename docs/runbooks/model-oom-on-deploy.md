@@ -98,8 +98,7 @@ deploy is itself unpinned — only if it is older than
 > **`NDIF_MODEL_CACHE_PERCENTAGE` is not a GPU knob.** It scales
 > `cpu_memory_bytes` — total host RAM — into the node's **WARM cache budget**
 > (`cluster.py:118-122`, `resources.py:5-7`). Lowering it frees nothing on the
-> GPU; it only makes the node hold fewer offloaded models. (The README's
-> description of this variable is wrong; the code is authoritative.)
+> GPU; it only makes the node hold fewer offloaded models.
 
 ## Reading the error
 
@@ -244,9 +243,11 @@ Both defaults live on the controller and are read at actor construction
 ndif status --verbose | jq '.cluster.evaluator | {padding_factor, padding_bias, dtype}'
 ```
 
-> **Note:** `DeploymentConfig.padding_factor` supports a per-model override. There
-> is no `ndif deploy` flag for it, but `load_model_config` reads a
-> `padding_factor:` key from `models.yaml` (`cli/lib/model_config.py`), so a YAML
+> **Note:** `DeploymentConfig.padding_factor` supports a per-model override:
+> `ndif deploy --padding-factor 0.3 <checkpoint>` (`cli/commands/deploy.py:33`,
+> alongside `--padding-bias`, `--size-bytes`, `--gpus`, `--max-tp`), and
+> `load_model_config` reads a `padding_factor:` key from `models.yaml`
+> (`cli/lib/model_config.py`), so a YAML
 > deploy can raise padding for just the models that need it. The dashboard's deploy
 > form (`dashboard/backend/routers/deploy.py:30`) and calling
 > `ndif.cli.lib.deploy.deploy` directly also set it.
