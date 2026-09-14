@@ -193,13 +193,15 @@ Read the first two if a behavior seems inexplicable:
 - **Inside the `ray` container, `localhost:6379` is Ray's GCS, not Redis.** The
   effective Ray head port is `6385` via the CLI; `start.sh`'s bare fallback of
   `6379` collides with Redis.
-- **A result comes back on the COMPLETED response by default, not through the
-  object store.** `NDIF_MAX_SOCKET_RESULT_BYTES` is unset out of the box, which
-  means no cap: the blob rides on `data` and `/subscribe` forwards it as a
-  binary frame. Redis is the real ceiling — a pubsub client over
-  `client-output-buffer-limit pubsub` (32 MB hard) is disconnected and the
-  response is lost — so set the cap on anything whose saves get large. Above the
-  cap, and for every non-blocking request, it falls back to a presigned URL.
+- **A result under 4 MiB comes back on the COMPLETED response, not through the
+  object store.** That is `NDIF_MAX_SOCKET_RESULT_BYTES`: the blob rides on
+  `data` and `/subscribe` forwards it as a binary frame. Above it, and for every
+  non-blocking request, it goes to a presigned URL. Redis is why there is a cap:
+  a pubsub subscriber past its output-buffer limit is disconnected and the
+  response is silently lost — measured on stock redis:7, a message arrives at
+  28 MiB and vanishes at 29 MiB. `0` removes the cap; don't, unless results
+  are known to be small. Anything reading `/subscribe` directly has to handle
+  binary frames.
 - **Presigned result URLs are signed with `NDIF_OBJECT_STORE_PUBLIC_URL`** and
   expire after an hour. Sign with an address the *client* can reach, or jobs
   complete and then fail to download.

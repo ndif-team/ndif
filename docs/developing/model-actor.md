@@ -254,7 +254,7 @@ drop `execution_ident`, `model.interleaver.cancel()`, and `synchronize` +
 
 `prepare_result` zstd-compresses (level 3) when `request.compress` is set and meters
 the size. The blob then takes one of two routes back, decided against
-`NDIF_MAX_SOCKET_RESULT_BYTES`: under the limit (and unset means no limit) it rides
+`NDIF_MAX_SOCKET_RESULT_BYTES`: under the limit (4 MiB unless set) it rides
 on the `COMPLETED` response's `data` field itself, published as `torch.save` output
 and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking
 request, which has no socket — `upload_bytes` `put`s it under `{request.id}.pt` and
