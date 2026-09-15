@@ -226,24 +226,6 @@ in order; `CLAUDE.md` routes "run the published image" to `docker/README.md`.
    locally) and can be pushed by hand with `docker push` after `docker login`
    if the workflow is not ready.
 
-## Fresh-user verification of the published artifacts
-
-After the release, two agents each ran the same scenario on a single-GPU
-machine with only the public artifacts, the `ndif` skills plugin and the
-internet — no access to a checkout: bring up a server, trace gpt2 remotely,
-bring back more than 5 MB, pre-deploy SmolLM2-135M, inspect queue and
-deployments, shut down cleanly.
-
-| Route | Steps | Time | What broke or misled |
-|---|---|---|---|
-| `docker run ndif/ndif` | 6/6 | ~8 min | Nothing blocked. Never opened the docs or the Hub page; the two skills carried it. The metrics provider streamed a connection-refused traceback into the client's first trace (fixed: #287). The `jq` model-key recipe did not run in the image. Hundreds of COLD models from the mounted HF cache, unexplained. No shutdown guidance. |
-| `pip install ndif`, no Docker | 5/6 + 1 partial | ~14 min | `pip install ndif` alone installed nnsight 0.7.0 (fixed: #288). Every route-3 command assumed a checkout. `NDIF_RAY_TEMP_DIR` under a long path killed Ray at start on the 107-byte socket limit while `ndif start` said ✓ and the skill said to wait 60–90 s (fixed: #288). `ndif stop` left Ray's daemons running (fixed: #288). conda-forge line stopped on the anaconda ToS prompt. |
-
-Everything the skills warned about that mattered — publish port 9000, plain
-assignments only inside a trace block, `/connected` as the readiness signal,
-`NDIF_DEPLOYMENTS` takes model keys — paid off in both runs. The skill
-corrections are in ndif-team/skills#11.
-
 ## The skills plugin
 
 See `plugins/ndif/` in the skills repo — four skills (`ndif-selfhost`,

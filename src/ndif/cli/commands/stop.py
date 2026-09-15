@@ -23,19 +23,10 @@ def stop(services):
             continue
         terminate_pid(pid)
         state.clear_pid(svc.name)
-        if svc.name == "ray":
-            _ray_stop()
+        if svc.name == "ray" and shutil.which("ray"):
+            # `ray start` daemonises: the GCS server, raylet and autoscaler
+            # monitor are not in the start.sh process group the PID file
+            # tracks, so killing that group alone leaves Ray itself running.
+            subprocess.run(["ray", "stop", "--force"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False)
         click.echo(f"  ■ {svc.name}: stopped (was pid {pid})")
-
-
-def _ray_stop() -> None:
-    """Take down the Ray daemons the head left behind.
-
-    ``ray start`` daemonises: the GCS server, raylet and autoscaler monitor
-    are not children of the ``start.sh`` process group the PID file tracks,
-    so killing that group stops the controller and leaves Ray itself running.
-    """
-    if shutil.which("ray") is None:
-        return
-    subprocess.run(["ray", "stop", "--force"], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, check=False)

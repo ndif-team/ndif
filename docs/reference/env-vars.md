@@ -121,7 +121,7 @@ Read by `src/ndif/services/ray/start.sh` on the ray service only — except
 | `NDIF_RAY_DASHBOARD_PORT` | `8265` | `ray/start.sh:64`, `cli/config.py:30` | Ray dashboard port, bound on `0.0.0.0` (`start.sh:63`). Head only. |
 | `NDIF_RAY_DASHBOARD_GRPC_PORT` | `52366` | `ray/start.sh:65` | Dashboard agent gRPC port. Head only. |
 | `NDIF_RAY_METRICS_PORT` | `8080` | `ray/start.sh:66` | Ray's `--metrics-export-port` — the Prometheus scrape endpoint, and what `prometheus.yml:20` targets as `ray:8080`. It is not a Serve HTTP port: nothing in `src/` imports `ray.serve`, the dependency is `ray[default]` (`pyproject.toml:46`), and model deployments are plain detached Ray actors. Head only. |
-| `NDIF_RAY_TEMP_DIR` | `/tmp/ray` | `ray/start.sh:19` | Ray session/temp dir. `start.sh` exits with an explicit error if it isn't writable, or if the path is longer than 40 characters — Ray's unix sockets live under `<dir>/session_<ts>_<pid>/sockets/` and AF_UNIX paths cap at 107 bytes. Head and worker. |
+| `NDIF_RAY_TEMP_DIR` | `/tmp/ray` | `ray/start.sh:19` | Ray session/temp dir. `start.sh:21-25` exits with an explicit error if it isn't writable. Head and worker. |
 | `NDIF_RAY_HEAD_WAIT_RETRIES` | `60` | `ray/start.sh:33` | Worker: TCP connect attempts before giving up on the head. |
 | `NDIF_RAY_HEAD_WAIT_INTERVAL_S` | `2` | `ray/start.sh:34` | Worker: seconds between those attempts. Defaults give a two-minute boot window. |
 

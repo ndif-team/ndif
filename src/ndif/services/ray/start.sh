@@ -34,15 +34,6 @@ if [ ! -w "$NDIF_RAY_TEMP_DIR" ]; then
     echo "Set NDIF_RAY_TEMP_DIR to a writable location." >&2
     exit 1
 fi
-# Ray puts unix sockets under <temp>/session_<timestamp>_<pid>/sockets/, and
-# AF_UNIX paths cannot exceed 107 bytes; the session part alone is ~64. A long
-# temp dir makes `ray start` die at once with "validate_socket_filename
-# failed", which is easy to mistake for a slow boot. Refuse it up front.
-if [ "${#NDIF_RAY_TEMP_DIR}" -gt 40 ]; then
-    echo "ERROR: NDIF_RAY_TEMP_DIR is ${#NDIF_RAY_TEMP_DIR} characters; Ray's socket paths" >&2
-    echo "under it would exceed the 107-byte AF_UNIX limit. Use a short path, e.g. /tmp/ndif-ray." >&2
-    exit 1
-fi
 
 HEAD_ADDRESS="${NDIF_RAY_HEAD_ADDRESS:-}"
 
