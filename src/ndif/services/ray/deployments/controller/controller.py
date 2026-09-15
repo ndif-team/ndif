@@ -629,6 +629,10 @@ class _ControllerActor:
                     "n_params": entry.n_params,
                     "size_bytes": deployment.size_bytes,
                     "actor_class": actor_class_repr,
+                    # How many GPUs this replica spans (the deploy-time `gpus`
+                    # count), so an export can reproduce the placement; the
+                    # per-GPU byte map is under cluster.nodes[].deployments.
+                    "gpus": len(deployment.gpus) if deployment.gpus else None,
                 }
 
                 if (

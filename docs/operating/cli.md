@@ -506,8 +506,12 @@ Active Deployments:
 `ndif export (-f FILE | --stdout) [--ray-address ADDR]` — collapses the current HOT
 per-replica list into one entry per model key, counts replicas, and writes a
 `models.yaml` you can feed straight back to `ndif deploy -f`. Exactly one of `-f` /
-`--stdout` is required. An entry with no revision, not pinned, one replica and no actor
-class is written in the short string form:
+`--stdout` is required. An entry with no revision, not pinned, one replica, one GPU
+and no actor class is written in the short string form. A model placed across several
+GPUs keeps its `gpus:` count, so re-applying the file does not let the placer
+re-derive a smaller count from each card's total memory; `padding_factor` is the one
+deploy-time setting that does not round-trip (it lives on the config, not the
+deployment).
 
 ```console
 $ ndif export --stdout
@@ -516,6 +520,9 @@ models:
 - checkpoint: meta-llama/Llama-3.1-8B
   pinned: true
   replicas: 2
+- checkpoint: google/gemma-3-27b-it
+  pinned: true
+  gpus: 2
 ```
 
 ## Queue operations
