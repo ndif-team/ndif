@@ -58,10 +58,6 @@ larger goes to an object store and the client gets a presigned URL.
   protocol, the split interleaver, and one proxy per worker. The densest page in
   the tree; the subsystem also has its own
   `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
-- [Untrusted code on a tensor-parallel model](sandboxed-tensor-parallel-proposal.md)
-  — the design record behind the sandboxed TP actor: why one runner serves a whole
-  rank group, and why the barrier is shaped as it is. Shipped; read it for the
-  argument, not the API.
 
 ### Shared foundations
 - [Providers](providers.md) — the provider pattern and each backing service, with
@@ -95,9 +91,6 @@ larger goes to an object store and the client gets a presigned URL.
   server, and how to force the untrusted path that local dev never exercises. No
   workflow runs any of it.
 - [Contributing](contributing.md) — the conventions this codebase actually follows.
-- [Release audit, September 2026](release-audit-2026-09.md) — what the 0.1.0
-  pass found across the three self-host routes, the image and the docs; what
-  was fixed and what is still open.
 
 ## Two things that catch everyone
 
@@ -111,19 +104,6 @@ identical results — that invariant is why the sandbox is shaped as it is, and
 *after* forking — `post_fork` for gunicorn workers, `spawn` for the dispatcher. A
 new entry point that imports them too early gets neither console formatting nor
 telemetry, silently.
-
-## Design records
-
-Both pages are named "proposal" and both have shipped. They are kept for the
-reasoning, which is not written down in the code; neither describes current
-behaviour, so read the subsystem page first and these for the *why*.
-
-- [One call to describe a checkpoint](checkpoint-description-proposal.md) — why
-  `ModelEvaluator` asks nnsight one question about a checkpoint instead of four,
-  and why `max_tp_size` deliberately isn't one of them.
-- [Untrusted code on a tensor-parallel model](sandboxed-tensor-parallel-proposal.md)
-  — one runner holding one set of workers, talking to every rank over the sandbox
-  protocol unchanged.
 
 ## Related
 

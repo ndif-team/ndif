@@ -288,6 +288,4 @@ pytest tests/      # the live-server suite (skips unless localhost:8001 is up)
 
 CI publishes but does not test: `.github/workflows/build_images.yml` (ECR on push to `main`), `publish_docker.yml` (Docker Hub on a `v*` tag), `publish.yml` (PyPI on a GitHub release). No workflow runs `pytest`; the only suite requires a running stack. See
 [docs/developing/testing.md](docs/developing/testing.md) and
-[docs/developing/contributing.md](docs/developing/contributing.md). What the
-0.1.0 release pass found, fixed and left open:
-[docs/developing/release-audit-2026-09.md](docs/developing/release-audit-2026-09.md).
+[docs/developing/contributing.md](docs/developing/contributing.md).
