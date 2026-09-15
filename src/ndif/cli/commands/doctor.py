@@ -59,8 +59,8 @@ def _check_binaries() -> int:
     failures = 0
     for binary, hint in [
         ("ray", "pip install 'ray[default]'"),
-        ("redis-server", "conda install -c conda-forge redis-server (or your package manager)"),
-        ("minio", "conda install -c conda-forge minio-server (MinIO no longer publishes standalone binaries)"),
+        ("redis-server", "conda install --override-channels -c conda-forge redis-server (or your package manager)"),
+        ("minio", "conda install --override-channels -c conda-forge minio-server (MinIO no longer publishes standalone binaries)"),
     ]:
         path = shutil.which(binary)
         if path:

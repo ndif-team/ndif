@@ -202,7 +202,7 @@ Binaries
   ✓ ray → /usr/local/bin/ray
   ✓ redis-server → /usr/bin/redis-server
   ✗ minio not on PATH
-      → conda install -c conda-forge minio-server (MinIO no longer publishes standalone binaries)
+      → conda install --override-channels -c conda-forge minio-server (MinIO no longer publishes standalone binaries)
 Compute
   ✓ 2× GPU (NVIDIA A100-SXM4-80GB, 81920 MiB)
   ✓ torch sees 2 GPU(s) (driver CUDA 12.8, torch CUDA 12.6)

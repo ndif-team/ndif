@@ -17,8 +17,10 @@ user-submitted intervention code — hooks, captures, edits, generation — agai
 large models on a shared GPU cluster. Researchers point nnsight at an NDIF
 endpoint and run experiments on models too big to fit on their own hardware.
 
-Untrusted intervention code runs in a separate process from the model, one fresh
-process per request. That isolation is process-based and still being hardened —
+With no authentication configured — the default — every request is *trusted*
+and its code runs inside the model process. Only when auth is on and a key is
+not granted `trusted` does the code run in a separate process, one fresh
+process per request; that isolation is process-based and still being hardened —
 see [docs/concepts/sandbox-execution.md](docs/concepts/sandbox-execution.md).
 
 This repo is the server. For the client, see
@@ -73,19 +75,24 @@ just down          # tear it down
 
 ### 3. From source — the `ndif` CLI, no Docker
 
+No checkout needed — the package is on PyPI:
+
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu126   # first: requirements.txt would otherwise pull PyPI's default (CUDA 13) wheel
-pip install -r requirements.txt
-pip install ".[api,ray,metrics,postgres,dashboard]"
+pip install torch --index-url https://download.pytorch.org/whl/cu126   # first, or pip picks PyPI's default (CUDA 13) wheel
+pip install "ndif[api,ray]"                                              # add metrics,postgres,dashboard as you need them
+conda install --override-channels -c conda-forge redis-server minio-server
 ndif doctor        # versions, binaries, GPU, connectivity
 ndif start         # redis, minio, ray, api — detached
+ndif stop          # ...and back down, Ray daemons included
 ```
 
-`ndif doctor` also wants `redis-server` and `minio` on `PATH`:
-`conda install -c conda-forge redis-server minio-server` provides both (MinIO no
-longer publishes standalone binaries; the other option is copying the binary out
-of the `quay.io/minio/minio` image — see
-[docs/operating/quickstart.md](docs/operating/quickstart.md)).
+From a checkout, `pip install -r requirements.txt` first gives you the pinned
+dependency set the image is built from, then `pip install ".[api,ray]"`.
+`redis-server` and `minio` come from conda-forge because MinIO no longer
+publishes standalone binaries (`--override-channels` sidesteps the anaconda
+terms-of-service prompt a stock miniconda raises); the other option is copying
+the binary out of the `quay.io/minio/minio` image — see
+[docs/operating/quickstart.md](docs/operating/quickstart.md).
 
 ### Then run a remote trace
 

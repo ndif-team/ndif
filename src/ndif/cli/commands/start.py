@@ -45,6 +45,13 @@ def _spawn(svc: Service, env: dict, state: State) -> None:
         raise click.ClickException(f"{svc.name}: cannot run {command[0]!r}: {e}")
     finally:
         log.close()
+    # A service that dies at once (a port in use, a bad config value) would
+    # otherwise get a ✓ and a PID file, and the operator would sit watching
+    # /connected say "reconnecting". Give it a moment.
+    time.sleep(2.0)
+    if proc.poll() is not None:
+        click.echo(f"  ✗ {svc.name}: exited immediately ({proc.returncode}) — see {log_path}")
+        return
     state.write_pid(svc.name, proc.pid)
     click.echo(f"  ✓ {svc.name}: started (pid {proc.pid}) → {log_path}")
 

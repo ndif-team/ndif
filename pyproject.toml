@@ -26,7 +26,10 @@ classifiers = [
 # up` bind-mounts it over the image's copy. torch, transformers, etc. are pulled
 # in transitively by nnsight and the ray extra.
 dependencies = [
-    "nnsight",
+    # The 0.8 line, as a pre-release: a bare "nnsight" resolves to the 0.7
+    # stable on PyPI and the server then cannot read 0.8 clients' payloads.
+    # requirements.txt carries the same specifier for the pinned install.
+    "nnsight>=0.8.0rc1,<0.9",
     "pydantic",
     "redis",
     "click",
@@ -49,7 +52,9 @@ api = [
 ]
 ray = [
     "ray[default]",
-    "transformers",
+    # Floor, not pin: below 5.15 tensor parallelism serves tied-embedding
+    # logits tp_size times too wide (see requirements.txt).
+    "transformers>=5.15.0",
     "accelerate",
     "numpy",
     # The model actor decompresses incoming request payloads (nnsight compresses

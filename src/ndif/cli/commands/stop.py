@@ -1,5 +1,8 @@
 """``ndif stop`` — tear NDIF services down."""
 
+import shutil
+import subprocess
+
 import click
 
 from ..service import SERVICES, resolve_targets
@@ -20,4 +23,10 @@ def stop(services):
             continue
         terminate_pid(pid)
         state.clear_pid(svc.name)
-        click.echo(f"  ✗ {svc.name}: stopped (was pid {pid})")
+        if svc.name == "ray" and shutil.which("ray"):
+            # `ray start` daemonises: the GCS server, raylet and autoscaler
+            # monitor are not in the start.sh process group the PID file
+            # tracks, so killing that group alone leaves Ray itself running.
+            subprocess.run(["ray", "stop", "--force"], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False)
+        click.echo(f"  ■ {svc.name}: stopped (was pid {pid})")
