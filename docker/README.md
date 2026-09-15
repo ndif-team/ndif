@@ -104,7 +104,7 @@ stack:
 | `dashboard` | Admin web UI: deploy / evict / status / schedules. Opt-in, see below | 8081 |
 
 Publish only what you use. `8001` is the one port a client needs; `9000` is
-needed as well for results over 4 MB (they come back as a presigned MinIO
+needed as well for results over 20 MB (they come back as a presigned MinIO
 URL the client downloads); `8265` if you want the Ray dashboard.
 
 ## Configuration

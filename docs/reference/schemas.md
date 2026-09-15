@@ -223,7 +223,7 @@ called server-side.
 **Result blobs above the socket cap are referenced, not embedded.** `execute`
 `torch.save`s the `nnsight.save()`-marked values (`base.py:501`) and `run`
 optionally zstd-compresses them (`base.py:663`). A blob at or under
-`NDIF_MAX_SOCKET_RESULT_BYTES` (4 MiB) rides back on the COMPLETED response
+`NDIF_MAX_SOCKET_RESULT_BYTES` (20 MiB) rides back on the COMPLETED response
 itself as a pickled frame; anything larger — and every result for a non-blocking
 request, which has no live socket — goes through `upload_bytes`
 (`modeling/base.py:688`), which `put`s it under the key `{request.id}.pt` and

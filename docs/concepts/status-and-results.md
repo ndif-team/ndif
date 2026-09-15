@@ -127,7 +127,7 @@ few kilobytes to many gigabytes of tensors. Both routes start the same way:
 
 Then the actor picks a route by size, against `NDIF_MAX_SOCKET_RESULT_BYTES`:
 
-**On the response.** Under the limit — 4 MiB unless set, which covers most
+**On the response.** Under the limit — 20 MiB unless set, which covers most
 traces — the bytes ride on the `COMPLETED` response as `data`. That response is
 published as `torch.save` output rather than a JSON dump, and `/subscribe`
 forwards it as a binary frame. The client loads it directly, with no second
@@ -146,8 +146,10 @@ on the blocking path — pushes the values back into the caller's frame so
 Redis is what bounds the first route: pub/sub is a fan-out bus, and a subscriber
 whose output buffer exceeds `client-output-buffer-limit pubsub` is disconnected,
 taking the response with it. On stock redis:7 a single message is delivered at
-28 MiB and lost at 29 MiB, and the 8 MiB soft limit catches a subscriber that is
-slow to drain. The 4 MiB default stays under both. `0` removes the cap.
+28 MiB and lost at 29 MiB; the 8 MiB soft limit only bites a subscriber that
+leaves a message undrained for a full minute, which the dispatcher never does
+unless the API itself is down. The 20 MiB default stays under the hard limit
+with room for framing. `0` removes the cap.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually

@@ -57,7 +57,7 @@ still reports healthy. `ray:connected` has no TTL, so `/ping`, `/connected`,
 **`COMPLETED` followed by a failed download** is almost always the presigned-URL
 host mismatch: the blob is signed with `NDIF_OBJECT_STORE_PUBLIC_URL`, and if that
 isn't an address the client can reach, the job succeeded and the download can't.
-(A result under `NDIF_MAX_SOCKET_RESULT_BYTES`, 4 MiB, rides back on the response
+(A result under `NDIF_MAX_SOCKET_RESULT_BYTES`, 20 MiB, rides back on the response
 itself and never touches a URL — so this only bites above that, and always for a
 non-blocking job.)
 

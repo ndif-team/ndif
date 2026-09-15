@@ -45,10 +45,13 @@ def _boolish(value: str) -> bool:
 # gap being the protocol framing the buffer counts. The soft limit only bites
 # when the API is slow to drain, which is when a large result is most likely.
 #
-# 4 MiB is half the soft limit, so no single result can trip either however
-# slowly it is drained. Little is given up above it: what the response route
-# saves is a fixed round trip, a small share of any transfer that size.
-DEFAULT_MAX_SOCKET_RESULT_BYTES = 4 * 1024 * 1024
+# 20 MiB sits well under the 28 MiB that actually gets through. The soft limit
+# only matters if the API leaves the message undrained for a full minute, and
+# the dispatcher drains a channel in milliseconds; a stall that long means the
+# API is down, at which point no result is getting back either way. Above the
+# cap the object-store route costs a fixed round trip, a small share of any
+# transfer that size.
+DEFAULT_MAX_SOCKET_RESULT_BYTES = 20 * 1024 * 1024
 
 
 def _result_cap(value: str) -> int:

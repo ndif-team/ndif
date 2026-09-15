@@ -213,7 +213,7 @@ Read the first two if a behavior seems inexplicable:
 - **Inside the `ray` container, `localhost:6379` is Ray's GCS, not Redis.** The
   effective Ray head port is `6385` via the CLI; `start.sh`'s bare fallback of
   `6379` collides with Redis.
-- **A result under 4 MiB comes back on the COMPLETED response, not through the
+- **A result under 20 MiB comes back on the COMPLETED response, not through the
   object store.** That is `NDIF_MAX_SOCKET_RESULT_BYTES`: the blob rides on
   `data` and `/subscribe` forwards it as a binary frame. Above it, and for every
   non-blocking request, it goes to a presigned URL. Redis is why there is a cap:

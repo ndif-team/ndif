@@ -185,7 +185,7 @@ Both paths produce the same bytes and both feed the same upload step. See
 compresses the `torch.save` output to match `request.compress` and meters it, so
 the blob is byte-identical whichever route it takes. Then `run` picks
 (`base.py:423`): if the request has a `session_id` and the blob is at or under
-`NDIF_MAX_SOCKET_RESULT_BYTES` (4 MiB, `0` = no cap), it rides back *on the
+`NDIF_MAX_SOCKET_RESULT_BYTES` (20 MiB, `0` = no cap), it rides back *on the
 response*; otherwise `upload_bytes` (`base.py:688`) PUTs it at `{request.id}.pt`
 and presigns a GET valid for an hour. The `COMPLETED` response carries either
 the bytes or the url in `data`, with `pickled` set when it is the bytes

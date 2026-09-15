@@ -187,7 +187,7 @@ URL on the COMPLETED response.
 | `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients. `_make_client` passes them only when both are set; both empty → boto3's own credential chain (on AWS, the host's IAM role) |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket for result blobs and non-blocking responses |
 | `NDIF_OBJECT_STORE_REGION` / `_VERIFY` | `us-east-1` / `true` | Region is explicit so presigning never round-trips to discover it; set verify false for self-signed MinIO over https |
-| `NDIF_MAX_SOCKET_RESULT_BYTES` | `4194304` (4 MiB) | The size at which a result stops riding on the COMPLETED response and is staged here instead. `0` removes the cap; an unparseable value keeps the default (`objectstore.py:54`) |
+| `NDIF_MAX_SOCKET_RESULT_BYTES` | `20971520` (20 MiB) | The size at which a result stops riding on the COMPLETED response and is staged here instead. `0` removes the cap; an unparseable value keeps the default (`objectstore.py:54`) |
 
 Two clients, because upload and download happen from different networks
 (`ObjectStoreProvider.connect`, `objectstore.py:157`). A presigned URL is a local
