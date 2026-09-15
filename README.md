@@ -30,6 +30,21 @@ development.
 
 ---
 
+## Installation
+
+The server is published two ways; both carry the same code.
+
+```bash
+docker pull ndif/ndif                 # the whole stack in one image (needs the NVIDIA container toolkit)
+pip install "ndif[api,ray]"           # the package and the ndif CLI, for running it as host processes
+```
+
+`pip install ndif` alone gives you the CLI and the client-facing pieces; the
+`api` and `ray` extras add the two services. torch is not a dependency of the
+package because the right wheel depends on your CUDA driver — install it first
+from the matching PyTorch index (`cu126` for any 12.x driver). Both routes, with
+the checks that prove they work, are below.
+
 ## Quick start
 
 Three ways to stand up your own NDIF. All three need an NVIDIA GPU and a CUDA
