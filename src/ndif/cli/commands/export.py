@@ -60,6 +60,8 @@ def export(output_file, to_stdout, ray_address):
                 extras.append("pinned")
             if dep.get("replicas", 1) != 1:
                 extras.append(f"replicas: {dep['replicas']}")
+            if dep.get("gpus") and int(dep["gpus"]) > 1:
+                extras.append(f"gpus: {dep['gpus']}")
             if dep.get("revision"):
                 extras.append(f"rev: {dep['revision']}")
             suffix = f" ({', '.join(extras)})" if extras else ""
@@ -95,6 +97,7 @@ def _aggregate_by_model_key(replicas: list[dict]) -> list[dict]:
                 "trusted": bool(r.get("trusted", False)),
                 "dtype": r.get("dtype"),
                 "execution_timeout_seconds": r.get("execution_timeout_seconds"),
+                "gpus": r.get("gpus"),
             }
             counts[mk] = 0
         counts[mk] += 1

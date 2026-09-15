@@ -138,11 +138,16 @@ def build_models_list(deployments: list[dict]) -> list:
         execution_timeout_seconds = dep.get("execution_timeout_seconds")
         envoy_class = dep.get("envoy_class")
         model_key = dep.get("model_key")
+        # A model placed across several GPUs must come back the same way: the
+        # placer would otherwise re-derive a count from each card's *total*
+        # memory and can put a two-card model on one card that cannot hold it.
+        gpus = dep.get("gpus")
+        gpus = int(gpus) if gpus and int(gpus) > 1 else None
 
         extras = (
             revision or pinned or replicas != 1 or actor_class or trusted or dtype
             or padding_factor is not None or execution_timeout_seconds is not None
-            or envoy_class or model_key
+            or envoy_class or model_key or gpus
         )
         if not extras:
             models.append(repo_id)
@@ -160,6 +165,8 @@ def build_models_list(deployments: list[dict]) -> list:
                 entry["dtype"] = dtype
             if padding_factor is not None:
                 entry["padding_factor"] = padding_factor
+            if gpus:
+                entry["gpus"] = gpus
             if execution_timeout_seconds is not None:
                 entry["execution_timeout_seconds"] = execution_timeout_seconds
             if envoy_class:
