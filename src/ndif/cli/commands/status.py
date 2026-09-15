@@ -130,7 +130,10 @@ def _render_resources(nodes: dict) -> None:
     click.echo(f"  Nodes: {len(nodes)}")
     click.echo(f"  Total GPUs: {total_gpus}")
     if total_mem:
-        click.echo(f"  GPU Memory: {free_mem / 1024**3:.1f} / {total_mem / 1024**3:.1f} GB free")
+        # The controller's ledger: each card's total minus what NDIF itself has
+        # reserved. It never reads nvidia-smi, so on a shared card another
+        # tenant's usage is invisible here.
+        click.echo(f"  GPU Memory: {free_mem / 1024**3:.1f} / {total_mem / 1024**3:.1f} GB unreserved by NDIF (other processes on the cards are not counted)")
 
 
 def _print_deployment(dep: dict, indent: int = 4) -> None:

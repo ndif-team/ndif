@@ -67,7 +67,7 @@ def evict(checkpoints, revision, replica, evict_all, ray_address, redis_url):
                 total_gpus = sum(rec["freed_gpus"] for r in evicted for rec in r["replicas"])
                 total_mem = sum(rec["freed_memory_gbs"] for r in evicted for rec in r["replicas"])
                 click.echo(f"✓ Evicted {total_replicas} replica(s) across {len(evicted)} model(s)")
-                click.echo(f"  Total GPUs freed: {total_gpus}")
+                click.echo(f"  Total GPU slots freed: {total_gpus} (one per replica per card)")
                 click.echo(f"  Total memory freed: {round(total_mem, 4)} GB")
             if not_found:
                 click.echo(f"✗ {len(not_found)} model(s) had no replicas to evict")

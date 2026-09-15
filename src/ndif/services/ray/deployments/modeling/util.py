@@ -60,7 +60,13 @@ def get_downloaded_models() -> list[str]:
         from huggingface_hub import scan_cache_dir
 
         info = scan_cache_dir()
-        return [repo.repo_id for repo in info.repos if _downloaded(repo)]
+        # Models only: a shared cache also holds datasets and spaces, which
+        # would otherwise show up as COLD "deployments" nothing can deploy.
+        return [
+            repo.repo_id
+            for repo in info.repos
+            if repo.repo_type == "model" and _downloaded(repo)
+        ]
     except Exception:
         logger.debug("Could not scan the HuggingFace cache", exc_info=True)
         return []

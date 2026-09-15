@@ -181,6 +181,7 @@ Connectivity:
 | Environment | Python ≥ 3.12; `ndif` and `nnsight` installed; then `torch` (with its CUDA build), `transformers` and `ray`, read through `version.collect()` (`doctor.py:46-52`) | Python/ndif/nnsight yes; torch/transformers/ray **no** — they are reported, not required |
 | Binaries | `ray`, `redis-server`, `minio` on `PATH` (`doctor.py:56-69`) | yes |
 | Compute | `nvidia-smi` returns ≥1 GPU, **and** `torch.cuda.is_available()` is true. The second catches a torch wheel built for a newer CUDA line than the driver supports (a `-cu130` image on a 12.x driver): nvidia-smi lists the card, torch quietly sees nothing, and Ray would advertise `cuda_memory_bytes: 0` | yes |
+| Disk | the filesystem holding `NDIF_RAY_TEMP_DIR` (default `/tmp/ray`) is under 90 % full — Ray's raylet stops scheduling at 95 %, and the only symptom is a server that never runs anything | yes |
 | Connectivity | redis / minio / api / ray at their `NDIF_*` URLs | **no** |
 
 Connectivity is informational by design — a stopped service is a normal answer
@@ -451,7 +452,7 @@ Evicting from 1 model(s)...
       - [a1b2c] 1 GPU(s), 0.2478 GB
 ```
 
-The trailing "Evicted N replica(s) across M model(s) / Total GPUs freed" summary only
+The trailing "Evicted N replica(s) across M model(s) / Total GPU slots freed" summary only
 prints for multi-model or multi-replica evictions.
 
 > **Gotcha:** `pinned` protects a deployment from the controller's *automatic* eviction
@@ -489,7 +490,7 @@ $ ndif status
 NDIF Cluster Status
 ============================================================
 Cluster Resources:
-  Nodes: 1 | Total GPUs: 2 | GPU Memory: 61.3 / 79.1 GB free
+  Nodes: 1 | Total GPUs: 2 | GPU Memory: 61.3 / 79.1 GB unreserved by NDIF (other processes on the cards are not counted)
 
 Active Deployments:
   🔥 HOT (1)

@@ -6,6 +6,7 @@ anything — a service being down is reported, not treated as a failure.
 """
 
 import importlib.metadata
+from pathlib import Path
 import platform
 import re
 import shutil
@@ -120,6 +121,30 @@ def _check_gpu() -> int:
     return 1
 
 
+def _check_ray_temp_dir() -> int:
+    """Ray refuses to schedule work once the filesystem holding its temp dir
+    passes 95 % full (the raylet's file_system_monitor). Warn well before that:
+    the server would come up and then never run anything, with the only clue
+    a raylet log line."""
+    path = Path(config.get("NDIF_RAY_TEMP_DIR") or "/tmp/ray")
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        usage = shutil.disk_usage(probe)
+    except OSError as e:
+        _bad(f"cannot stat the filesystem holding {path}: {e}")
+        return 1
+    pct = 100 * usage.used / usage.total if usage.total else 0
+    free_gb = usage.free / 1024**3
+    if pct >= 90:
+        _bad(f"Ray temp dir {path}: filesystem {pct:.0f}% full ({free_gb:.0f} GB free)",
+             "Ray stops scheduling at 95%; set NDIF_RAY_TEMP_DIR to a filesystem with room")
+        return 1
+    _ok(f"Ray temp dir {path}: filesystem {pct:.0f}% full ({free_gb:.0f} GB free)")
+    return 0
+
+
 def _report_connectivity() -> None:
     """Reachability is informational — a stopped service is not a failure."""
     for name, var, fn in [
@@ -148,6 +173,9 @@ def doctor():
 
     click.echo("\nCompute")
     failures += _check_gpu()
+
+    click.echo("\nDisk")
+    failures += _check_ray_temp_dir()
 
     click.echo("\nConnectivity")
     _report_connectivity()
