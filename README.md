@@ -288,6 +288,20 @@ that provider is *off* until you set its URL.
 | `NDIF_DASHBOARD_MONITOR_CRON` | `*/10 * * * *` | Monitor cron schedule. |
 | `NDIF_DASHBOARD_RECONCILE_CRON` | `*/2 * * * *` | Reconcile cron schedule. |
 
+## Using NDIF from an LLM agent
+
+Give an agent up-to-date knowledge of running and operating NDIF one of these
+ways:
+
+- **Skills** — in Claude Code: `/plugin marketplace add https://github.com/ndif-team/skills.git`
+  then `/plugin install ndif@ndif-team` (the `nnsight` plugin from the same
+  marketplace covers the client side). In OpenAI Codex:
+  `skill-installer install https://github.com/ndif-team/skills.git`.
+- **Context7 MCP** — add `use context7` to prompts, or point your MCP client at
+  `https://mcp.context7.com/mcp` (see [Context7](https://github.com/upstash/context7)).
+- **Docs in context** — hand the agent [CLAUDE.md](./CLAUDE.md), which routes by
+  task into [docs/](./docs/); every page there cites the source it describes.
+
 ## Contributing
 
 PRs welcome. Please read the [Code of Conduct](CODE_OF_CONDUCT.md).
