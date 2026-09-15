@@ -39,8 +39,10 @@ docker pull ndif/ndif                 # the whole stack in one image (needs the 
 pip install "ndif[api,ray]"           # the package and the ndif CLI, for running it as host processes
 ```
 
-`pip install ndif` alone gives you the CLI and the client-facing pieces; the
-`api` and `ray` extras add the two services. torch is not a dependency of the
+A bare `pip install ndif` is only the package and the `ndif` CLI — enough for
+`ndif doctor`, `version`, `queue` and `kill`, not for running a server or
+talking to one (`deploy`, `status`, `evict` need the Ray client). The `api` and
+`ray` extras add the two services and that client. torch is not a dependency of the
 package because the right wheel depends on your CUDA driver — install it first
 from the matching PyTorch index (`cu126` for any 12.x driver). Both routes, with
 the checks that prove they work, are below.
