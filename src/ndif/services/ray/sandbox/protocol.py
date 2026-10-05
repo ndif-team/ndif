@@ -26,6 +26,12 @@ SWAP / SKIP, ``rest`` carries the swap value for SWAP/SKIP, ``pin`` is the worke
 ``tracer.iter`` pointer (or None); ``None`` instead of a park means the worker
 finished. The host tags/matches the occurrence, so parks cross untagged.
 
+A ``tracer.barrier()`` arrival is a park too: BARRIER with ``location`` the
+barrier's identity (``barrier:<id>``) and the count it was built with riding in
+the ``rest`` slot, no pin. Every arrival crosses — the host counts them and
+releases the round (``driver.barrier_arrival``), the runner never does — so the
+host always knows where a released worker parked next (#294).
+
 Message catalog (the event name is the first element):
 
 host -> runner
@@ -38,15 +44,20 @@ host -> runner
                               to the runner's meta model so its tree matches the
                               host's (a PEFT adapter reshapes both)
   ("RESUME", id, args, pin)   switch worker ``id`` in with ``args`` (a read's value,
-                              or empty for a swap); ``pin`` pushes the host's pin so
-                              tracer.iter relaxation stays in step — or ``KEEP_PIN``
-                              when answering a control park (SOURCE/CALL/CACHE),
-                              which carried no pin, so the host has nothing current
+                              or empty for a swap or a barrier release); ``pin``
+                              pushes the host's pin so tracer.iter relaxation stays
+                              in step — or ``KEEP_PIN`` when answering a control
+                              park (SOURCE/CALL/CACHE) or a BARRIER park, which
+                              carried no pin, so the host has nothing current
                               to push. Reply: PARK
-  ("THROW", id, requester, is_iter)
+  ("THROW", id, requester, kind)
                               worker ``id`` is still parked on ``requester`` the
-                              model never reached; throw OutOfOrderError into it
-                              (warn instead when ``is_iter``). No reply
+                              model never reached; ``kind`` is the host's
+                              classification — "OUT_OF_ORDER" (throw
+                              OutOfOrderError into it), "ITER" (an open-ended
+                              tracer.iter outran the model: unwind and warn), or
+                              "BARRIER" (the barrier never released: throw the
+                              base ValueError). No reply
   ("DONE", result)            the forward pass returned ``result``; ends the pump
 
 runner -> host

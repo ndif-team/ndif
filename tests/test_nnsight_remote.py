@@ -562,6 +562,71 @@ class TestRemoteBatching:
         assert out.shape[0] == 2
 
 
+class TestRemoteBarrier:
+    """`tracer.barrier(n)` sequences invokes server-side. The sandbox path used to
+    lose the released invoke entirely (#294): the job COMPLETED, the second
+    invoke's saves silently never existed, and the only signal was a loop
+    warning. Run these under `-p conftest_untrusted` too."""
+
+    P1 = "Hello world"
+    P2 = "Goodbye world"
+
+    def test_cross_invoke_barrier_keeps_both_saves(self, model):
+        # The issue's repro: invoke 1 touches the model before the barrier, so
+        # the release happens mid-forward. Both saves must come back and match
+        # the prompts run alone. (Local binds, not self.P1: a `self` referenced
+        # inside the traced block ships the whole test class by value, and this
+        # class's methods reference pytest, which the server doesn't have.)
+        p1, p2 = self.P1, self.P2
+        with model.trace(p1, remote=True):
+            solo1 = model.output.logits[0, -1].argmax().save()
+        with model.trace(p2, remote=True):
+            solo2 = model.output.logits[0, -1].argmax().save()
+        with model.trace(remote=True) as tracer:
+            barrier = tracer.barrier(2)
+            with tracer.invoke(p1):
+                model.transformer.h[0].output
+                barrier()
+                a = model.output.logits[0, -1].argmax().save()
+            with tracer.invoke(p2):
+                barrier()
+                b = model.output.logits[0, -1].argmax().save()
+        assert a == solo1
+        assert b == solo2
+
+    def test_embedding_transplant(self, model):
+        # nnsight's Barrier docstring pattern: the underscore prompt generates
+        # from the meaningful prompt's embeddings, so both rows continue the
+        # same way under greedy decoding.
+        with model.generate(max_new_tokens=3, do_sample=False, remote=True) as tracer:
+            barrier = tracer.barrier(2)
+            with tracer.invoke("Madison Square Garden is in the city of"):
+                embeddings = model.transformer.wte.output
+                barrier()
+                tokens = tracer.result.save()
+            with tracer.invoke("_ _ _ _ _ _ _ _ _"):
+                barrier()
+                model.transformer.wte.output = embeddings
+                transplanted = tracer.result.save()
+        assert torch.equal(tokens[:, -3:], transplanted[:, -3:])
+
+    def test_wrong_count_fails_loudly(self, model):
+        # n=3 with two invokes can never release. Both paths must fail the job
+        # with the barrier ValueError's wording — the sandbox used to COMPLETE
+        # with a warning and the saves gone. Local binds for the same reason as
+        # above: the block must not capture `self`.
+        p1, p2 = self.P1, self.P2
+        with pytest.raises(Exception, match="never reached by every block"):
+            with model.trace(remote=True) as tracer:
+                barrier = tracer.barrier(3)
+                with tracer.invoke(p1):
+                    barrier()
+                    model.output.logits[0, -1].argmax().save()
+                with tracer.invoke(p2):
+                    barrier()
+                    model.output.logits[0, -1].argmax().save()
+
+
 class TestRemoteSaving:
     """Save mechanics over the wire: both the function form (``nnsight.save(v)``)
     and a value computed inside the block come back."""
