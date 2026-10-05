@@ -28,6 +28,7 @@ from nnsight.intervention.interleaver import EarlyStopException, Mediator, Pendi
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
+from .protocol import KEEP_PIN
 
 class RunnerError(Exception):
     """A failure raised by the user's block in the runner, carrying its already-
@@ -149,7 +150,15 @@ class MediatorProxy(Mediator):
                     )
                 )
                 reply = None
-            self.connection.send(("RESUME", self.id, (reply,), self.iteration))
+            # KEEP_PIN, not self.iteration: a control park carried no pin (adopt
+            # left `self.iteration` at whatever the last *model* park said), and
+            # the worker may have advanced its own pin since then — a
+            # `tracer.iter` loop moves it between parks, and `.source` parks a
+            # SOURCE on every access, so a loop body that touches `.source`
+            # parks one right after the pin advanced. Pushing the stale copy
+            # wound the worker back to the previous step, and its next read
+            # asked for an occurrence the model was already past (#296).
+            self.connection.send(("RESUME", self.id, (reply,), KEEP_PIN))
             event, rest, _ = self.driver.next_event(self.connection)
             if event == "STOP":
                 raise EarlyStopException()

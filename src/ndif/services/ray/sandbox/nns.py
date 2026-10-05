@@ -56,6 +56,7 @@ from ....common.errors import RequestError
 from ....common.schema.request import BackendRequestModel
 from ..deployments.modeling.nns import block_scope, execute_traced_block
 from ..deployments.modeling.util import cpu_pickle_module, resolve_dtype
+from .protocol import KEEP_PIN
 
 # The runner's connection to the host, for the request currently executing. The
 # runner handles one request at a time, so a module global is enough.
@@ -121,7 +122,9 @@ class IPCInterleaver(Interleaver):
 
         RESUME switches a worker in (a read's value, or nothing for a swap) and
         replies with its next park; the host pushes the worker's pin so tracer.iter
-        relaxation stays in lockstep. THROW surfaces a dangling worker. DONE carries
+        relaxation stays in lockstep — except for ``KEEP_PIN``, which answers a
+        control park and leaves the worker's own pin standing (see below).
+        THROW surfaces a dangling worker. DONE carries
         the model's result and ends the loop. Every RESUME also writes the previous
         read's value back (see :meth:`writeback`) so in-place edits reach the host.
 
@@ -141,7 +144,13 @@ class IPCInterleaver(Interleaver):
             if kind == "RESUME":
                 _, mediator_id, args, pin = message
                 mediator = self.mediators[mediator_id]
-                mediator.iteration = pin
+                # KEEP_PIN answers a control park (SOURCE/CALL/CACHE), where the
+                # host's copy of the pin is stale: relaxation only happens while
+                # a model location is served, and the worker may have moved its
+                # own pin since its last model park (a `tracer.iter` step).
+                # Overwriting it here wound the loop back a step (#296).
+                if pin != KEEP_PIN:
+                    mediator.iteration = pin
                 # The read this RESUME answers, if any — the worker has held its
                 # (copied) value and may have edited it in place.
                 read = reads.pop(mediator_id, None)
