@@ -78,7 +78,11 @@ class Capture:
 
 def run_sandboxed(model, blob: bytes):
     """Drive ``blob`` through a real runner process and return its saved values."""
-    sandbox = host.spawn(model_key=REPO)
+    # The full "import.path.Class:repo" key, as the actor's pool passes it, so
+    # the runner builds its meta model and the payload's persistent ids resolve
+    # the way they do in production (a bare repo id degrades to the
+    # no-meta-model path, which still works but isn't what a request gets).
+    sandbox = host.spawn(model_key=model.to_model_key())
     try:
         connection = sandbox.connection()
         # The payload message run_in_runner sends: blob, compress, dtype, seed, env.

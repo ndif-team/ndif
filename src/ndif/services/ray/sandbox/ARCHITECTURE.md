@@ -187,7 +187,11 @@ sandbox moves **all** of it to the host:
   location plus the worker's current pin, leaving `iteration` for the host.
 - The proxy (host) owns the counter, resolves the occurrence in `adopt`, matches
   in `handle`, and on each `RESUME` **pushes the pin back** so `tracer.iter`
-  relaxation stays in lockstep with the worker.
+  relaxation stays in lockstep with the worker — except when answering a
+  *control* park (SOURCE/CALL/CACHE), which carried no pin: the worker may have
+  advanced its own since its last model park (a `tracer.iter` step lands between
+  parks), so the host's copy is stale there and the reply sends the `KEEP_PIN`
+  sentinel instead, telling the pump to leave the worker's pin standing.
 
 A park crosses the socket as nnsight's `Pending` named tuple, which carries the
 occurrence as its own field alongside the undecorated location. The interleaver

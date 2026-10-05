@@ -110,7 +110,7 @@ host owns the `.i{n}` occurrence tag.
 | Message | Dir | Payload | Sent by | Reply |
 |---|---|---|---|---|
 | `(blob, compress, dtype, seed, env)` | h→r | the request's serialized tracer payload and its zstd flag, the model's dtype (for the runner's autocast bracket), the block's RNG seed or `None`, and the request's per-request environment (applied to the runner's meta model); first message on the connection | `run_in_runner`, `model.py:97` | eventually `INTERLEAVE`, then `END`/`EXCEPTION` |
-| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step | `MediatorProxy.switch`, `driver.py:174`; `settle_control`, `:125` | `PARK` |
+| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step — except on a control reply, where it is the `KEEP_PIN` sentinel (`protocol.py`): the control park carried no pin, so the proxy's copy is stale and the worker's own stands | `MediatorProxy.switch`, `driver.py:183`; `settle_control`, `:126` | `PARK` |
 | `("THROW", id, requester, is_iter)` | h→r | worker `id` is still parked on `requester`, which the model never reached | `check_dangling`, `driver.py` | none |
 | `("CACHE_HIT", cache_id, path, key, value)` | h→r | one filtered, transformed value for a `tracer.cache()` living in the runner | `ShippingCache._record`, `driver.py:68` | none |
 | `("DONE", result)` | h→r | the forward pass returned `result` | `interleave`, `driver.py` | none — ends `pump` |
@@ -317,11 +317,24 @@ read then a swap three; a location no worker is parked on never crosses at all.
 nnsight splits occurrence handling between `Mediator.handle` (counts visits,
 relaxes a pin) and `Mediator.event` (tags a park from that count); here all of it
 lives on the host. The runner parks untagged with `worker.mediator().iteration` as
-`pin` (`ipc_event`, `nns.py:65`); `adopt` (`driver.py:97`) sets
+`pin` (`ipc_event`, `nns.py:65`); `adopt` (`driver.py:98`) sets
 `self.iteration = pin` and tags with `pin` when pinned, else with the proxy's own
 `iterations[location]` — the counter `handle` matches against; and every `RESUME`
 pushes the proxy's `iteration` back, which `pump` assigns to the runner-side
-mediator (`nns.py:144`), so a pin relaxed on the host relaxes in the worker too.
+mediator (`nns.py:153`), so a pin relaxed on the host relaxes in the worker too.
+
+One RESUME must not push: the one `settle_control` sends for a control park. A
+control park carries no pin — `adopt` leaves `self.iteration` at whatever the
+last *model* park said — and the worker may have advanced its own pin since
+then: a `tracer.iter` loop moves it between parks, and `.source` parks a SOURCE
+on **every** access, so a loop body that touches `.source` parks one right after
+the pin advanced. Pushing the stale copy wound the worker back a step — its next
+read either asked for an occurrence the model was already past (the
+`OutOfOrderError` of #296) or re-matched the visit the host was still serving
+and silently got the previous step's value again. So a control reply sends the
+`KEEP_PIN` sentinel (`protocol.py`) instead, which `pump` treats as "leave the
+worker's pin alone" — always correct, because relaxation only ever happens while
+a model location is served, so a control reply never carries iteration news.
 
 ### Batching
 
