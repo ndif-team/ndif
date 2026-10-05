@@ -24,7 +24,9 @@ Three constraints shape the whole design:
 2. **The API forwards results but never produces them.** The model actor
    publishes the result on the COMPLETED response and the `/subscribe`
    forwarder passes it to the client, so it does cross an API worker.
-   `NDIF_MAX_SOCKET_RESULT_BYTES` caps what may travel that way; above it the
+   The inline cap — `RedisProvider.max_publish_bytes`, derived from the Redis
+   server's own pubsub output-buffer limits — bounds what may travel that way;
+   above it the
    actor stages the blob in the object store and publishes a *presigned URL*
    instead, which the client downloads directly. A non-blocking request always
    takes the object-store route.

@@ -125,15 +125,17 @@ few kilobytes to many gigabytes of tensors. Both routes start the same way:
    (matching what the client will try to decompress) and records a
    `RequestResponseSizeMetric`.
 
-Then the actor picks a route by size, against `NDIF_MAX_SOCKET_RESULT_BYTES`:
+Then the actor picks a route by size, against the inline cap
+(`RedisProvider.max_publish_bytes`, derived from the Redis server's own pubsub
+output-buffer limits — 8 MiB against stock redis:7):
 
-**On the response.** Under the limit — 20 MiB unless set, which covers most
+**On the response.** Under the cap — which covers most
 traces — the bytes ride on the `COMPLETED` response as `data`. That response is
 published as `torch.save` output rather than a JSON dump, and `/subscribe`
 forwards it as a binary frame. The client loads it directly, with no second
 round trip.
 
-**Through the object store.** Over the limit, or for a non-blocking request —
+**Through the object store.** Over the cap, or for a non-blocking request —
 which has no live socket to hand anything to — `upload_bytes` PUTs the blob at
 key `{request.id}.pt` and `presigned_get` signs a GET URL valid for one hour,
 using the *public* endpoint (`NDIF_OBJECT_STORE_PUBLIC_URL`) rather than the
@@ -145,11 +147,21 @@ on the blocking path — pushes the values back into the caller's frame so
 
 Redis is what bounds the first route: pub/sub is a fan-out bus, and a subscriber
 whose output buffer exceeds `client-output-buffer-limit pubsub` is disconnected,
-taking the response with it. On stock redis:7 a single message is delivered at
-28 MiB and lost at 29 MiB; the 8 MiB soft limit only bites a subscriber that
-leaves a message undrained for a full minute, which the dispatcher never does
-unless the API itself is down. The 20 MiB default stays under the hard limit
-with room for framing. `0` removes the cap.
+taking the response with it — the job reads `COMPLETED` while the result is
+unrecoverable, because an inline result is never written to the object store.
+Worse, Redis's omem accounting carries an allocator-dependent overhead over the
+payload (measured 1.15× on one box, 1.67× on another, where a 20.04 MB message
+produced omem 33,554,456 — past the stock 32 MiB hard kill). That is why the cap
+is *derived from the server's own limits* rather than configured beside them:
+`RedisProvider.max_publish_bytes` reads them over `CONFIG GET` once per process
+and takes `min(soft, hard // 2)`, each bound counted only when enabled. The soft
+limit as the primary bound means the stock cap is 8 MiB, whose ~1.67× omem can
+never reach either limit. No limits configured → a fixed 20 MiB ceiling; a
+failed `CONFIG GET` (managed Redis) → a conservative fixed 8 MiB. To raise the
+cap, raise the Redis pubsub limits — the cap follows. One residual: the cap
+bounds a single message, not a *queue* of them — several near-cap results
+published to a subscriber that has stopped draining can still accumulate past
+the limits.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually

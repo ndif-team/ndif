@@ -49,8 +49,8 @@ its pool is built lazily inside an event loop.
 ### Importing is connecting
 
 Four modules run `from_env(); connect()` at the bottom of the file, so **importing
-the module establishes the connection in that process**: `redis.py:72` and
-`objectstore.py:238` (cheap — the clients open no socket until the first command),
+the module establishes the connection in that process**: `redis.py:165` and
+`objectstore.py:188` (cheap — the clients open no socket until the first command),
 `influx.py:224` and `loki.py:231` (both start a background shipper thread). Two
 only load config: `ray.py:139` (`ray.init()` is expensive, and only the dispatcher
 and CLI want it) and `postgres.py:159` (an asyncpg pool needs a running event loop,
@@ -120,7 +120,7 @@ is a 503, never an allowed request); InfluxDB and Loki **fail open**.
 
 `src/ndif/common/providers/redis.py`. Wraps `redis-py` with **three** client
 singletons off one URL (`NDIF_REDIS_URL`, default `redis://localhost:6379`),
-constructed in `connect()` (`redis.py:44`):
+constructed in `connect()` (`redis.py:50`):
 
 - `sync_client` — sync, `decode_responses=True`. Response pub/sub from sync code
   (the model actor); the dispatcher's `ray:connected` flag.
@@ -129,14 +129,28 @@ constructed in `connect()` (`redis.py:44`):
 - `async_bytes_client` — async, raw bytes. The pickled request queue; decoding
   would corrupt the pickle.
 
-`RedisProvider.connected` (`redis.py:55`) is a `ping()` with exceptions swallowed.
+`RedisProvider.max_publish_bytes()` is the inline-result cap: the largest
+payload safely published as one pubsub message, derived at first use from the
+server's own `client-output-buffer-limit pubsub` values (`CONFIG GET` through
+`sync_client`) as `min(soft, hard // 2)`, each bound counted only when enabled —
+8 MiB against stock redis:7. A subscriber past those limits is *disconnected*
+and the buffered response silently lost, and Redis's omem accounting carries an
+allocator-dependent 1.15–1.67× overhead over the payload, which is why the soft
+limit is the primary bound and why the cap is derived from the server rather
+than configured beside it. No limits at all → a fixed 20 MiB ceiling; a failed
+`CONFIG GET` (blocked or renamed on managed Redis) → a conservative fixed 8 MiB.
+Memoized per process; `connect()` clears the memo. The model actor reads it to
+route results (`modeling/base.py:426`); an operator raises the Redis pubsub
+limits to raise the cap.
+
+`RedisProvider.connected` (`redis.py:148`) is a `ping()` with exceptions swallowed.
 `reset()` closes only the sync client; the async ones are replaced on the next
 `connect()`, since closing them needs an event loop `reset()` may not be in. All
 three pass `socket_timeout=None` explicitly, and that is load-bearing: redis-py
 8.0+ negotiates a "maintenance notifications" feature with Redis 8 and silently
 sets `socket_timeout=5`, shorter than the dispatcher's `brpop(queue, timeout=10)` —
 without it, every idle dispatch iteration raises a spurious `TimeoutError`
-(`redis.py:32`).
+(`redis.py:52`).
 
 **Used by:** the API app (`app.py:114`, `:183`, `:224`, `:393`), the dispatcher, and
 `BackendRequestModel.respond` / `arespond` (`common/schema/request.py:190`, `:222`)
@@ -176,9 +190,10 @@ client-side, dragging in `BackendRequestModel` and its deps, which breaks on a s
 ## ObjectStoreProvider
 
 `src/ndif/common/providers/objectstore.py`. boto3 over S3, so the same code serves
-MinIO in dev and AWS S3 in prod. Result blobs are far too large for the Redis
-response channel, so the model actor uploads them here and returns a presigned GET
-URL on the COMPLETED response.
+MinIO in dev and AWS S3 in prod. Result blobs over the inline cap
+(`RedisProvider.max_publish_bytes`) are too large for the Redis response channel,
+so the model actor uploads them here and returns a presigned GET URL on the
+COMPLETED response.
 
 | Env var | Default | What it does |
 |---|---|---|
@@ -187,18 +202,17 @@ URL on the COMPLETED response.
 | `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients. `_make_client` passes them only when both are set; both empty → boto3's own credential chain (on AWS, the host's IAM role) |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket for result blobs and non-blocking responses |
 | `NDIF_OBJECT_STORE_REGION` / `_VERIFY` | `us-east-1` / `true` | Region is explicit so presigning never round-trips to discover it; set verify false for self-signed MinIO over https |
-| `NDIF_MAX_SOCKET_RESULT_BYTES` | `20971520` (20 MiB) | The size at which a result stops riding on the COMPLETED response and is staged here instead. `0` removes the cap; an unparseable value keeps the default (`objectstore.py:54`) |
 
 Two clients, because upload and download happen from different networks
-(`ObjectStoreProvider.connect`, `objectstore.py:157`). A presigned URL is a local
+(`ObjectStoreProvider.connect`, `objectstore.py:107`). A presigned URL is a local
 HMAC over the request *including the host*, so it must be signed with the host the
 downloader will hit — `minio:9000` from the compose network, `localhost:9000` from
 the user's machine. A custom endpoint also forces path-style addressing, since
-`bucket.minio:9000` wouldn't resolve (`_make_client`, `objectstore.py:119`). Methods:
+`bucket.minio:9000` wouldn't resolve (`_make_client`, `objectstore.py:69`). Methods:
 `put(key, data, content_type)` (creates the bucket on first use,
-`objectstore.py:192`), `get(key)` → `bytes | None` (deliberately does *not* ensure
+`objectstore.py:142`), `get(key)` → `bytes | None` (deliberately does *not* ensure
 the bucket — a missing key or bucket just means "nothing yet",
-`objectstore.py:205`), `presigned_get(key, expires=1h)` (`objectstore.py:227`).
+`objectstore.py:155`), `presigned_get(key, expires=1h)` (`objectstore.py:177`).
 
 **Used by:** `BaseModelDeployment.upload_bytes` (`modeling/base.py:688`, key
 `{request.id}.pt`), `BackendRequestModel.respond` for non-blocking requests

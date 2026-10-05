@@ -14,10 +14,10 @@ The traps that come from *where* things listen rather than what they do. Two
 facts produce almost all of them:
 
 1. **Every provider defaults to `localhost`.** `NDIF_REDIS_URL` defaults to
-   `redis://localhost:6379` (`src/ndif/common/providers/redis.py:23`),
+   `redis://localhost:6379` (`src/ndif/common/providers/redis.py:39`),
    `NDIF_RAY_ADDRESS` to `ray://localhost:10001`
    (`src/ndif/common/providers/ray.py:55`), `NDIF_OBJECT_STORE_URL` to
-   `http://localhost:9000` (`src/ndif/common/providers/objectstore.py:80`). Those
+   `http://localhost:9000` (`src/ndif/common/providers/objectstore.py:40`). Those
    defaults are tuned for a single-host `ndif start`. On the compose network they
    are all wrong, and compose overrides them **per service** — miss one and that
    service silently talks to itself.
@@ -77,7 +77,7 @@ service-name hosts". 6385 is the answer to the first half. Consequences:
 
 Results are uploaded by the server and downloaded by the client, from different
 networks. `ObjectStoreProvider` keeps two boto3 clients for exactly this
-(`src/ndif/common/providers/objectstore.py:114-115`, `:159-160`):
+(`src/ndif/common/providers/objectstore.py:64-65`, `:107-110`):
 
 | Variable | Default | Used for |
 |---|---|---|

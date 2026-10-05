@@ -79,7 +79,7 @@ Rules the existing providers all follow:
 - **Declare the attribute annotations under `CONFIG`.** They're documentation for
   readers and type checkers — `from_env` sets them at runtime.
 - **Comment each entry with what it does and what empty means.** The object store's
-  `CONFIG` (`objectstore.py:77`) is the model: eight entries, each with the reason
+  `CONFIG` (`objectstore.py:37`) is the model: seven entries, each with the reason
   it exists, including why `region` is set explicitly (so presigning never
   round-trips to discover it over an endpoint the server can't reach).
 - **Empty string means off** for an optional subsystem. Add a separate `_ENABLED`
@@ -102,7 +102,7 @@ so **importing the module establishes the singleton**. That's why
 services nobody asked for, at import of anything under `common/`.
 
 `connect()` must be **cheap and idempotent**. Cheap: `RedisProvider.connect`
-(`redis.py:31`) and `ObjectStoreProvider.connect` (`objectstore.py:157`) construct
+(`redis.py:50`) and `ObjectStoreProvider.connect` (`objectstore.py:107`) construct
 client objects that open no socket until the first call. Idempotent: every process
 entry point — each uvicorn worker, each Ray actor — calls it without coordinating,
 and it must be a no-op the second time (`influx.py:112` returns early if

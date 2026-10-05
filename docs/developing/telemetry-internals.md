@@ -36,7 +36,7 @@ nowhere else; every module takes a dotted child so records carry a meaningful
 
 | Logger | Used by |
 |---|---|
-| `ndif` | every provider (`providers/base.py:20`, `redis.py:19`, `ray.py:20`, `objectstore.py:30`, `postgres.py:35`, `influx.py:40`, `loki.py:45`) |
+| `ndif` | every provider (`providers/base.py:20`, `redis.py:20`, `ray.py:20`, `postgres.py:35`, `influx.py:40`, `loki.py:45` — the object-store provider has no logger of its own) |
 | `ndif.api` | the FastAPI app and auth (`services/api/app.py:48`, `auth.py:40`) |
 | `ndif.request` | request lifecycle transitions (`common/schema/request.py:20`) |
 | `ndif.queue.dispatcher` | `services/api/queue/dispatcher.py:51` |

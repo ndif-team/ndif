@@ -238,6 +238,16 @@ way (`sandbox/driver.py:254`). A chatty block produces hundreds of publishes on 
 > can't POST `/request` until it has the id, so the channel is guaranteed live
 > before any status can be published.
 
+> **Gotcha:** a subscriber whose output buffer exceeds the server's
+> `client-output-buffer-limit pubsub` is *disconnected*, and everything buffered
+> for it is lost — on this channel that means a COMPLETED response, result
+> included. The model actor therefore caps what may ride a single publish at
+> `RedisProvider.max_publish_bytes`, derived from those same server limits
+> (`min(soft, hard // 2)`, 8 MiB against stock redis:7); larger results go to the
+> object store. The cap bounds one message, not a queue of them: a subscriber
+> that stops draining while several near-cap results are published can still be
+> dropped.
+
 ## The `ray:connected` flag
 
 A plain string key, no TTL, owned entirely by the dispatcher's `connect()`

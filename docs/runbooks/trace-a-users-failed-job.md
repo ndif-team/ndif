@@ -197,15 +197,18 @@ written.
 
 On success the actor uploads the `torch.save` blob, optionally zstd-compressed to
 match the request, and returns a **presigned GET url valid for one hour**
-(`objectstore.py:159-168`), which rides on the COMPLETED response as `data`. The
-client downloads it and injects the values.
+(`objectstore.py:177-184`), which rides on the COMPLETED response as `data`. The
+client downloads it and injects the values. (A result under the inline cap —
+`RedisProvider.max_publish_bytes`, derived from Redis's pubsub output-buffer
+limits — rides on the response itself instead and never touches the object
+store.)
 
 ## Step 5 — "it completed but the user got nothing"
 
 This is almost always the presigned-url misconfiguration, and it is the most
 common real one.
 
-The provider keeps **two** S3 clients (`providers/objectstore.py:9-17`):
+The provider keeps **two** S3 clients (`providers/objectstore.py:11-19`):
 
 - `NDIF_OBJECT_STORE_URL` — reached by the *server*; used to upload.
 - `NDIF_OBJECT_STORE_PUBLIC_URL` — reached by the *client*; used only to **sign**

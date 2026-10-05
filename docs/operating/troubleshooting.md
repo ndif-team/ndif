@@ -223,8 +223,8 @@ uploads through.
 
 | Variable | Compose value | Role |
 |---|---|---|
-| `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client (`objectstore.py:41`) |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET (`objectstore.py:43`, `:93`) |
+| `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client (`objectstore.py:40`) |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET (`objectstore.py:42`, `:110`) |
 
 Both are set on `api` and `ray` (`docker-compose.yml:159`-`160`, `247`-`248`).
 Swap them and every job completes and then fails to download; leave the public
@@ -235,7 +235,7 @@ client machine* — that is exactly what the user's download does.
 
 In production the public URL is whatever your users reach — a load-balanced S3
 endpoint or a CDN hostname — and it must be *reachable from outside your
-network*. URLs expire after one hour (`objectstore.py:161`), which is a real
+network*. URLs expire after one hour (`objectstore.py:178`), which is a real
 constraint for non-blocking jobs polled much later.
 
 ## No Redis on localhost inside the ray container

@@ -106,7 +106,7 @@ pair falls back to the chain as well.
 
 > **Gotcha — the single most common misconfiguration.** There are two endpoint
 > variables and they are not interchangeable
-> (`common/providers/objectstore.py:9-18`). `NDIF_OBJECT_STORE_URL` is what the
+> (`common/providers/objectstore.py:11-20`). `NDIF_OBJECT_STORE_URL` is what the
 > *server* uploads through. `NDIF_OBJECT_STORE_PUBLIC_URL` is what presigned GET
 > URLs are **signed with** — and a presigned URL is an HMAC over the request
 > including the host, so signing with an internal hostname produces a link your
@@ -118,7 +118,7 @@ Both variables must be set identically on `api` and `ray` — the model actor
 uploads and signs, the API serves `/response/{id}` from the same bucket.
 
 Presigned URLs expire after **one hour**
-(`objectstore.py:160-167`), which is not currently env-configurable. Result blobs
+(`objectstore.py:177-184`), which is not currently env-configurable. Result blobs
 are never deleted by NDIF; if you don't want the bucket to grow forever, add a
 lifecycle rule on the store itself.
 
