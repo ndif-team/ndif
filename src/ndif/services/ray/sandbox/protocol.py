@@ -39,7 +39,10 @@ host -> runner
                               host's (a PEFT adapter reshapes both)
   ("RESUME", id, args, pin)   switch worker ``id`` in with ``args`` (a read's value,
                               or empty for a swap); ``pin`` pushes the host's pin so
-                              tracer.iter relaxation stays in step. Reply: PARK
+                              tracer.iter relaxation stays in step — or ``KEEP_PIN``
+                              when answering a control park (SOURCE/CALL/CACHE),
+                              which carried no pin, so the host has nothing current
+                              to push. Reply: PARK
   ("THROW", id, requester, is_iter)
                               worker ``id`` is still parked on ``requester`` the
                               model never reached; throw OutOfOrderError into it
@@ -68,6 +71,17 @@ import struct
 import time
 
 import torch
+
+# RESUME's pin field normally pushes the host proxy's iteration pointer to the
+# worker, keeping `tracer.iter` relaxation in lockstep. A RESUME answering a
+# *control* park (SOURCE/CALL/CACHE) has nothing truthful to push: the control
+# park carried no pin, and the worker may have advanced its own since its last
+# model park — a `tracer.iter` loop moves the pin between parks, and `.source`
+# parks a control event on every access. Pushing the host's stale copy there
+# wound the worker back a step (#296). This sentinel in place of the pin means
+# "leave the worker's pin as it is". A string, compared by value, because real
+# pins are ints or None and the sentinel has to survive the codec.
+KEEP_PIN = "KEEP_PIN"
 
 
 # -- length-prefixed framing -------------------------------------------------
