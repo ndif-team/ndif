@@ -2,9 +2,11 @@
 
 Uses **boto3**, so the same code talks to MinIO in dev and AWS S3 in prod.
 
-Results are too big to ride the redis pub/sub response channel, so the model
-actor uploads them here and publishes a presigned GET url on the COMPLETED
-response; the client downloads them directly.
+Results over the inline cap (``RedisProvider.max_publish_bytes``, derived from
+the Redis server's own pubsub output-buffer limits) are too big to ride the
+redis pub/sub response channel, so the model actor uploads them here and
+publishes a presigned GET url on the COMPLETED response; the client downloads
+them directly.
 
 Two endpoints, because upload and download happen from different networks:
     ``url``         reached by the server (e.g. ``minio:9000`` on the compose
@@ -17,7 +19,6 @@ Two endpoints, because upload and download happen from different networks:
                     ``url`` when unset.
 """
 
-import logging
 from datetime import timedelta
 from typing import Optional
 
@@ -27,53 +28,9 @@ from botocore.exceptions import ClientError
 
 from .base import Provider
 
-logger = logging.getLogger("ndif")
-
 
 def _boolish(value: str) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
-
-
-# The largest result, after compression, handed back on the COMPLETED response
-# instead of staged here for the client to download.
-#
-# The limit that matters is redis, which carries the response: a pubsub
-# subscriber whose output buffer passes `client-output-buffer-limit pubsub` is
-# disconnected, and the response goes with it — the client waits on a socket
-# that will never deliver. Measured against stock redis:7 (32 MiB hard, 8 MiB
-# soft held for 60 s): one message arrives at 28 MiB and is lost at 29 MiB, the
-# gap being the protocol framing the buffer counts. The soft limit only bites
-# when the API is slow to drain, which is when a large result is most likely.
-#
-# 20 MiB sits well under the 28 MiB that actually gets through. The soft limit
-# only matters if the API leaves the message undrained for a full minute, and
-# the dispatcher drains a channel in milliseconds; a stall that long means the
-# API is down, at which point no result is getting back either way. Above the
-# cap the object-store route costs a fixed round trip, a small share of any
-# transfer that size.
-DEFAULT_MAX_SOCKET_RESULT_BYTES = 20 * 1024 * 1024
-
-
-def _result_cap(value: str) -> int:
-    """Bytes, where 0 means no cap and anything unreadable means the default.
-
-    Zero rather than None so the value survives ``to_env``/``from_env``, which
-    round-trip through ``str``. A typo keeps the cap rather than removing it:
-    no cap is the direction that loses responses.
-    """
-    try:
-        cap = int(value)
-    except ValueError:
-        cap = -1
-    if cap < 0:
-        logger.warning(
-            "NDIF_MAX_SOCKET_RESULT_BYTES=%r is not a byte count; using the "
-            "default of %d. Set 0 to send every result on the response.",
-            value,
-            DEFAULT_MAX_SOCKET_RESULT_BYTES,
-        )
-        return DEFAULT_MAX_SOCKET_RESULT_BYTES
-    return cap
 
 
 class ObjectStoreProvider(Provider):
@@ -94,15 +51,6 @@ class ObjectStoreProvider(Provider):
         "region": ("NDIF_OBJECT_STORE_REGION", "us-east-1", str),
         # TLS cert verification; set false for self-signed MinIO over https.
         "verify": ("NDIF_OBJECT_STORE_VERIFY", True, _boolish),
-        # Decides which way a result goes back: under this it rides on the
-        # COMPLETED response, over it (or with no socket to use) it is staged
-        # here. Config of this provider because it is the size at which this
-        # provider becomes the answer. 0 means no cap.
-        "max_socket_result_bytes": (
-            "NDIF_MAX_SOCKET_RESULT_BYTES",
-            DEFAULT_MAX_SOCKET_RESULT_BYTES,
-            _result_cap,
-        ),
     }
 
     url: str
@@ -112,7 +60,6 @@ class ObjectStoreProvider(Provider):
     bucket: str
     region: str
     verify: bool
-    max_socket_result_bytes: int
 
     client: "boto3.client"  # server-side: upload + bucket ops
     public_client: "boto3.client"  # client-facing: presign GET urls

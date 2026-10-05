@@ -158,7 +158,7 @@ them to the S3-compatible object store and returns a **presigned GET URL** on th
 HMAC over the request *including the host*, it must be signed with the address the
 client will actually hit — hence the two endpoints `NDIF_OBJECT_STORE_URL`
 (server-side, e.g. `minio:9000`) and `NDIF_OBJECT_STORE_PUBLIC_URL` (client-facing,
-e.g. `localhost:9000`); `providers/objectstore.py:9`. See
+e.g. `localhost:9000`); `providers/objectstore.py:11`. See
 [status-and-results.md](../concepts/status-and-results.md).
 
 ## Processor

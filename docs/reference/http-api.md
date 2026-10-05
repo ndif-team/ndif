@@ -173,7 +173,7 @@ A status update is a JSON text frame:
 | `DISPATCHED` | `Replica.dispatch` |
 | `RUNNING` | model actor (`modeling/base.py:317`) |
 | `LOG` | model actor — a transient message, not a lifecycle stage |
-| `COMPLETED` | model actor (`modeling/base.py:459-461`); `data` is a presigned GET URL, or the result blob itself when it is under `NDIF_MAX_SOCKET_RESULT_BYTES` |
+| `COMPLETED` | model actor (`modeling/base.py:462-464`); `data` is a presigned GET URL, or the result blob itself when it is under the inline cap (`RedisProvider.max_publish_bytes`, derived from Redis's pubsub output-buffer limits) |
 | `ERROR` | anywhere; `description` carries the user-facing message |
 
 On `COMPLETED`, `data` is a presigned URL for `{request_id}.pt` in the object

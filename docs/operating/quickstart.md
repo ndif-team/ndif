@@ -60,11 +60,12 @@ docker run --gpus all --shm-size 4g \
   64 MB default makes Ray fall back to `/tmp` with a performance warning.
 
 - **8001** is the API — the only port a client posts to.
-- **9000** is MinIO's S3 API. Publish it: a result over
-  `NDIF_MAX_SOCKET_RESULT_BYTES` comes back as a presigned URL the *client*
+- **9000** is MinIO's S3 API. Publish it: a result over the inline cap
+  (derived from Redis's pubsub buffer limits; 8 MiB against stock redis)
+  comes back as a presigned URL the *client*
   fetches, signed with `NDIF_OBJECT_STORE_PUBLIC_URL` (which falls back to
   `NDIF_OBJECT_STORE_URL`, `http://localhost:9000` by default —
-  `providers/objectstore.py:80-82`). Unpublished, large results fail to download.
+  `providers/objectstore.py:40-42`). Unpublished, large results fail to download.
 - The **HF cache mount** is what makes weights survive the container. The image
   declares `VOLUME ["/root/.cache/huggingface"]` (`Dockerfile:137`), so an
   anonymous volume is created if you don't bind one — bind your own and a
@@ -388,7 +389,7 @@ limiting).
   anonymous one from the image's `VOLUME` (`Dockerfile:137`), so weights survive
   a restart of that container but not a `docker rm`. Bind the host cache.
 - **Publish 9000 as well as 8001** on the `docker run` route, or any result over
-  `NDIF_MAX_SOCKET_RESULT_BYTES` completes server-side and then fails to
+  the inline cap completes server-side and then fails to
   download client-side.
 - **After a code change, `just up` is not enough** — the image is stale. Use
   `just ta` (down → build → up), or `just ta ray` for one service. (nnsight is the

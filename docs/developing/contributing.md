@@ -34,7 +34,7 @@ codebase:
 
 - **Module docstring** — the concept, the constraint, the shape.
 - **Class/function docstring** — the contract and the reasoning. Note the
-  *reasoning*: `RedisProvider.connect` (`common/providers/redis.py:31`) spends its
+  *reasoning*: `RedisProvider.connect` (`common/providers/redis.py:50`) spends its
   whole docstring on why `socket_timeout=None` is passed explicitly, because
   someone will otherwise delete it.
 - **Inline comment** — why *this* implementation, never what the line does.

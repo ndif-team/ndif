@@ -73,7 +73,7 @@ sequenceDiagram
         M->>M: hand the blob to a fresh runner process; drive the forward pass over a socket
     end
     M->>R: PUBLISH LOG (per print line)
-    alt result <= NDIF_MAX_SOCKET_RESULT_BYTES and session_id
+    alt result under the inline cap, and session_id
         M->>R: PUBLISH COMPLETED carrying the blob itself
         R-->>C: COMPLETED (binary frame via A's websocket)
     else large, or non-blocking
@@ -181,15 +181,17 @@ connection.send(
 Both paths produce the same bytes and both feed the same upload step. See
 [Sandbox Execution](sandbox-execution.md).
 
-**9. Result back, by one of two routes.** `prepare_result` (`base.py:662`)
+**9. Result back, by one of two routes.** `prepare_result` (`base.py:665`)
 compresses the `torch.save` output to match `request.compress` and meters it, so
 the blob is byte-identical whichever route it takes. Then `run` picks
-(`base.py:423`): if the request has a `session_id` and the blob is at or under
-`NDIF_MAX_SOCKET_RESULT_BYTES` (20 MiB, `0` = no cap), it rides back *on the
-response*; otherwise `upload_bytes` (`base.py:688`) PUTs it at `{request.id}.pt`
+(`base.py:426`): if the request has a `session_id` and the blob is at or under
+the inline cap — `RedisProvider.max_publish_bytes`, derived from the Redis
+server's own pubsub output-buffer limits (8 MiB against stock redis:7; see
+[Status and Results](status-and-results.md)) — it rides back *on the
+response*; otherwise `upload_bytes` (`base.py:691`) PUTs it at `{request.id}.pt`
 and presigns a GET valid for an hour. The `COMPLETED` response carries either
 the bytes or the url in `data`, with `pickled` set when it is the bytes
-(`base.py:460`) — that flag is what tells `/subscribe` to forward a binary
+(`base.py:466`) — that flag is what tells `/subscribe` to forward a binary
 frame.
 
 **10. Client collects.** Each published response goes to the Redis channel
@@ -221,7 +223,7 @@ the object store and polled via `GET /response/{id}` instead — see
 | 8a | Runner process dies mid-run | `ERROR` carrying the runner's formatted traceback | [Sandbox internals](../developing/sandbox-internals.md) |
 | 9 | Object store unreachable | `ERROR` from the upload, after a successful run (only on the object-store route) | [Providers](../developing/providers.md) |
 | 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Compose networking](../gotchas/networking-and-compose.md) |
-| 10 | `NDIF_MAX_SOCKET_RESULT_BYTES` raised or set to `0` | a large result exceeds Redis's pubsub output-buffer limit, the subscriber is dropped, and `COMPLETED` never arrives | [Status and Results](status-and-results.md) |
+| 10 | several near-cap inline results published while the subscriber stalls | the accumulated output buffer exceeds Redis's pubsub limits, the subscriber is dropped, and `COMPLETED` never arrives — the cap bounds one message, not a queue of them | [Status and Results](status-and-results.md) |
 
 > **Gotcha:** the presigned url is an HMAC over the request *including the host*,
 > so it must be signed with the address the client will actually hit.

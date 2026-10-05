@@ -263,15 +263,17 @@ drop `execution_ident`, `model.interleaver.cancel()`, and `synchronize` +
 `gc.collect` + `empty_cache`.
 
 `prepare_result` zstd-compresses (level 3) when `request.compress` is set and meters
-the size. The blob then takes one of two routes back, decided against
-`NDIF_MAX_SOCKET_RESULT_BYTES`: under the limit (20 MiB unless set) it rides
+the size. The blob then takes one of two routes back, decided against the inline
+cap — `RedisProvider.max_publish_bytes`, derived from the Redis server's own
+pubsub output-buffer limits (8 MiB against stock redis:7; raise those limits to
+raise the cap): under the cap it rides
 on the `COMPLETED` response's `data` field itself, published as `torch.save` output
 and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking
 request, which has no socket — `upload_bytes` `put`s it under `{request.id}.pt` and
 returns a presigned GET url to ride on `data` instead. The url is signed with
 `NDIF_OBJECT_STORE_PUBLIC_URL` when set: a presigned url is an HMAC over the request
 *including the host*, so it must be signed with the host the downloader will hit
-(`presigned_get` signs with `public_client`, `objectstore.py:226`). Default expiry: one hour.
+(`presigned_get` signs with `public_client`, `objectstore.py:181`). Default expiry: one hour.
 
 ## Batching
 

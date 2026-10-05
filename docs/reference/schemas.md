@@ -209,26 +209,28 @@ bytes the backend publishes are exactly what an unmodified client parses.
 | `id` | `str` | *(required)* | The request id this update belongs to. |
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — the queue position, the error traceback, or one line of `print` output for `LOG`. |
-| `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`. Either the result blob itself (`bytes`, on a response sent as `torch.save` rather than JSON) or the presigned GET url to download it from. `NDIF_MAX_SOCKET_RESULT_BYTES` decides which; a non-blocking request always gets the url. |
+| `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`. Either the result blob itself (`bytes`, on a response sent as `torch.save` rather than JSON) or the presigned GET url to download it from. The inline cap (`RedisProvider.max_publish_bytes`, derived from Redis's pubsub output-buffer limits) decides which; a non-blocking request always gets the url. |
 
 Model config: `arbitrary_types_allowed=True, protected_namespaces=()`, the latter
 so `model_key`-style names don't collide with pydantic's `model_` namespace, both
 inherited from `ResponseModel`. `pickle()` (a `torch.save` of
 `model_dump(exclude_unset=True)`) is inherited **and used**: `respond(...,
 pickled=True)` publishes it instead of `model_dump_json()` when the result fits
-under `NDIF_MAX_SOCKET_RESULT_BYTES` and rides on the response itself
+under the inline cap and rides on the response itself
 (`request.py:190-193`). `unpickle()` is the client's side of that and is never
 called server-side.
 
-**Result blobs above the socket cap are referenced, not embedded.** `execute`
-`torch.save`s the `nnsight.save()`-marked values (`base.py:501`) and `run`
-optionally zstd-compresses them (`base.py:663`). A blob at or under
-`NDIF_MAX_SOCKET_RESULT_BYTES` (20 MiB) rides back on the COMPLETED response
+**Result blobs above the inline cap are referenced, not embedded.** `execute`
+`torch.save`s the `nnsight.save()`-marked values (`base.py:504`) and `run`
+optionally zstd-compresses them (`base.py:678`). A blob at or under the inline
+cap — `RedisProvider.max_publish_bytes`, derived from the Redis server's own
+pubsub output-buffer limits (8 MiB against stock redis:7) — rides back on the
+COMPLETED response
 itself as a pickled frame; anything larger — and every result for a non-blocking
 request, which has no live socket — goes through `upload_bytes`
-(`modeling/base.py:688`), which `put`s it under the key `{request.id}.pt` and
-returns `ObjectStoreProvider.presigned_get(key)` (`base.py:698`). Either way the
-value lands in `data` on `COMPLETED` (`base.py:459-461`).
+(`modeling/base.py:691`), which `put`s it under the key `{request.id}.pt` and
+returns `ObjectStoreProvider.presigned_get(key)` (`base.py:701`). Either way the
+value lands in `data` on `COMPLETED` (`base.py:462-464`).
 
 ## Controller schemas
 

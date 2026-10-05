@@ -245,7 +245,7 @@ signed with the address the downloader will actually hit. Two variables:
 | Variable | Compose value | Used for |
 |---|---|---|
 | `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own PUT/GET |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | **signing** the client's GET (`objectstore.py:82`) |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | **signing** the client's GET (`objectstore.py:42`) |
 
 Set them backwards and every job completes and then fails to download. If
 `NDIF_OBJECT_STORE_PUBLIC_URL` is unset entirely, `public_client` falls back to
@@ -256,7 +256,7 @@ Other download failures:
 | Symptom | Cause |
 |---|---|
 | `403 SignatureDoesNotMatch` | The URL was signed with different credentials than the store now accepts, or a proxy rewrote the Host header |
-| `403 Request has expired` | Presigned URLs expire after **one hour** — `presigned_get`'s `expires` default (`common/providers/objectstore.py:227-234`). A non-blocking job polled a day later gets a stale URL from `responses/{id}.json` |
+| `403 Request has expired` | Presigned URLs expire after **one hour** — `presigned_get`'s `expires` default (`common/providers/objectstore.py:177-184`). A non-blocking job polled a day later gets a stale URL from `responses/{id}.json` |
 | Download works, `torch.load` fails | A compression mismatch — the client decompresses only if it set `compress`; the actor compresses only if the request asked |
 
 ## A websocket that closes mid-run

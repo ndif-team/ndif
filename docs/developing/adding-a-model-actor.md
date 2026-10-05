@@ -125,8 +125,8 @@ If you replace `execute` only, you get all of this for free. If you go further, 
    entry and precisely one `COMPLETED` or `ERROR`. A request with no terminal
    response hangs the client's websocket until it times out.
 2. **`COMPLETED` carries either the bytes or a presigned url.** `execute` returns
-   the `torch.save` bytes and `run()` decides the route (`base.py:418`): a result at
-   or under `ObjectStoreProvider.max_socket_result_bytes` on a request with a live
+   the `torch.save` bytes and `run()` decides the route (`base.py:426`): a result at
+   or under `RedisProvider.max_publish_bytes()` on a request with a live
    socket rides on the response itself, with `pickled=True` so `/subscribe` forwards
    a binary frame; anything larger, and every non-blocking request, goes through
    `upload_bytes` (`base.py:688`), staged at `{request.id}.pt` and signed as a GET

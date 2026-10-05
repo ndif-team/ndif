@@ -96,7 +96,7 @@ raises at import on a non-integer or non-positive value — the API won't boot.
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py:23`, `cli/service.py:31` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI also derives the port it starts `redis-server` on from this URL. |
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py:39`, `cli/service.py:31` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI also derives the port it starts `redis-server` on from this URL. It is also where the inline-result cap comes from: `RedisProvider.max_publish_bytes` derives the largest result that may ride the COMPLETED response from this server's own `client-output-buffer-limit pubsub` values (`min(soft, hard // 2)` — 8 MiB on stock redis:7), so raising those limits in the Redis config raises the cap. There is deliberately no env var for it: a cap configured beside the limits can disagree with the Redis it publishes through, and a subscriber past those limits is disconnected with the response silently lost. |
 | `NDIF_ENV_TTL_S` | `300` | `src/ndif/common/redis/env.py:33` | How long a cached `/env` payload is served before a refresh is triggered. |
 | `NDIF_ENV_TIMEOUT_S` | `60` | `common/redis/env.py:37` | How long a `/env` request waits for a refresh, and how long the refresh worker holds the coalescing lock. |
 | `NDIF_STATUS_TTL_S` | `60` | `src/ndif/common/redis/status.py:27` | Same, for the cached `/status` blob. |
@@ -148,7 +148,6 @@ is only a *default*; a per-model `DeploymentConfig` overrides it.
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | `controller.py:788-790` | Additive slack in the same estimate. |
 | `NDIF_DEFAULT_DTYPE` | `bfloat16` | `controller.py:791` | Dtype a model loads in when its config doesn't name one. Pinned into the config before placement (`controller.py:179-180`) so the size estimate and the actual load agree. |
 | `NDIF_SANDBOX_POOL_SIZE` | `7` | `sandbox/model.py:47` (`DEFAULT_POOL_SIZE`) | Runners kept pre-warmed per **sandboxed** model actor (ignored by the base, in-process actor). Sized from the costs it trades: a cold spawn is ~4s against a ~0.7s warm execution, so the pool must be at least spawn/execute ≈ 6 or a saturated queue drains it and requests pay the spawn inline. Each warm runner holds ~480 MB (PSS, gpt2; more for a larger architecture) whether used or not — 7 is ~3.4 GB per model actor — and refills contend for CPU on the actor's node. Turn it down on memory- or core-tight nodes, or when many models are resident at once. A per-deployment `pool_size` kwarg still overrides it. |
-| `NDIF_MAX_SOCKET_RESULT_BYTES` | `20971520` (20 MiB) | `providers/objectstore.py:98-102` | Largest result, **after compression**, handed back on the COMPLETED response itself instead of staged in the object store for the client to download. A result above it — and every result for a non-blocking request, which has no live socket — goes to the object store and the client gets a presigned url. `0` removes the cap; a value that is not a byte count uses the default, with a warning. Config of the object-store provider because it is the size at which that provider becomes the answer, so it reaches each model actor with the rest of the provider env rather than by a route of its own. The ceiling is redis: a pubsub subscriber past `client-output-buffer-limit pubsub` is disconnected and the response is lost. On stock redis:7 (32 MiB hard, 8 MiB soft held for 60 s) a single message arrives at 28 MiB and is lost at 29 MiB. The default is half the soft limit, so no single result can trip either. |
 
 ## Object store
 
@@ -156,13 +155,13 @@ Read by the API and by model actors. Boto3-backed: MinIO in dev, real S3 in prod
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `src/ndif/common/providers/objectstore.py:80` | Server-side endpoint used to upload and ensure the bucket. **Empty means real AWS S3** — boto3 derives the endpoint from `region`. |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | `objectstore.py:82` | Client-facing endpoint used *only for presigning*. Empty → falls back to `url`. A presigned URL is an HMAC over the request including the host, so this must be the host the downloader actually hits. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` | `minioadmin` | `objectstore.py:86` | S3 access key. Also becomes MinIO's `MINIO_ROOT_USER` when the CLI spawns MinIO (`cli/service.py:48`). **Set this and the secret key both empty** to authenticate as the host's own IAM role instead — see below. |
-| `NDIF_OBJECT_STORE_SECRET_KEY` | `minioadmin` | `objectstore.py:87` | S3 secret key; likewise `MINIO_ROOT_PASSWORD` (`cli/service.py:49`). |
-| `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | `objectstore.py:88` | Bucket result blobs are written to. |
-| `NDIF_OBJECT_STORE_REGION` | `us-east-1` | `objectstore.py:91` | Set explicitly so presigning never round-trips to discover the region. |
-| `NDIF_OBJECT_STORE_VERIFY` | `true` | `objectstore.py:93` | TLS verification. Set false for self-signed MinIO over HTTPS. Parsed by `_boolish` — `1`/`true`/`yes`/`on` (`objectstore.py:33-34`). |
+| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `src/ndif/common/providers/objectstore.py:40` | Server-side endpoint used to upload and ensure the bucket. **Empty means real AWS S3** — boto3 derives the endpoint from `region`. |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | `objectstore.py:42` | Client-facing endpoint used *only for presigning*. Empty → falls back to `url`. A presigned URL is an HMAC over the request including the host, so this must be the host the downloader actually hits. |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` | `minioadmin` | `objectstore.py:46` | S3 access key. Also becomes MinIO's `MINIO_ROOT_USER` when the CLI spawns MinIO (`cli/service.py:48`). **Set this and the secret key both empty** to authenticate as the host's own IAM role instead — see below. |
+| `NDIF_OBJECT_STORE_SECRET_KEY` | `minioadmin` | `objectstore.py:47` | S3 secret key; likewise `MINIO_ROOT_PASSWORD` (`cli/service.py:49`). |
+| `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | `objectstore.py:48` | Bucket result blobs are written to. |
+| `NDIF_OBJECT_STORE_REGION` | `us-east-1` | `objectstore.py:51` | Set explicitly so presigning never round-trips to discover the region. |
+| `NDIF_OBJECT_STORE_VERIFY` | `true` | `objectstore.py:53` | TLS verification. Set false for self-signed MinIO over HTTPS. Parsed by `_boolish` — `1`/`true`/`yes`/`on` (`objectstore.py:32-33`). |
 | `NDIF_OBJECT_STORE_CONSOLE_PORT` | `9001` | `src/ndif/cli/service.py:38` | **CLI only** — the console port for a MinIO server the CLI spawns. The compose file hardcodes `--console-address ":9001"` (`docker-compose.yml:128`) and ignores this. |
 
 ## Postgres and API-key auth
