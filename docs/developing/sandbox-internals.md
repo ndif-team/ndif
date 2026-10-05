@@ -105,13 +105,17 @@ are rebuilt. `SandboxDriver.pump` sets it to the host's own model device.
 A *park* is `(event, location, pin, *rest)`: `event` is `Event.VALUE`/`SWAP`/`SKIP`
 or a control-event string, `rest` carries the replacement for SWAP/SKIP, and `pin`
 is the worker's `tracer.iter` pointer or `None`. Parks cross **untagged** — the
-host owns the `.i{n}` occurrence tag.
+host owns the `.i{n}` occurrence tag. A `tracer.barrier()` arrival is an
+`Event.BARRIER` park: `location` identifies the barrier (`barrier:<id>`), the
+count it was built with rides in `rest`, and no pin — the runner's patched
+`Barrier.__call__` parks **every** arrival so the host can count and release the
+round (`SandboxDriver.barrier_arrival`); nothing is released runner-side.
 
 | Message | Dir | Payload | Sent by | Reply |
 |---|---|---|---|---|
 | `(blob, compress, dtype, seed, env)` | h→r | the request's serialized tracer payload and its zstd flag, the model's dtype (for the runner's autocast bracket), the block's RNG seed or `None`, and the request's per-request environment (applied to the runner's meta model); first message on the connection | `run_in_runner`, `model.py:97` | eventually `INTERLEAVE`, then `END`/`EXCEPTION` |
-| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step — except on a control reply, where it is the `KEEP_PIN` sentinel (`protocol.py`): the control park carried no pin, so the proxy's copy is stale and the worker's own stands | `MediatorProxy.switch`, `driver.py:183`; `settle_control`, `:126` | `PARK` |
-| `("THROW", id, requester, is_iter)` | h→r | worker `id` is still parked on `requester`, which the model never reached | `check_dangling`, `driver.py` | none |
+| `("RESUME", id, args, pin)` | h→r | resume worker `id`; `args` is `(value,)` for a read, `()` for a swap/skip or a barrier release, `(reply,)` for a control park; `pin` pushes the proxy's `iteration` so `tracer.iter` relaxation stays in step — except on a control or barrier-release reply, where it is the `KEEP_PIN` sentinel (`protocol.py`): those parks carried no pin, so the proxy's copy is stale and the worker's own stands | `MediatorProxy.switch`, `driver.py:183`; `settle_control`, `:126`; `release` | `PARK` |
+| `("THROW", id, requester, kind)` | h→r | worker `id` is still parked on `requester`, which the model never reached; `kind` is the host's classification — `"OUT_OF_ORDER"` (raise `OutOfOrderError` into it), `"ITER"` (a `tracer.iter` loop outran the model: unwind and warn), `"BARRIER"` (the barrier never released: raise the base `ValueError`) | `check_dangling`, `driver.py` | none (a fatal kind ends the run: `EXCEPTION`) |
 | `("CACHE_HIT", cache_id, path, key, value)` | h→r | one filtered, transformed value for a `tracer.cache()` living in the runner | `ShippingCache._record`, `driver.py:68` | none |
 | `("DONE", result)` | h→r | the forward pass returned `result` | `interleave`, `driver.py` | none — ends `pump` |
 | `("INTERLEAVE", fn_name, parks, batch_groups, invokes, **kwargs)` | r→h | run wrapper method `fn_name` (`_call` / `generate` / `pipe`) on the model; one initial park per worker, each worker's `[start, size]` batch rows, the raw per-invoke inputs, and the trace-level forward kwargs | `IPCEnvoy.interleave`, `nns.py:213` | a stream of `RESUME`/`THROW`, then `DONE` |
@@ -369,7 +373,7 @@ worker's rows; `pump` records each hit into the runner's cache (`nns.py:167`).
 |---|---|---|
 | Normal | block finishes | forward returns → `DONE` → `pump` returns → block ends → `END` with the saved-values blob → host uploads it |
 | `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises (`nns.py:151`); the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
-| Dangling worker | worker still parked after the forward | `check_dangling` (`driver.py:408`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:186`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
+| Dangling worker | worker still parked after the forward | `check_dangling` (`driver.py`) classifies the park as nnsight's `dangling_unwind` does and sends `THROW` with the kind; `IPCInterleaver.throw` (`nns.py`) raises `OutOfOrderError` into the worker (`OUT_OF_ORDER`), catches and warns for a `tracer.iter` loop that outran the model (`ITER`), or raises the base barrier `ValueError` (`BARRIER` — a count no set of blocks could satisfy) |
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` (`driver.py:237`) raises `RunnerError`; `format_error` returns it verbatim, non-fatal |
 | Timeout / cancel | `run`'s race (`base.py:357`) | `interrupt` (`model.py:200`) stops the runner; the host thread's `recv` fails with `ConnectionError` |
 | Always | after every request | `cleanup` (`model.py:169`) → `discard_sandbox` (`:181`) stops the request's runner |
@@ -400,11 +404,19 @@ boundary to rely on today.
 
 ## Gotchas
 
-- **`tracer.barrier()` parks a 2-tuple.** nnsight's `Mediator.barrier` switches
-  `(Event.BARRIER, None)` directly instead of going through `Mediator.event`, so
-  it carries no `pin` and `MediatorProxy.adopt`'s 3-way unpack (`driver.py:97`)
-  fails on it. A barrier every block reaches during worker start-up is released
-  inside the runner and never crosses; one still waiting when the parks ship does.
+- **`tracer.barrier()` is counted on the host, not in the runner.** The base
+  `Barrier.__call__` counts arrivals in-process and the last one releases the
+  others by switching them directly — in the runner that release happened where
+  the host could not see it, so a released worker's post-barrier reads were
+  never served and its saves silently vanished while the job COMPLETED (#294).
+  The runner patch (`nns.ipc_barrier`) parks *every* arrival over the socket
+  (`Event.BARRIER`, the barrier's id, its count) and
+  `SandboxDriver.barrier_arrival` releases the round once it is full — each
+  release a `RESUME`(`KEEP_PIN`)→`PARK` round trip, whether the arrival was an
+  initial park or landed mid-forward. A count too high to ever release is
+  classified by `check_dangling` as nnsight's `dangling_unwind` does and raises
+  the same `ValueError` the trusted path raises — not the `tracer.iter`
+  overrun warning the barrier park's `None` iteration used to fall into.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
   mediator in the *runner*, whose `handle` never runs, so only the generic
   writeback of the raw value reaches the host.

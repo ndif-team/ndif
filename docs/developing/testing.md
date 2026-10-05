@@ -31,6 +31,7 @@ a real running NDIF over HTTP and skip themselves if nothing answers at
 | `test_replica_wait.py` | nothing | what counts as "not yet" versus "never" when waiting on a replica |
 | `test_fanout.py` | nothing | the `Fanout` barrier that lets one runner drive several ranks |
 | `test_sandbox_iter_pins.py` | nnsight + the gpt2 weights (no server, no Ray) | the `tracer.iter` pin surviving control events (`#296`): a real gpt2 on CPU, a spawned runner, a `SandboxDriver` over the socket, values compared step-by-step against the local run |
+| `test_sandbox_barriers.py` | nnsight + the gpt2 weights (no server, no Ray) | `tracer.barrier()` across the socket (`#294`): cross-invoke releases, the embedding transplant, reuse, and a wrong count raising the trusted path's `ValueError` instead of warning |
 | `test_node_registry.py` | nothing | the two regressions behind the 2026-09-08 prod outage: a stale node registry and a swallowed trace error |
 
 `test_tensor_parallel_remote.py` skips itself unless a replica of its model is

@@ -155,10 +155,12 @@ host: forward pass reaches location L, value V
 - A **swap** (`model.layer.output = x`) rides back in the worker's `PARK` (its
   pending event carries the replacement); the proxy substitutes it.
 - `PARK(id, None)` means the worker finished.
-- After the run, `check_dangling` finds proxies still parked (workers that wanted a
-  location the model never reached) and sends `THROW`; the runner throws
-  `OutOfOrderError` into that worker — or warns, for an open-ended `tracer.iter` that
-  outran the model.
+- After the run, `check_dangling` finds proxies still parked (workers that wanted
+  something the run never delivered), classifies each as nnsight's
+  `dangling_unwind` does, and sends `THROW` with the kind; the runner throws
+  `OutOfOrderError` into that worker — or warns, for an open-ended `tracer.iter`
+  that outran the model, or raises the base barrier `ValueError`, for a
+  `tracer.barrier()` round that could never release.
 - `tracer.stop()` in a worker raises `EarlyStopException`; the runner sends `STOP`,
   the proxy re-raises it into the forward pass, and the model's interleaver swallows
   it as an intentional early stop.
@@ -198,6 +200,35 @@ occurrence as its own field alongside the undecorated location. The interleaver
 reads both by name — it builds its parked-location set from `pending.provider`
 and matches a visit on `.provider` and `.iteration` — so a bare tuple of the
 same values in the same order does not substitute for one.
+
+### Barrier authority lives on the host too
+
+`tracer.barrier()` is the one primitive where base nnsight coordinates
+worker-to-worker rather than worker-to-model: `Barrier.__call__` counts arrivals
+in its own `_waiting` list and the last one releases the others by switching
+them directly. In the sandbox all the workers live in the runner, so that
+release *worked* — but entirely out of the host's sight: a released worker's
+next park was stashed on its own mediator and never crossed, the host proxy
+kept the stale barrier park, every post-barrier read went unserved, and the
+worker's saves were silently dropped while the dangling check mistook the park
+for a `tracer.iter` overrun and merely warned (#294).
+
+So the counting moved to the host, beside the occurrence counter and the pin:
+
+- The runner patches `Barrier.__call__` (`nns.ipc_barrier`) so **every** arrival
+  parks over the socket — `Pending(Event.BARRIER, "barrier:<id>", None, n)`,
+  the barrier's identity and the count it was built with, no pin. Nothing is
+  counted or released runner-side.
+- The host (`SandboxDriver.barrier_arrival`, reached from `MediatorProxy.adopt`)
+  accumulates arrivals per barrier id and, at `n`, clears the round *before*
+  resuming anyone (so a reused barrier rounds correctly) and releases the
+  waiters sequentially — earlier arrivals first, the completing one last,
+  mirroring the base. Each release is an ordinary `RESUME`→`PARK` round trip
+  with empty args and `KEEP_PIN` (a barrier park carries no pin, exactly like a
+  control park), so the released worker's next park always crosses and joins
+  the run — whether the round completed among the initial parks in
+  `_build_proxies` or mid-visit, where the base interleaver's `handle` loop
+  already serves a worker released into the location it is still serving.
 
 ---
 
