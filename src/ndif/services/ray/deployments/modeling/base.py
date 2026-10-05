@@ -37,6 +37,7 @@ from .....common.metrics import (
 )
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.ray import CachedActorError
+from .....common.providers.redis import RedisProvider
 from .....common.telemetry import elapsed_ms, event
 from .....common.types import MODEL_KEY
 from .nns import block_scope, execute_traced_block, prepare_traced_block
@@ -419,10 +420,12 @@ class BaseModelDeployment:
             # Hand the result straight back on the COMPLETED response when it is
             # small enough (and there is a socket to hand it to). A non-blocking
             # request has no live channel, so it always goes to the object store.
-            # 0 means no cap; see ObjectStoreProvider.CONFIG for why there is one.
-            limit = ObjectStoreProvider.max_socket_result_bytes
+            # The cap comes from the Redis the response publishes through: past
+            # its pubsub output-buffer limits the subscriber is disconnected and
+            # the response silently lost — see RedisProvider.max_publish_bytes.
+            limit = RedisProvider.max_publish_bytes()
             blob = self.prepare_result(request, data)
-            if request.session_id and (not limit or len(blob) <= limit):
+            if request.session_id and len(blob) <= limit:
                 inline = blob
             else:
                 url = self.upload_bytes(request, blob)
