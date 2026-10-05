@@ -121,7 +121,7 @@ host owns the `.i{n}` occurrence tag.
 | `("END", blob, deserialize_ms)` | r→h | `torch.save` of the block's saved values, plus the runner's deserialize time | `run`, `nns.py:463` | none |
 | `("EXCEPTION", text)` | r→h | the block raised; already-formatted traceback text | `run`, `nns.py:463` | none |
 | `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:298` | served by `install_source` (`driver.py`) → operation names, or `None` if the forward can't be sourced |
-| `("CALL", path, None, hook, args, kwargs)` | park | control park: run the module's forward ad hoc (logit lens) | `IPCEnvoy.__call__`, `nns.py:246` | served by `run_module` (`driver.py`) → the module's output |
+| `("CALL", path, None, hook, args, kwargs)` | park | control park: call the module at `path` ad hoc (logit lens). `run_module` defers to the host Envoy's own `__call__`, which owns the occurrence semantics: `hook=False` runs the module with the trace stood down, spending no occurrence for it or anything under it (#295), while `hook=True` lets the trace watch the call | `IPCEnvoy.__call__`, `nns.py:255` | served by `run_module` (`driver.py:314`) → the module's output |
 | `("CACHE", cache_id, None, config)` | park | control park: register a `tracer.cache()` filter | `ipc_cache`, `nns.py:349` | `settle_control` attaches a `ShippingCache` → `None` |
 
 The last three name nothing the forward produces: they ride inside a `PARK`, are
@@ -271,7 +271,7 @@ first park arrived in `INTERLEAVE`). `alive` (`:170`) is "has a pending park".
 prepends the trace's edits, enters the interleaver (starting every worker so each
 parks on its first location), ships `INTERLEAVE`, then hands the socket to
 `IPCInterleaver.pump` (`:119`) until `DONE`. On the host,
-`SandboxDriver.interleave` (`driver.py:350`) builds one proxy per park,
+`SandboxDriver.interleave` (`driver.py:369`) builds one proxy per park,
 settles their control events, installs them as the model interleaver's mediators,
 assembles the inputs, runs `fn(...)` for real, serves the return value at
 `"result"`, checks for dangling workers, and sends `DONE`.
@@ -345,7 +345,7 @@ ships `batcher.invokes` raw (`IPCEnvoy.interleave`, `nns.py:235`) and the host
 rebuilds a `Batcher`, `add`s each invoke, and calls `assemble(fn)` (`_assemble`,
 `driver.py`); trace-level kwargs (`max_new_tokens`) win, and input tensors are
 device-placed (`_to_device`, `driver.py:271`). Each proxy carries its shipped `batch_group`
-(`_build_proxies`, `driver.py:318`), so the inherited `handle` narrows a read to that
+(`_build_proxies`, `driver.py:337`), so the inherited `handle` narrows a read to that
 invoke's rows and widens its edit back into the batch.
 
 ### Control events and caches
@@ -369,7 +369,7 @@ worker's rows; `pump` records each hit into the runner's cache (`nns.py:167`).
 |---|---|---|
 | Normal | block finishes | forward returns → `DONE` → `pump` returns → block ends → `END` with the saved-values blob → host uploads it |
 | `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises (`nns.py:151`); the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
-| Dangling worker | worker still parked after the forward | `check_dangling` (`driver.py:389`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:186`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
+| Dangling worker | worker still parked after the forward | `check_dangling` (`driver.py:408`) sends `THROW`; `IPCInterleaver.throw` (`nns.py:186`) raises `OutOfOrderError` into the worker — or, for `iteration != 0` (an open-ended `tracer.iter` that outran the model), catches it and warns |
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` (`driver.py:237`) raises `RunnerError`; `format_error` returns it verbatim, non-fatal |
 | Timeout / cancel | `run`'s race (`base.py:357`) | `interrupt` (`model.py:200`) stops the runner; the host thread's `recv` fails with `ConnectionError` |
 | Always | after every request | `cleanup` (`model.py:169`) → `discard_sandbox` (`:181`) stops the request's runner |

@@ -312,15 +312,25 @@ class SandboxDriver:
         }
 
     def run_module(self, path: str, hook: bool, args, kwargs):
-        """Run the module at ``path``'s forward on ``args`` and return its output —
-        the host side of the runner's ``IPCEnvoy.__call__`` (an ad-hoc module call,
-        e.g. the logit lens, where the module lives here). Mirrors ``Envoy.__call__``:
-        ``hook=False`` calls ``forward`` directly (no hooks, its real place in the
-        pass untouched); ``hook=True`` runs the full module so its hooks fire."""
-        envoy = self._envoy_at(path)
-        if hook:
-            return envoy(*args, **kwargs)
-        return envoy._module.forward(*args, **kwargs)
+        """Run the module at ``path`` ad hoc and return its output — the host side
+        of the runner's ``IPCEnvoy.__call__`` (an ad-hoc module call, e.g. the
+        logit lens, where the module lives here).
+
+        Defers to ``Envoy.__call__`` instead of picking a callable itself,
+        because the base call owns the occurrence semantics: ``hook=False`` runs
+        the module the ordinary way with the trace stood down for the duration,
+        so nothing is served and no occurrence is spent for the module *or
+        anything under it* — a hand-rolled ``_module.forward(...)`` with
+        ``interleaving`` still on let the controllers count the ad-hoc visit and
+        steal the real occurrence, so a later read of the module's real
+        ``.output`` raised ``OutOfOrderError`` (#295) — and the module's own
+        runtime wrappers still fire (transformers tensor parallelism keeps its
+        collectives there; a bare ``forward`` returns one rank's slice).
+        ``hook=True`` lets the trace watch the call, for a module attached to
+        the tree rather than one the forward already runs. The host's ``Envoy``
+        is the real, unpatched class (the IPC patches load only in the runner),
+        so this is the trusted path's behavior by construction."""
+        return self._envoy_at(path)(*args, hook=hook, **kwargs)
 
     # -- the interleaved run --------------------------------------------------
 

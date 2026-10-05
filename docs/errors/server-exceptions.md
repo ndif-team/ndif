@@ -91,9 +91,9 @@ plumbing and the actor's own frames before formatting (`base.py:558-560`).
 
 ### OutOfOrderError thrown into a dangling worker
 
-After the forward pass returns, `check_dangling` (`driver.py:389`) looks for
+After the forward pass returns, `check_dangling` (`driver.py:408`) looks for
 proxies still holding a park — a worker waiting on a location the model never
-reached — and sends `("THROW", id, requester, iteration != 0)` (`driver.py:401`).
+reached — and sends `("THROW", id, requester, iteration != 0)` (`driver.py:420`).
 The runner's `IPCInterleaver.throw` (`nns.py:186`) constructs the error and
 throws it into the greenlet so the traceback points at the line that was waiting:
 
