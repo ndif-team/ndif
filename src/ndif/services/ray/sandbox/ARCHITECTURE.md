@@ -203,6 +203,28 @@ reads both by name — it builds its parked-location set from `pending.provider`
 and matches a visit on `.provider` and `.iteration` — so a bare tuple of the
 same values in the same order does not substitute for one.
 
+### Source instrumentation lives on the host too
+
+`.source` decomposes a forward into operations, and the forward that runs is the
+host's — so everything source builds has to land there. One level is a SOURCE
+control park: the host instruments the module's forward (`install_source`) and
+replies with the operation names/lines/text (the `Compiled`'s code object cannot
+pickle, so only its describable parts cross). **Recursive** `.source` (drilling
+into a call the forward makes) can't be served that way, because the drilled-into
+callable is a live value that only exists mid-forward: base nnsight resolves it
+by parking on `{path}.fn` until the op fires. The sandbox keeps that shape and
+splits it — the runner's patched `SourceEnvoy.source` arms the host with a
+SOURCE park carrying the *op path* (mark `interleaver.sourced[path] = None`, so
+`run_op` serves the callable at `{path}.fn`), then parks on `{path}.fn` as the
+base does. When the op fires the host serves the callable to the worker over the
+socket (functions pickle by reference) and, in the same moment
+(`MediatorProxy.switch` → `SandboxDriver.build_recursive_source`), instruments
+its own copy into `interleaver.sourced` — the copy `run_op` then runs, making
+the inner ops ordinary locations the proxies serve. The runner rebuilds the same
+`Compiled` locally for validation and reprs. Error parity is preserved by
+construction: the submodule/assignment/no-source cases raise the base
+`SourceNotAvailable` inside the worker's own frame, and the host builds nothing.
+
 ### Barrier authority lives on the host too
 
 `tracer.barrier()` is the one primitive where base nnsight coordinates

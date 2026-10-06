@@ -124,7 +124,7 @@ round (`SandboxDriver.barrier_arrival`); nothing is released runner-side.
 | `("PRINT", text)` | r→h | one complete line of the block's stdout | `Writer.write`, `runner.py:86` | none — echoed as a `LOG` response |
 | `("END", blob, deserialize_ms)` | r→h | `torch.save` of the block's saved values, plus the runner's deserialize time | `run`, `nns.py:463` | none |
 | `("EXCEPTION", text, cause_type)` | r→h | the block raised; already-formatted traceback text plus the terminal exception's class name, which `RunnerError` carries as `cause_type` so telemetry records the real type rather than the wrapper (#280) | `run`, `nns.py:463` | none |
-| `("SOURCE", path, None)` | park | control park: source-instrument the module at `path` | `IPCSource.__init__`, `nns.py:298` | served by `install_source` (`driver.py`) → operation names, or `None` if the forward can't be sourced |
+| `("SOURCE", path, None)` | park | control park: source-instrument `path`. A module path instruments its forward; a nested op path (`...attn.source.attention_interface_1`) is a recursive `.source` — it **arms** the host (`interleaver.sourced[path] = None`) to serve the drilled-into callable at `{path}.fn` when the op fires, and to instrument it host-side at that moment (`build_recursive_source`) so the inner ops fire (#281) | `IPCSource.__init__`, `nns.py:298`; `ipc_recursive_source`, `nns.py` | served by `install_source` (`driver.py`) → operation names (module path), or `None` — if the forward can't be sourced, or always for a nested path, whose runner rebuilds its own `Compiled` from the callable served at `{path}.fn` |
 | `("CALL", path, None, hook, args, kwargs)` | park | control park: call the module at `path` ad hoc (logit lens). `run_module` defers to the host Envoy's own `__call__`, which owns the occurrence semantics: `hook=False` runs the module with the trace stood down, spending no occurrence for it or anything under it (#295), while `hook=True` lets the trace watch the call | `IPCEnvoy.__call__`, `nns.py:255` | served by `run_module` (`driver.py:314`) → the module's output |
 | `("CACHE", cache_id, None, config)` | park | control park: register a `tracer.cache()` filter | `ipc_cache`, `nns.py:349` | `settle_control` attaches a `ShippingCache` → `None` |
 
@@ -261,7 +261,7 @@ Each nnsight `Mediator` is cut in half at the model↔mediator seam:
 | occurrence counting, pin relaxation | none (pin pushed back on every `RESUME`) | inherited `Mediator.handle` on the proxy |
 | forward hooks | `IPCInterleaver.instrument` is a no-op (`nns.py:114`) | the model's real `Interleaver` |
 | batch scoping, input assembly | `batch_group` computed by the tracer, shipped | `Batcher` + `narrow`/`widen`, `_assemble` (`driver.py`) |
-| `.source` / ad-hoc call / cache | `IPCSource`, `IPCEnvoy.__call__`, the real `Cache` | `install_source`, `run_module`, `ShippingCache` |
+| `.source` / ad-hoc call / cache | `IPCSource`, `ipc_recursive_source`, `IPCEnvoy.__call__`, the real `Cache` | `install_source` + `build_recursive_source`, `run_module`, `ShippingCache` |
 | dangling workers | `IPCInterleaver.throw` (`nns.py:186`) | `check_dangling` sends `THROW` |
 
 `MediatorProxy` (`driver.py:72`) **subclasses `Mediator` and reuses `handle`
@@ -358,6 +358,29 @@ invoke's rows and widens its edit back into the batch.
 `handle` ever sees them — reply, `RESUME`, adopt the next park, repeat until the
 worker parks on a real model location — once per proxy before the forward starts,
 and again after every `switch`.
+
+Recursive `.source` (drilling into a call the forward makes —
+`attn.source.attention_interface_1.source.attn_weights_2`) splits the base
+`SourceEnvoy.source` property at the same seam. The base resolves the callable
+from the live value at run time: mark `interleaver.sourced[path] = None`, park
+on `{path}.fn` until `run_op` serves the callable, instrument it, and let
+`run_op` run the instrumented copy — whose inner ops are ordinary locations.
+None of that lands in the right process from the runner (the mark and the build
+must sit on the interleaver whose forward runs — the host's), so the runner's
+patched `SourceEnvoy.source` (`ipc_recursive_source`, `nns.py`) first arms the
+host with a SOURCE control park carrying the **op path**, then parks on
+`{path}.fn` exactly as the base does. When the op fires, the host serves the
+callable both ways at once: over the socket to the parked worker (functions
+pickle by reference), and — from `MediatorProxy.switch`, the moment the `.fn`
+value is in hand — into its own `interleaver.sourced` as an instrumented copy
+(`SandboxDriver.build_recursive_source`). The runner rebuilds the same
+`Compiled` locally for names/validation/reprs (`Compiled.code` never pickles,
+and the names are deterministic given the callable's source); arming that
+arrived with the *initial* parks is re-applied just after the interleaver is
+entered, because `Interleaver.__enter__` clears `sourced`. The error story
+matches the trusted path: a submodule target, an assignment, or a callable with
+no Python source raises the base `SourceNotAvailable` from the worker's own
+frame, and the host builds nothing.
 
 `tracer.cache()` **is** supported over the socket: `ipc_cache` (`nns.py:349`)
 builds the ordinary nnsight `Cache`/`CacheView` in the runner (so the client can

@@ -33,6 +33,7 @@ a real running NDIF over HTTP and skip themselves if nothing answers at
 | `test_sandbox_iter_pins.py` | nnsight + the gpt2 weights (no server, no Ray) | the `tracer.iter` pin surviving control events (`#296`): a real gpt2 on CPU, a spawned runner, a `SandboxDriver` over the socket, values compared step-by-step against the local run |
 | `test_sandbox_barriers.py` | nnsight + the gpt2 weights (no server, no Ray) | `tracer.barrier()` across the socket (`#294`): cross-invoke releases, the embedding transplant, reuse, and a wrong count raising the trusted path's `ValueError` instead of warning |
 | `test_sandbox_error_masking.py` | nnsight + the gpt2 weights (no server, no Ray; the two `report`-wiring tests also need `ray` importable) | errors cross the sandbox as themselves (`#280`): the out-of-order repro arrives as its `OutOfOrderError`, a host-side apply failure arrives as the host's own exception, never `BrokenPipeError`, and telemetry's `error_type` is the real type on both paths |
+| `test_sandbox_recursive_source.py` | nnsight + the gpt2 weights (no server, no Ray) | recursive `.source` over the socket (`#281`): the eager attention-probabilities route, one-level `.source` untouched, the drill beside module reads and across generation steps, and a missing op failing with the available names — values against the local run |
 | `test_node_registry.py` | nothing | the two regressions behind the 2026-09-08 prod outage: a stale node registry and a swallowed trace error |
 
 `test_tensor_parallel_remote.py` skips itself unless a replica of its model is
