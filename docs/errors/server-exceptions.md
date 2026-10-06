@@ -34,7 +34,7 @@ Three facts organise everything below:
 
 | Exception | Raised at | What the user sees | Cause | Whose fault |
 |---|---|---|---|---|
-| `RunnerError` | defined `sandbox/driver.py:32`, raised `sandbox/driver.py:258` | `ERROR` with the block's own traceback | The user's block raised inside the runner process | **user** |
+| `RunnerError` | defined `sandbox/driver.py:38`, raised in `SandboxDriver.next_event` | `ERROR` with the block's own traceback; telemetry's `error_type` is the terminal exception's name it carries (`cause_type`), not the wrapper | The user's block raised inside the runner process | **user** |
 | `PayloadError` | `common/errors.py:31`, raised by `BackendRequestModel.deserialize` (`common/schema/request.py:98`) | `ERROR`: `Your request payload could not be read (...)` — a **sentence, not a traceback** | The blob was truncated, corrupted, or compressed differently than `compress` declared | **user** (or the network) |
 | `ArchitectureMismatchError` | `common/errors.py:50`, raised at `common/schema/request.py:96` | `ERROR`: `The model architecture on this server doesn't match the one your code was traced against: it has no module at '<path>'.` plus the `ndif.compare()` recipe | A `Module:<path>` persistent id has no match in the server's live model tree — almost always a `transformers` difference | **user** (environment drift) |
 | Any block exception (trusted path) | propagates out of `BaseModelDeployment.execute`, `base.py:473`, surfaced when `job.result()` re-raises at `base.py:368` | `ERROR` with the block's own traceback | The user's block raised in the actor process | **user** |
@@ -74,10 +74,11 @@ class RunnerError(Exception):
 The runner catches everything out of the block, formats the traceback **in its
 own process** — preferring the worker's `__intervention_tb__` when the failure
 came from intervention code, else nnsight's `clean_traceback` — and sends
-`("EXCEPTION", text)` (`sandbox/nns.py:544`-`555`). On the host,
-`SandboxDriver.next_event` turns that into `raise RunnerError(text)`
-(`driver.py:257-258`), and `SandboxHost.format_error` (`model.py:161-166`)
-returns the string verbatim with `fatal=False`:
+`("EXCEPTION", text, cause_type)` (`sandbox/nns.py`), where `cause_type` is the
+terminal exception's class name (the type survives the socket no better than
+the traceback does). On the host, `SandboxDriver.next_event` turns that into
+`raise RunnerError(text, cause_type)`, and `SandboxHost.format_error`
+(`model.py`) returns the string verbatim with `fatal=False`:
 
 ```python
 if isinstance(exception, RunnerError):
@@ -89,6 +90,26 @@ So a `RunnerError` in your logs is **always** user code. The corresponding
 trusted-path failure has no wrapper class at all: the exception propagates out of
 the worker thread, and the base `format_error` (`base.py:545`) strips nnsight
 plumbing and the actor's own frames before formatting (`base.py:558-560`).
+
+Telemetry sees through the wrapper: `SandboxHost.error_name` records
+`cause_type` as the event's `error_type`, so the same mistake counts as, say,
+`OutOfOrderError` whether or not it was sandboxed. Recording the wrapper — or,
+before the tolerant teardown sends below, the `BrokenPipeError` that followed
+it — attributed user errors to infrastructure (#280).
+
+Two teardown rules keep transport noise out of the report (#280):
+
+* **Anything the host throws in is already known to it.** A fatal `THROW` makes
+  the runner raise, report EXCEPTION and exit — possibly before the host's next
+  send — so `check_dangling`'s THROW loop and `interleave`'s DONE send tolerate
+  `OSError` and let `pump` read the buffered EXCEPTION (AF_UNIX keeps buffered
+  bytes after peer exit). Before that, the broken DONE send surfaced as
+  `BrokenPipeError: [Errno 32] Broken pipe` in place of the thrown
+  `OutOfOrderError`.
+* **Anything the host itself raises mid-forward** — e.g. applying a swapped
+  value the next layer can't run with — propagates out of
+  `SandboxDriver.interleave`/`pump` to `format_error` as itself. The runner's
+  socket then dies under it, but its BrokenPipe stays in the runner's stderr.
 
 ### A dangling worker, thrown into by kind
 
