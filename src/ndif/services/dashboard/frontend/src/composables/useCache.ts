@@ -10,7 +10,7 @@ import { onMounted, ref } from 'vue'
 import { api } from '@/api'
 import type { CacheValues } from '@/deploy'
 
-const EMPTY: CacheValues = { repo_id: [], actor_class: [], envoy_class: [] }
+const EMPTY: CacheValues = { repo_id: [], task: [], actor_class: [], envoy_class: [] }
 
 export function useCache() {
   const cache = ref<CacheValues>({ ...EMPTY })

@@ -39,10 +39,10 @@ def deploy(
 
     Args:
         specs: model spec dicts. Required: ``checkpoint``. Optional: ``revision``,
-            ``pinned``, ``replicas`` (default 1), ``trusted`` (default False),
-            ``dtype``, ``actor_class``, ``envoy_class``, ``padding_factor``,
-            ``size_bytes``, ``padding_bias``, ``gpus``, ``max_tp``,
-            ``execution_timeout_seconds``, ``model_key``.
+            ``task``, ``pinned``, ``replicas`` (default 1), ``trusted`` (default
+            False), ``dtype``, ``actor_class``, ``envoy_class``,
+            ``padding_factor``, ``size_bytes``, ``padding_bias``, ``gpus``,
+            ``max_tp``, ``execution_timeout_seconds``, ``model_key``.
         sync: reconcile the cluster to match ``specs`` exactly (evict extras,
             trim/grow per model). Without it, each call is purely additive.
         ray_address: Ray address (defaults to ``NDIF_RAY_ADDRESS``).
@@ -81,7 +81,8 @@ def deploy(
         else:
             emit(on_message, f"Generating model key for {spec['checkpoint']}{rev_str}...")
             model_key = get_model_key(
-                spec["checkpoint"], spec["revision"], spec.get("envoy_class")
+                spec["checkpoint"], spec["revision"], spec.get("envoy_class"),
+                spec.get("task"),
             )
             emit(on_message, f"  Model key: {model_key}")
         model_keys_map[model_key] = spec

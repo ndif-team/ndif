@@ -15,6 +15,9 @@ export interface ReplicaInfo {
 export interface Deployment {
   model_key: string
   repo_id?: string
+  // Pipeline task parsed from the model_key server-side; null/absent on a
+  // key minted before tasks joined the model identity.
+  task?: string | null
   revision?: string | null
   // Card-level "best" across replicas (HOT > WARM > COLD).
   deployment_level?: 'HOT' | 'WARM' | 'COLD' | string
@@ -356,6 +359,9 @@ function onMenuBlur(e: FocusEvent) {
         </div>
 
         <div class="meta">
+          <span v-if="deployment.task" :title="'pipeline task'">
+            ⌬ {{ deployment.task }}
+          </span>
           <span v-if="deployment.revision" :title="'revision: ' + deployment.revision">
             ⌖ {{ deployment.revision }}
           </span>

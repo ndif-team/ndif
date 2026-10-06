@@ -77,9 +77,10 @@ def _aggregate_by_model_key(replicas: list[dict]) -> list[dict]:
 
     Carries every deployment field ``controller.status()`` reports that
     ``deploy -f`` can set again, so an exported config restores the deployment
-    as it was. ``envoy_class`` needs no entry of its own — it is the prefix of
-    ``model_key``, which is carried. ``padding_factor`` is not recoverable: it
-    lives on the deploy-time config, not on the deployment.
+    as it was. ``envoy_class`` and ``task`` need no entry of their own — both
+    live inside ``model_key``, which is carried and used verbatim on redeploy.
+    ``padding_factor`` is not recoverable: it lives on the deploy-time config,
+    not on the deployment.
     """
     by_mk: dict[str, dict] = {}
     counts: dict[str, int] = {}

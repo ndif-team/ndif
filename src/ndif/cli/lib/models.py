@@ -14,17 +14,20 @@ DEFAULT_ENVOY_CLASS = "nnsight.modeling.transformers.TransformersModel"
 
 
 def get_model_key(checkpoint: str, revision: str | None = None,
-                  envoy_class: str | None = None) -> str:
+                  envoy_class: str | None = None, task: str | None = None) -> str:
     """Resolve the canonical model_key for a checkpoint via nnsight.
 
     ``envoy_class`` selects the nnsight wrapper (defaults to ``TransformersModel``).
-    Construction is meta-lazy (no weights loaded); the lookup canonicalises the
-    HuggingFace repo id via the Hub.
+    ``task`` pins the pipeline task; left unset it is inferred from the
+    checkpoint, exactly as an nnsight client with no ``task=`` does, so the two
+    mint the same key. Construction is meta-lazy (no weights loaded); the lookup
+    canonicalises the HuggingFace repo id via the Hub.
     """
     from nnsight.util import from_import_path
 
     cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
-    return cls(checkpoint, revision=revision).to_model_key()
+    kwargs = {} if task is None else {"task": task}
+    return cls(checkpoint, revision=revision, **kwargs).to_model_key()
 
 
 def extract_repo_id_from_model_key(model_key: str) -> str:
@@ -42,15 +45,31 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
     return model_key
 
 
+def extract_task_from_model_key(model_key: str) -> str | None:
+    """Pull the pipeline ``task`` out of a model_key, or None.
+
+    None both for a non-JSON suffix (e.g. a VLLM key) and for a key minted
+    before tasks joined the model identity — such a deployment serves whatever
+    task the server inferred at load.
+    """
+    import json
+
+    try:
+        return json.loads(model_key.split(":", 1)[1]).get("task")
+    except (IndexError, ValueError, AttributeError):
+        return None
+
+
 def canonicalize_checkpoint(checkpoint: str, revision: str | None = None,
-                            envoy_class: str | None = None) -> tuple[str, str | None, str]:
+                            envoy_class: str | None = None,
+                            task: str | None = None) -> tuple[str, str | None, str]:
     """Resolve a user-typed checkpoint to ``(canonical_repo_id, revision, model_key)``.
 
     One nnsight lookup yields both the Hub-canonical repo id and the model_key,
     so callers (e.g. the dashboard's schedule store) can persist both without
     paying the resolution cost twice.
     """
-    model_key = get_model_key(checkpoint, revision, envoy_class)
+    model_key = get_model_key(checkpoint, revision, envoy_class, task)
     return extract_repo_id_from_model_key(model_key), revision, model_key
 
 

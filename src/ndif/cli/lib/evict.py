@@ -13,6 +13,7 @@ from .models import get_current_deployments, get_model_key
 def evict(
     *,
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None,
+    task: Optional[str] = None,
     model_keys: Optional[list[str]] = None,
     evict_all: bool = False,
     replica: Optional[str] = None,
@@ -57,7 +58,7 @@ def evict(
     elif checkpoints:
         target_keys = []
         for cp, rev in checkpoints:
-            mk = get_model_key(cp, rev)
+            mk = get_model_key(cp, rev, task=task)
             target_keys.append(mk)
             emit(on_message, f"  Model key for {cp}: {mk}")
     else:

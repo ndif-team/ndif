@@ -22,6 +22,7 @@ def scale(
     *,
     n: int = 1,
     revision: Optional[str] = None,
+    task: Optional[str] = None,
     model_key: Optional[str] = None,
     actor_class: Optional[str] = None,
     dtype: Optional[str] = None,
@@ -58,7 +59,7 @@ def scale(
     controller = get_controller_actor_handle()
 
     if model_key is None:
-        model_key = get_model_key(checkpoint, revision)
+        model_key = get_model_key(checkpoint, revision, task=task)
         emit(on_message, f"  Model key for {checkpoint}: {model_key}")
 
     requested = DeploymentConfig(

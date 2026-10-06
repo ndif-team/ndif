@@ -552,6 +552,19 @@ class _ControllerActor:
 
         return {"python_version": sys.version, "packages": packages}
 
+    @staticmethod
+    def _task_of(model_key: MODEL_KEY) -> Optional[str]:
+        # The pipeline task baked into the key's JSON suffix. None for a
+        # non-JSON suffix and for a key minted before tasks joined the model
+        # identity (such a deployment serves whatever task was inferred at
+        # load).
+        import json
+
+        try:
+            return json.loads(model_key.split(":", 1)[1]).get("task")
+        except (IndexError, ValueError, AttributeError):
+            return None
+
     def status(self):
         """Dashboard view: per-deployment health + cluster resources + COLD models."""
         ray_status = list_actors()
@@ -620,6 +633,7 @@ class _ControllerActor:
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
+                    "task": self._task_of(deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()
@@ -661,6 +675,7 @@ class _ControllerActor:
                     "model_key": cached_deployment.model_key,
                     "replica_id": cached_deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
+                    "task": self._task_of(cached_deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()

@@ -236,8 +236,8 @@ Read the first two if a behavior seems inexplicable:
   `4bit`, `fp4`, `int8`/`8bit`, `fp8`), plus `--gpus`, `--size-bytes`,
   `--padding-factor`, `--padding-bias` and `--max-tp`; `models.yaml` passes every
   `DeploymentConfig` field (`trusted`, `dtype`, `size_bytes`, `padding_factor`,
-  `padding_bias`, `gpus`, `max_tp`, `execution_timeout_seconds`, `envoy_class`,
-  `actor_class`, `model_key`).
+  `padding_bias`, `gpus`, `max_tp`, `execution_timeout_seconds`, `task`,
+  `envoy_class`, `actor_class`, `model_key`).
 - **Only `dashboard_data` persists.** Result blobs, metrics, logs, Postgres data and
   downloaded weights all vanish on `just down`.
 - **A single-GPU model must be loaded with `device=`, not a device map.** Models

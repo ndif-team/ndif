@@ -13,6 +13,7 @@ interface ScheduleEvent {
   title: string
   checkpoint: string
   revision: string | null
+  task: string | null
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -49,6 +50,7 @@ function emptyForm(start?: Date): EventForm {
     title: '',
     checkpoint: '',
     revision: null,
+    task: null,
     actor_class: null,
     envoy_class: DEFAULT_ENVOY_CLASS,
     padding_factor: null,
@@ -110,6 +112,7 @@ function openEdit(eventId: string) {
     title: e.title,
     checkpoint: e.checkpoint,
     revision: e.revision,
+    task: e.task ?? null,
     actor_class: e.actor_class,
     envoy_class: e.envoy_class ?? DEFAULT_ENVOY_CLASS,
     padding_factor: e.padding_factor,
@@ -133,6 +136,7 @@ async function save(data: EventForm) {
       title: data.title,
       checkpoint: data.checkpoint,
       revision: data.revision || null,
+      task: data.task || null,
       actor_class: data.actor_class || null,
       envoy_class: data.envoy_class || null,
       padding_factor: data.padding_factor ?? null,

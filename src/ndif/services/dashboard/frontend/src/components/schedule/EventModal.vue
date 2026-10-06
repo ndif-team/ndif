@@ -8,6 +8,8 @@ export interface EventForm {
   title: string
   checkpoint: string
   revision: string | null
+  // Pipeline task — part of the model key the entry pins. null = inferred.
+  task: string | null
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -114,6 +116,15 @@ function toggleOpenEnded(e: Event) {
         </label>
 
         <label class="field">
+          Task
+          <AutocompleteInput
+            v-model="form.task"
+            placeholder="(inferred)"
+            :options="cache?.task ?? []"
+          />
+        </label>
+
+        <label class="field">
           Actor class
           <AutocompleteInput
             v-model="form.actor_class"
@@ -126,7 +137,7 @@ function toggleOpenEnded(e: Event) {
           Envoy class
           <AutocompleteInput
             v-model="form.envoy_class"
-            placeholder="nnsight.modeling.language.LanguageModel"
+            placeholder="nnsight.modeling.transformers.TransformersModel"
             :options="cache?.envoy_class ?? []"
           />
         </label>

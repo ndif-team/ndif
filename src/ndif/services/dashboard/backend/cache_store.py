@@ -1,8 +1,8 @@
 """Cache of values the user has previously deployed successfully.
 
-Backs the autocomplete dropdowns in the deploy + schedule modals. Three
-keyed lists — ``repo_id``, ``actor_class``, ``envoy_class`` — kept in
-most-recently-used order and capped so the file doesn't grow unbounded.
+Backs the autocomplete dropdowns in the deploy + schedule modals. Four
+keyed lists — ``repo_id``, ``task``, ``actor_class``, ``envoy_class`` — kept
+in most-recently-used order and capped so the file doesn't grow unbounded.
 
 Only successfully-deployed values land here; the deploy/reconcile paths
 call :func:`add_many` after the controller has confirmed each spec went
@@ -13,6 +13,7 @@ File layout (``<data_dir>/cache/values.json``)::
 
     {
       "repo_id":     ["meta-llama/Llama-3.1-8B", "openai-community/gpt2", ...],
+      "task":        ["text-generation", "fill-mask", ...],
       "actor_class": ["ndif.services.ray.deployments.modeling.base.ModelActor", ...],
       "envoy_class": ["nnsight.modeling.transformers.TransformersModel", ...]
     }
@@ -35,7 +36,7 @@ MAX_ENTRIES_PER_FIELD = 200
 
 # The set of fields we track. Anything outside this is silently ignored
 # so callers can pass arbitrary spec dicts without sanitizing.
-FIELDS = ("repo_id", "actor_class", "envoy_class")
+FIELDS = ("repo_id", "task", "actor_class", "envoy_class")
 
 
 @contextlib.contextmanager
@@ -139,6 +140,7 @@ def add_from_deploy_result(
         repo_id = extract_repo_id_from_model_key(d.get("model_key") or "")
         entries.append({
             "repo_id": repo_id or d.get("checkpoint"),
+            "task": spec.get("task"),
             "actor_class": spec.get("actor_class"),
             "envoy_class": spec.get("envoy_class"),
         })
