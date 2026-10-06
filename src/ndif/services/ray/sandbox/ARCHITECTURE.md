@@ -69,7 +69,9 @@ across a process boundary.
    - `execute(request)` — the worker-thread body: if `request.trusted` it defers to
      the base (in-process, no sandbox); otherwise it drives a fresh runner (below).
    - `interrupt` (also `stop()` the runner), `format_error` (`RunnerError` → its
-     pre-formatted text), `cleanup` (discard the runner too), `execution_scope`
+     pre-formatted text), `error_name` (`RunnerError` → the terminal exception's
+     class name it carries, so telemetry records the real type on both paths,
+     #280), `cleanup` (discard the runner too), `execution_scope`
      (nothing — PRINT events, not host stdout).
 
    On timeout/cancel the template calls `interrupt()`, which stops the runner —
