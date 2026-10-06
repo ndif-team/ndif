@@ -584,8 +584,9 @@ def _run(
         # No user frames exist yet, so there is no traceback worth sending —
         # just the sentence BackendRequestModel.deserialize already classified
         # this into. The in-process path raises the very same object; only text
-        # crosses this socket, so the runner ships str() of it.
-        terminal = ("EXCEPTION", str(error))
+        # crosses this socket, so the runner ships str() of it, plus the type's
+        # name so telemetry records what failed rather than the wrapper (#280).
+        terminal = ("EXCEPTION", str(error), type(error).__name__)
     else:
         try:
             # The shared executor, not a copy of it: the autocast bracket and the
@@ -608,7 +609,11 @@ def _run(
                 error.__traceback__
             )
             message = "".join(traceback.format_exception(type(error), error, tb))
-            terminal = ("EXCEPTION", message)
+            # The type's *name* rides along: the host wraps the text in a
+            # RunnerError, and without the name a user mistake is recorded in
+            # telemetry as the wrapper — OutOfOrderError trusted, RunnerError
+            # untrusted, for the identical block (#280).
+            terminal = ("EXCEPTION", message, type(error).__name__)
         else:
             terminal = ("END", buffer.getvalue(), deserialize_ms)
     # Drain a trailing partial print line (stdout is the runner's line-buffering

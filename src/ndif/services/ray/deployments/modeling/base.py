@@ -304,7 +304,8 @@ class BaseModelDeployment:
 
         A template: :meth:`execute` is the worker-thread body (deserialize, run the
         block, return its result blob + deserialize_ms), and :meth:`execution_scope`
-        / :meth:`interrupt` / :meth:`format_error` / :meth:`cleanup` are the seams a
+        / :meth:`interrupt` / :meth:`format_error` / :meth:`error_name` /
+        :meth:`cleanup` are the seams a
         subclass overrides to run the block elsewhere (see the sandbox deployment).
         Everything else — the timeout/cancel race, metrics, event logs,
         cleanup/restart, and the RUNNING/COMPLETED/ERROR responses — is shared.
@@ -563,6 +564,19 @@ class BaseModelDeployment:
         message = "".join(traceback.format_exception(type(exception), exception, tb))
         return message, _is_unrecoverable_cuda_error(exception)
 
+    def error_name(self, exception: BaseException) -> str:
+        """The name a failure is recorded under (``error_type`` in telemetry).
+
+        The exception's own class name here, where the block runs in-process and
+        the exception that reaches ``run`` *is* the failure. A subclass whose
+        failures arrive wrapped overrides this to name the real cause — the
+        sandbox's ``RunnerError`` is transport, and recording it made the same
+        user mistake count as ``OutOfOrderError`` trusted and ``RunnerError``
+        (or ``BrokenPipeError``) untrusted, attributing user errors to
+        infrastructure (#280).
+        """
+        return type(exception).__name__
+
     def report(
         self,
         request: "BackendRequestModel",
@@ -609,7 +623,7 @@ class BaseModelDeployment:
                 model_key=self.model_key, request_id=request.id,
                 api_key=request.api_key, email=request.email,
                 stage="running",
-                error_type=type(exception).__name__ if exception else "error",
+                error_type=self.error_name(exception) if exception else "error",
                 fatal=fatal, exec_ms=exec_ms,
             )
         ExecutionTimeMetric.update(

@@ -167,6 +167,16 @@ class SandboxHost:
             return str(exception), False
         return super().format_error(exception)
 
+    def error_name(self, exception):
+        # A RunnerError is transport, not a cause: the block failed in the
+        # runner and the terminal exception's type name rode over the socket
+        # with the formatted traceback. Record that name, so the same mistake
+        # counts under the same error_type whether or not it was sandboxed —
+        # trusted said OutOfOrderError where untrusted said RunnerError (#280).
+        if isinstance(exception, RunnerError) and exception.cause_type:
+            return exception.cause_type
+        return super().error_name(exception)
+
     def cleanup(self) -> None:
         # Fresh process per request: discard the runner, then do the base reset.
         self.discard_sandbox()

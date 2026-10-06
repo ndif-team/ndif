@@ -38,7 +38,22 @@ from .protocol import KEEP_PIN
 class RunnerError(Exception):
     """A failure raised by the user's block in the runner, carrying its already-
     formatted traceback (tracebacks don't survive cloudpickle, so the runner
-    formats the text and ships that; see ``nns.run``)."""
+    formats the text and ships that; see ``nns.run``).
+
+    ``cause_type`` is the terminal exception's class name, shipped beside the
+    text because the type survives the socket no better than the traceback
+    does. It exists for telemetry: the wrapper's own name says "sandbox", not
+    what failed, so recording it attributed a user mistake to infrastructure —
+    the same block's error counted as ``OutOfOrderError`` trusted and as this
+    class (or worse, a pipe error) untrusted (#280). ``error_name``
+    (``model.py``) reads it so both paths record the real type.
+    """
+
+    def __init__(
+        self, message: str = "sandbox error", cause_type: "Optional[str]" = None
+    ) -> None:
+        super().__init__(message)
+        self.cause_type = cause_type
 
 
 class ShippingCache(Cache):
@@ -297,7 +312,10 @@ class SandboxDriver:
                 self._on_log(rest[0] if rest else "")
                 continue
             if event == "EXCEPTION":
-                raise RunnerError(rest[0] if rest else "sandbox error")
+                raise RunnerError(
+                    rest[0] if rest else "sandbox error",
+                    rest[1] if len(rest) > 1 else None,
+                )
             return event, rest, kwargs
 
     # -- envoy/device helpers ------------------------------------------------
