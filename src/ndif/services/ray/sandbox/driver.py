@@ -228,6 +228,18 @@ class MediatorProxy(Mediator):
         # Resume this worker in the runner (args carry a read's value, already
         # narrowed to this worker's rows, or nothing for a swap) and return its next
         # park. Push our pin so the runner relaxes tracer.iter in lockstep.
+        answered = self.pending
+        if (
+            args
+            and answered is not None
+            and answered.event is Event.VALUE
+            and answered.provider.endswith(".fn")
+        ):
+            # Serving a `{path}.fn` read: the live callable a worker asked to
+            # drill into (recursive `.source`) is in hand exactly once, here.
+            # Build the host's instrumented copy now, so when this handle
+            # returns, `run_op` finds it and runs it in place of the original.
+            self.driver.build_recursive_source(answered.provider[: -len(".fn")], args[0])
         self.connection.send(("RESUME", self.id, args, self.iteration))
         event, rest, _ = self.driver.next_event(self.connection)
         if event == "STOP":
@@ -263,6 +275,13 @@ class SandboxDriver:
         # Reset per interleave: a barrier is scoped to one trace, and the id is a
         # runner-process address a later trace's barrier could legitimately reuse.
         self._barriers: "dict[str, list[MediatorProxy]]" = {}
+        # Op paths a worker asked to drill into this trace (recursive `.source`).
+        # `install_source` arms them on the model interleaver's `sourced`, but a
+        # request that arrives with the initial parks is armed *before* the run
+        # is entered and `Interleaver.__enter__` clears `sourced` — so they are
+        # kept here too and re-armed just after entry (`interleave`). Reset per
+        # interleave, like `sourced` itself (per-run, cleared on entry).
+        self._armed: "set[str]" = set()
 
     def pump(self, connection) -> "tuple[bytes, Optional[float]]":
         """Service the runner until it reports the block finished.
@@ -349,18 +368,83 @@ class SandboxDriver:
         to build a ``SourceEnvoy``; the runner has no ``Compiled`` of the forward
         that actually runs, so they travel with the names. Everything else on
         ``Compiled`` stays here — ``code`` is a code object and does not pickle.
+
+        ``path`` can also be a **nested op path** (``...attn.source.
+        attention_interface_1``): recursive ``.source``, where the drilled-into
+        callable is a live value the forward resolves at run time, so there is
+        nothing to describe yet. Arming ``interleaver.sourced[path] = None`` is
+        what makes ``run_op`` serve that callable at ``{path}.fn`` when the op
+        fires — to the runner's parked worker, and to
+        :meth:`SandboxDriver.build_recursive_source`, which instruments it then
+        (the base ``SourceEnvoy.source`` marks the same ``None``; see
+        nnsight ``intervention/source.py``). The reply is ``None``: the runner
+        builds its own ``Compiled`` from the callable it is served, so nothing
+        needs describing — and ``_envoy_at`` could not walk a ``.source``
+        segment anyway. The enclosing module's source is (re)installed first so
+        the op fires at all; installing it is idempotent, and it cannot fail
+        here — reaching a ``SourceEnvoy`` already installed it.
         """
         from nnsight.intervention.source import SourceNotAvailable, install_source
 
+        module_path, _, _ = path.partition(".source.")
         try:
-            compiled = install_source(self._envoy_at(path))
+            compiled = install_source(self._envoy_at(module_path))
         except SourceNotAvailable:
+            return None
+        if module_path != path:
+            self.model.interleaver.sourced.setdefault(path, None)
+            self._armed.add(path)
             return None
         return {
             "names": list(compiled.names),
             "lines": dict(compiled.lines),
             "source": compiled.source,
         }
+
+    def build_recursive_source(self, path: str, fn) -> None:
+        """Instrument the live callable at an armed op ``path``, for this forward
+        to run in place of the original (the host half of recursive ``.source``).
+
+        Called from :meth:`MediatorProxy.switch` at the one moment the callable
+        exists on this side: ``run_op`` reached the drilled-into op and is
+        serving it over ``{path}.fn`` to the runner's parked worker. Storing the
+        instrumented copy into ``interleaver.sourced[path]`` before that handle
+        returns is what makes ``run_op`` pick it up — its inner operations then
+        fire under ``{path}.source.*``, ordinary locations the proxies serve.
+        Mirrors the build at the bottom of the base ``SourceEnvoy.source``
+        (nnsight ``intervention/source.py``), which on the trusted path runs in
+        the parked worker itself.
+
+        The error cases build nothing, deliberately: a submodule target, an
+        assignment, or a callable with no Python source each make the *runner's*
+        copy of this raise the trusted path's ``SourceNotAvailable`` inside the
+        user's own frame (``ipc_recursive_source``, nns.py). The entry staying
+        ``None`` just means the forward runs the original callable while that
+        error ends the run.
+        """
+        from nnsight.intervention.source import (
+            SourceNotAvailable,
+            bind,
+            instrument,
+            make_op,
+        )
+
+        interleaver = self.model.interleaver
+        if path not in interleaver.sourced or interleaver.sourced[path] is not None:
+            return  # not an armed recursive-source request, or already built
+        if isinstance(fn, torch.nn.Module) or fn is bind:
+            return
+        try:
+            interleaver.sourced[path] = instrument(
+                fn,
+                make_op(
+                    lambda: (interleaver, path)
+                    if interleaver.interleaving
+                    else (None, None)
+                ),
+            )
+        except SourceNotAvailable:
+            pass
 
     def run_module(self, path: str, hook: bool, args, kwargs):
         """Run the module at ``path`` ad hoc and return its output — the host side
@@ -464,8 +548,10 @@ class SandboxDriver:
         batch_groups = args[0] if args else []
         invokes = args[1] if len(args) > 1 else []
         # Fresh barrier rounds per trace: a barrier's id is a runner-process
-        # address, which a later trace in the same session could reuse.
+        # address, which a later trace in the same session could reuse. The
+        # armed recursive-source paths are per-trace for the same reason.
         self._barriers = {}
+        self._armed = set()
         proxies = self._build_proxies(connection, parks, batch_groups)
         interleaver.mediators = proxies
         result = None
@@ -478,6 +564,13 @@ class SandboxDriver:
             # gpt2: identical token ids and embeddings, diverging inside the
             # first block.
             with request_dtype(self.dtype), interleaver:
+                # Re-arm recursive-source requests that arrived with the initial
+                # parks: `install_source` armed them in `_build_proxies`, before
+                # this entry, and `Interleaver.__enter__` clears `sourced`.
+                # A mid-run arm (settle_control after a switch) lands after the
+                # clear and stays put on its own.
+                for armed in self._armed:
+                    interleaver.sourced.setdefault(armed, None)
                 fn = getattr(self.model, fn_name)
                 interleaver.batcher, call_args, call_kwargs = self._assemble(
                     fn, invokes, kwargs
