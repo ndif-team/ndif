@@ -50,10 +50,7 @@ key and each task is its own deployment, and when left unset the task is
 inferred from the checkpoint exactly as an nnsight client with no `task=` infers
 it, so the two still mint the same key; and the **wrapper class is part of the
 identity**, defaulting to `nnsight.modeling.transformers.TransformersModel`
-(`cli/lib/models.py:13`). A key minted before tasks joined the identity (no
-`"task"` field) still loads — the server infers the task — but it is a
-*different string*, so it routes to its own deployment rather than matching a
-task-carrying one.
+(`cli/lib/models.py:13`).
 
 The client sends the key it computed; the server never guesses. "Model not
 deployed" is almost always a key mismatch — compare `ndif status --json-output`

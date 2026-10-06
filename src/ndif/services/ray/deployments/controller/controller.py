@@ -555,9 +555,8 @@ class _ControllerActor:
     @staticmethod
     def _task_of(model_key: MODEL_KEY) -> Optional[str]:
         # The pipeline task baked into the key's JSON suffix. None for a
-        # non-JSON suffix and for a key minted before tasks joined the model
-        # identity (such a deployment serves whatever task was inferred at
-        # load).
+        # suffix that carries no task — non-JSON (a VLLM key), or a wrapper
+        # whose identity has no task.
         import json
 
         try:

@@ -15,8 +15,8 @@ export interface ReplicaInfo {
 export interface Deployment {
   model_key: string
   repo_id?: string
-  // Pipeline task parsed from the model_key server-side; null/absent on a
-  // key minted before tasks joined the model identity.
+  // Pipeline task parsed from the model_key server-side; null when the key's
+  // suffix carries no task (e.g. a VLLM key).
   task?: string | null
   revision?: string | null
   // Card-level "best" across replicas (HOT > WARM > COLD).

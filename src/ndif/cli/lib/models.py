@@ -46,11 +46,10 @@ def extract_repo_id_from_model_key(model_key: str) -> str:
 
 
 def extract_task_from_model_key(model_key: str) -> str | None:
-    """Pull the pipeline ``task`` out of a model_key, or None.
+    """Pull the pipeline ``task`` out of a model_key.
 
-    None both for a non-JSON suffix (e.g. a VLLM key) and for a key minted
-    before tasks joined the model identity — such a deployment serves whatever
-    task the server inferred at load.
+    None for a suffix that carries no task — a non-JSON suffix (e.g. a VLLM
+    key), or a wrapper whose identity has no task.
     """
     import json
 
