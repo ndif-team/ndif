@@ -73,7 +73,13 @@ runner -> host
                               finished; ``blob`` is torch.save of the block's
                               nnsight.save()-marked values, for the host to upload;
                               ``deserialize_ms`` is the runner's deserialize time
-  ("EXCEPTION", error)        the block raised ``error``
+  ("EXCEPTION", error, cause_type)
+                              the block raised: ``error`` is the traceback the
+                              runner already formatted (tracebacks don't survive
+                              the socket), ``cause_type`` the terminal
+                              exception's class name — telemetry records it so a
+                              sandboxed mistake counts under its real type, not
+                              the RunnerError wrapper (#280)
 """
 
 import io

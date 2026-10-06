@@ -145,6 +145,15 @@ helper reads `.cause` and renders `RayTaskError[CachedActorError]`. Query on the
 bracketed part when you want the thing that actually failed — a bare
 `error_type=RayTaskError` means the cause was absent, not that Ray itself broke.
 
+The model actor's own `error_type` (the `model execution errored` event,
+`base.py`) goes through the deployment's `error_name` seam for the same reason:
+a sandboxed block's failure reaches the actor as a `RunnerError` whose name
+says "sandbox", not what failed, so `SandboxHost.error_name` records the
+terminal type's name the runner shipped with the traceback (`cause_type`).
+Without it, the identical user mistake counted as `OutOfOrderError` trusted and
+`RunnerError` untrusted — or, before the tolerant teardown sends, as
+`BrokenPipeError` — attributing user errors to infrastructure (#280).
+
 The densest emitter is `BackendRequestModel._advance_status`
 (`common/schema/request.py:115`): one event per lifecycle transition carrying
 `stage`, `prev_stage`, and `prev_stage_ms` — enough to reconstruct a request's

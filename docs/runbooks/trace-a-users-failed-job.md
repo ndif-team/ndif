@@ -107,11 +107,13 @@ as an `EXCEPTION` event:
             error.__traceback__
         )
         message = "".join(traceback.format_exception(type(error), error, tb))
-        terminal = ("EXCEPTION", message)
+        terminal = ("EXCEPTION", message, type(error).__name__)
 ```
 
-— `src/ndif/services/ray/sandbox/nns.py:514-522`. The host turns that event into
-a `RunnerError` carrying the text (`sandbox/model.py:161-168`), and
+— `src/ndif/services/ray/sandbox/nns.py`. The host turns that event into
+a `RunnerError` carrying the text plus the terminal type's name (its
+`cause_type` — what telemetry records as `error_type`, so a sandboxed mistake
+counts under its real type, #280), and
 `SandboxModelDeployment.format_error` returns it verbatim and marks it
 **non-fatal — it's user code** (`sandbox/model.py:188-194`). `run()` then sends it
 as the `Status.ERROR` description (`modeling/base.py:344-346`), and nnsight's
