@@ -166,8 +166,13 @@ lean on for adversarial code.
   newline only flushes when the block ends.
 - **Pickle-ability of what you close over**, as above — including things that
   travel *back*, like a swap replacement.
-- **`tracer.barrier()` doesn't currently survive the boundary** unless every block
-  reaches it before any of them touches the model; see the gotchas in
+- **`tracer.barrier()` counts on the host.** Every arrival crosses the socket and
+  the host releases the round, so cross-invoke barriers behave as they do
+  trusted — including a barrier reached mid-forward, which used to release
+  invisibly inside the runner and silently drop the released block's saves. A
+  count no set of blocks can satisfy fails the run with the same
+  `ValueError` ("A barrier was never reached by every block it waits for…") the
+  trusted path raises; see the gotchas in
   `docs/developing/sandbox-internals.md`.
 - **The two paths can drift.** Because dev servers run trusted (in-process), a bug
   that only appears in the sandbox path can hide locally. When a remote failure

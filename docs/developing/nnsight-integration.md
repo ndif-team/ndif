@@ -214,9 +214,11 @@ on `Mediator`'s *internal* structure — the `(event, location, pin)` park tuple
 
 A change to nnsight's park tuple shape, event enum, or `handle` contract breaks
 the untrusted path while leaving the trusted path working, and a bare `just up`
-never exercises the untrusted path. [Sandbox internals](sandbox-internals.md) has
-the full message catalog and the known rough edges (`tracer.barrier()`'s 2-tuple,
-`eproperty` write-back transforms).
+never exercises the untrusted path. The sandbox also patches `Barrier.__call__`
+in the runner (host-authority barriers — the host counts arrivals and releases
+the round), so `Barrier`'s release contract is part of the same coupling.
+[Sandbox internals](sandbox-internals.md) has the full message catalog and the
+known rough edges (`eproperty` write-back transforms).
 
 ## What NDIF re-exports
 

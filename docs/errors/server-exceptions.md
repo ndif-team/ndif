@@ -38,7 +38,8 @@ Three facts organise everything below:
 | `PayloadError` | `common/errors.py:31`, raised by `BackendRequestModel.deserialize` (`common/schema/request.py:98`) | `ERROR`: `Your request payload could not be read (...)` — a **sentence, not a traceback** | The blob was truncated, corrupted, or compressed differently than `compress` declared | **user** (or the network) |
 | `ArchitectureMismatchError` | `common/errors.py:50`, raised at `common/schema/request.py:96` | `ERROR`: `The model architecture on this server doesn't match the one your code was traced against: it has no module at '<path>'.` plus the `ndif.compare()` recipe | A `Module:<path>` persistent id has no match in the server's live model tree — almost always a `transformers` difference | **user** (environment drift) |
 | Any block exception (trusted path) | propagates out of `BaseModelDeployment.execute`, `base.py:473`, surfaced when `job.result()` re-raises at `base.py:368` | `ERROR` with the block's own traceback | The user's block raised in the actor process | **user** |
-| `OutOfOrderError` | thrown into a worker by `IPCInterleaver.throw`, `sandbox/nns.py:186-195` | `ERROR`: `'<location>' was requested but the model already ran past it` | A worker was still parked on a location the forward pass never reached | **user** |
+| `OutOfOrderError` | thrown into a worker by `IPCInterleaver.throw`, `sandbox/nns.py` | `ERROR`: `'<location>' was requested but the model already ran past it` | A worker was still parked on a location the forward pass never reached | **user** |
+| `ValueError` (barrier) | thrown into a worker by `IPCInterleaver.throw`, `sandbox/nns.py` | `ERROR`: `A barrier was never reached by every block it waits for; check the count it was created with` | A `tracer.barrier(n)` whose `n` exceeds the blocks that call it — the round could never release. Same error as the trusted path | **user** |
 | `EarlyStopException` | `sandbox/driver.py:155`, `:183`; nnsight's `tracer.stop()` | nothing — the job completes normally | Intentional early stop | **neither** |
 | *(no exception)* — timeout | the `asyncio.wait` race in `base.py:355-362` expires | `ERROR`: `Your job exceeded the execution timeout of {n}s.` (`base.py:399-403`) | Block ran past `execution_timeout` | **user** (usually) |
 | *(no exception)* — kill switch | `base.py:392-394` | `ERROR`: `Your job was cancelled or preempted by the server.` | `ndif kill`, or an operator cancel. **Only when `kill_reason` is not `KILL_REASON_PREEMPTED`** — a preempt takes the eviction path below instead | **operator** |
@@ -89,33 +90,31 @@ trusted-path failure has no wrapper class at all: the exception propagates out o
 the worker thread, and the base `format_error` (`base.py:545`) strips nnsight
 plumbing and the actor's own frames before formatting (`base.py:558-560`).
 
-### OutOfOrderError thrown into a dangling worker
+### A dangling worker, thrown into by kind
 
-After the forward pass returns, `check_dangling` (`driver.py:408`) looks for
-proxies still holding a park — a worker waiting on a location the model never
-reached — and sends `("THROW", id, requester, iteration != 0)` (`driver.py:420`).
-The runner's `IPCInterleaver.throw` (`nns.py:186`) constructs the error and
-throws it into the greenlet so the traceback points at the line that was waiting:
+After the forward pass returns, `check_dangling` (`driver.py`) looks for
+proxies still holding a park — a worker waiting on something the run never
+delivered — classifies each the way nnsight's `dangling_unwind` does, and sends
+`("THROW", id, requester, kind)`. The runner's `IPCInterleaver.throw`
+(`nns.py`) constructs the matching error and throws it into the greenlet so the
+traceback points at the line that was waiting:
 
-```python
-error = OutOfOrderError(
-    f"'{requester}' was requested but the model already ran past it"
-)
-if is_iter:
-    try:
-        mediator.worker.throw(error)
-    except OutOfOrderError:
-        warnings.warn(...)
-else:
-    mediator.worker.throw(error)
-```
+* `"OUT_OF_ORDER"` — `OutOfOrderError: '<location>' was requested but the model
+  already ran past it`. Fails the run.
+* `"ITER"` (`iteration != 0`: a pinned step, or `None` after a pin relaxed) — a
+  `tracer.iter` loop that outran the model **warns instead of failing**, and
+  the iterations that were reached are kept.
+* `"BARRIER"` — a `tracer.barrier()` round that could never release (its count
+  is higher than the number of blocks that call it): `ValueError: A barrier was
+  never reached by every block it waits for; check the count it was created
+  with`. Fails the run — the same error, same wording, as the trusted path.
+  (Before #294 this park's `None` iteration fell into the iter test and was
+  *warned* about as a loop overrun while the dropped saves went unmentioned.)
 
-The `is_iter` branch is the one to remember: an open-ended `tracer.iter` that
-outran the model **warns instead of failing**, and the iterations that were
-reached are kept. Anything else fails the run. This mirrors nnsight's local
-`Interleaver.check_dangling_mediators` exactly — the same class, the same
-message — so the user's fix is the same one nnsight's own docs give: access
-modules in forward-pass order, or bound the iteration.
+This mirrors nnsight's local `Interleaver.check_dangling_mediators` exactly —
+the same classes, the same messages — so the user's fix is the same one
+nnsight's own docs give: access modules in forward-pass order, bound the
+iteration, or make the barrier's count match the blocks that call it.
 
 ### EarlyStopException — not an error
 

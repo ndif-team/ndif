@@ -14,7 +14,10 @@ The interleaver is split across the socket at the mediator level:
 * Each worker's **parent side** — the occurrence counter, the pin, and the
   read/swap matching — lives on the host as one proxy per worker. The host drives
   each worker individually over the socket: ``pump`` resumes a worker on RESUME
-  and returns its next park, throws OutOfOrderError on THROW, and ends on DONE.
+  and returns its next park, throws the host-classified dangling error on THROW,
+  and ends on DONE. ``tracer.barrier()`` follows the same doctrine: every arrival
+  parks over the socket (patched ``Barrier.__call__``) and the *host* counts and
+  releases the round, so a released worker's next park always crosses.
 
 So iteration state is tracked per mediator on the host, and a worker's activation
 values only cross when the host resumes it (a read) or it swaps (in its park).
@@ -37,6 +40,7 @@ import warnings
 import torch
 from greenlet import getcurrent
 
+from nnsight.intervention.barrier import Barrier
 from nnsight.intervention.cache import Cache
 from nnsight.intervention.envoy import Envoy
 from nnsight.intervention.interleaver import (
@@ -86,6 +90,35 @@ def ipc_event(cls, event, location, *rest):
 # Every mediator in this process is a worker whose parent lives on the host, so
 # park untagged. (nns is imported only in the runner, so this never hits the host.)
 Mediator.event = classmethod(ipc_event)
+
+
+def ipc_barrier(self):
+    """``barrier()`` in a worker: park the arrival for the host to count.
+
+    The base ``Barrier.__call__`` counts arrivals in its own ``_waiting`` list
+    and the last one releases the others by switching them directly — all
+    inside this process, where the host cannot see it. A released worker's next
+    park was stashed on its own mediator (base ``Barrier`` assigns
+    ``other.pending``) but never crossed the socket, so the host proxy kept the
+    stale barrier park, every post-barrier read went unserved, and the worker's
+    saves were silently dropped at the end of the run (#294).
+
+    So in the runner *every* arrival parks over the socket instead, carrying
+    what the host needs to do the counting itself (``driver.barrier_arrival``):
+    the barrier's identity (``id`` is stable for the request — one Barrier
+    object, built by the trace body, shared by its blocks) and the ``n`` it was
+    built with. No pin rides along — base ``Mediator.barrier`` carries none
+    either — and no release happens here: the host resumes each waiter once the
+    round is full, and a resumed worker simply returns from this switch.
+    """
+    # The same outside-a-trace error the base raises on its _waiting append.
+    Mediator.current("tracer.barrier()")
+    getcurrent().parent.switch(
+        Pending(Event.BARRIER, f"barrier:{id(self)}", None, self.n)
+    )
+
+
+Barrier.__call__ = ipc_barrier
 
 
 def read_of(park):
@@ -167,8 +200,8 @@ class IPCInterleaver(Interleaver):
                     reads[mediator_id] = new_read
                 self.connection.send("PARK", mediator_id, park)
             elif kind == "THROW":
-                _, mediator_id, requester, is_iter = message
-                self.throw(self.mediators[mediator_id], requester, is_iter)
+                _, mediator_id, requester, dangling_kind = message
+                self.throw(self.mediators[mediator_id], requester, dangling_kind)
             elif kind == "CACHE_HIT":
                 # A location one of our caches wants was reached on the host; record
                 # the (already filtered + moved-to-cpu) value into that cache.
@@ -192,18 +225,32 @@ class IPCInterleaver(Interleaver):
         self.connection.send("PARK", mediator_id, (Event.SWAP, location, iteration, value))
         self.connection.recv()
 
-    def throw(self, mediator, requester, is_iter):
-        """Throw OutOfOrderError into a worker still parked after the run.
+    def throw(self, mediator, requester, kind):
+        """End a worker still parked after the run, as the host classified it.
 
-        Mirrors ``Interleaver.check_dangling_mediators``: an open-ended
-        ``tracer.iter`` that outran the model is unwound and warned about (its
-        reached iterations are kept); any other dangling request is a real error
-        and propagates, failing the run.
+        Mirrors ``Interleaver.check_dangling_mediators`` / ``dangling_unwind``:
+        ``kind`` is the host's classification (``check_dangling``):
+
+        * ``"BARRIER"`` — the barrier was never going to release (fewer blocks
+          reached it than it was built for); the base's ValueError, raised out
+          of the worker's own frame, same wording as the trusted path.
+        * ``"ITER"`` — a ``tracer.iter`` loop outran the model; unwound and
+          warned about, its reached iterations kept.
+        * ``"OUT_OF_ORDER"`` — a real error: the model already ran past the
+          requested location; propagates, failing the run.
         """
+        if kind == "BARRIER":
+            mediator.worker.throw(
+                ValueError(
+                    "A barrier was never reached by every block it waits for; "
+                    "check the count it was created with"
+                )
+            )
+            return
         error = OutOfOrderError(
             f"'{requester}' was requested but the model already ran past it"
         )
-        if is_iter:
+        if kind == "ITER":
             try:
                 mediator.worker.throw(error)
             except OutOfOrderError:

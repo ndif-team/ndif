@@ -24,7 +24,12 @@ import torch
 
 from nnsight.intervention.batching import Batcher
 from nnsight.intervention.cache import Cache
-from nnsight.intervention.interleaver import EarlyStopException, Mediator, Pending
+from nnsight.intervention.interleaver import (
+    EarlyStopException,
+    Event,
+    Mediator,
+    Pending,
+)
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
@@ -103,10 +108,19 @@ class MediatorProxy(Mediator):
         if park is None:
             self.pending = None
             return
-        # TODO: tracer.barrier() parks without a pin, which the unpack below
-        # can't destructure — it raises here. The barrier primitive is
-        # unsupported on the sandbox path for now.
         event, location, pin, *rest = park
+        if event is Event.BARRIER:
+            # A barrier arrival. The runner's patched Barrier.__call__ parks
+            # every arrival here — `location` identifies the barrier, `value`
+            # is the count it was built with — and the host does the counting
+            # (`SandboxDriver.barrier_arrival`), matching where iteration
+            # authority already lives. Like a control park it carries no pin
+            # (the slot is None), so `self.iteration` is left alone; the
+            # release RESUME sends KEEP_PIN for the same reason. The iteration
+            # stays None so the park can never match a model visit.
+            self.pending = Pending(event, location, None, *rest)
+            self.driver.barrier_arrival(self)
+            return
         if event in ("SOURCE", "CALL", "CACHE"):
             # A control event, not a model location: SOURCE (instrument a module),
             # CALL (run a module's forward ad hoc), or CACHE (observe for a
@@ -164,6 +178,21 @@ class MediatorProxy(Mediator):
                 raise EarlyStopException()
             self.adopt(rest[1])
 
+    def release(self) -> None:
+        # Resume this worker out of a barrier park and adopt wherever it parks
+        # next. Empty args — a barrier call returns nothing — and KEEP_PIN,
+        # because the barrier park carried no pin, so the host's copy is stale
+        # for the same reason a control park's is (#296); the worker re-ships
+        # its own pin on its next model park. The new park may itself be a
+        # control park (drained here) or another barrier arrival (adopt
+        # re-registers it, so chained or reused barriers round correctly).
+        self.connection.send(("RESUME", self.id, (), KEEP_PIN))
+        event, rest, _ = self.driver.next_event(self.connection)
+        if event == "STOP":
+            raise EarlyStopException()
+        self.adopt(rest[1])
+        self.settle_control()
+
     def start(self, interleaver=None) -> None:
         # Interleaver.__enter__ starts every mediator; this proxy's worker lives in
         # the runner and its first park already arrived in the INTERLEAVE message,
@@ -215,6 +244,10 @@ class SandboxDriver:
         self.model = model
         self.dtype = dtype
         self._on_log = on_log if on_log is not None else (lambda text: None)
+        # Barrier id -> the proxies parked on it this round (see barrier_arrival).
+        # Reset per interleave: a barrier is scoped to one trace, and the id is a
+        # runner-process address a later trace's barrier could legitimately reuse.
+        self._barriers: "dict[str, list[MediatorProxy]]" = {}
 
     def pump(self, connection) -> "tuple[bytes, Optional[float]]":
         """Service the runner until it reports the block finished.
@@ -332,6 +365,39 @@ class SandboxDriver:
         so this is the trusted path's behavior by construction."""
         return self._envoy_at(path)(*args, hook=hook, **kwargs)
 
+    def barrier_arrival(self, proxy: "MediatorProxy") -> None:
+        """One worker arrived at a barrier; release the round when it is full.
+
+        The host-authority half of ``tracer.barrier()``: the runner's patched
+        ``Barrier.__call__`` parks every arrival over the socket instead of
+        counting in-process (where a release moved workers the host never heard
+        about and their saves were silently dropped, #294), so the counting
+        lives here, beside the occurrence counter and the pin.
+
+        ``proxy.pending`` is the arrival: ``provider`` identifies the barrier
+        and ``value`` is the ``n`` it was built with. Arrivals accumulate under
+        the barrier's id; the nth releases the whole round **sequentially** —
+        earlier arrivals first, the completing one last, mirroring base
+        ``Barrier.__call__`` — each a RESUME→PARK round trip that adopts the
+        worker's next park. The registry entry is cleared *before* the resumes,
+        as the base empties ``_waiting``, so a released worker that reaches the
+        same barrier again starts a fresh round (adopt re-enters here).
+
+        Works the same wherever the arrival lands: an initial park at
+        INTERLEAVE time (every block reaches the barrier before touching the
+        model — the round completes in ``_build_proxies``, before the forward)
+        or mid-forward (a released worker's new park joins the visit the host
+        is still serving, exactly as base ``Interleaver.handle`` promises).
+        """
+        pending = proxy.pending
+        waiting = self._barriers.setdefault(pending.provider, [])
+        waiting.append(proxy)
+        if len(waiting) < pending.value:
+            return
+        del self._barriers[pending.provider]
+        for waiter in waiting:
+            waiter.release()
+
     # -- the interleaved run --------------------------------------------------
 
     def _build_proxies(self, connection, parks, batch_groups):
@@ -379,6 +445,9 @@ class SandboxDriver:
         # per-invoke inputs positionally after `parks`.
         batch_groups = args[0] if args else []
         invokes = args[1] if len(args) > 1 else []
+        # Fresh barrier rounds per trace: a barrier's id is a runner-process
+        # address, which a later trace in the same session could reuse.
+        self._barriers = {}
         proxies = self._build_proxies(connection, parks, batch_groups)
         interleaver.mediators = proxies
         result = None
@@ -403,18 +472,53 @@ class SandboxDriver:
             # Leave the interleaver clean so the next run starts fresh.
             interleaver.mediators = []
             interleaver.batcher = None
-        connection.send(("DONE", result))
+        try:
+            connection.send(("DONE", result))
+        except OSError:
+            # A fatal THROW (check_dangling) makes the runner unwind, report
+            # EXCEPTION and close its socket — possibly before this send. The
+            # report is already buffered for `pump` to read; raising the broken
+            # send instead would mask the user's real error with a
+            # BrokenPipeError (#280's shape).
+            pass
 
     def check_dangling(self, connection, proxies) -> None:
         """Surface workers still parked after the run.
 
-        A proxy whose worker never got the location it wanted asks the runner to
-        throw OutOfOrderError into that worker (the runner warns instead for an
-        open-ended ``tracer.iter`` that outran the model). Mirrors the parent-side
-        ``Interleaver.check_dangling_mediators``, now that the parent lives here.
+        Classifies each dangling park the way nnsight's ``dangling_unwind``
+        does, event first — the THROW carries the kind and the runner builds
+        the matching error:
+
+        * ``BARRIER`` — fewer blocks reached the barrier than it was built
+          for, so it was never going to release. The runner raises the base
+          ValueError; before this branch existed the barrier park's ``None``
+          iteration fell into the iter test below and a dropped save was
+          *warned* about as a loop overrun (#294).
+        * ``ITER`` — ``iteration != 0`` (a pinned step, or ``None`` after a
+          pin relaxed, which only a ``tracer.iter`` produces): the loop
+          outran the model; the runner unwinds and warns, keeping what was
+          saved. Base reads the same from ``mediator.iteration == 0``.
+        * ``OUT_OF_ORDER`` — a plain request for a location the model never
+          reached; the runner raises OutOfOrderError into the worker.
+
+        Mirrors the parent-side ``Interleaver.check_dangling_mediators``, now
+        that the parent lives here.
         """
         for proxy in proxies:
             if not proxy.alive:
                 continue
-            requester = str(proxy.pending)
-            connection.send(("THROW", proxy.id, requester, proxy.iteration != 0))
+            if proxy.pending.event is Event.BARRIER:
+                kind = "BARRIER"
+            elif proxy.iteration != 0:
+                kind = "ITER"
+            else:
+                kind = "OUT_OF_ORDER"
+            try:
+                connection.send(("THROW", proxy.id, str(proxy.pending), kind))
+            except OSError:
+                # A fatal kind already thrown makes the runner unwind, report
+                # EXCEPTION and close its socket, racing the rest of this loop.
+                # Its report is buffered for `pump` to read; stop sending so a
+                # BrokenPipeError can't mask the user's real error (#280's
+                # shape).
+                return
