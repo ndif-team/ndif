@@ -24,7 +24,12 @@ from ._common import (
     normalize_specs,
 )
 from .events import notify_reconcile
-from .models import get_current_deployments, get_model_key, wait_for_replica_ready
+from .models import (
+    extract_task_from_model_key,
+    get_current_deployments,
+    get_model_key,
+    wait_for_replica_ready,
+)
 
 
 def deploy(
@@ -85,6 +90,10 @@ def deploy(
                 spec.get("task"),
             )
             emit(on_message, f"  Model key: {model_key}")
+            if spec.get("task") is None:
+                emit(on_message,
+                     f"  Task not given; inferred "
+                     f"'{extract_task_from_model_key(model_key)}' from the checkpoint")
         model_keys_map[model_key] = spec
 
     emit(on_message, f"Connecting to Ray at {ray_address}...")

@@ -161,8 +161,8 @@ write path. Activity is a pure function of event and timestamp: `_is_active`
 
 ## cache_store
 
-Backs the autocomplete dropdowns: three MRU lists (`repo_id`, `actor_class`,
-`envoy_class`) capped at `MAX_ENTRIES_PER_FIELD = 200` in
+Backs the autocomplete dropdowns: four MRU lists (`repo_id`, `task`,
+`actor_class`, `envoy_class`) capped at `MAX_ENTRIES_PER_FIELD = 200` in
 `<data_dir>/cache/values.json`, same sidecar-flock + atomic-rename discipline.
 `add_many` (`:89`) bumps each recognized field to the front, ignoring unknown keys
 and falsy values. `add_from_deploy_result` (`:112`) is the real entry point: it

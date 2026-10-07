@@ -171,7 +171,7 @@ Two things are worth knowing before deploying one:
   1.24 against 1.50, where `bfloat16` is exact. The default 0.15 padding does not
   absorb 1.74x, so give a quantized deploy a measured `size_bytes` or a padding
   factor you worked out on the hardware.
-- **A client cannot ask for it.** A model key is the repo id and revision, so
+- **A client cannot ask for it.** A model key is the repo id, revision and task, so
   quantization is not part of what routes a request. The deployment decides, and
   two dtypes of one checkpoint are the same model as far as routing is concerned.
 
@@ -363,11 +363,12 @@ lists locally cached models, `--watch` refreshes every 2s, `--verbose` dumps nod
 and evaluator state). `--json-output` is the debugging one: each entry carries
 `model_key`, `replica_id`, `deployment_level`, `application_state`
 (`RUNNING`/`DEPLOYING`/`UNHEALTHY`, derived from Ray actor states,
-`controller.py:393`), `pinned`, `trusted`, `n_params`, `size_bytes` and — for
+`controller.py:393`), `task`, `pinned`, `trusted`, `n_params`, `size_bytes` and — for
 non-pinned deployments — `schedule.end_time`, the moment age protection lapses.
 `ndif export` aggregates per-replica entries into one per model key so `replicas`
 is the live count (`cli/commands/export.py:73`), recording only `checkpoint`,
-`revision`, `pinned`, `replicas`, `actor_class`.
+`revision`, `pinned`, `replicas`, `actor_class` and the full `model_key` —
+which carries the task and envoy class, so the round trip keeps them.
 
 ## PEFT adapters
 
@@ -395,7 +396,7 @@ just up
 alias in-ray='docker compose -f docker/docker-compose.yml exec ray'
 
 in-ray ndif deploy gpt2 --pinned
-#   Model key: nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null}
+#   Model key: nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}
 #   ✓ ...gpt2... [a1b2c]: ready
 in-ray ndif status
 #   🔥 HOT (1) → • openai-community/gpt2   RUNNING | 124M params

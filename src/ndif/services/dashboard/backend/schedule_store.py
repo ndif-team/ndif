@@ -11,6 +11,7 @@ Schema (``schedule.json``)
           "title": "Llama 3.1 8B (research week)",
           "checkpoint": "meta-llama/Llama-3.1-8B",
           "revision": null,
+          "task": null,
           "actor_class": null,
           "envoy_class": null,
           "padding_factor": null,

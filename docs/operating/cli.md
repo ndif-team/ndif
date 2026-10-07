@@ -495,7 +495,7 @@ Cluster Resources:
 Active Deployments:
   🔥 HOT (1)
     • openai-community/gpt2
-      RUNNING | 124M params
+      RUNNING | text-generation | 124M params
   🌡️  WARM (0)
     (none)
   ❄️  COLD (3)

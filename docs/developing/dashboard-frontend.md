@@ -88,7 +88,8 @@ produces the per-route chunks under `dist/assets`.
   `model_key` (short-circuiting the deploy lib's HF canonicalization) with no
   modal while a COLD card opens `DeployModal`; and an in-flight deploy sits in a
   local `pending` list rendered as a placeholder card until a HOT/WARM deployment
-  with the same `(repo_id, revision)` appears or a 5-minute TTL expires, so a
+  with the same `(repo_id, revision, task)` appears (a placeholder with no
+  task clears on any task of that repo/revision) or a 5-minute TTL expires, so a
   deploy the controller no-ops doesn't read as success.
 - **`ScheduleView`** GETs `/api/schedule`, renders `MonthCalendar`, and
   creates/updates/deletes through `EventModal`, whose "forever" option sends

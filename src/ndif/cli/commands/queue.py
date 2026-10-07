@@ -7,7 +7,7 @@ from datetime import timedelta
 import click
 
 from ..lib.events import fetch_queue_state
-from ..lib.models import extract_repo_id_from_model_key
+from ..lib.models import extract_repo_id_from_model_key, extract_task_from_model_key
 
 
 @click.command()
@@ -79,7 +79,8 @@ def _render(data: dict, json_flag: bool) -> None:
 
 def _print_processor(p: dict) -> None:
     repo_id = extract_repo_id_from_model_key(p.get("model_key", "unknown"))
-    click.echo(f"  {repo_id}")
+    task = extract_task_from_model_key(p.get("model_key", ""))
+    click.echo(f"  {repo_id} ({task})" if task else f"  {repo_id}")
 
     status_line = p.get("status", "unknown").upper()
     changed = p.get("status_changed_at")

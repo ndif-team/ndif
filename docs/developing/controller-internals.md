@@ -317,8 +317,8 @@ in `models.yaml`, the dashboard, or a request whose API key carries the `trusted
 
 **Evict finds nothing.** `Cluster.evict` returns an empty `ReplicaStates` and the CLI prints `✗
 <key>: nothing to evict` (`cli/lib/evict.py:73`). Usually a model-key mismatch — the key derives
-from checkpoint *and* revision *and* envoy class (`cli/lib/models.py:16`), so `ndif evict gpt2`
-won't match a deployment made with a non-default `--revision`. Evict is never *refused* for policy.
+from checkpoint *and* revision *and* task *and* envoy class (`cli/lib/models.py:16`), so `ndif evict gpt2`
+won't match a deployment made with a non-default `--revision` or `--task`. Evict is never *refused* for policy.
 
 **Stale deployment state after a controller restart.** `max_restarts=-1` means Ray restarts a
 crashed controller, and `__init__` starts from a **blank** `Cluster` and empty `self.state` while

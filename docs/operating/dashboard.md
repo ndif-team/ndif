@@ -163,7 +163,7 @@ card per `model_key`, and tags a card `pinned` if the controller says so *or* an
 active schedule event names that key. Filter by level (HOT/WARM/COLD/PINNED),
 search and sort; per card you get Deploy, Add Replica, Restart and Evict, and
 expanding a card gives the same actions per replica. A COLD card opens the deploy
-modal (`actor_class`, `envoy_class`, `padding_factor`,
+modal (`task`, `actor_class`, `envoy_class`, `padding_factor`,
 `execution_timeout_seconds`, pinned); a WARM card redeploys the existing
 `model_key` with no modal. In-flight deploys show as placeholder cards until the
 model appears HOT or WARM, or 5 minutes elapse.
@@ -203,8 +203,8 @@ deployment topology and not a replica count.
 - **Active window is `[start, end)`.** `end: null` is open-ended — active forever
   after `start` (`schedule_store.py:221`), which is how the UI expresses "just
   keep this pinned" without picking a sunset date.
-- **Per-event fields mirror the deployment config**: `revision`, `actor_class`,
-  `envoy_class`, `padding_factor`, `execution_timeout_seconds`.
+- **Per-event fields mirror the deployment config**: `revision`, `task`,
+  `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`.
 - **`model_key` is server-set.** Every write resolves the checkpoint against
   HuggingFace and stamps the canonical checkpoint, revision, and `model_key` onto
   the event (`routers/schedule.py:18`). A typo'd repo fails the write with a 400
@@ -311,7 +311,7 @@ Everything is under `NDIF_DASHBOARD_DATA_DIR` (`/var/lib/dashboard` in compose):
 |---|---|---|
 | `schedule.json` | schedule router | The events; the source of truth for reconcile |
 | `.reconcile.state.json` | reconcile | `prev_model_keys`, `active_count`, `last_run` |
-| `cache/values.json` | deploy + reconcile | MRU autocomplete lists (`repo_id`, `actor_class`, `envoy_class`) |
+| `cache/values.json` | deploy + reconcile | MRU autocomplete lists (`repo_id`, `task`, `actor_class`, `envoy_class`) |
 | `config.json` | you (seeded from the example) | Discord webhook, role id, message templates |
 | `logs/connected_*.log` | monitor | One JSON object per tick: timestamp + ok/reason |
 | `logs/models_*.log` | monitor | One object per trace pass: per-model status, latency, error |

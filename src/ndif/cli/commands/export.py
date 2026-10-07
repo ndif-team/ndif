@@ -7,7 +7,7 @@ import yaml
 
 from ..lib._common import NDIFConnectivityError, ensure_ray_connected
 from ..lib.model_config import build_models_list, save_model_config
-from ..lib.models import get_current_deployments
+from ..lib.models import extract_task_from_model_key, get_current_deployments
 
 
 @click.command()
@@ -64,6 +64,9 @@ def export(output_file, to_stdout, ray_address):
                 extras.append(f"gpus: {dep['gpus']}")
             if dep.get("revision"):
                 extras.append(f"rev: {dep['revision']}")
+            task = extract_task_from_model_key(dep.get("model_key") or "")
+            if task:
+                extras.append(task)
             suffix = f" ({', '.join(extras)})" if extras else ""
             click.echo(f"  - {dep.get('repo_id', 'unknown')}{suffix}")
 

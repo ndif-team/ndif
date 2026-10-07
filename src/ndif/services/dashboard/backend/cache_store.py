@@ -118,7 +118,11 @@ def add_from_deploy_result(
     """Bump cache entries for specs whose deploy succeeded.
 
     Pairs ``specs`` to the per-model entries in ``deployments_result`` by
-    ``checkpoint`` (the as-typed user string the deploy lib echoes back).
+    ``checkpoint`` (the as-typed user string the deploy lib echoes back),
+    disambiguated by the task baked into the result's ``model_key`` when one
+    checkpoint was deployed under several tasks in one call. Only an
+    explicitly-entered task is cached — an inferred one stays off the
+    dropdown.
     The ``repo_id`` written to the cache is the canonical form parsed out
     of the ``model_key`` so case variants (``…-8b`` vs ``…-8B``) collapse
     to the form HF actually serves.
@@ -129,14 +133,33 @@ def add_from_deploy_result(
     an actor that raised while loading, …) is silently skipped.
     """
     # Lazy import — keeps the cache module free of cli dependency.
-    from ....cli.lib.models import extract_repo_id_from_model_key
+    from ....cli.lib.models import (
+        extract_repo_id_from_model_key,
+        extract_task_from_model_key,
+    )
 
-    specs_by_checkpoint = {s.get("checkpoint"): s for s in specs}
+    specs_by_checkpoint: dict = {}
+    for s in specs:
+        specs_by_checkpoint.setdefault(s.get("checkpoint"), []).append(s)
+
+    def _spec_for(d: dict) -> dict:
+        candidates = specs_by_checkpoint.get(d.get("checkpoint")) or []
+        if len(candidates) == 1:
+            return candidates[0]
+        minted = extract_task_from_model_key(d.get("model_key") or "")
+        for s in candidates:
+            if s.get("task") == minted:
+                return s
+        for s in candidates:
+            if s.get("task") is None:
+                return s
+        return {}
+
     entries: list[dict] = []
     for d in deployments_result:
         if d.get("error") is not None:
             continue
-        spec = specs_by_checkpoint.get(d.get("checkpoint")) or {}
+        spec = _spec_for(d)
         repo_id = extract_repo_id_from_model_key(d.get("model_key") or "")
         entries.append({
             "repo_id": repo_id or d.get("checkpoint"),

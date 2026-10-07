@@ -14,7 +14,7 @@ from typing import Optional
 
 from .. import config
 from ._common import OnMessage, emit, ensure_ray_connected
-from .models import get_model_key
+from .models import extract_task_from_model_key, get_model_key
 
 
 def scale(
@@ -61,6 +61,10 @@ def scale(
     if model_key is None:
         model_key = get_model_key(checkpoint, revision, task=task)
         emit(on_message, f"  Model key for {checkpoint}: {model_key}")
+        if task is None:
+            emit(on_message,
+                 f"  Task not given; inferred "
+                 f"'{extract_task_from_model_key(model_key)}' from the checkpoint")
 
     requested = DeploymentConfig(
         trusted=trusted,

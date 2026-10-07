@@ -68,7 +68,7 @@ the callback runs before any subcommand, `--env-file` must precede the verb:
 
 **Import discipline.** `main.py` imports every command module at startup, so those
 modules must stay cheap. `ray`, `nnsight`, `redis`, and `yaml` are imported *inside*
-functions in `lib/` (e.g. `lib/deploy.py:58`, `lib/models.py:24`) precisely so that
+functions in `lib/` (e.g. `lib/deploy.py:58`, `lib/models.py:26`) precisely so that
 `ndif --help` and the service-lifecycle commands don't drag in the compute stack.
 Keep that up: a top-level `import ray` in a command module slows down every invocation.
 
