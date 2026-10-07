@@ -359,7 +359,7 @@ function onMenuBlur(e: FocusEvent) {
         </div>
 
         <div class="meta">
-          <span v-if="deployment.task" :title="'pipeline task'">
+          <span v-if="deployment.task" class="shrink" :title="'pipeline task: ' + deployment.task">
             ⌬ {{ deployment.task }}
           </span>
           <span v-if="deployment.revision" :title="'revision: ' + deployment.revision">
@@ -369,12 +369,14 @@ function onMenuBlur(e: FocusEvent) {
           <span v-if="sizeGB" :title="'GPU memory footprint'">⊞ {{ sizeGB }}</span>
           <span
             v-if="envoyClass"
+            class="shrink"
             :title="'envoy class: ' + (deployment.model_key || '').split(':')[0]"
           >
             ◉ {{ envoyClass }}
           </span>
           <span
             v-if="actorClass"
+            class="shrink"
             :title="'actor class: ' + deployment.actor_class"
           >
             ⏵ {{ actorClass }}
@@ -718,6 +720,19 @@ function onMenuBlur(e: FocusEvent) {
   color: var(--muted);
   font-family: 'Space Mono', monospace;
   margin-top: auto;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+.meta > span {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.meta > .shrink {
+  flex-shrink: 1;
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hf-link {
