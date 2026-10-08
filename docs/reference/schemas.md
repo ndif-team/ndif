@@ -116,7 +116,7 @@ included — travels as **pickle**, not JSON:
 ### Response methods
 
 Three, all on the request because the request knows the id, the channel, and the
-status clock. `response(status, description="", data=None)`
+status clock. `response(status, description="", data=None, meta=None)`
 (`request.py:100`) advances the status and returns a `BackendResponseModel`, with
 no I/O; `respond` (`request.py:161`) also publishes, over sync Redis, from the
 model actor's threads; `arespond` (`request.py:203`) is the async counterpart the
@@ -210,6 +210,7 @@ bytes the backend publishes are exactly what an unmodified client parses.
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — the queue position, the error traceback, or one line of `print` output for `LOG`. |
 | `data` | `Optional[Any]` | `None` | Only populated on `COMPLETED`. Either the result blob itself (`bytes`, on a response sent as `torch.save` rather than JSON) or the presigned GET url to download it from. The inline cap (`RedisProvider.max_publish_bytes`, derived from Redis's pubsub output-buffer limits) decides which; a non-blocking request always gets the url. |
+| `meta` | `Optional[dict]` | `None` | What the run cost, on `COMPLETED` **and** on a failure (`request_meta`, `util.py:352`) — a timeout that peaked at 99% of its headroom explains itself. A plain JSON-native dict: `runtime` (wall-clock **seconds** — the actor times in ms and converts here), `max_mem_by_gpu` / `max_mem_pct_by_gpu` (bytes above the resident weights, and that against the headroom the request had), `max_memory_usage` (worst-pressured device), and `alloc_shortfall_by_gpu` — present only on an out-of-memory failure, `{gpu_id: bytes}` of the refused allocation that would not fit, per card that ran out, read from the allocator's own refusal message (`None` when the card can't be identified). GPU keys are strings so the JSON and `torch.save` encodings agree; values are plain ints and floats. |
 
 Model config: `arbitrary_types_allowed=True, protected_namespaces=()`, the latter
 so `model_key`-style names don't collide with pydantic's `model_` namespace, both
