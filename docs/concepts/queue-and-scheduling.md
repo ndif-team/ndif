@@ -78,7 +78,7 @@ drain the error queue and notice a broken Ray connection.
 
 The target is `request.model_key`, chosen entirely by the client: nnsight's
 `to_model_key()` produces `"<import.path.ClassName>:<model id>"` (e.g.
-`nnsight.modeling.transformers.TransformersModel:openai-community/gpt2`). The
+`nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`). The
 API never validates it — it is just a dict key:
 
 ```python

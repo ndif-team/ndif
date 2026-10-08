@@ -146,6 +146,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
             card = {
                 "model_key": mk,
                 "repo_id": entry.get("repo_id"),
+                "task": entry.get("task"),
                 "revision": entry.get("revision"),
                 "n_params": entry.get("n_params"),
                 "size_bytes": entry.get("size_bytes"),

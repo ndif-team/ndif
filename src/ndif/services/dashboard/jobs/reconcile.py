@@ -58,6 +58,7 @@ def _spec_from_event(e: ScheduleEvent) -> dict:
     return {
         "checkpoint": e.checkpoint,
         "revision": e.revision,
+        "task": e.task,
         "pinned": True,  # schedule entries are always pinned
         "trusted": True,  # admin-configured, so trusted like any dashboard deploy
         "actor_class": e.actor_class,
@@ -293,10 +294,14 @@ def _reconcile_locked(settings, *, force: bool) -> dict:
                 f" error={d['error']}" if d.get("error") else "",
             )
 
-    # Update per-event status from the deploy result, then notify
-    by_checkpoint = {d["checkpoint"]: d for d in deploy_result.get("deployments", [])}
+    # Update per-event status from the deploy result, then notify. Keyed by
+    # model_key, not checkpoint: two entries for one checkpoint under
+    # different tasks are different deployments and must not swap statuses.
+    by_key = {
+        d.get("model_key"): d for d in deploy_result.get("deployments", [])
+    }
     for ev in active:
-        d = by_checkpoint.get(ev.checkpoint)
+        d = by_key.get(ev.model_key)
         if d is None:
             continue
         store.mark_status(ev.id, d["status"], d.get("error"))

@@ -28,19 +28,25 @@ const deployError = ref<string | null>(null)
 const { cache, refresh: loadCache } = useCache()
 
 // In-flight deploys, rendered as placeholder cards above the server list
-// until a real deployment with matching (repo_id, revision) shows up. The
-// key is `${repo_id}|${revision || ''}`.
+// until a real deployment with matching (repo_id, revision, task) shows up.
+// The key is `${repo_id}|${revision || ''}|${task || ''}` — a placeholder
+// with no task (inferred) clears on any live task of that repo/revision.
 interface PendingDeploy {
   key: string
   repo_id: string
   revision: string | null
+  task: string | null
   startedAt: number
 }
 const pending = ref<PendingDeploy[]>([])
 const PENDING_TTL_MS = 5 * 60 * 1000
 
-function pendingKey(repo_id: string, revision: string | null | undefined): string {
-  return `${repo_id}|${revision || ''}`
+function pendingKey(
+  repo_id: string,
+  revision: string | null | undefined,
+  task?: string | null
+): string {
+  return `${repo_id}|${revision || ''}|${task || ''}`
 }
 
 // model_key -> "restart" | "evict" while a per-card action is in flight.
@@ -67,15 +73,18 @@ async function load() {
     // HOT remains visible as a still-deploying card until TTL or until the
     // user retries. Without this, a no-op deploy silently looks like success.
     const now = Date.now()
-    const live = new Set(
-      arr
-        .filter(
-          (d) =>
-            d.repo_id &&
-            (d.deployment_level === 'HOT' || d.deployment_level === 'WARM')
-        )
-        .map((d) => pendingKey(d.repo_id as string, d.revision ?? null))
-    )
+    const live = new Set<string>()
+    for (const d of arr) {
+      if (
+        !d.repo_id ||
+        (d.deployment_level !== 'HOT' && d.deployment_level !== 'WARM')
+      )
+        continue
+      // Both forms: the task-carrying key matches a placeholder that named a
+      // task, the task-less key matches one that left it to inference.
+      live.add(pendingKey(d.repo_id as string, d.revision ?? null, d.task))
+      live.add(pendingKey(d.repo_id as string, d.revision ?? null))
+    }
     pending.value = pending.value.filter(
       (p) => !live.has(p.key) && now - p.startedAt < PENDING_TTL_MS
     )
@@ -152,9 +161,10 @@ async function onDeploy(form: DeployForm) {
   // pulsing card so the admin gets feedback before the controller responds
   // (deploy can take 10s+ for a model that's never been loaded).
   const placeholder: PendingDeploy = {
-    key: pendingKey(form.checkpoint, form.revision),
+    key: pendingKey(form.checkpoint, form.revision, form.task),
     repo_id: form.checkpoint,
     revision: form.revision,
+    task: form.task,
     startedAt: Date.now()
   }
   pending.value = [placeholder, ...pending.value.filter((p) => p.key !== placeholder.key)]
@@ -462,7 +472,7 @@ async function onReplicaDeploy(d: Deployment, _replicaId: string) {
       <DeploymentCard
         v-for="p in pending"
         :key="'pending:' + p.key"
-        :deployment="{ model_key: 'pending:' + p.key, repo_id: p.repo_id, revision: p.revision, pending: true }"
+        :deployment="{ model_key: 'pending:' + p.key, repo_id: p.repo_id, revision: p.revision, task: p.task, pending: true }"
       />
       <DeploymentCard
         v-for="d in filtered"

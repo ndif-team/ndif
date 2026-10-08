@@ -7,7 +7,7 @@ import yaml
 
 from ..lib._common import NDIFConnectivityError, ensure_ray_connected
 from ..lib.model_config import build_models_list, save_model_config
-from ..lib.models import get_current_deployments
+from ..lib.models import extract_task_from_model_key, get_current_deployments
 
 
 @click.command()
@@ -64,6 +64,9 @@ def export(output_file, to_stdout, ray_address):
                 extras.append(f"gpus: {dep['gpus']}")
             if dep.get("revision"):
                 extras.append(f"rev: {dep['revision']}")
+            task = extract_task_from_model_key(dep.get("model_key") or "")
+            if task:
+                extras.append(task)
             suffix = f" ({', '.join(extras)})" if extras else ""
             click.echo(f"  - {dep.get('repo_id', 'unknown')}{suffix}")
 
@@ -77,9 +80,10 @@ def _aggregate_by_model_key(replicas: list[dict]) -> list[dict]:
 
     Carries every deployment field ``controller.status()`` reports that
     ``deploy -f`` can set again, so an exported config restores the deployment
-    as it was. ``envoy_class`` needs no entry of its own — it is the prefix of
-    ``model_key``, which is carried. ``padding_factor`` is not recoverable: it
-    lives on the deploy-time config, not on the deployment.
+    as it was. ``envoy_class`` and ``task`` need no entry of their own — both
+    live inside ``model_key``, which is carried and used verbatim on redeploy.
+    ``padding_factor`` is not recoverable: it lives on the deploy-time config,
+    not on the deployment.
     """
     by_mk: dict[str, dict] = {}
     counts: dict[str, int] = {}

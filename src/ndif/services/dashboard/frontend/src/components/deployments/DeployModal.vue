@@ -6,6 +6,9 @@ import AutocompleteInput from '@/components/AutocompleteInput.vue'
 export interface DeployForm {
   checkpoint: string
   revision: string | null
+  // Pipeline task — part of the model key, so it selects/creates a distinct
+  // deployment. null = inferred from the checkpoint.
+  task: string | null
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -28,6 +31,7 @@ const emit = defineEmits<{
 const form = ref<DeployForm>({
   checkpoint: '',
   revision: null,
+  task: null,
   actor_class: null,
   envoy_class: DEFAULT_ENVOY_CLASS,
   padding_factor: null,
@@ -71,6 +75,15 @@ function submit() {
         </label>
 
         <label class="field">
+          Task
+          <AutocompleteInput
+            v-model="form.task"
+            placeholder="(inferred)"
+            :options="cache?.task ?? []"
+          />
+        </label>
+
+        <label class="field">
           Actor class
           <AutocompleteInput
             v-model="form.actor_class"
@@ -83,7 +96,7 @@ function submit() {
           Envoy class
           <AutocompleteInput
             v-model="form.envoy_class"
-            placeholder="nnsight.modeling.language.LanguageModel"
+            placeholder="nnsight.modeling.transformers.TransformersModel"
             :options="cache?.envoy_class ?? []"
           />
         </label>

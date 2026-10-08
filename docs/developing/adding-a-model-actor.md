@@ -288,7 +288,7 @@ Changing the default only affects **new** deployments; the class is captured on 
 
 Deploying tells you whether the actor constructs and loads: `ndif deploy` blocks on
 each new replica's `__ray_ready__` (`cli/lib/deploy.py:177`, waiting in
-`cli/lib/models.py:110`), which resolves only after `__init__` — including the weight
+`cli/lib/models.py:127`), which resolves only after `__init__` — including the weight
 load — returns. `ndif status --verbose --json-output` then dumps the controller state,
 in which each replica carries its resolved `actor_class` (`Deployment.get_state`,
 `deployment.py:130`). From there run

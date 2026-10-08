@@ -30,10 +30,10 @@ this page is the model lifecycle. Two facts frame it:
 
 A model key is the server's identity for a checkpoint:
 `"<nnsight wrapper class import path>:<JSON>"`, the JSON carrying the canonical
-repo id and revision.
+repo id, revision, and (for `TransformersModel`) the pipeline task.
 
 ```text
-nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null}
+nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}
 ```
 
 `get_model_key` (`src/ndif/cli/lib/models.py:16`) builds it by constructing the
@@ -43,7 +43,12 @@ Hub** (`HfApi().model_info(id).id`), so `gpt2` and `openai-community/gpt2` land
 on the same key and deploying needs network access to huggingface.co (plus a
 token for a gated repo); the **revision is part of the identity**, so
 `--revision` doesn't set a stored field, it changes the key, and two revisions
-are two independent deployments; and the **wrapper class is part of the
+are two independent deployments; the **task is part of the identity** for the
+same reason — two tasks over one checkpoint can load different architecture
+classes (`ForCausalLM` vs `ForSequenceClassification`), so `--task` changes the
+key and each task is its own deployment, and when left unset the task is
+inferred from the checkpoint exactly as an nnsight client with no `task=` infers
+it, so the two still mint the same key; and the **wrapper class is part of the
 identity**, defaulting to `nnsight.modeling.transformers.TransformersModel`
 (`cli/lib/models.py:13`).
 
@@ -83,6 +88,7 @@ models:
   - gpt2
   - checkpoint: meta-llama/Llama-3.1-8B
     revision: null
+    task: text-generation   # pipeline task, part of the model key; inferred when unset
     pinned: true
     replicas: 2
     trusted: false
@@ -100,7 +106,7 @@ models:
 ```
 
 `load_model_config` passes through every field the deploy path understands —
-`checkpoint`, `revision`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
+`checkpoint`, `revision`, `task`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
 `padding_factor`, `padding_bias`, `size_bytes`, `gpus`, `max_tp`,
 `execution_timeout_seconds`, `envoy_class`, `model_key`; any other key is
 silently dropped. `--sync` reconciles instead of adding:
@@ -165,7 +171,7 @@ Two things are worth knowing before deploying one:
   1.24 against 1.50, where `bfloat16` is exact. The default 0.15 padding does not
   absorb 1.74x, so give a quantized deploy a measured `size_bytes` or a padding
   factor you worked out on the hardware.
-- **A client cannot ask for it.** A model key is the repo id and revision, so
+- **A client cannot ask for it.** A model key is the repo id, revision and task, so
   quantization is not part of what routes a request. The deployment decides, and
   two dtypes of one checkpoint are the same model as far as routing is concerned.
 
@@ -357,11 +363,12 @@ lists locally cached models, `--watch` refreshes every 2s, `--verbose` dumps nod
 and evaluator state). `--json-output` is the debugging one: each entry carries
 `model_key`, `replica_id`, `deployment_level`, `application_state`
 (`RUNNING`/`DEPLOYING`/`UNHEALTHY`, derived from Ray actor states,
-`controller.py:393`), `pinned`, `trusted`, `n_params`, `size_bytes` and — for
+`controller.py:393`), `task`, `pinned`, `trusted`, `n_params`, `size_bytes` and — for
 non-pinned deployments — `schedule.end_time`, the moment age protection lapses.
 `ndif export` aggregates per-replica entries into one per model key so `replicas`
 is the live count (`cli/commands/export.py:73`), recording only `checkpoint`,
-`revision`, `pinned`, `replicas`, `actor_class`.
+`revision`, `pinned`, `replicas`, `actor_class` and the full `model_key` —
+which carries the task and envoy class, so the round trip keeps them.
 
 ## PEFT adapters
 
@@ -389,7 +396,7 @@ just up
 alias in-ray='docker compose -f docker/docker-compose.yml exec ray'
 
 in-ray ndif deploy gpt2 --pinned
-#   Model key: nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null}
+#   Model key: nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}
 #   ✓ ...gpt2... [a1b2c]: ready
 in-ray ndif status
 #   🔥 HOT (1) → • openai-community/gpt2   RUNNING | 124M params

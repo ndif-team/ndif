@@ -10,6 +10,8 @@ from ..lib.scale import scale as scale_lib
 @click.option("-n", "count", default=1, show_default=True,
               help="How many replicas to ADD (additive, like deploy --replicas).")
 @click.option("--revision", default=None, help="Model revision/branch.")
+@click.option("--task", default=None,
+              help="Pipeline task of the deployment to grow (inferred when unset).")
 @click.option("--actor-class", default=None,
               help="Override the actor class instead of matching the running one.")
 @click.option("--dtype", default=None,
@@ -23,7 +25,7 @@ from ..lib.scale import scale as scale_lib
               help="Run the model's own repo code (HF trust_remote_code).")
 @click.option("--pinned", is_flag=True, help="Add as pinned (won't be evicted).")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
-def scale(checkpoint, count, revision, actor_class, dtype, gpus,
+def scale(checkpoint, count, revision, task, actor_class, dtype, gpus,
           execution_timeout_seconds, trusted, pinned, ray_address):
     """Add replicas of a model, matching how it is already served.
 
@@ -49,6 +51,7 @@ def scale(checkpoint, count, revision, actor_class, dtype, gpus,
         checkpoint,
         n=count,
         revision=revision,
+        task=task,
         actor_class=actor_class,
         dtype=dtype,
         gpus=gpus,

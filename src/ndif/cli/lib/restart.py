@@ -6,13 +6,14 @@ from typing import Optional
 
 from .. import config
 from ._common import NDIFConnectivityError, OnMessage, emit, ensure_ray_connected
-from .models import get_model_key, wait_for_replica_ready
+from .models import extract_task_from_model_key, get_model_key, wait_for_replica_ready
 
 
 def restart(
     checkpoint: Optional[str] = None,
     *,
     revision: Optional[str] = None,
+    task: Optional[str] = None,
     model_key: Optional[str] = None,
     replica: Optional[str] = None,
     ray_address: Optional[str] = None,
@@ -37,8 +38,12 @@ def restart(
             raise ValueError("Either model_key or checkpoint is required")
         rev_str = f" (revision: {revision})" if revision else ""
         emit(on_message, f"Generating model key for {checkpoint}{rev_str}...")
-        model_key = get_model_key(checkpoint, revision)
+        model_key = get_model_key(checkpoint, revision, task=task)
         emit(on_message, f"  Model key: {model_key}")
+        if task is None:
+            emit(on_message,
+                 f"  Task not given; inferred "
+                 f"'{extract_task_from_model_key(model_key)}' from the checkpoint")
 
     emit(on_message, f"Connecting to Ray at {ray_address}...")
     ensure_ray_connected(ray_address)

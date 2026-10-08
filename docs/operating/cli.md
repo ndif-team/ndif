@@ -276,7 +276,7 @@ with `Cannot connect to Ray at <url>`.
 
 ### `ndif deploy`
 
-`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--pinned] [--replicas N] [--actor-class PATH] [--trusted] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
+`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--pinned] [--replicas N] [--actor-class PATH] [--trusted] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -284,6 +284,7 @@ with `Cannot connect to Ray at <url>`.
 | `-f/--file` | path | YAML `models:` list (below) |
 | `--sync` | flag, off | reconcile the cluster to the file exactly; requires `-f`, forbids positional args |
 | `--revision` | str, unset | HF branch/revision; part of the model key |
+| `--task` | str, unset | pipeline task (`text-generation`, `fill-mask`, ...); part of the model key, so each task is its own deployment. Inferred from the checkpoint when unset, matching what an nnsight client with no `task=` mints |
 | `--pinned` | flag, off | exempt from autoscaling / cache eviction |
 | `--replicas` | int, `1` | **new** replicas to add per model |
 | `--actor-class` | dotted path, default `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | Ray actor class serving the deployment |
@@ -364,7 +365,7 @@ The loader passes through every field the deploy path understands
 `actor_class`, `trusted`, `dtype`, `padding_factor`, `padding_bias`, `size_bytes`,
 `gpus`, `max_tp`, `execution_timeout_seconds`,
 `envoy_class`, and a precomputed `model_key`. A per-model value overrides the
-matching CLI flag default (`--revision`, `--pinned`, `--replicas`, `--actor-class`,
+matching CLI flag default (`--revision`, `--task`, `--pinned`, `--replicas`, `--actor-class`,
 `--trusted`, `--dtype`) for entries that omit it. A missing `models:` key or a
 non-list value is an error. Pair `-f` with `ndif export` to snapshot and restore a
 cluster.
@@ -394,7 +395,7 @@ So `ndif deploy --trusted` (or `trusted: true` in `models.yaml`) can deploy a
 
 ### `ndif scale`
 
-`ndif scale CHECKPOINT [-n N] [--revision REV] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--execution-timeout SECONDS] [--trusted] [--pinned] [--ray-address ADDR]`
+`ndif scale CHECKPOINT [-n N] [--revision REV] [--task TASK] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--execution-timeout SECONDS] [--trusted] [--pinned] [--ray-address ADDR]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -432,9 +433,9 @@ is served and should not be deciding.
 
 ### `ndif evict`
 
-`ndif evict [CHECKPOINTS...] [--revision REV] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
+`ndif evict [CHECKPOINTS...] [--revision REV] [--task TASK] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
 
-`--revision` applies to *every* checkpoint given. `--replica ID` targets one replica and
+`--revision` and `--task` apply to *every* checkpoint given. `--replica ID` targets one replica and
 requires exactly one checkpoint. `--all` targets every currently-HOT model key and
 cannot be combined with checkpoints or `--replica`. Without `--replica` the controller
 removes **every HOT and WARM replica** of the model key: `node.evict` frees the GPU
@@ -461,7 +462,7 @@ prints for multi-model or multi-replica evictions.
 
 ### `ndif restart`
 
-`ndif restart CHECKPOINT [--revision REV] [--replica ID] [--ray-address ADDR]` —
+`ndif restart CHECKPOINT [--revision REV] [--task TASK] [--replica ID] [--ray-address ADDR]` —
 resolves the model key, asks the controller for the deployment's replicas, then per
 replica calls `ray.kill(actor, no_restart=False)` and waits for it to come back
 (`src/ndif/cli/lib/restart.py:69`). The actor is declared `max_restarts=-1` so Ray
@@ -494,7 +495,7 @@ Cluster Resources:
 Active Deployments:
   🔥 HOT (1)
     • openai-community/gpt2
-      RUNNING | 124M params
+      RUNNING | text-generation | 124M params
   🌡️  WARM (0)
     (none)
   ❄️  COLD (3)

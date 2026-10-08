@@ -82,8 +82,8 @@ model = HuggingFaceModel.from_model_key(
   memory so accelerate can't plan an impossible fit.
 - `from_model_key` is nnsight's `Remotable` classmethod: it splits the class import
   path off the key and delegates to that wrapper's `_remoteable_from_model_key`. For
-  a HuggingFace model the rest of the key is `{"repo_id": ..., "revision": ...}`, so
-  **the revision is part of the model key**, not a separate arg. `dispatch=True` skips
+  a HuggingFace model the rest of the key is `{"repo_id": ..., "revision": ..., "task": ...}`, so
+  **the revision and the pipeline task are part of the model key**, not separate args. `dispatch=True` skips
   nnsight's meta-device phase; `device_map`/`max_memory`/`torch_dtype` ride into the
   transformers model kwargs.
 - After a `torch.cuda.synchronize()` (accelerate's copies are async),

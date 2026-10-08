@@ -11,6 +11,7 @@ Schema (``schedule.json``)
           "title": "Llama 3.1 8B (research week)",
           "checkpoint": "meta-llama/Llama-3.1-8B",
           "revision": null,
+          "task": null,
           "actor_class": null,
           "envoy_class": null,
           "padding_factor": null,
@@ -68,6 +69,10 @@ class ScheduleEventIn(BaseModel):
     start: dt.datetime
     end: Optional[dt.datetime] = None
     revision: Optional[str] = None
+    # Pipeline task; part of the model_key the write-time canonicalization
+    # mints, so it decides which deployment the entry pins. Inferred from the
+    # checkpoint when unset.
+    task: Optional[str] = None
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None

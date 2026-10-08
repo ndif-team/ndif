@@ -199,7 +199,7 @@ Every one of these is an internal that a nnsight refactor can break. Grepping fo
 | `intervention.batching.Batcher` | `.../sandbox/driver.py:25` | host-side input assembly for multi-invoke traces |
 | `intervention.cache.Cache` | `.../sandbox/nns.py:40`, `.../sandbox/driver.py:26` | `tracer.cache()` over the socket |
 | `intervention.tracer.InterleavingTracer` | `.../sandbox/nns.py:52` | the `cache` patch |
-| `util.from_import_path`, `util.apply` | `cli/lib/models.py:24`, `.../sandbox/driver.py:28` | model-key resolution and nested-structure mapping |
+| `util.from_import_path`, `util.apply` | `cli/lib/models.py:26`, `.../sandbox/driver.py:28` | model-key resolution and nested-structure mapping |
 
 ### The interleaver contract is the deepest coupling
 

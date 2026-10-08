@@ -7,12 +7,17 @@ from typing import Optional
 from .. import config
 from ._common import NDIFConnectivityError, OnMessage, emit, ensure_ray_connected
 from .events import notify_reconcile
-from .models import get_current_deployments, get_model_key
+from .models import (
+    extract_task_from_model_key,
+    get_current_deployments,
+    get_model_key,
+)
 
 
 def evict(
     *,
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None,
+    task: Optional[str] = None,
     model_keys: Optional[list[str]] = None,
     evict_all: bool = False,
     replica: Optional[str] = None,
@@ -57,9 +62,13 @@ def evict(
     elif checkpoints:
         target_keys = []
         for cp, rev in checkpoints:
-            mk = get_model_key(cp, rev)
+            mk = get_model_key(cp, rev, task=task)
             target_keys.append(mk)
             emit(on_message, f"  Model key for {cp}: {mk}")
+            if task is None:
+                emit(on_message,
+                     f"  Task not given; inferred "
+                     f"'{extract_task_from_model_key(mk)}' from the checkpoint")
     else:
         target_keys = list(model_keys or [])
 

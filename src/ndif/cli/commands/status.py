@@ -139,6 +139,8 @@ def _print_deployment(dep: dict, indent: int = 4) -> None:
     parts = []
     if dep.get("deployment_level") == "HOT" and dep.get("application_state"):
         parts.append(dep["application_state"])
+    if dep.get("task"):
+        parts.append(dep["task"])
     if dep.get("revision"):
         parts.append(f"rev: {dep['revision']}")
     n = dep.get("n_params")

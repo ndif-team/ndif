@@ -60,6 +60,10 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 "replicas": int(spec.get("replicas") or 1),
                 "actor_class": spec.get("actor_class"),
                 "envoy_class": spec.get("envoy_class"),
+                # Pipeline task baked into the model key (part of the model's
+                # identity). Unset, nnsight infers it from the checkpoint, the
+                # same way a client with no task= does.
+                "task": spec.get("task"),
                 "padding_factor": spec.get("padding_factor"),
                 "size_bytes": spec.get("size_bytes"),
                 "padding_bias": spec.get("padding_bias"),

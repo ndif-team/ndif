@@ -27,6 +27,9 @@ router = APIRouter(prefix="/api/deployments", tags=["deployments"])
 class DeployRequest(BaseModel):
     checkpoint: str
     revision: Optional[str] = None
+    # Pipeline task, baked into the model key (inferred from the checkpoint
+    # when unset) — so two tasks of one checkpoint are two deployments.
+    task: Optional[str] = None
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None

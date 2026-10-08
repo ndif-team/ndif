@@ -29,7 +29,7 @@ the server-side ones.
 
 | Field | Type | Default | Meaning |
 |---|---|---|---|
-| `model_key` | `str` | *(required)* | Identifies the served model, e.g. `nnsight.modeling.LanguageModel:openai-community/gpt2`. The queue routes on it; the actor loads from it. Inherited from the client. |
+| `model_key` | `str` | *(required)* | Identifies the served model, e.g. `nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`. The queue routes on it; the actor loads from it. Inherited from the client. |
 | `session_id` | `str` | `""` | The Redis pub/sub channel the client's `/subscribe` websocket listens on. Empty means a **non-blocking** job — responses go to the object store instead. Inherited. |
 | `compress` | `bool` | `False` | The payload is zstd-compressed *and* the server must compress the result blob it uploads. Inherited. |
 | `env` | `dict[str, Any]` | `{}` | Per-request model environment (e.g. `{"peft": "<adapter repo id>"}`), applied via `model._remoteable_set_env` before execution (`base.py:350`). Inherited. |
