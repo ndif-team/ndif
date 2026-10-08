@@ -419,7 +419,7 @@ class BaseModelDeployment:
                 request.respond(
                     Status.ERROR,
                     "Your job was cancelled or preempted by the server.",
-                    meta_data=request_meta(
+                    meta=request_meta(
                         gpu_peaks(baselines),
                         self.gpu_mem_bytes_by_id,
                         elapsed_ms(exec_started),
@@ -433,7 +433,7 @@ class BaseModelDeployment:
                     Status.ERROR,
                     f"Your job exceeded the execution timeout of "
                     f"{self.execution_timeout}s.",
-                    meta_data=request_meta(
+                    meta=request_meta(
                         gpu_peaks(baselines),
                         self.gpu_mem_bytes_by_id,
                         elapsed_ms(exec_started),
@@ -474,7 +474,7 @@ class BaseModelDeployment:
             request.respond(
                 Status.ERROR,
                 message,
-                meta_data=request_meta(
+                meta=request_meta(
                     gpu_peaks(baselines),
                     self.gpu_mem_bytes_by_id,
                     elapsed_ms(exec_started),
@@ -507,7 +507,7 @@ class BaseModelDeployment:
             "Your job has been completed.",
             data=inline if inline is not None else url,
             pickled=inline is not None,
-            meta_data=request_meta(per_device, self.gpu_mem_bytes_by_id, exec_ms),
+            meta=request_meta(per_device, self.gpu_mem_bytes_by_id, exec_ms),
         )
         self.report(
             request,

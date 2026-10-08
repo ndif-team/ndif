@@ -581,7 +581,7 @@ class TestRemoteSaving:
         assert mean.ndim == 0 and torch.isfinite(mean)
 
 
-class TestRemoteMetaData:
+class TestRemoteMeta:
     """What the server reports back about a finished job's cost.
 
     The one place the whole path is visible at once: the actor measures a real
@@ -596,17 +596,17 @@ class TestRemoteMetaData:
             logits = model.output.logits.save()
 
         # The backend runs in __exit__, so the report exists only out here.
-        meta = tracer.backend.meta_data
-        assert meta is not None, "server sent no meta_data on COMPLETED"
-        assert meta.runtime is not None
-        assert meta.max_mem_by_gpu is not None
+        meta = tracer.backend.meta
+        assert meta is not None, "server sent no meta on COMPLETED"
+        assert meta["runtime"] is not None
+        assert meta["max_mem_by_gpu"] is not None
         assert logits.shape[-1] == VOCAB  # the job really did run
 
     def test_runtime_is_plausible_seconds(self, model):
         with model.trace(PROMPT, remote=True) as tracer:
             model.output.logits.save()
 
-        runtime = tracer.backend.meta_data.runtime
+        runtime = tracer.backend.meta["runtime"]
         # Seconds, not the actor's milliseconds: a gpt2 forward is well under a
         # minute, so a value in the hundreds would mean the units are wrong.
         assert 0 < runtime < 60, runtime
@@ -615,18 +615,18 @@ class TestRemoteMetaData:
         with model.trace(PROMPT, remote=True) as tracer:
             model.output.logits.save()
 
-        meta = tracer.backend.meta_data
-        by_gpu = meta.max_mem_by_gpu
+        meta = tracer.backend.meta
+        by_gpu = meta["max_mem_by_gpu"]
         if not by_gpu:
             pytest.skip("server has no CUDA device to report")
 
         # Keys are strings whichever way the response came back (JSON frame or
         # pickled frame) — that's the point of stringifying them server-side.
         assert all(isinstance(k, str) for k in by_gpu)
-        assert set(meta.max_mem_pct_by_gpu) == set(by_gpu)
+        assert set(meta["max_mem_pct_by_gpu"]) == set(by_gpu)
         # A real forward pass allocates activations on top of the weights.
-        assert meta.max_memory_usage == max(by_gpu.values()) > 0
-        assert all(0 <= p <= 100 for p in meta.max_mem_pct_by_gpu.values())
+        assert meta["max_memory_usage"] == max(by_gpu.values()) > 0
+        assert all(0 <= p <= 100 for p in meta["max_mem_pct_by_gpu"].values())
 
 
 class TestRemoteAsync:
@@ -665,8 +665,8 @@ class TestRemoteAsync:
         asyncio.run(backend.resolve())
         # resolve() goes through note(), the same shared handling the blocking
         # path uses.
-        assert backend.meta_data is not None
-        assert backend.meta_data.runtime > 0
+        assert backend.meta is not None
+        assert backend.meta["runtime"] > 0
 
     def test_aiter_yields_statuses_then_the_saves(self, model):
         backend = self._backend(model)
@@ -684,7 +684,7 @@ class TestRemoteAsync:
         assert Status.RUNNING in statuses
 
     def test_stream_records_the_cost_off_the_raw_frame(self, model):
-        # stream() bypasses note(), so it records meta_data on its own path —
+        # stream() bypasses note(), so it records meta on its own path —
         # and the frame it yields carries the report itself. The fake-connection
         # unit test can't vouch for the server actually putting it there.
         backend = self._backend(model)
@@ -700,8 +700,8 @@ class TestRemoteAsync:
             for item in items[:-1]
             if item.status == Status.COMPLETED
         ]
-        assert completed and completed[0].meta_data is not None
-        assert backend.meta_data == completed[0].meta_data
+        assert completed and completed[0].meta is not None
+        assert backend.meta == completed[0].meta
 
 
 class TestRemoteOOM:
@@ -738,23 +738,23 @@ class TestRemoteOOM:
         assert "out of memory" in str(error).lower()
 
     def test_a_failed_job_still_reports_its_cost(self, model):
-        # note() records meta_data before it raises, so the report survives.
+        # note() records meta before it raises, so the report survives.
         tracer, _ = self._oom(model)
-        meta = tracer.backend.meta_data
-        assert meta is not None, "no meta_data on the ERROR response"
-        assert meta.runtime >= 0
+        meta = tracer.backend.meta
+        assert meta is not None, "no meta on the ERROR response"
+        assert meta["runtime"] >= 0
 
     def test_it_says_how_much_more_was_needed(self, model):
         tracer, _ = self._oom(model)
-        meta = tracer.backend.meta_data
+        meta = tracer.backend.meta
 
-        if meta.alloc_shortfall_by_gpu is None:
+        if meta.get("alloc_shortfall_by_gpu") is None:
             pytest.skip("the server could not identify the refused allocation")
 
         # Keyed by GPU, like the other per-device maps, with string keys. The
         # block asked for 8 GiB it did not have, so the shortfall is real and
         # can't exceed what was asked for.
-        short = meta.alloc_shortfall_by_gpu
+        short = meta["alloc_shortfall_by_gpu"]
         assert short and all(isinstance(gpu, str) for gpu in short)
         assert all(0 < value <= self.HOG_BYTES for value in short.values())
 
@@ -767,6 +767,6 @@ class TestRemoteOOM:
             with model.trace(PROMPT, remote=True) as tracer:
                 broken = (model.output.logits + "not a tensor").save()
 
-        meta = tracer.backend.meta_data
+        meta = tracer.backend.meta
         if meta is not None:
-            assert meta.alloc_shortfall_by_gpu is None
+            assert "alloc_shortfall_by_gpu" not in meta
