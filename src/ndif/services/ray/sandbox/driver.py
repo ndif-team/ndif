@@ -33,7 +33,7 @@ from nnsight.intervention.interleaver import (
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
-from .protocol import KEEP_PIN
+from .protocol import KEEP_PIN, SOURCE_ERROR
 
 class RunnerError(Exception):
     """A failure raised by the user's block in the runner, carrying its already-
@@ -54,6 +54,18 @@ class RunnerError(Exception):
     ) -> None:
         super().__init__(message)
         self.cause_type = cause_type
+
+
+def describe(compiled) -> dict:
+    """The picklable description of a ``Compiled``: the operation names, each
+    one's line, and the forward's source text — what a runner builds an
+    ``IPCSource`` from. Everything else on ``Compiled`` stays host-side; its
+    ``code`` is a code object and does not pickle."""
+    return {
+        "names": list(compiled.names),
+        "lines": dict(compiled.lines),
+        "source": compiled.source,
+    }
 
 
 class ShippingCache(Cache):
@@ -237,9 +249,15 @@ class MediatorProxy(Mediator):
         ):
             # Serving a `{path}.fn` read: the live callable a worker asked to
             # drill into (recursive `.source`) is in hand exactly once, here.
-            # Build the host's instrumented copy now, so when this handle
-            # returns, `run_op` finds it and runs it in place of the original.
-            self.driver.build_recursive_source(answered.provider[: -len(".fn")], args[0])
+            # Describe, don't ship (#312): the driver classifies it, builds the
+            # instrumented copy `run_op` will find when this handle returns,
+            # and hands back the description (or typed refusal) that crosses
+            # the socket in the callable's place.
+            args = (
+                self.driver.serve_recursive_source(
+                    answered.provider[: -len(".fn")], args[0]
+                ),
+            )
         self.connection.send(("RESUME", self.id, args, self.iteration))
         event, rest, _ = self.driver.next_event(self.connection)
         if event == "STOP":
@@ -363,26 +381,22 @@ class SandboxDriver:
         the forward runs here. ``None`` when the ``forward`` can't be sourced, so
         the runner reports it like the local path would.
 
-        Returns the operation names plus the forward's source text and the line
-        each operation sits on. A local ``Source`` reads those off its ``Compiled``
-        to build a ``SourceEnvoy``; the runner has no ``Compiled`` of the forward
-        that actually runs, so they travel with the names. Everything else on
-        ``Compiled`` stays here — ``code`` is a code object and does not pickle.
+        Returns the :func:`describe` of the ``Compiled`` — what the runner's
+        ``IPCSource`` builds its ``SourceEnvoy``s from.
 
         ``path`` can also be a **nested op path** (``...attn.source.
         attention_interface_1``): recursive ``.source``, where the drilled-into
         callable is a live value the forward resolves at run time, so there is
         nothing to describe yet. Arming ``interleaver.sourced[path] = None`` is
         what makes ``run_op`` serve that callable at ``{path}.fn`` when the op
-        fires — to the runner's parked worker, and to
-        :meth:`SandboxDriver.build_recursive_source`, which instruments it then
-        (the base ``SourceEnvoy.source`` marks the same ``None``; see
-        nnsight ``intervention/source.py``). The reply is ``None``: the runner
-        builds its own ``Compiled`` from the callable it is served, so nothing
-        needs describing — and ``_envoy_at`` could not walk a ``.source``
-        segment anyway. The enclosing module's source is (re)installed first so
-        the op fires at all; installing it is idempotent, and it cannot fail
-        here — reaching a ``SourceEnvoy`` already installed it.
+        fires (the base ``SourceEnvoy.source`` marks the same ``None``; see
+        nnsight ``intervention/source.py``) — a serve
+        :meth:`serve_recursive_source` intercepts, so the description crosses
+        then instead of now. The reply here is ``None`` — and ``_envoy_at``
+        could not walk a ``.source`` segment anyway. The enclosing module's
+        source is (re)installed first so the op fires at all; installing it is
+        idempotent, and it cannot fail here — reaching a ``SourceEnvoy``
+        already installed it.
         """
         from nnsight.intervention.source import SourceNotAvailable, install_source
 
@@ -395,32 +409,31 @@ class SandboxDriver:
             self.model.interleaver.sourced.setdefault(path, None)
             self._armed.add(path)
             return None
-        return {
-            "names": list(compiled.names),
-            "lines": dict(compiled.lines),
-            "source": compiled.source,
-        }
+        return describe(compiled)
 
-    def build_recursive_source(self, path: str, fn) -> None:
-        """Instrument the live callable at an armed op ``path``, for this forward
-        to run in place of the original (the host half of recursive ``.source``).
+    def serve_recursive_source(self, path: str, fn):
+        """The value to serve at an armed op ``path``'s ``{path}.fn`` park: a
+        *description* of the live callable ``fn``, never the callable itself
+        (#312) — the host half of recursive ``.source``.
 
         Called from :meth:`MediatorProxy.switch` at the one moment the callable
         exists on this side: ``run_op`` reached the drilled-into op and is
-        serving it over ``{path}.fn`` to the runner's parked worker. Storing the
-        instrumented copy into ``interleaver.sourced[path]`` before that handle
-        returns is what makes ``run_op`` pick it up — its inner operations then
-        fire under ``{path}.source.*``, ordinary locations the proxies serve.
-        Mirrors the build at the bottom of the base ``SourceEnvoy.source``
-        (nnsight ``intervention/source.py``), which on the trusted path runs in
-        the parked worker itself.
-
-        The error cases build nothing, deliberately: a submodule target, an
-        assignment, or a callable with no Python source each make the *runner's*
-        copy of this raise the trusted path's ``SourceNotAvailable`` inside the
-        user's own frame (``ipc_recursive_source``, nns.py). The entry staying
-        ``None`` just means the forward runs the original callable while that
-        error ends the run.
+        serving it over ``{path}.fn`` to the runner's parked worker. The
+        classification is the base ``SourceEnvoy.source``'s, run here against
+        the live value: a submodule target or an assignment serves
+        ``(SOURCE_ERROR, message)`` with the base wording (kept in this one
+        place), a callable with no Python source serves ``instrument``'s own
+        ``SourceNotAvailable`` text — and nothing is built, so the forward runs
+        the original callable while the runner raises from the user's frame.
+        Otherwise the instrumented copy lands in ``interleaver.sourced[path]``
+        before the handle returns, which is what makes ``run_op`` pick it up —
+        its inner operations then fire under ``{path}.source.*``, ordinary
+        locations the proxies serve — and the reply is the same shape the
+        one-level SOURCE reply uses, from which the runner builds another
+        ``IPCSource``. A second worker drilling the same path at the same fire
+        is served the already-built copy's description. A ``.fn`` park that was
+        never armed is some other read whose path happens to end in ``.fn``:
+        served verbatim.
         """
         from nnsight.intervention.source import (
             SourceNotAvailable,
@@ -430,21 +443,32 @@ class SandboxDriver:
         )
 
         interleaver = self.model.interleaver
-        if path not in interleaver.sourced or interleaver.sourced[path] is not None:
-            return  # not an armed recursive-source request, or already built
-        if isinstance(fn, torch.nn.Module) or fn is bind:
-            return
-        try:
-            interleaver.sourced[path] = instrument(
-                fn,
-                make_op(
-                    lambda: (interleaver, path)
-                    if interleaver.interleaving
-                    else (None, None)
-                ),
-            )
-        except SourceNotAvailable:
-            pass
+        if path not in interleaver.sourced:
+            return fn  # not an armed recursive-source request: serve verbatim
+        if interleaver.sourced[path] is None:
+            name = path.rsplit(".", 1)[-1]
+            if isinstance(fn, torch.nn.Module):
+                return SOURCE_ERROR, (
+                    f"{name!r} calls a submodule; call `.source` on that "
+                    f"submodule directly instead of drilling into the call"
+                )
+            if fn is bind:
+                return SOURCE_ERROR, (
+                    f"{name!r} is an assignment, not a call; there is no "
+                    f"function to drill into"
+                )
+            try:
+                interleaver.sourced[path] = instrument(
+                    fn,
+                    make_op(
+                        lambda: (interleaver, path)
+                        if interleaver.interleaving
+                        else (None, None)
+                    ),
+                )
+            except SourceNotAvailable as error:  # a builtin/C target
+                return SOURCE_ERROR, str(error)
+        return describe(interleaver.sourced[path][1])
 
     def run_module(self, path: str, hook: bool, args, kwargs):
         """Run the module at ``path`` ad hoc and return its output — the host side

@@ -204,6 +204,134 @@ class TestRecursiveSource:
         assert sandboxed["step2"].shape[-2] == 1
 
 
+def run_sandboxed_measured(model, blob: bytes):
+    """``run_sandboxed`` with every host->runner frame's size recorded.
+
+    The serve for an armed drill must carry a description, never the callable
+    (#312) — so the largest thing the host ever sends is bounded by the request
+    payload, kilobytes, and a weighted module leaking onto the wire (megabytes)
+    is unmissable.
+    """
+    import io
+
+    from ndif.services.ray.sandbox import host
+    from ndif.services.ray.sandbox.driver import SandboxDriver
+
+    sandbox = host.spawn(model_key=model.to_model_key())
+    sizes = []
+    try:
+        connection = sandbox.connection()
+        send_raw = connection.send_raw
+        connection.send_raw = lambda data: (sizes.append(len(data)), send_raw(data))
+        connection.send((blob, False, "torch.float32", None, {}))
+        data, _ = SandboxDriver(model, torch.float32).pump(connection)
+        return torch.load(io.BytesIO(data), weights_only=False)["vals"], sizes
+    finally:
+        sandbox.stop()
+
+
+class TestRefusalWordings:
+    """#312: a refused drill ships a typed error, produced host-side from base
+    nnsight's own checks — each wording must match the trusted path's byte for
+    byte, raised from the user's own line."""
+
+    def refusal(self, model, block):
+        local, sandboxed = both_ways(model, block)
+        assert "error_text" in local and "error_text" in sandboxed
+        assert sandboxed["error_text"] == local["error_text"]
+        return sandboxed["error_text"]
+
+    def test_submodule_target_ships_no_module(self, model):
+        # The former Module-shipping case: pre-#312 the live Conv1D (weights and
+        # all, ~9 MB) was pickled host->runner — twice, with the writeback —
+        # just to be refused in the runner. Now a typed refusal crosses instead,
+        # so no host->runner frame comes anywhere near module size.
+        def block(model, tracer, vals):
+            try:
+                model.transformer.h[0].mlp.source.self_c_fc_0.source
+            except BaseException as error:
+                vals["error_text"] = f"{type(error).__name__}: {error}"
+
+        with model.trace(PROMPT) as tracer:
+            vals = nnsight.save({})
+            block(model, tracer, vals)
+        local = snapshot(vals)
+
+        capture = Capture()
+        with model.trace(PROMPT, backend=capture) as tracer:
+            vals = nnsight.save({})
+            block(model, tracer, vals)
+        sandboxed, sizes = run_sandboxed_measured(model, capture.blob)
+
+        assert sandboxed["error_text"] == local["error_text"]
+        assert "SourceNotAvailable" in sandboxed["error_text"]
+        assert "calls a submodule" in sandboxed["error_text"]
+        # The final frame is DONE carrying the forward's own result (logits +
+        # KV cache, legitimately megabytes); everything before it is parks and
+        # control replies. c_fc alone is ~9.4 MB in fp32; the request payload
+        # is kilobytes.
+        serve_sizes = sizes[:-1]
+        assert max(serve_sizes) < 512 * 1024, (
+            f"a host->runner frame was {max(serve_sizes)} bytes — module-sized, "
+            f"so the callable (or the module) crossed the socket"
+        )
+
+    def test_assignment_target_wording(self, model):
+        def block(model, tracer, vals):
+            try:
+                model.transformer.h[0].mlp.source.hidden_states_0.source
+            except BaseException as error:
+                vals["error_text"] = f"{type(error).__name__}: {error}"
+
+        text = self.refusal(model, block)
+        assert "SourceNotAvailable" in text
+        assert "is an assignment, not a call" in text
+
+    def test_unsourceable_target_wording(self, model):
+        # torch.matmul is a C function; the wording is base `instrument`'s own,
+        # shipped as text — and the drill itself is two levels deep.
+        def block(model, tracer, vals):
+            try:
+                inner = model.transformer.h[0].attn.source.attention_interface_1
+                inner.source.torch_matmul_0.source
+            except BaseException as error:
+                vals["error_text"] = f"{type(error).__name__}: {error}"
+
+        text = self.refusal(model, block)
+        assert "SourceNotAvailable" in text
+        assert "has no Python source" in text
+
+
+class TestTwoInvokesOnePath:
+    """Two workers drilling the same op path park on the same `{path}.fn`; both
+    are served the one description built at the single fire."""
+
+    def test_two_invokes_drilling_one_path(self, model):
+        def block(model, tracer, vals):
+            with tracer.invoke(PROMPT):
+                inner = model.transformer.h[0].attn.source.attention_interface_1
+                vals["a"] = inner.source.attn_weights_2.output
+            with tracer.invoke("The quick brown fox"):
+                inner = model.transformer.h[0].attn.source.attention_interface_1
+                vals["b"] = inner.source.attn_weights_2.output
+
+        with model.trace() as tracer:
+            vals = nnsight.save({})
+            block(model, tracer, vals)
+        local = snapshot(vals)
+
+        capture = Capture()
+        with model.trace(backend=capture) as tracer:
+            vals = nnsight.save({})
+            block(model, tracer, vals)
+        sandboxed = run_sandboxed(model, capture.blob)["vals"]
+
+        assert_matches(local, sandboxed)
+        # Each worker got its own invoke's rows, not a shared serve (the padded
+        # shapes match, the probabilities must not).
+        assert not torch.allclose(sandboxed["a"], sandboxed["b"])
+
+
 class TestMissingOpErrorStory:
     """An op that doesn't exist fails with the available names, like one-level."""
 
