@@ -52,7 +52,14 @@ from nnsight.intervention.interleaver import (
     Pending,
 )
 from nnsight.intervention.serialization import CustomCloudUnpickler
-from nnsight.intervention.source import SourceEnvoy
+from nnsight.intervention.source import (
+    Source,
+    SourceEnvoy,
+    SourceNotAvailable,
+    bind,
+    instrument,
+    make_op,
+)
 from nnsight.intervention.tracer import InterleavingTracer
 from nnsight.modeling.mixins.remotable import Remotable
 
@@ -387,6 +394,78 @@ class IPCSource:
             self._source,
             self._lines.get(name, 0),
         )
+
+
+def ipc_recursive_source(self: SourceEnvoy) -> Source:
+    """``op.source`` in the runner: drill into a called function recursively.
+
+    The base ``SourceEnvoy.source`` resolves the called function from the live
+    value flowing through the call — it marks ``interleaver.sourced[path] =
+    None``, parks on ``{path}.fn`` until the op fires and ``run_op`` hands the
+    callable over, then builds an instrumented copy for the model to run in its
+    place. None of that lands in the right process here: the envoy's own
+    ``.interleaver`` is a never-entered unpickling copy (every persistent
+    ``"Interleaver"`` id loads a fresh ``IPCInterleaver``), so the base property
+    raised its outside-a-trace error even mid-trace — and had it not, the mark
+    and the instrumented copy would have lived in this process while ``run_op``
+    consults the *host's* interleaver, whose forward is the one that runs.
+
+    So, split like everything else at this seam:
+
+    * A ``SOURCE`` control park carrying the **op path** arms the host: it marks
+      its own ``interleaver.sourced[path] = None`` so ``run_op`` serves the live
+      callable at ``{path}.fn`` when the op fires (``install_source``,
+      driver.py).
+    * The worker then parks on ``{path}.fn`` — an ordinary VALUE park. When the
+      op fires, the host serves the callable both ways at once: over the socket
+      to this worker (functions pickle by reference; both sides import the same
+      libraries), and into its own ``sourced`` as a freshly instrumented copy
+      that the forward runs in place of the original
+      (``SandboxDriver.build_recursive_source``), making the inner ops
+      locations the proxies serve like any other.
+    * This side rebuilds the same ``Compiled`` from the same callable — names,
+      lines and source text are deterministic given the source — purely for
+      validation and reprs; its instrumented code never runs here (there is no
+      forward), so its ops are located nowhere.
+
+    The validation mirrors the base property: a submodule target and an
+    assignment raise the same ``SourceNotAvailable`` errors, from this worker's
+    own frame, exactly as the trusted path raises them.
+    """
+    try:
+        mediator = Mediator.current(f"{self.path}.source")
+    except ValueError:
+        # Outside a worker there is no trace to resolve the callable from; the
+        # base property's wording, for parity with the trusted path.
+        raise SourceNotAvailable(
+            "recursive `.source` is only available inside a trace"
+        ) from None
+    # The *entered* interleaver — the run's — not `self.envoy.interleaver`, the
+    # unpickling copy. Caching here matches the base property's per-run scope:
+    # `sourced` is cleared on entry, so each trace re-arms once.
+    interleaver = mediator.interleaver
+    if interleaver.sourced.get(self.path) is None:
+        getcurrent().parent.switch(Pending("SOURCE", self.path, None))
+        fn = Mediator.value(f"{self.path}.fn")
+        if isinstance(fn, torch.nn.Module):
+            raise SourceNotAvailable(
+                f"{self.name!r} calls a submodule; call `.source` on that "
+                f"submodule directly instead of drilling into the call"
+            )
+        if fn is bind:
+            raise SourceNotAvailable(
+                f"{self.name!r} is an assignment, not a call; there is no "
+                f"function to drill into"
+            )
+        # Raises SourceNotAvailable itself for a builtin/C target — the same
+        # error the host's build quietly stepped aside for.
+        interleaver.sourced[self.path] = instrument(fn, make_op(lambda: (None, None)))
+    return Source(
+        self.envoy, prefix=self.path, compiled=interleaver.sourced[self.path][1]
+    )
+
+
+SourceEnvoy.source = property(ipc_recursive_source)
 
 
 # Patch the whole IPCEnvoy class onto the base Envoy. The tracer's root is a model

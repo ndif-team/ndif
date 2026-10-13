@@ -32,6 +32,28 @@ the ``rest`` slot, no pin. Every arrival crosses — the host counts them and
 releases the round (``driver.barrier_arrival``), the runner never does — so the
 host always knows where a released worker parked next (#294).
 
+Control parks name no forward location and carry no pin; the host answers them
+in the next RESUME's args (``driver.MediatorProxy.settle_control``):
+
+  ("SOURCE", path, None)      source-instrument ``path`` and describe it — the
+                              operation names, the forward's source text, each
+                              op's line — or None when the forward can't be
+                              sourced. ``path`` is a module path, or a nested op
+                              path (``...attn.source.attention_interface_1``) for
+                              a recursive `.source`: that arms the host to serve
+                              the drilled-into callable at ``{path}.fn`` when
+                              the op fires (an ordinary VALUE park the worker is
+                              already waiting on) and to instrument it host-side
+                              so the inner ops fire; the reply is None — the
+                              runner rebuilds the same Compiled from the callable
+                              it is served (#281)
+  ("CALL", path, None, (hook, args, kwargs))
+                              run the module at ``path`` ad hoc; reply is its
+                              output (#295)
+  ("CACHE", cache_id, None, (config,))
+                              observe for a ``tracer.cache()`` on the host;
+                              hits ship back as CACHE_HIT; reply is None
+
 Message catalog (the event name is the first element):
 
 host -> runner
@@ -58,6 +80,9 @@ host -> runner
                               tracer.iter outran the model: unwind and warn), or
                               "BARRIER" (the barrier never released: throw the
                               base ValueError). No reply
+  ("CACHE_HIT", cache_id, path, key, value)
+                              one filtered, transformed value for a
+                              ``tracer.cache()`` living in the runner. No reply
   ("DONE", result)            the forward pass returned ``result``; ends the pump
 
 runner -> host
