@@ -40,13 +40,17 @@ in the next RESUME's args (``driver.MediatorProxy.settle_control``):
                               op's line — or None when the forward can't be
                               sourced. ``path`` is a module path, or a nested op
                               path (``...attn.source.attention_interface_1``) for
-                              a recursive `.source`: that arms the host to serve
-                              the drilled-into callable at ``{path}.fn`` when
-                              the op fires (an ordinary VALUE park the worker is
-                              already waiting on) and to instrument it host-side
-                              so the inner ops fire; the reply is None — the
-                              runner rebuilds the same Compiled from the callable
-                              it is served (#281)
+                              a recursive `.source` (#281): that arms the host
+                              (reply None) to answer the ``{path}.fn`` VALUE park
+                              the worker then waits on. That serve is the one
+                              place the host substitutes a served value for the
+                              forward's verbatim one (#312): it instruments the
+                              live callable host-side so the inner ops fire, and
+                              ships the same description shape — or
+                              ``(SOURCE_ERROR, message)`` on refusal, carrying
+                              base nnsight's SourceNotAvailable wording. The
+                              callable (or the whole submodule a refused drill
+                              targeted) never crosses the socket
   ("CALL", path, None, (hook, args, kwargs))
                               run the module at ``path`` ad hoc; reply is its
                               output (#295)
@@ -124,6 +128,14 @@ import torch
 # "leave the worker's pin as it is". A string, compared by value, because real
 # pins are ints or None and the sentinel has to survive the codec.
 KEEP_PIN = "KEEP_PIN"
+
+# First element of the pair served at an armed recursive-`.source` path's
+# ``{path}.fn`` park when the drilled-into callable can't be sourced: the host
+# ships ("SOURCE_ERROR", message) instead of a description, and the runner
+# raises SourceNotAvailable(message) from the user's own frame
+# (driver.serve_recursive_source / nns.ipc_recursive_source, #312). A string,
+# compared by value, so it survives the codec — same reasoning as KEEP_PIN.
+SOURCE_ERROR = "SOURCE_ERROR"
 
 
 # -- length-prefixed framing -------------------------------------------------
