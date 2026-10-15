@@ -103,8 +103,9 @@ docker logs -f ndif
 - **`-e HF_TOKEN`** passes your token through for gated checkpoints.
 - **`--user $(id -u):$(id -g)`** (optional) runs the stack as your uid, so the
   weights it writes to the mounted cache are yours rather than root's. The image
-  sets `HOME=/root` and makes `/root` writable by any uid, so the mount path
-  does not change. Only the dashboard's cron jobs need root.
+  sets `HOME=/root` and makes `/root` writable by any uid, so the mount path is
+  the same for every uid. Run `mkdir -p ~/.cache/huggingface` first, or Docker
+  creates it root-owned. Only the dashboard's cron jobs need root.
 
 Image tags (one per CUDA line) and how to pick one are in
 [docker/README.md](../../docker/README.md#tags). A torch wheel built for a CUDA
@@ -295,10 +296,12 @@ above, for the default). What a wrong address looks like is in
   `ports:` entry in `docker/docker-compose.yml`; the justfile passes `-f`
   explicitly, so a `docker-compose.override.yml` is not read.
 - **The compose HF cache is a fixed path,** `${HOME}/.cache/huggingface`. The
-  `ray` container runs as root unless `NDIF_UID` and `NDIF_GID` are set
-  (`NDIF_UID=$(id -u) NDIF_GID=$(id -g) just up`), so by default the files it
-  downloads are root-owned. On a cache shared with other work every cached
-  model shows `COLD` in `/status`.
+  `ray` container runs as root unless `NDIF_USER` is set
+  (`NDIF_USER=$(id -u):$(id -g) just up`), so by default the files it
+  downloads are root-owned. A cache root already wrote to needs
+  `sudo chown -R $(id -u):$(id -g) ~/.cache/huggingface` once before running as
+  yourself. On a cache shared with other work every cached model shows `COLD`
+  in `/status`.
 
 ## Related
 

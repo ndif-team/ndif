@@ -60,7 +60,7 @@ environment handed to spawned services, never written into `os.environ`:
 | `NDIF_RAY_DASHBOARD_PORT` | `8265` | |
 
 **`NDIF_HOME` state** (`src/ndif/cli/state.py` `State`): `run/<service>.pid`,
-`logs/<service>.log`, and `redis/` and `rustfs/` data dirs when the CLI spawns them. Liveness is the PID
+`logs/<service>.log`, and `rustfs/` when the CLI spawns RustFS. Liveness is the PID
 file plus `kill(pid, 0)`; a PID file whose process is gone is cleared on read.
 Nothing about deployments is stored here — that lives in the controller.
 

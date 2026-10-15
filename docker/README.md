@@ -28,7 +28,10 @@ docker run -d --name ndif --gpus all --shm-size 4g \
 ```
 
 To have the weights it downloads owned by you rather than root, add
-`--user $(id -u):$(id -g)`; the image runs as any uid.
+`--user $(id -u):$(id -g)`; the image runs as any uid. Create the cache first
+(`mkdir -p ~/.cache/huggingface`), or Docker creates it root-owned. A cache
+that root containers already wrote to needs this once:
+`sudo chown -R $(id -u):$(id -g) ~/.cache/huggingface`.
 
 Ray takes a minute to boot. `curl localhost:8001/ping` answers `"pong"` as
 soon as the API is up; `curl localhost:8001/connected` answers

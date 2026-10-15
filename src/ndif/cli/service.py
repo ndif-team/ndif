@@ -29,14 +29,12 @@ def _script_command(relative: str) -> Callable[[dict], list[str]]:
 def _redis_command(env: dict) -> list[str]:
     """Spawn ``redis-server`` on the port from ``NDIF_REDIS_URL``.
 
-    ``--dir`` puts its RDB snapshots under ``NDIF_HOME`` rather than the working
-    directory, which may not be writable; a failed snapshot makes Redis refuse
-    writes (``MISCONF``).
+    Snapshots are off: a failed snapshot into an unwritable working directory
+    makes Redis refuse writes, and the queue has nothing worth keeping across
+    restarts.
     """
     port = urlparse(env.get("NDIF_REDIS_URL", "redis://localhost:6379")).port or 6379
-    data_dir = Path(env.get("NDIF_HOME", "~/.ndif")).expanduser() / "redis"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return ["redis-server", "--port", str(port), "--daemonize", "no", "--dir", str(data_dir)]
+    return ["redis-server", "--port", str(port), "--daemonize", "no", "--save", ""]
 
 
 def _rustfs_command(env: dict) -> list[str]:

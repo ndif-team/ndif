@@ -57,7 +57,8 @@ apply inside every container too. Two consequences:
   every NDIF container is `/app` — a directory with no `.env`. Configuring a
   container through `.env` means bind-mounting the file to `/app/.env`.
 - The compose file uses `${VAR}` interpolation only for `HF_TOKEN`, `HOME`,
-  `NDIF_VERSION` and `NDIF_UID` / `NDIF_GID` (the `ray` service's `user:`), and has no `env_file:` key. Everything else is set in each
+  `NDIF_VERSION` and `NDIF_USER` (the `ray` service's `user:`), and has no
+  `env_file:` key. Everything else is set in each
   service's `environment:` block.
 
 ## One boundary config crosses by itself
