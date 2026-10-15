@@ -36,6 +36,10 @@ has to change before either faces users.
 | `grafana` | `grafana/grafana:11.1.0` | optional | 3000 | No dashboards; the data is still in Loki/Influx/Prometheus. |
 | `dashboard` | built from `docker/Dockerfile` | optional | 8081 | No admin UI, no monitor/reconcile crons. Deploys still work via the CLI. |
 
+A host port already in use fails that service's start; change its `ports:`
+entry in `docker/docker-compose.yml`. The justfile passes `-f` explicitly, so
+compose does not read a `docker-compose.override.yml`.
+
 "Health-gated" is a compose artifact: the `api` service's `depends_on` waits for
 `redis`, `minio`, `influxdb` and `postgres` to be `service_healthy`, whether or
 not the API will use them. `api` has its own health check — `GET /ping` through
@@ -99,7 +103,9 @@ and `minio` containers instead.
 
 The compose project name is `dev`, so containers and the network are
 `dev-api-1`, `dev-ray-1`, `dev_default` — useful when you reach past `just` for
-`docker logs dev-ray-1` or `docker exec`.
+`docker logs dev-ray-1` or `docker exec`. The name is fixed, so every `just up`
+on a host reuses project `dev`: an existing `dev` stack is taken over, and
+existing `dev-*` images are retagged by the next build.
 
 ### The GPU reservation
 

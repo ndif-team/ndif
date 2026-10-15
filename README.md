@@ -66,9 +66,11 @@ yourself. Before anyone else can reach it, work through
 ### 1. `docker run` — the published image, whole stack in one container
 
 ```bash
-docker run --gpus all --shm-size 4g -p 8001:8001 -p 9000:9000 \
+docker run -d --name ndif --gpus all --shm-size 4g \
+  -p 127.0.0.1:8001:8001 -p 127.0.0.1:9000:9000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   ndif/ndif:0.1.0
+docker logs -f ndif
 ```
 
 `NDIF_SERVICE` defaults to `all`, so the container starts redis, minio, ray and
@@ -149,6 +151,8 @@ just ta              # down -> rebuild -> up (full refresh after a code change)
 just build ray && just up ray   # rebuild and recreate one service, leaving the rest up
 pytest tests/        # live-server tests skip unless the stack is up
 ```
+
+Every `just ta` starts with a bare `just down`: `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 
 The `ndif` CLI is the image entrypoint (`ENTRYPOINT ["ndif"]`, `CMD ["start",
 "--foreground"]`); `NDIF_SERVICE` selects which service(s) a container runs. It

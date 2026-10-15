@@ -159,7 +159,7 @@ Wraps `docker compose -f docker/docker-compose.yml`: `just build`, `just up
 [service...]`, `just down [args]`, `just ta` (down → build → up), `just restart`,
 `just logs`, `just ps`, and `just nnsight` (what nnsight would be bind-mounted). It
 also computes `NDIF_VERSION` for the build and adds the nnsight override when an
-editable nnsight is found.
+editable nnsight is found. `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 
 ## `pyproject.toml`
 

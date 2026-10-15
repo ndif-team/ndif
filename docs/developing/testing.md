@@ -59,6 +59,7 @@ Install the `dev` extra (`ruff`, `httpx`, `pytest`, `pytest-asyncio`) plus a cli
 nnsight:
 
 ```bash
+python -m venv --system-site-packages .venv && . .venv/bin/activate   # optional: keeps the dev extra out of a shared env
 pip install -e ".[dev]"
 ```
 
@@ -79,8 +80,15 @@ only the first test pays the deploy time.
 
 With no stack, collection still succeeds and every live test is skipped:
 `tests/conftest.py` probes `GET /ping` once at import and builds the
-`requires_server` marker from the answer. Pointing at a non-default host means
-editing `HOST` in `tests/conftest.py`; there is no environment variable for it.
+`requires_server` marker from the answer. Pointing at a non-default host or port
+means editing `HOST` in `tests/conftest.py`; there is no environment variable for
+it. Through an SSH tunnel, use the tunnel's local port.
+
+Two client-side requirements: the tests that check `meta` need a client nnsight
+newer than 0.8.0 (0.8.0 and rc1 drop the field), and the non-blocking tests
+download from `NDIF_OBJECT_STORE_PUBLIC_URL`, which must be reachable from the
+machine running pytest
+([Quickstart](../operating/quickstart.md#client-on-another-machine)).
 
 > **Gotcha:** run `pytest tests/`, not a bare `pytest`. `pyproject.toml` has no
 > `[tool.pytest.ini_options]` or `testpaths`, so a bare invocation from the repo

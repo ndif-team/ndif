@@ -53,6 +53,13 @@ wrapper class on the meta device (no weights, no GPU) and calling nnsight's
 - **The wrapper class**, `nnsight.modeling.transformers.TransformersModel` by
   default (`DEFAULT_ENVOY_CLASS`).
 
+A server whose nnsight predates task-in-key mints **task-less** keys. Current
+clients never match them: a client trace provisions a separate deployment beside
+the task-less one, and `--task` does not reach the key. On such a server, deploy
+through a verbatim `model_key:` entry in `models.yaml` that spells the task out,
+and evict by the exact key
+([Deploy and pin a model](../runbooks/deploy-and-pin-a-model.md#removing-it)).
+
 The client sends the key it computed; the server never guesses. "Model not
 deployed" is almost always a key mismatch — compare `ndif status --json-output`
 with what nnsight computed locally.
@@ -307,7 +314,7 @@ ndif evict gpt2                 # every HOT + WARM replica of gpt2
 ndif evict gpt2 --replica abc12 # one replica (exactly one checkpoint)
 ndif evict --all                # every HOT deployment, pinned included
 ndif status --json-output       # raw controller payload — model keys live here
-ndif export -f models.yaml      # current HOT set as a models.yaml
+ndif export --stdout > models.yaml  # current HOT set as a models.yaml
 ```
 
 Explicit eviction is unconditional — it respects neither `pinned` nor the age
@@ -333,6 +340,14 @@ on redeploy. It does **not** carry `padding_factor`, `padding_bias`,
 stored on the deployment, so a restored model is re-sized from the cluster
 defaults unless you add them back to the file.
 
+Fields are written only when they differ from the defaults. Replicas under one
+key with different settings (say one pinned, one not) are merged into one entry,
+so a restore can differ from what ran; if that matters, save the per-replica
+state from `ndif status --json-output` first. `ndif export -f` writes its file
+where the CLI runs — inside the `ray` container on compose — so use the stdout
+form to get it onto the host:
+`docker exec dev-ray-1 ndif export --stdout > models.yaml`.
+
 ## PEFT adapters
 
 Adapters are **per request, not per deployment** — `DeploymentConfig` has no
@@ -354,7 +369,7 @@ adapter id surfaces as a normal user-facing `ERROR` with the real message.
 On the compose stack, deploy gpt2 pinned, check it, and take it back down:
 
 ```bash
-alias in-ray='docker compose -f docker/docker-compose.yml exec ray'
+in-ray() { docker exec -i dev-ray-1 "$@"; }      # a function: an alias only works interactively
 in-ray ndif deploy openai-community/gpt2 --pinned   # prints the model key, then ✓ ready
 in-ray ndif status                                  # 🔥 HOT (1) • openai-community/gpt2 RUNNING | text-generation
 in-ray ndif evict openai-community/gpt2

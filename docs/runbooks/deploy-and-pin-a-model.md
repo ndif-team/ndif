@@ -32,7 +32,8 @@ each step. Three facts shape the procedure:
 stack, run them in the `ray` container:
 
 ```bash
-alias ndif='docker compose -f docker/docker-compose.yml exec -T ray ndif'
+# a function, not an alias: works in scripts and from any directory (project `dev`)
+ndif() { docker exec -i dev-ray-1 ndif "$@"; }
 ```
 
 ## 1. Deploy
@@ -200,8 +201,16 @@ models:
 An entry without `task:` takes `--task` when given, else the inferred task, which
 matches clients that don't pass one. A `model_key:` entry is used verbatim — it
 needs the task in it.
-`ndif export -f models.yaml` writes the current HOT set, task and key included, so
-"snapshot now, restore later" is two commands.
+`ndif export --stdout > models.yaml` writes the current HOT set, task and key
+included, so "snapshot now, restore later" is two commands. (`-f` writes inside
+the `ray` container when the CLI runs there.) Only non-default fields are
+written, and replicas with different settings under one key are merged into one
+entry, so dump `ndif status --json-output` first if per-replica state matters.
+
+A server whose nnsight predates task-in-key mints task-less keys: current
+clients never match them, a client trace provisions a separate deployment, and
+`--task` does not reach the key. On such a server, deploy through a verbatim
+`model_key:` entry that carries the task, and evict by exact key (below).
 
 **The dashboard schedule** — the only mechanism that keeps re-asserting itself.
 

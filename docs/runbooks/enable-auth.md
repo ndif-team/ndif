@@ -51,12 +51,18 @@ data sits in an **anonymous** Docker volume tied to the container:
 | `just down` | **lost** — the container goes, and the next `up` creates a fresh empty volume, so `init.sql` runs again |
 | `just ta` | **lost** — it runs `just down` first |
 
+After a loss, every existing key gets `403 Invalid API key.` until its rows are
+re-inserted. The old anonymous volume is not deleted: it stays on disk unattached,
+where `docker volume ls -f dangling=true` lists it — recoverable by mounting it,
+and a disk leak otherwise.
+
 Pick one of these before you issue keys you care about:
 
 - **Give Postgres a named volume.** In `docker/docker-compose.yml`, add
   `- pgdata:/var/lib/postgresql/data` to the `postgres` service's `volumes:` and
   `pgdata:` under the top-level `volumes:` (next to `dashboard_data`). Data then
-  survives `just down` and `just ta`; only `just down -v` removes it.
+  survives `just down` and `just ta`; only `just down -v` removes it. The named
+  volume starts empty, so dump the current keys (below) before switching.
 - **Dump and restore around every teardown:**
 
   ```bash
@@ -159,16 +165,41 @@ and editing activations, `.save()`, `.source`, and generation all work. These do
 not:
 
 - reading or editing parameters directly (`module.weight`) — the runner's
-  parameters are on the meta device, so reads fail and edits change nothing;
+  parameters are meta tensors. Saving anything derived from one fails at result
+  upload with `Cannot copy out of meta tensor`; weight writes are silent no-ops;
 - gradients and `backward()`;
 - training loops in a session — optimizer steps update nothing.
 
 Users who need those need a `trusted` key. What the runner's process separation
 covers, and what it does not, is in [Sandbox execution](../concepts/sandbox-execution.md).
 
+**Confirm which path a request took.** The logs carry no `trusted` field.
+Runners are child processes of the model actor (`ndif.services.ray.sandbox.runner`
+on the command line), kept warm in a pool; each untrusted request takes one,
+which is stopped afterwards and replaced by a new pid. The image has no `ps`, so
+list them by walking `/proc` in the `ray` container, before and after a request:
+
+```bash
+docker compose -f docker/docker-compose.yml exec ray sh -c \
+  'for p in /proc/[0-9]*; do echo "$(cut -d" " -f4 $p/stat) ${p#/proc/} $(tr "\0" " " < $p/cmdline)"; done' \
+  | grep -i -e ModelActor -e runner
+```
+
+The first column is the parent pid. New runner pids after the request mean it
+took the untrusted path; a trusted request leaves the runners untouched.
+
 ## 5. Verify
 
-Every failure is a distinct status (`src/ndif/services/api/auth.py` module
+The primary check is `/whoami`, which resolves a key without submitting anything
+(`src/ndif/services/api/app.py` `whoami`). A missing or unknown key returns
+`{"email": null, "tags": []}`; a malformed one returns 400:
+
+```bash
+curl -s -H "ndif-api-key: <key_id>" localhost:8001/whoami
+# {"email":"researcher@example.edu","tags":["trusted"]}
+```
+
+To confirm rejection on `/request` itself, every failure is a distinct status (`src/ndif/services/api/auth.py` module
 docstring):
 
 | Condition | Status |
@@ -196,23 +227,14 @@ probe 00000000-0000-0000-0000-000000000000     # 403
 `503` from all three means `require_ray_connection` rejected the request before
 auth ran: Ray isn't connected (`src/ndif/services/api/app.py`
 `require_ray_connection`). `200` from all three means auth is off — go back to
-step 3.
-
-`/whoami` resolves a key to its email and tags. A missing or unknown key returns
-`{"email": null, "tags": []}`; a malformed one returns 400
-(`src/ndif/services/api/app.py` `whoami`):
-
-```bash
-curl -s -H "ndif-api-key: <key_id>" localhost:8001/whoami
-# {"email":"researcher@example.edu","tags":["trusted"]}
-```
+step 3. A `200` probe also enqueues a real job for the bogus model key.
 
 End to end from the client, which sends the key in the `ndif-api-key` header:
 
 ```python
 import nnsight
 nnsight.CONFIG.API.HOST = "http://localhost:8001"
-nnsight.CONFIG.set_default_api_key("<key_id>")   # persists to the user config
+nnsight.CONFIG.API.APIKEY = "<key_id>"   # or export NDIF_API_KEY; this session only
 
 from nnsight.modeling.transformers import TransformersModel
 model = TransformersModel("openai-community/gpt2")
@@ -221,6 +243,8 @@ with model.trace("hello", remote=True):
 ```
 
 Without the key the same script fails on the HTTP 401 before any job exists.
+`CONFIG.set_default_api_key` also works but rewrites the whole client config
+file, `HOST` included, with the current in-memory values.
 
 ## 6. Lock the dashboard
 
@@ -259,6 +283,9 @@ Recreate and check, as in step 3:
 ```bash
 just up dashboard
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/schedule   # 401
+curl -s -c jar -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"your-password"}' localhost:8081/api/auth/login
+curl -s -o /dev/null -w '%{http_code}\n' -b jar localhost:8081/api/schedule   # 200
 ```
 
 ## Gotchas

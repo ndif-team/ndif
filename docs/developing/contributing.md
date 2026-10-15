@@ -163,7 +163,8 @@ those:
 3. A new env var gets a row in [Environment variables](../reference/env-vars.md); a
    new `start.sh` or other non-`.py` file gets a `package-data` entry
    ([Adding a service](adding-a-service.md#dependencies-extras-and-the-image)).
-4. A doc your change makes false is fixed in the same PR; `pytest tests/test_docs.py`
+4. After a code change run `just ta`. `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
+5. A doc your change makes false is fixed in the same PR; `pytest tests/test_docs.py`
    checks cited paths, symbols and links.
 
 Nothing here is a stable public API, and a change that deletes a concept is worth

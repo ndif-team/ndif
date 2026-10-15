@@ -152,6 +152,29 @@ that is the request's own `trusted`, stamped by the API. See
 [Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) and
 [Sandbox Execution](../concepts/sandbox-execution.md).
 
+### Scripting the dashboard API
+
+The same JSON endpoints the SPA calls, for a box with no browser. With login on,
+get the session cookie first; in dev mode skip that step.
+
+```bash
+D=http://localhost:8081
+curl -s -c jar -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"<password>"}' $D/api/auth/login
+curl -s -b jar -H 'content-type: application/json' $D/api/deployments/deploy \
+  -d '{"checkpoint":"openai-community/gpt2","trusted":false}'
+curl -s -b jar -H 'content-type: application/json' $D/api/deployments/evict \
+  -d '{"model_key":"<model_key>","replica":"<replica_id>"}'
+```
+
+| Endpoint | Body (`src/ndif/services/dashboard/backend/routers/`) |
+|---|---|
+| `POST /api/auth/login` | `{username, password}`; sets the HttpOnly session cookie |
+| `POST /api/deployments/deploy` | `DeployRequest`: `checkpoint` (required), optional `model_key` (used verbatim), `trusted` (default `true`), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`, `pinned`, `replicas` |
+| `POST /api/deployments/evict` | `EvictRequest`: `model_key`, optional `replica` |
+| `POST /api/deployments/restart` | `RestartRequest`: `model_key`, optional `replica` |
+| `POST /api/schedule` | `ScheduleEventIn`: `title`, `checkpoint`, `start`, optional `end` (open-ended when absent), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`; `model_key` is recomputed server-side |
+
 ## The schedule model
 
 A schedule event is *one model, pinned, over a time window*. It is not a

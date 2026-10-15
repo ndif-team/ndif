@@ -229,13 +229,13 @@ the object store and polled via `GET /response/{id}` instead — see
 | 5 | Model never deploys | stuck on `PROVISIONING`/`DEPLOYING`, then `ERROR` | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
 | 6 | Won't fit on any node | `ERROR` "Could not deploy this model." with a node's stated reason, else `CANT_ACCOMMODATE` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | 7 | Replica evicted mid-flight | silently re-queued at the front (no error) | [Deployments and Eviction](deployments-and-eviction.md) |
-| 8 | Block raises | `ERROR` with the user's own traceback | [Error messages](../reference/error-messages.md) |
+| 8 | Block raises | `ERROR` with a traceback ending at the user's line; only nnsight's frames are stripped, so asyncio/Ray/NDIF wrapper and torch/transformers frames precede it | [Error messages](../reference/error-messages.md) |
 | 8 | Block exceeds the timeout | `ERROR` "exceeded the execution timeout of Ns" | [Auth and Limits](auth-and-limits.md) |
 | 8 | Missing module in the block | `ModuleNotFoundError` at deserialize | [Error messages](../reference/error-messages.md) |
 | 8a | Runner process dies mid-run | `ERROR` carrying the runner's formatted traceback | [Sandbox internals](../developing/sandbox-internals.md) |
 | 9 | Object store unreachable | `ERROR` from the upload, after a successful run (only on the object-store route) | [Providers](../developing/providers.md) |
 | 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Production](../operating/production.md#3-real-object-storage-reachable-from-two-networks) |
-| 10 | Several near-cap inline results published while the subscriber stalls | the subscriber is dropped and `COMPLETED` never arrives | [Status and Results](status-and-results.md#how-the-result-gets-back) |
+| 10 | Near-cap inline results published while the subscriber stalls (about three reach the hard limit) | the subscriber is dropped and `COMPLETED` never arrives | [Status and Results](status-and-results.md#how-the-result-gets-back) |
 
 ## Related
 

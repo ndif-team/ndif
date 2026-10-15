@@ -25,7 +25,8 @@ ledger said yes and the card disagreed.
 compose stack, run them in the `ray` container:
 
 ```bash
-alias ndif='docker compose -f docker/docker-compose.yml exec -T ray ndif'
+# a function, not an alias: works in scripts and from any directory (project `dev`)
+ndif() { docker exec -i dev-ray-1 ndif "$@"; }
 ```
 
 ## How the size is estimated
@@ -201,7 +202,8 @@ stays up and `cleanup()` empties the cache. Fix with padding, not a restart.
 The failed request's terminal response carries a `meta` dict
 (`src/ndif/services/ray/deployments/modeling/util.py` `request_meta`) — on a
 non-blocking job it is in `curl -s localhost:8001/response/<request_id> | jq .meta`;
-on a blocking one, ask the user for it:
+on a blocking one, ask the user for it. `meta` appears only when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1 releases lack the field and pydantic drops it silently.
+Its keys:
 
 | Key | Meaning |
 |---|---|
@@ -274,7 +276,11 @@ just up ray
 `ray` takes down the controller **and every model actor**: in-flight and queued
 requests are errored once the API notices the lost connection, and only
 `NDIF_DEPLOYMENTS` models (and dashboard-scheduled ones, on the next reconcile)
-come back on their own. Plan it as an outage. On a from-source install, change the
+come back on their own. Plan it as an outage. Right after the recreate, the first
+request errors with `Error starting model. Please try again later.` — the API is
+still holding its old compute connection, and its log shows a `ConnectionError` —
+and the next may get a `503` until the API reconnects; retry after that.
+On a from-source install, change the
 variable in the environment `ndif start` runs under, then `ndif stop ray` and
 `ndif start ray`.
 

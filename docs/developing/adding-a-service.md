@@ -126,9 +126,12 @@ setuptools leaves it out of the wheel unless `pyproject.toml` lists it:
 "ndif.services.myservice" = ["start.sh"]
 ```
 
-Skip it and everything works from a checkout while `ndif start myservice` fails
-from a `pip install` with `cannot run 'bash'` — `SERVICES_DIR` resolves into
-`site-packages`, where the script was never installed. Ship any other asset the same
+Skip it and everything works from an editable checkout while the service fails
+to start from any installed copy with
+`bash: .../services/myservice/start.sh: No such file or directory` (exit 127) —
+`SERVICES_DIR` resolves into `site-packages`, where the script was never
+installed. That includes the compose image, which installs the package
+non-editable, so `package-data` is required for compose development too. Ship any other asset the same
 way; the dashboard ships `config.example.json` and its built SPA
 (`"frontend/dist/*"`, `"frontend/dist/**/*"`).
 

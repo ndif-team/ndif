@@ -272,6 +272,38 @@ explicitly with `nnsight.register(module)`.
 
 This is the one home for the procedure; other pages link here.
 
+**On the compose stack**, `docker/docker-compose.nnsight.yml` bind-mounts a
+checkout over the image's nnsight in `api`, `ray` and `dashboard`, so client
+changes are picked up without a rebuild:
+
+```bash
+export NNSIGHT_PATH=/path/to/nnsight/src/nnsight   # the package dir, not the repo root
+just nnsight                                        # prints what would be mounted
+just up
+```
+
+- **`NNSIGHT_PATH` names the package directory** (`<checkout>/src/nnsight`), and
+  every `just` invocation must carry it: a `just up` or `just ta` without it
+  recreates the containers without the mount.
+- **Auto-detection** (no `NNSIGHT_PATH`) needs a host `python` that imports an
+  *editable* nnsight; with no such `python` it is skipped silently and the image's
+  pinned copy is used. A non-editable nnsight under `site-packages` is
+  deliberately not mounted.
+- **Build the compiled extension in the checkout.** A fresh checkout has no
+  `nnsight._c` extension, and under the mount every remote `.save()` then fails
+  with an `AttributeError`. Build it in place with the image's toolchain:
+
+  ```bash
+  docker run --rm --entrypoint python -v <checkout>:/src -w /src dev-ray setup.py build_ext --inplace
+  ```
+
+- **Verify the mount** with `grep nnsight /proc/self/mountinfo` inside the
+  container, or by importing a symbol only your branch has.
+  `nnsight.__version__` reports the image's installed version even under the
+  mount, so it cannot tell you.
+
+**Outside Docker**, install nnsight first:
+
 ```bash
 pip install -e /path/to/nnsight        # before installing ndif
 pip install -e ".[api,ray,metrics,postgres,dashboard]"
@@ -279,18 +311,11 @@ pip install -e ".[api,ray,metrics,postgres,dashboard]"
 
 Order matters: the `ndif` install resolves its `nnsight` requirement against what is
 already present, so installing nnsight afterwards can pull a PyPI release over your
-checkout. The published wheels ship nnsight's compiled `nnsight._c.py_mount`
-extension; an **sdist** install needs a compiler, and without one setuptools
-silently skips the extension and `some_list.save()` inside a *remote* block raises
-`AttributeError` — the mount is a server-side dependency. The image keeps `gcc` and
-`libc6-dev` for that fallback (`docker/Dockerfile`).
-
-For the compose stack, the `justfile` bind-mounts an **editable** nnsight over the
-image's copy via `docker/docker-compose.nnsight.yml` (into `api`, `ray` and
-`dashboard`), so client changes are picked up without a rebuild. It resolves
-`NNSIGHT_PATH` from the shell's `import nnsight`, or takes it from the environment;
-a non-editable nnsight under `site-packages` is deliberately not mounted, and the
-image's pinned copy is used. `just nnsight` prints what would be mounted.
+checkout. The published wheels ship the compiled `nnsight._c.py_mount` extension;
+an **sdist** install needs a compiler, and without one setuptools silently skips
+the extension and `.save()` inside a *remote* block raises `AttributeError` — the
+mount is a server-side dependency. The image keeps `gcc` and `libc6-dev` for that
+fallback (`docker/Dockerfile`).
 
 To build the image against an unreleased nnsight, replace the `nnsight` line in
 `requirements.txt` with a git ref (`git+https://github.com/ndif-team/nnsight.git@<ref>`);

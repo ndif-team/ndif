@@ -14,8 +14,11 @@ For a whole-stack symptom (a service won't start, everything hangs) start at
 
 ## Read the shape first
 
-- **A Python traceback through the user's own lines** — their code ran and
+- **A Python traceback ending in the user's own lines** — their code ran and
   raised. A user error, never fatal to the replica. Stop looking at the server.
+  Only nnsight's frames are stripped, so asyncio, Ray, NDIF and torch/transformers
+  frames come first; judge by the last frames. A traceback whose last frames are
+  greenlet/threading or NDIF paths is a server fault, not the user's.
 - **One prose sentence, no frames** — the server refused or failed the request,
   and the sentence says which. A rejected payload is deliberately a sentence: every
   frame at that point is server-side, so a traceback would leak module layout and
@@ -85,12 +88,13 @@ The request was accepted and something failed later. `RemoteBackend` raises
 | `The model architecture on this server doesn't match the one your code was traced against: it has no module at '<path>'.` followed by the `ndif.compare()` recipe | the same sentence | User's environment: the client built a different module tree, nearly always a `transformers` difference. `<path>` is the *first* diverging path, not the layer the user reached for | Not fatal. Align versions, then retry |
 | `Your job exceeded the execution timeout of {n}s.` | `model execution timed out`, `error_type=timeout` | Usually user. Only emitted when `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` or a per-model `execution_timeout_seconds` is set — there is no default | Not fatal. The in-process interrupt lands at a bytecode boundary and cannot preempt a running CUDA kernel; the sandboxed path kills the runner process |
 | `Your job was cancelled or preempted by the server.` | `model execution cancelled`, `error_type=cancelled` | No current path sends it. The actor sends it when its `cancel()` fires without the preempt reason, and its only caller, the HOT→WARM demotion (`BaseModelDeployment.to_cache`), passes that reason and re-queues instead (`src/ndif/services/ray/deployments/modeling/base.py` `BaseModelDeployment.run`) | Re-submit |
-| `Request cancelled by operator.` | `ndif kill` prints `removed_from_queue` or `cancelled_execution` | Operator: `ndif kill`. A queued request is removed and errored. An executing one is errored and its dispatch cancelled; the actor is not interrupted and runs the block to completion. The eviction sentence follows this one — see [Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs) (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`) | Re-submit |
+| `Request cancelled by operator.` (a blocking client shows this first `ERROR` with an empty description) | `ndif kill` prints `✓ Request <id> cancelled while executing.` for an executing request | Operator: `ndif kill`. A queued request is removed and errored. An executing one is errored and its dispatch cancelled; the actor is not interrupted and runs the block to completion — restart that replica before it takes new work (the greenlet row below). The eviction sentence follows this one — see [Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs) (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`) | Re-submit |
 | `Replica was evicted while processing your request. Sorry for the inconvenience. Please try again later.` | `request errored: cancelled mid-dispatch`, `error_type=cancelled` (`ndif.queue.replica`) | Server/operator: the replica's worker task was cancelled mid-dispatch (`src/ndif/services/api/queue/replica.py` `Replica.dispatch`). After `ndif kill` or a purge it arrives *second*, after the specific message: a blocking client has already raised on the first; a non-blocking job's stored response shows this sentence until the still-running actor's own final response (`COMPLETED`, or an `ERROR`) overwrites it | Retry, unless it follows a kill |
 | `Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.` | `request errored during execution` (`ndif.queue.replica`) with the traceback; `error_type` is the Ray-side exception class | Server: the dispatch to the actor failed with something that is not an eviction. If the class is `ActorUnavailableError` the actor is restarting after a fatal CUDA error and the worker waits for it | Retry |
-| `Error provisioning model. Please try again later. Sorry for the inconvenience.` / `Error starting model. …` | the same text (`ndif.queue.processor`) with the traceback | Server: the controller could not place or ready a replica and did not say why. The failing phase picks the wording. Every queued request for that model gets it at once (`src/ndif/services/api/queue/processor.py` `Processor.start`, `Processor.purge`) | Retry later |
-| `Could not deploy this model. <reason>` | the same, with the controller's text | Usually the caller: a mistyped `repo_id`, a gated repo, or `CANT_ACCOMMODATE` on a full cluster. Only a controller `DeploymentError` is forwarded this way, truncated to `_MAX_REASON_CHARS` | Not until the reason is fixed — see [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) for capacity |
+| `Error provisioning model. Please try again later. Sorry for the inconvenience.` / `Error starting model. Please try again later.` | the same text (`ndif.queue.processor`) with the traceback | Server: the controller could not place or ready a replica and did not say why. The failing phase picks the wording. Every queued request for that model gets it at once (`src/ndif/services/api/queue/processor.py` `Processor.start`, `Processor.purge`). Right after the `ray` container is recreated, `Error starting model.` is instead the API's stale compute connection — the logged traceback is a `ConnectionError` — and the next request may 503 until the API reconnects | Retry later |
+| `Could not deploy this model. <reason>` | the same, with the controller's text | Usually the caller: a mistyped `repo_id`, a gated repo, or `CANT_ACCOMMODATE` on a full cluster. Only a controller `DeploymentError` is forwarded this way, truncated to `_MAX_REASON_CHARS`; the reason can embed a server-side Hugging Face traceback | Not until the reason is fixed — see [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) for capacity |
 | `Critical server error occurred. Please try again later. Sorry for the inconvenience.` | the dispatcher's error handler, after a Ray connection error | Server: the dispatcher purged every model's queue and is reconnecting (`Dispatcher.handle_errors`) | Retry |
+| A traceback ending in greenlet/threading frames: `ValueError: Cannot switch to a different thread` or `… parent cannot be on a different thread` | `model execution errored` | Server: new work was dispatched to a replica whose killed block is still running | Restart the replica ([Debug a stuck request](../runbooks/debug-a-stuck-request.md#step-8--unstick-it)), then retry |
 
 ### The two fatal CUDA errors
 
@@ -124,6 +128,7 @@ store ([Status and Results](../concepts/status-and-results.md)).
 |---|---|---|
 | `httpx.ConnectError: [Errno -2] Name or service not known` (or a hang) | Operator | The URL was signed for a host the client cannot reach. `NDIF_OBJECT_STORE_PUBLIC_URL` must be the address *the client* resolves; empty, it falls back to `NDIF_OBJECT_STORE_URL` (`src/ndif/common/providers/objectstore.py` `ObjectStoreProvider`). See [Production](../operating/production.md#3-real-object-storage-reachable-from-two-networks) |
 | `403 SignatureDoesNotMatch` | Operator | Signed with different credentials than the store accepts, or a proxy rewrote the Host header |
+| An `httpx.HTTPStatusError` for a `404`, body `NoSuchBucket` | Operator | A different S3 server answered at the public URL: `NDIF_OBJECT_STORE_PUBLIC_URL` is wrong, or the client's tunnel to it lands on another store |
 | `403 Request has expired` | User | Presigned URLs live one hour (`ObjectStoreProvider.presigned_get`); a non-blocking job polled later gets a stale URL. Re-run |
 | Download works, `torch.load` fails | Client | A compression mismatch: the client decompresses only if it set `compress` |
 
@@ -153,6 +158,7 @@ there means "nothing recorded yet", and the client treats it as still running.
 | `torch.cuda.OutOfMemoryError` at load | `BaseModelDeployment.load_from_disk` | Sizing: the estimate was too small, or the GPU was not actually free. Reaches users as `Error starting model.` — [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `RuntimeError: '<name>' is still on the meta device …` / `… is on 'cpu', expected one of CUDA devices […]` / `… is on cuda:N, outside the assigned set […]` / `No tensors were placed on assigned GPUs […]` | `src/ndif/services/ray/deployments/modeling/util.py` `verify_device_placement` | The load did not land on the granted GPUs; `cpu` means the budget was too small and accelerate offloaded the overflow |
 | An HF error about `trust_remote_code` | the evaluator or the load | The deployment is untrusted and the repo ships custom modelling code; redeploy trusted |
+| `No response from the dispatcher for <event>. Is the API running?` | `src/ndif/cli/lib/events.py` | CLI (`ndif queue` and other dispatcher events). Transient for ~5 s after an API restart, while the dispatcher comes up; persistent means the API is down |
 | `NDIFConnectivityError: Cannot connect to Ray at <url>: …` | `src/ndif/cli/lib/_common.py` `ensure_ray_connected` | CLI and dashboard only. Ray is down, the address isn't listening, or the `Controller` actor is missing from the `NDIF` namespace (`RayProvider.connected`) |
 
 An OOM *during* a request is a different case: the weights fit and the
@@ -164,3 +170,9 @@ The dispatcher's error queue makes one decision: a connection-level failure
 `RayProvider.connected()` turning false) purges every queue and reconnects.
 Everything else is logged and dropped, because the replica already told the user —
 an isolated `request errored during execution` needs no action.
+
+## CLI output
+
+`ndif evict` and `ndif restart` print `✗ <model_key>: nothing to evict` and
+`✗ <model_key>: no HOT replicas to restart` as failures but exit 0. Check the
+output, not the exit code, in a script.

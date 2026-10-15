@@ -19,6 +19,10 @@ The single entry point for "something broke". Find the row, follow it.
 | A past failure to reconstruct from a request id and a time | [Trace a user's failed job](../runbooks/trace-a-users-failed-job.md) |
 | A deploy refused, or an actor dying while loading weights | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | A new GPU node that doesn't show up | [Add a GPU node](../runbooks/add-a-gpu-node.md) |
+| A killed job's stored response later shows `COMPLETED` | [Trace a user's failed job → Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs) |
+| Requests fail right after a kill, with a greenlet `ValueError` (`Cannot switch to a different thread`) | [Debug a stuck request → step 8](../runbooks/debug-a-stuck-request.md#step-8--unstick-it): restart the replica |
+| An actor dead for good: `UNHEALTHY` persists and requests to it hang | [Debug a stuck request → step 4](../runbooks/debug-a-stuck-request.md#step-4--is-there-a-live-replica), the `HOT \| UNHEALTHY` row (not the load-OOM case below) |
+| The first request after `just up ray` errors `Error starting model.` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md#right-sizing): the note after recreating `ray` |
 | The stack itself: a service down, everything hanging, no UI, no telemetry | the rest of this page |
 
 ## The first commands
@@ -66,7 +70,7 @@ narrower "what is installed".
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status --verbose` per-GPU free memory | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are untrusted unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision and task are part of the key), or the replica is only WARM | `ndif status --json-output` for the exact key | Pass the deployment's `--revision` / `--task` |
-| `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not | `curl localhost:8001/ping` | Restart `api` |
+| `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not — or the API restarted under five seconds ago | `curl localhost:8001/ping` | Wait five seconds; if it persists, restart `api` |
 | `ndif start` printed ✓ but `/connected` never leaves 503 | A service died after its 2-second startup check | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
 | Code changes have no effect | The source is baked into the image | — | `just ta` (down → build → up) |
 | `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth (grpc fork handlers skipped) | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` before `SpecificServer startup failed` | `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it |

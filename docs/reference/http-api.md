@@ -180,7 +180,7 @@ store (`BaseModelDeployment.upload_bytes`), which the client fetches directly. T
 cap and the choice are explained in
 [status-and-results.md](../concepts/status-and-results.md). The terminal
 response (`COMPLETED` or `ERROR` from the model actor) also carries `meta`: the
-run's wall-clock `runtime` and per-GPU memory peaks. `/subscribe` is
+run's wall-clock `runtime` and per-GPU memory peaks. `meta` appears only when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1 releases lack the field and pydantic drops it silently. `/subscribe` is
 unauthenticated; the server ignores any key sent on the handshake.
 
 ```bash
@@ -200,7 +200,8 @@ polls when it submitted without a websocket.
 A job with no `session_id` has no live channel, so each non-`LOG` response is
 written to the object store at `responses/{id}.json` (`_response_key` in
 `src/ndif/common/schema/request.py`); this endpoint (`get_response`) reads that
-object back. A non-blocking result is always delivered by presigned URL.
+object back. A non-blocking result is always delivered by presigned URL. `LOG`
+output is not stored, so a non-blocking job's `print()` output is lost.
 
 **Response** — `200` with a JSON status update, identical in shape to a websocket
 frame. Only the *latest* status is stored, so polling can skip intermediate
@@ -231,6 +232,17 @@ rest wait on the `status:ready` pub/sub channel, bounded by
 `NDIF_STATUS_TIMEOUT_S` (60s).
 
 **Response** — `200`, `application/json`, the cached blob byte-for-byte.
+
+Entries under `deployments` are keyed `{replica_id}:ModelActor:{model_key}` for a
+live actor and by the bare repo id for a COLD model. A HOT entry carries
+`application_state`, `deployment_level`, `model_key`, `replica_id`, `repo_id`,
+`revision`, `task`, `config` (the HF config as a JSON string), `n_params`,
+`size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`, `trusted`,
+`execution_timeout_seconds`, `actor_class`, and — unpinned, with a minimum
+deployment time set — `schedule.end_time`. A WARM entry carries the subset from
+`model_key` to `n_params`. The deployment-level `trusted` means the model was
+loaded with `trust_remote_code`; it says nothing about whether a given request
+runs trusted.
 
 | Code | Cause |
 |---|---|

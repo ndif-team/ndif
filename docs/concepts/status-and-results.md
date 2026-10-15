@@ -145,9 +145,13 @@ process and takes `min(soft, hard // 2)`, counting each bound only when enabled.
 To raise the cap, raise the Redis pubsub limits — the cap follows. The soft limit
 is the primary bound because Redis's buffer accounting carries an
 allocator-dependent overhead over the payload (the reasoning is in the
-`max_publish_bytes` docstring). The cap bounds one message, not a queue of them:
-several near-cap results published to a subscriber that has stopped draining can
-still accumulate past the limits.
+`max_publish_bytes` docstring).
+
+The cap bounds the blob, not the frame. What is published is the pickled
+`COMPLETED` response, and `torch.save`'s byte encoding of the blob makes that
+frame up to ~1.5x the compressed blob. A near-cap result therefore already
+exceeds the soft limit on its own, and about three undrained near-cap results
+reach the hard limit.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually
@@ -164,9 +168,10 @@ The client renders every update as one in-place status line. Beyond display:
 
 - `LOG` — printed as output from the remote block, not a lifecycle change.
 - `ERROR` — raises `RemoteError` with the server's `description`. For a failure
-  inside the user's block that is the user's own traceback: the actor strips
-  nnsight internals and its own wrapper frames
-  (`BaseModelDeployment.format_error`).
+  inside the user's block that is a traceback ending at the user's line.
+  `BaseModelDeployment.format_error` strips only nnsight's frames and those of
+  its own file; the asyncio, Ray and other NDIF wrapper frames stay, as do the
+  torch/transformers frames above the user's line.
 - `COMPLETED` — takes the result off the frame or downloads the URL, and ends
   the wait.
 

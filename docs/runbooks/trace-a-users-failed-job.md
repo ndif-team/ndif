@@ -86,18 +86,20 @@ Only the first `ERROR` is logged; a later one for the same request (see
 
 ## Step 3 — user code, or server failure?
 
-**If the user's error text is a Python traceback, it's their code. If it's one of
-a fixed set of English sentences, it's the server.**
+**If the user's error text is a Python traceback ending in their block, it's
+their code. If it's one of a fixed set of English sentences, or a traceback whose
+last frames are greenlet/threading or NDIF paths, it's the server.**
 
 On the untrusted path the runner catches the exception where it is live, formats
 the traceback there and ships the text back
 (`src/ndif/services/ray/sandbox/nns.py` `_run`);
 `SandboxHost.format_error` passes it through as a non-fatal user error
 (`src/ndif/services/ray/sandbox/model.py` `SandboxHost.format_error`). On the
-trusted path `BaseModelDeployment.format_error` strips nnsight's and the actor's
-frames (`src/ndif/services/ray/deployments/modeling/base.py`
-`BaseModelDeployment.format_error`). Either way the user sees a traceback of their
-own block, with their line numbers.
+trusted path `BaseModelDeployment.format_error`
+(`src/ndif/services/ray/deployments/modeling/base.py`) strips only nnsight's
+frames and those of its own file. The traceback the user sees still carries
+asyncio, Ray and other NDIF wrapper frames, and torch/transformers frames, before
+the frames of their own block; read it from the bottom.
 
 Every fixed sentence — what it means, whose fault, whether a retry helps — is in
 [Error messages](../reference/error-messages.md). Look up the exact text there.
@@ -120,8 +122,8 @@ a row (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
 first `Request cancelled by operator.`, then `Replica was evicted while processing
 your request. …`. The actor is not interrupted and keeps running the block.
 
-- **Blocking job:** the client raises on the first, so the user sees
-  `Request cancelled by operator.`
+- **Blocking job:** the client raises on the first `ERROR`, and its description
+  shows empty.
 - **Non-blocking job:** `responses/{id}.json` is overwritten by the second, so
   polling shows the eviction sentence. If the block then finishes, the actor's
   own final response (`COMPLETED`, or an `ERROR` with a traceback) overwrites it
@@ -141,8 +143,10 @@ curl -s localhost:8001/response/3f9c1e2b... | jq '{status, description, meta}'
 ```
 
 `GET /response/{id}` 404s when nothing was written, which for a blocking job is
-always (`src/ndif/services/api/app.py` `get_response`). `meta` on a terminal
-response is what the run cost — `runtime`, per-GPU memory above the weights, and
+always (`src/ndif/services/api/app.py` `get_response`). `meta` is present only
+when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1
+releases lack the field and pydantic drops it silently. Where present, `meta` on
+a terminal response is what the run cost — `runtime`, per-GPU memory above the weights, and
 on an OOM `alloc_shortfall_by_gpu` ([Model OOM on deploy](model-oom-on-deploy.md)).
 
 How a successful result travels — inline on the response, or as a presigned URL

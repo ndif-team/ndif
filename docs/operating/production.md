@@ -115,7 +115,9 @@ Set `NDIF_DASHBOARD_USERNAME`, the resulting bcrypt hash as
 `change-me-please-this-is-not-secure` (`Settings` in
 `src/ndif/services/dashboard/backend/config.py`), and anyone who knows it can
 forge a session cookie. `NDIF_DASHBOARD_SESSION_TTL_DAYS` (7) bounds how long a
-stolen cookie is useful.
+stolen cookie is useful. On a headless box, log in with
+`POST /api/auth/login` and reuse the cookie
+([Admin Dashboard](dashboard.md#scripting-the-dashboard-api)).
 
 Dashboard deploys default to `trusted: true` (an admin action), so they load
 with `trust_remote_code`. Give the dashboard a durable `NDIF_DASHBOARD_DATA_DIR`
@@ -238,9 +240,12 @@ Several other timeouts (`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS`, `NDIF_API_TIMEOU
 defaults tuned for a single-host dev stack. Review them against your workload —
 each is documented with its default in [Environment Variables](../reference/env-vars.md).
 
-The dev stack keeps no telemetry, Redis, blob, or Postgres volumes, so metrics,
-results, and the keys DB vanish on a container recreate (only the host HF cache
-mount and the `dashboard_data` volume persist). A real deployment brings its own
+The dev stack declares no named telemetry, Redis, blob, or Postgres volumes.
+API keys survive a container recreate — Postgres's anonymous data volume
+reattaches — but `just down` (and so `just ta`) removes the container, the next
+boot gets a new empty volume, and `init.sql` re-runs: the keys DB is gone, as are
+metrics and results. Only the host HF cache mount and the `dashboard_data` volume
+survive `just down`. A real deployment brings its own
 durable volumes and retention policy for anything it needs to keep. See
 [Observability](observability.md).
 

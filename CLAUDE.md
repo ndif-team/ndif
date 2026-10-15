@@ -42,6 +42,7 @@ once; every other page zooms into one of its hops.
   lives in its memory, so an API restart drops in-flight work, and
   `ray:connected` has no TTL — health endpoints pass after the dispatcher dies.
 - **Source is baked into the image.** Run `just ta` after a code change.
+  `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 - **The published image runs the core stack in one container.** `NDIF_SERVICE`
   defaults to `all`: redis, minio, ray and the API. The dashboard is optional and
   is not part of `all`.

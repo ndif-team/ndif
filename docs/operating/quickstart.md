@@ -60,10 +60,11 @@ changes for a key without the tag, is in
 
 | Requirement | Why | Notes |
 |---|---|---|
-| An NVIDIA GPU + a CUDA driver | The controller manages only nodes reporting a `GPU` resource (`src/ndif/services/ray/deployments/controller/cluster/cluster.py` `Cluster.update_nodes`) | Routes 1 and 2 also need the NVIDIA container toolkit |
+| An NVIDIA GPU + a CUDA driver | The controller manages only nodes reporting a `GPU` resource (`src/ndif/services/ray/deployments/controller/cluster/cluster.py` `Cluster.update_nodes`) | Routes 1 and 2 also need the NVIDIA container toolkit, registered as a Docker runtime: if containers see no GPU, run `sudo nvidia-ctk runtime configure --runtime=docker` and restart Docker |
 | Docker with Compose v2 | Routes 1 and 2 | `docker compose version` should print v2.x |
-| [`just`](https://github.com/casey/just) | Wraps the compose commands | Route 2 only; every recipe is a one-line `docker compose -f docker/docker-compose.yml ...` |
+| [`just`](https://github.com/casey/just) | Wraps the compose commands | Route 2 only. Install: `curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \| bash -s -- --to ~/.local/bin`, with `~/.local/bin` on `PATH`. Every recipe is a one-line `docker compose -f docker/docker-compose.yml ...` |
 | Python 3.12 or 3.13 | Route 3: `requires-python = ">=3.12,<3.14"` in `pyproject.toml`; `ndif doctor` fails below 3.12 | |
+| Disk for the image | Routes 1 and 2: the image is ~8 GB, and a compose build adds ~8 GB of build cache | Both land under Docker's data root (typically `/var/lib/docker`); check free space there, not only on the weights disk |
 | Disk for model weights | The model actor downloads checkpoints from Hugging Face at deploy time | gpt2 is ~0.5 GB; a 70B checkpoint is ~140 GB |
 | Host RAM | Evicted models are held in host RAM as WARM before going COLD | `NDIF_MODEL_CACHE_PERCENTAGE` |
 
@@ -253,6 +254,24 @@ MinIO URL. [Request Lifecycle](../concepts/request-lifecycle.md) walks each hop.
 The repo's own test suite runs this same trace against `localhost:8001`; see
 [Testing](../developing/testing.md).
 
+### Client on another machine
+
+With the ports bound to `127.0.0.1`, reach the API over SSH from the client
+machine:
+
+```bash
+ssh -fN -L 8001:localhost:8001 user@server     # the API
+ssh -fN -L 9000:localhost:9000 user@server     # the object store
+```
+
+The second tunnel is not optional. Every non-blocking result, and any blocking
+result over the inline cap, is downloaded by the client from a presigned URL
+built on `NDIF_OBJECT_STORE_PUBLIC_URL`, so that address must resolve from the
+client. A presigned URL's signature covers its host, so the client must reach the
+store under exactly that host and port (`localhost:9000` through the tunnel
+above, for the default). What a wrong address looks like is in
+[Error Messages](../reference/error-messages.md).
+
 ## Gotchas
 
 - **`just down` removes containers,** but downloaded weights survive in the
@@ -268,6 +287,12 @@ The repo's own test suite runs this same trace against `localhost:8001`; see
   assuming anything is broken.
 - **Gated checkpoints need `HF_TOKEN`.** The compose `ray` service passes it
   through from your environment, so export it before `just up`.
+- **A port already in use on the host** fails that service's start. Edit its
+  `ports:` entry in `docker/docker-compose.yml`; the justfile passes `-f`
+  explicitly, so a `docker-compose.override.yml` is not read.
+- **The compose HF cache is a fixed path,** `${HOME}/.cache/huggingface`. The
+  container writes as root, so files it downloads come back root-owned, and on a
+  cache shared with other work every cached model shows `COLD` in `/status`.
 
 ## Related
 

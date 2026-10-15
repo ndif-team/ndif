@@ -29,6 +29,8 @@ pytest tests/              # everything; live-server tests skip unless localhost
 pytest tests/test_docs.py  # the docs gate; no server needed
 ```
 
+`just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
+
 An all-skipped live run means the server wasn't up. If you touched execution, also
 run the suite with `trusted=False` forced so the sandbox path is covered — a
 local stack is trusted by default.

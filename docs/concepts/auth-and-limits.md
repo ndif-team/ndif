@@ -78,6 +78,12 @@ Activations â€” reads, swaps, in-place edits, `.source`, module calls, caches â€
 behave as they do in-process. The mechanics are in
 [Sandbox internals](../developing/sandbox-internals.md#what-the-untrusted-path-cannot-do).
 
+**Observing the fork.** No log record carries `trusted`. Runners are child
+processes of the model actor, one used per untrusted request and then replaced,
+so new runner pids under the actor show a request took the untrusted path
+([Enable auth](../runbooks/enable-auth.md#what-an-untagged-key-can-do) has the
+command).
+
 **Deploy-time trust.** A dashboard deploy sets `DeploymentConfig.trusted=True`,
 because dashboard access is shell-equivalent on the node, so the model loads with
 `trust_remote_code`. That is the deployment's flag only: each request routed to

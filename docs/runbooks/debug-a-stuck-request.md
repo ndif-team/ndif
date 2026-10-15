@@ -39,8 +39,9 @@ Where the evidence lives:
 compose stack:
 
 ```bash
-alias ndif='docker compose -f docker/docker-compose.yml exec -T ray ndif'
-alias rcli='docker compose -f docker/docker-compose.yml exec -T redis redis-cli'
+# a function, not an alias: works in scripts and from any directory (project `dev`)
+ndif() { docker exec -i dev-ray-1 ndif "$@"; }
+rcli() { docker exec -i dev-redis-1 redis-cli "$@"; }
 ```
 
 ## Step 0 — get the request id
@@ -194,7 +195,7 @@ ndif status --json-output | jq '.deployments[] |
 |---|---|---|
 | HOT | RUNNING | Healthy. A request stuck here is stuck inside the actor — step 5. |
 | HOT | DEPLOYING | Weights loading, or Ray restarting the actor after a fatal CUDA error. Large models take minutes. |
-| HOT | UNHEALTHY | The actor is dead and Ray will not restart it, but the controller still holds the deployment and its GPU reservation, and keeps handing that replica to the queue, which waits on it forever. Redeploying doesn't help. Run `ndif evict <checkpoint> --replica <id>`. If `ndif queue` still shows the model `DEPLOYING` afterwards, the processor is already waiting on the dead id: `just restart api`. The next request provisions a fresh replica. |
+| HOT | UNHEALTHY | The actor is dead and Ray will not restart it, but the controller still holds the deployment and its GPU reservation, and keeps handing that replica to the queue, which waits on it forever. Redeploying doesn't help. Run `ndif evict <checkpoint> --replica <id>`, or evict by exact key ([step 8](#step-8--unstick-it)) when the key carries no task or another one. If `ndif queue` still shows the model `DEPLOYING` afterwards, the processor is already waiting on the dead id: `just restart api` clears it. The next request provisions a fresh replica. |
 | WARM | — | Weights on CPU. `run()` raises `CachedActorError`, the queue re-queues the request as an eviction, and the processor provisions a HOT replica. A model flapping HOT↔WARM makes requests loop without finishing. |
 | absent | — | The queue only sees HOT replicas (`_ControllerActor.get_deployment`); a model with only WARM replicas looks undeployed to it. |
 
@@ -272,7 +273,13 @@ provisioned Loki datasource puts on every `request_id`:
 
 Without Loki (`NDIF_LOKI_URL` unset) the same records go to each process's console
 with fields appended as `key=value`: `just logs api` for the API and dispatcher,
-the Ray dashboard's per-actor log for the model actor.
+the Ray dashboard's per-actor log for the model actor. With no dashboard at hand,
+grep the actor's worker logs in the `ray` container:
+
+```bash
+docker compose -f docker/docker-compose.yml exec ray \
+  sh -c 'grep 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978 /tmp/ray/session_latest/logs/worker-*.out'
+```
 
 ## Step 8 — unstick it
 
@@ -299,7 +306,9 @@ it, which drops that replica from the processor's pool
 `src/ndif/services/api/queue/replica.py` `Replica.cancel`). It does not reach into
 the actor: the block keeps running there until it finishes or hits the execution
 timeout, holding its memory, and the processor can pick the same replica up again
-and send it new work while it does. `ndif restart` kills the actor; Ray brings it
+and send it new work while it does. Restart the replica **before** it takes new
+work: work dispatched to an actor whose killed block is still running can fail
+with cross-thread greenlet errors (`Cannot switch to a different thread`). `ndif restart` kills the actor; Ray brings it
 back, it reloads the weights, and the command returns once it is ready
 (`src/ndif/cli/lib/restart.py` `restart`). Add `--task` if the deployment's task
 isn't the checkpoint's default. Requests sent to that replica during the restart
@@ -308,6 +317,26 @@ are re-queued or errored.
 **Wedged actor, no single culprit:** the same `ndif restart <checkpoint> --replica <id>`.
 If `ndif restart` reports it can't get the actor handle, the actor is dead for
 good — the `HOT | UNHEALTHY` row in step 4.
+
+**By exact key.** `ndif evict <checkpoint>` and `ndif restart <checkpoint>` act on
+the inferred task's key only. For a key with no task or another task, pass the
+exact `model_key` from `ndif status --json-output`:
+
+```bash
+docker compose -f docker/docker-compose.yml exec ray python -c "
+from ndif.cli.lib.restart import restart
+restart(model_key='<model_key>', replica='<replica_id>', on_message=print)"
+
+docker compose -f docker/docker-compose.yml exec ray python -c "
+from ndif.cli.lib.evict import evict
+evict(model_keys=['<model_key>'], replica='<replica_id>', on_message=print)"
+```
+
+Both print `✗ ... no HOT replicas to restart` / `✗ ... nothing to evict` when
+the key matches nothing, and still exit 0.
+
+Right after an API restart, `ndif queue` and `ndif kill` answer
+`No response from the dispatcher` for about five seconds while it comes up.
 
 ## Related
 
