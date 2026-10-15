@@ -202,7 +202,7 @@ stays up and `cleanup()` empties the cache. Fix with padding, not a restart.
 The failed request's terminal response carries a `meta` dict
 (`src/ndif/services/ray/deployments/modeling/util.py` `request_meta`) — on a
 non-blocking job it is in `curl -s localhost:8001/response/<request_id> | jq .meta`;
-on a blocking one, ask the user for it. `meta` appears only when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1 releases lack the field and pydantic drops it silently.
+on a blocking one, ask the user for it.
 Its keys:
 
 | Key | Meaning |

@@ -180,7 +180,7 @@ store (`BaseModelDeployment.upload_bytes`), which the client fetches directly. T
 cap and the choice are explained in
 [status-and-results.md](../concepts/status-and-results.md). The terminal
 response (`COMPLETED` or `ERROR` from the model actor) also carries `meta`: the
-run's wall-clock `runtime` and per-GPU memory peaks. `meta` appears only when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1 releases lack the field and pydantic drops it silently. `/subscribe` is
+run's wall-clock `runtime` and per-GPU memory peaks. `/subscribe` is
 unauthenticated; the server ignores any key sent on the handshake.
 
 ```bash

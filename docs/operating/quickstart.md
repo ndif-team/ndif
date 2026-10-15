@@ -226,7 +226,7 @@ Same for all three routes. Install nnsight on the client and point it at your
 server:
 
 ```bash
-pip install "nnsight>=0.8.0rc1"     # 0.8 is a pre-release; the specifier names it
+pip install nnsight
 ```
 
 ```python
