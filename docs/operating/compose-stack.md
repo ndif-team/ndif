@@ -122,13 +122,17 @@ The compose equivalent of `docker run --gpus all`, on the `ray` service only. It
 requires the NVIDIA container toolkit on the host; without it the `ray`
 container fails to create.
 
-### `shm_size: "4gb"`
+### `shm_size: "16gb"`
 
-Ray's plasma object store lives in `/dev/shm`, and Docker's default shared-memory
-size is **64 MB**. Ray then spills to disk and crawls or fails outright, and
-neither failure mentions `shm_size`. 4 GB is a development floor. Running the
+Ray sizes its object store at 30 % of RAM, capped at 10 GB, and keeps it in
+`/dev/shm` only when `/dev/shm` is at least that big; otherwise it silently
+puts the store in its temp dir on the container's disk and logs a
+performance warning. Docker's default shared-memory size is **64 MB**, and
+neither the warning nor the slow spilling that follows mentions `shm_size`.
+Anything under about 11 GB spills on a machine with 34 GB of RAM or more, so
+the service gets 16 GB; tmpfs only takes memory as objects fill it. Running the
 `ray` service anywhere else needs the same setting — `docker run
---shm-size=4gb`, a Kubernetes `emptyDir` with `medium: Memory`, or your
+--shm-size=16g`, a Kubernetes `emptyDir` with `medium: Memory`, or your
 orchestrator's equivalent.
 
 ## Service names, not localhost

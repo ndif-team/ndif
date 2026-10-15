@@ -121,9 +121,9 @@ create outright. `nvidia-smi` working inside the container but
 `cuda_memory_bytes: 0` means torch can't use the driver: a torch wheel built for
 a newer CUDA line than the driver supports, which `ndif doctor` names.
 
-`shm_size: "4gb"` on the `ray` service is not optional either: Ray's plasma
-store lives in `/dev/shm`, and Docker's 64 MB default makes Ray spill to disk or
-fail outright.
+`shm_size: "16gb"` on the `ray` service is not optional either: Ray keeps its
+object store in `/dev/shm` only when `/dev/shm` holds it (30 % of RAM, capped at
+10 GB); Docker's 64 MB default, or a few GB, silently moves it to disk.
 
 ## `/ping` works but requests hang
 
