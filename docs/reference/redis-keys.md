@@ -82,9 +82,8 @@ never reused. Event types on `dispatcher:events`:
 | `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message verbatim | n/a | A JSON `BackendResponseModel` (text frame), or — for a COMPLETED response carrying the result itself, whose blob is at most `RedisProvider.max_publish_bytes` — the response's `torch.save` bytes (binary frame) |
 
 The cap bounds the blob, not the frame: the published frame is the pickled response,
-up to ~1.5x the compressed blob (`torch.save`'s byte encoding). A near-cap result
-already exceeds the soft pubsub limit, and about three undrained near-cap results
-reach the hard limit.
+written at pickle protocol 4 (`BackendResponseModel.pickle`), so it is the
+compressed blob plus a few hundred bytes.
 
 `session_id` is a bare `uuid4().hex` minted per websocket and used as the channel
 name with no prefix. The handler subscribes *before* sending the id to the client,

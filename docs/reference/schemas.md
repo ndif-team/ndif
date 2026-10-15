@@ -154,8 +154,10 @@ what an unmodified client parses.
 
 Model config (`arbitrary_types_allowed=True, protected_namespaces=()`) is
 inherited. `pickle()` (a `torch.save` of `model_dump(exclude_unset=True)`) is
-inherited and used by `respond(..., pickled=True)` for an inline result;
-`unpickle()` is the client's half.
+overridden only to pass `pickle_protocol=4`: the default protocol 2 has no bytes
+opcode, so the result blob in `data` cost 1.5x its size and about 10x the time to
+save and load. It is used by `respond(..., pickled=True)` for an inline result;
+`unpickle()` is the client's half, a plain `torch.load` that reads any protocol.
 
 ## Controller schemas
 
@@ -248,7 +250,7 @@ translation, and is spelled out here in full so you don't need the client source
 | Server | Client base | Relationship |
 |---|---|---|
 | `BackendRequestModel` | `RequestModel` — fields `model_key: str`, `session_id: str = ""`, `compress: bool = False`, `env: dict = {}`; methods `metadata()`, `serialize(tracer, compress)`, `deserialize(...)` | Subclass. Those four are the same fields. The rest of the request table is added server-side; the official client does not send it. `deserialize` is **overridden** to classify failures into `PayloadError` / `ArchitectureMismatchError`. |
-| `BackendResponseModel` | `ResponseModel` — fields `id: str`, `status: Status`, `description: str = ""`, `data: Any \| None = None`, `meta: dict \| None = None`; methods `pickle()` / `unpickle()`, `__str__` | Subclass with **no added fields and no overrides**, so what the server publishes is exactly what the client validates. `meta` needs an nnsight that declares it on both ends: newer than 0.8.0, since 0.8.0 and rc1 lack the field and pydantic drops it silently. |
+| `BackendResponseModel` | `ResponseModel` — fields `id: str`, `status: Status`, `description: str = ""`, `data: Any \| None = None`, `meta: dict \| None = None`; methods `pickle()` / `unpickle()`, `__str__` | Subclass with **no added fields**; its one override, `pickle()`, changes only the pickle protocol, so what the server publishes is exactly what the client validates. `meta` needs an nnsight that declares it on both ends: newer than 0.8.0, since 0.8.0 and rc1 lack the field and pydantic drops it silently. |
 | `Status` | `Status` — a `str`-valued enum: `RECEIVED`, `QUEUED`, `PROVISIONING`, `DEPLOYING`, `DISPATCHED`, `RUNNING`, `COMPLETED`, `ERROR`, `LOG`, each with `value == name` | *The same enum object*, imported and re-exported — so a new status cannot be added server-side without a client release. |
 | `DeploymentConfig`, `DeployResponse`, `ReplicaState(s)` | — | No client counterpart; purely internal to the API↔controller RPC. |
 

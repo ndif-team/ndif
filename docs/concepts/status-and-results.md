@@ -148,10 +148,10 @@ allocator-dependent overhead over the payload (the reasoning is in the
 `max_publish_bytes` docstring).
 
 The cap bounds the blob, not the frame. What is published is the pickled
-`COMPLETED` response, and `torch.save`'s byte encoding of the blob makes that
-frame up to ~1.5x the compressed blob. A near-cap result therefore already
-exceeds the soft limit on its own, and about three undrained near-cap results
-reach the hard limit.
+`COMPLETED` response, which `BackendResponseModel.pickle` writes at pickle
+protocol 4, so the frame is the compressed blob plus a few hundred bytes. (At
+`torch.save`'s default protocol 2 a `bytes` value goes through a latin-1 `str`
+and the frame was up to ~1.5x the blob.)
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually
