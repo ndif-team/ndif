@@ -82,8 +82,7 @@ EOF
     echo "[dashboard] starting cron daemon"
     cron
 else
-    echo "[dashboard] cron not available — schedules won't run from this start.sh."
-    echo "             (intended for non-Docker dev; the docker container runs cron)"
+    echo "[dashboard] cron missing or /etc/cron.d not writable; uvicorn runs without schedules."
 fi
 
 # ---- uvicorn (foreground; PID 1 in the container) --------------------------
