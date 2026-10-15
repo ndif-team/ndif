@@ -1,6 +1,6 @@
 ---
 title: Adding a Service
-one_liner: Recipe for adding a fourth NDIF service alongside api / ray / dashboard — the NDIF_SERVICE + start.sh + CLI-registry contract, and everything it has to be wired into.
+one_liner: Recipe for adding a fourth NDIF service alongside api / ray / dashboard — the NDIF_SERVICE + start.sh + CLI-registry contract, packaging (package-data, extras, the image), and everything else it has to be wired into.
 tags: [internals, dev, cli]
 related: [docs/developing/repo-layout.md, docs/developing/cli-internals.md, docs/developing/providers.md, docs/developing/api-service.md, docs/developing/ray-service.md, docs/developing/dashboard-internals.md, docs/developing/telemetry-internals.md, docs/operating/compose-stack.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/developing/contributing.md]
 sources: [src/ndif/cli/service.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/services/api/start.sh, src/ndif/services/ray/start.sh, src/ndif/services/dashboard/start.sh, docker/Dockerfile, docker/docker-compose.yml, pyproject.toml, src/ndif/services/api/gunicorn_conf.py]
@@ -10,54 +10,46 @@ sources: [src/ndif/cli/service.py, src/ndif/cli/commands/start.py, src/ndif/cli/
 
 ## What this covers
 
-How to add a fourth long-running NDIF service next to `api`, `ray`, and
-`dashboard`. The whole design rests on one idea:
+How to add a long-running NDIF service next to `api`, `ray` and `dashboard`, and
+the single home for how any service ships its non-Python files and dependencies.
+The design rests on one idea:
 
-> **A service is a name plus a `start.sh`.** Nothing else distinguishes them. One
-> image runs all of them; `NDIF_SERVICE` picks which; the CLI turns that name into
-> a script to exec.
+> **A service is a name plus a `start.sh`.** One image runs all of them;
+> `NDIF_SERVICE` picks which; the CLI turns that name into a script to exec.
 
-That means adding a service is mostly *registration*, not implementation — and it
-means the four places you must register it are the four places that break if you
-forget. This page walks them in order.
+So adding a service is mostly *registration*, and the places you must register it
+are the places that break if you forget.
 
 ## The contract
 
-Three pieces, and they compose in one direction:
-
 ```mermaid
 flowchart TB
-    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT ndif + CMD start --foreground<br/>(docker/Dockerfile:141)"]
-    B --> C["env_services() reads NDIF_SERVICE<br/>(cli/service.py:83)"]
-    C --> D["resolve_targets() maps name -> Service<br/>via SERVICE_MAP (cli/service.py:80)"]
+    A["container env: NDIF_SERVICE=myservice"] --> B["ENTRYPOINT ndif + CMD start --foreground"]
+    B --> C["env_services() reads NDIF_SERVICE"]
+    C --> D["resolve_targets() maps name -> Service via SERVICE_MAP"]
     D --> E["_script_command builds ['bash', '<pkg>/services/myservice/start.sh']"]
-    E --> F["os.execvpe: start.sh replaces PID 1<br/>(cli/commands/start.py:64)"]
+    E --> F["os.execvpe: start.sh replaces PID 1"]
     F --> G["start.sh execs your server process"]
 ```
 
-**1. `NDIF_SERVICE`.** A space- or comma-separated list of service names, read
-once by `env_services()` (`src/ndif/cli/service.py:83`). Also the value the Loki
-and InfluxDB providers use as the `service` stream label / base tag, so it doubles
-as your telemetry identity — pick the name you want to see in Grafana.
+**`NDIF_SERVICE`** is a space- or comma-separated list of service names, read by
+`src/ndif/cli/service.py` `env_services`. It is also the `service` label on every
+log and metric, so pick the name you want to see in Grafana. The image defaults it
+to `all`, which `resolve_targets` expands to what a bare `ndif start` brings up: the
+`SERVICES` list (redis, minio, ray, api), or just `ray` on a worker node where
+`NDIF_RAY_HEAD_ADDRESS` is set. An optional service is never in that expansion, so a
+container running yours sets `NDIF_SERVICE: myservice`, or `"all myservice"` to add
+it to the core stack in one container.
 
-The image defaults it to `all` (`docker/Dockerfile:34`), and `all` expands, in
-`resolve_targets` (`cli/service.py:88`), to whatever `ndif start` would have brought
-up on its own: the `SERVICES` list — redis, minio, ray, api — or just `ray` on a
-worker node, where `NDIF_RAY_HEAD_ADDRESS` is set (`cli/commands/start.py:134`). An
-opt-in service is never in that expansion, so a container running yours sets
-`NDIF_SERVICE` explicitly (`NDIF_SERVICE: myservice`, or `"all myservice"` to add it
-to the core stack in one container).
+**`start.sh`** is the only launch surface. Every knob is env-driven, so
+`_script_command` builds literally `["bash", "<package>/services/<name>/start.sh"]`
+with no arguments. Your script owns defaults, validation, and the final `exec`.
 
-**2. `start.sh`.** The only launch surface. Every knob is env-driven, so the CLI
-passes no arguments at all: `_script_command` (`cli/service.py:23`) builds
-literally `["bash", "<package>/services/<name>/start.sh"]`. Your script owns
-defaults, validation, and the final `exec`.
+**Registration** in the CLI's service list gives you `ndif start`, `stop`,
+`restart` and `logs` for free, detached (PID file under `$NDIF_HOME`) and
+`--foreground` (container).
 
-**3. `ndif start <name>`.** Registration in the CLI's service list. With it you get
-`start`, `stop`, `restart`, and `logs` for free, in both detached (PID file under
-`$NDIF_HOME`) and `--foreground` (container) modes.
-
-## Step 1 — the service package and its `start.sh`
+## Step 1 — the package and its `start.sh`
 
 ```
 src/ndif/services/myservice/
@@ -65,8 +57,6 @@ src/ndif/services/myservice/
 ├── start.sh
 └── app.py        (or whatever your service actually is)
 ```
-
-The script conventions, taken from the three existing ones:
 
 ```bash
 #!/bin/bash
@@ -76,7 +66,7 @@ The script conventions, taken from the three existing ones:
 # Env: NDIF_MYSERVICE_PORT (8090), NDIF_MYSERVICE_WORKERS (1).
 set -euo pipefail
 
-# Telemetry: label everything this service emits to Loki as `service=myservice`.
+# Telemetry: label everything this service emits as `service=myservice`.
 export NDIF_SERVICE="${NDIF_SERVICE:-myservice}"
 
 # exec so the server replaces the shell (PID 1) and gets signals directly.
@@ -84,30 +74,20 @@ exec python -m uvicorn ndif.services.myservice.app:app \
     --host 0.0.0.0 --port "${NDIF_MYSERVICE_PORT:-8090}"
 ```
 
-Four things matter here and all four are load-bearing:
+All four conventions are load-bearing: `set -euo pipefail`; export `NDIF_SERVICE`
+first (`src/ndif/services/ray/start.sh` does it before `ray start` so every actor
+inherits the label); `exec` the final process, because in `--foreground` mode a
+single service is `execvpe`'d and `start.sh` *is* PID 1 — without `exec` your server
+never sees SIGTERM; and document the env vars with defaults in the header comment.
 
-- **`set -euo pipefail`.** All three existing scripts open with it.
-- **`export NDIF_SERVICE="${NDIF_SERVICE:-myservice}"` before anything else.**
-  This is how logs and metrics get attributed. `ray/start.sh:17` does it before
-  `ray start` specifically so the raylet — and every actor process it later spawns
-  — inherits the label.
-- **`exec` the final process.** In `--foreground` mode a single service is
-  `execvpe`'d (`cli/commands/start.py:64`), so `start.sh` *is* PID 1 in the
-  container; without `exec` your server ends up a child of bash and never sees
-  SIGTERM.
-- **Document the env vars in the header comment**, with defaults. `api/start.sh:6`
-  and `dashboard/start.sh:16` both do; that comment is the reference for anyone
-  running the script by hand.
-
-If your service needs something that isn't a foreground process — the dashboard
-needs cron for its three scheduled jobs (monitor, reconcile, report) — do it
-*before* the `exec`, and guard it so running the script on a laptop degrades
-instead of failing (`dashboard/start.sh:51` checks `command -v cron` and that
-`/etc/cron.d` is writable, and prints a note when it can't).
+Anything that isn't the foreground process goes *before* the `exec`, guarded so a
+laptop run degrades instead of failing — `src/ndif/services/dashboard/start.sh`
+starts cron for its scheduled jobs only if `cron` is on `PATH` and `/etc/cron.d` is
+writable.
 
 ## Step 2 — register it with the CLI
 
-`src/ndif/cli/service.py` holds two lists. Pick one:
+`src/ndif/cli/service.py` holds two lists:
 
 ```python
 # The core stack, ordered by startup dependency. `ndif start` with no args
@@ -125,28 +105,19 @@ OPTIONAL_SERVICES: list[Service] = [
 ]
 ```
 
-**`SERVICES` (`cli/service.py:66`)** is the default target set — a bare
-`ndif start` brings all of them up, in list order, and `ndif stop` tears them down
-in reverse. Add here only if your service is part of the minimum viable NDIF.
+Add to `SERVICES` only if your service is part of the minimum viable NDIF;
+`OPTIONAL_SERVICES` is the right home for almost anything new. Either way
+`SERVICE_MAP` picks it up, and `logs` uses it as its click `Choice`, so your name
+appears in `--help` with no further edits.
 
-**`OPTIONAL_SERVICES` (`cli/service.py:75`)** is startable by name and nothing
-else. This is the right home for almost anything new; the dashboard is here.
+`Service`'s optional fourth field, `build_env`, is for third-party env naming:
+`_minio_env` translates `NDIF_OBJECT_STORE_*` into MinIO's `MINIO_ROOT_USER` /
+`MINIO_ROOT_PASSWORD`. Don't use it for your own config.
 
-Either way `SERVICE_MAP` picks it up (`cli/service.py:80`) and `stop`, `restart`,
-and `logs` work immediately — `logs` uses `SERVICE_MAP` as its click `Choice`, so
-your name appears in `--help` with no further edits.
+## Dependencies, extras and the image
 
-The `Service` dataclass has a fourth, optional field, `build_env`, for a service
-that needs process env beyond the shared `NDIF_*` set. `_minio_env`
-(`cli/service.py:45`) is the example: MinIO reads `MINIO_ROOT_USER` /
-`MINIO_ROOT_PASSWORD`, so the CLI translates the `NDIF_OBJECT_STORE_*` values into
-them. Use it for third-party naming, not for your own config.
-
-## Step 3 — packaging
-
-`start.sh` is not a `.py` file, so setuptools will not put it in the wheel unless
-you say so. Add your package to `[tool.setuptools.package-data]`
-(`pyproject.toml:144`):
+**Non-Python files need `package-data`.** `start.sh` is not a `.py` file, so
+setuptools leaves it out of the wheel unless `pyproject.toml` lists it:
 
 ```toml
 [tool.setuptools.package-data]
@@ -155,35 +126,35 @@ you say so. Add your package to `[tool.setuptools.package-data]`
 "ndif.services.myservice" = ["start.sh"]
 ```
 
-Skip this and the symptom is confusing: everything works from a source checkout
-(the file is right there on disk) and `ndif start myservice` fails from a
-`pip install` with `cannot run 'bash'` — because `SERVICES_DIR` resolves into
-`site-packages`, where the script was never installed. Ship any other non-Python
-asset the same way (the dashboard ships its built SPA with
-`"frontend/dist/*"` and `"frontend/dist/**/*"`).
+Skip it and everything works from a checkout while `ndif start myservice` fails
+from a `pip install` with `cannot run 'bash'` — `SERVICES_DIR` resolves into
+`site-packages`, where the script was never installed. Ship any other asset the same
+way; the dashboard ships `config.example.json` and its built SPA
+(`"frontend/dist/*"`, `"frontend/dist/**/*"`).
 
-If your service pulls new third-party packages, add an extra rather than a core
-dependency:
+**New third-party packages go in an extra**, not a core dependency:
 
 ```toml
 [project.optional-dependencies]
 myservice = ["some-server-lib"]
 ```
 
-Then add it to the image's install list in `docker/Dockerfile:93` and pin the
-package in `requirements.txt` — the Dockerfile installs with `--no-deps`, so
-extras only *declare* what's needed; `requirements.txt` is what actually provides
-it.
+The image installs the package with `pip install --no-deps
+".[api,ray,metrics,postgres,dashboard]"` after `pip install -r requirements.txt`
+(`docker/Dockerfile`). With `--no-deps`, an extra only *declares* intent — so add
+your extra to that list **and** pin the package in `requirements.txt`, which is what
+actually installs it. (The `ext` extra, packages user blocks may import, is the
+exception: the Dockerfile reads its list out of `pyproject.toml` and installs it
+directly.)
 
-## Step 4 — compose
+## Step 3 — compose
 
-Every NDIF service in `docker/docker-compose.yml` uses an identical `build:` block
-and differs only by env. Copy the pattern:
+Every NDIF service in `docker/docker-compose.yml` shares one `build:` block and
+differs only by env:
 
 ```yaml
   myservice:
     build:
-      # Repo root, so the Dockerfile can COPY src/.
       context: ..
       dockerfile: docker/Dockerfile
     environment:
@@ -202,43 +173,27 @@ and differs only by env. Copy the pattern:
         condition: service_healthy
 ```
 
-There is no `command:` and no `entrypoint:` — `NDIF_SERVICE` is the whole
-selection mechanism, on top of the image's `ENTRYPOINT ["ndif"]` plus
-`CMD ["start", "--foreground"]` (`docker/Dockerfile:141`). The split is what lets
-`docker run ndif/ndif doctor` run any other CLI command against the same image: the
-argument replaces the CMD, not the entrypoint.
+No `command:` and no `entrypoint:` — `NDIF_SERVICE` is the whole selection
+mechanism, on top of the image's `ENTRYPOINT ["ndif"]` and
+`CMD ["start", "--foreground"]`. The split is what lets `docker run ndif/ndif
+doctor` run any other CLI command against the same image.
 
-> **Gotcha:** service-name hosts. Provider defaults point at `localhost`, which
-> inside a container is the container itself. Set every URL your service uses
-> explicitly, exactly as the `api` and `ray` services do. The sharpest case is
-> Redis on the `ray` service: without `NDIF_REDIS_URL: redis://redis:6379` it
-> defaults to `localhost:6379`, which inside that container is *Ray's own GCS*,
-> and the handshake fails in a way that doesn't look like a Redis problem.
+> **Gotcha:** provider defaults point at `localhost`, which inside a container is
+> the container itself — nothing listens there. Set every URL your service uses
+> explicitly, as the `api` and `ray` services do.
 
-Claim a host port nobody else uses and add it to
-[docs/reference/ports.md](../reference/ports.md).
+Claim an unused host port and add it to [Ports](../reference/ports.md).
 
-## Step 5 — providers, logging, and telemetry
+## Step 4 — providers, logging, telemetry
 
-**Reuse, don't reinvent.** Pick from `src/ndif/common/providers/` (see
-[providers.md](./providers.md#writing-a-new-provider) if you need a new one):
+Reuse the providers in `src/ndif/common/providers/` — Redis, the object store, Ray,
+Postgres, Loki, Influx; [Providers](providers.md) covers what each is for and how to
+write a new one. Importing a provider module connects it, so in the common case there
+is nothing to call.
 
-| Need | Import |
-|---|---|
-| Redis (queue, pub/sub, cached status/env) | `common.providers.redis.RedisProvider` |
-| Result blobs / presigned URLs | `common.providers.objectstore.ObjectStoreProvider` |
-| Ray control plane, actor handles | `common.providers.ray.RayProvider`, `get_named_actor` |
-| API-key verification | `common.providers.postgres.PostgresProvider` + `services/api/auth.py` |
-| Log shipping | `common.providers.loki.LokiProvider` |
-| Metrics | `common.providers.influx.InfluxProvider` via `common/metrics.py` |
-
-Importing a provider module connects it (the module ends with `from_env()` and
-`connect()`), so in the common case there is nothing to call.
-
-**Logging.** Use `logging.getLogger("ndif.myservice")` and emit through
-`common.telemetry.event`. Console formatting is installed by `LokiProvider.connect`
-— which runs on import even when `NDIF_LOKI_URL` is unset — so importing the Loki
-provider gives you readable structured output with or without a Loki:
+Log through `logging.getLogger("ndif.myservice")` and `ndif.common.telemetry.event`;
+emit metrics through a `Metric` subclass in `src/ndif/common/metrics.py`. Importing
+the Loki provider installs the console formatter even with `NDIF_LOKI_URL` unset:
 
 ```python
 import logging
@@ -249,31 +204,24 @@ logger = logging.getLogger("ndif.myservice")
 event(logger, "myservice started", port=port)
 ```
 
-**Metrics.** Add a `Metric` subclass in `common/metrics.py` rather than calling
-`InfluxProvider.write` directly; that's where the tag/field split lives.
-
-**If you fork or spawn workers, read `services/api/gunicorn_conf.py:1` first.**
-The Loki and Influx providers each own a background thread, and threads don't
-survive `fork()`. The rule: a parent must not import those providers before
-forking children that will emit. The API handles this by importing them in
-`post_fork` (per worker) and starting the dispatcher with `spawn` rather than
-`fork`. A multi-process service that ignores this ships zero logs and zero metrics
-from its children, silently.
+**If your service forks or spawns workers**, follow the fork rule in
+[Telemetry internals](telemetry-internals.md#process-wiring): a parent must not
+import the Loki/Influx providers before forking children that emit, or the children
+ship nothing, silently.
 
 ## Checklist
 
-- [ ] `src/ndif/services/myservice/{__init__.py,start.sh}`, script `exec`s its server and exports `NDIF_SERVICE`.
-- [ ] Registered in `SERVICES` or `OPTIONAL_SERVICES` in `src/ndif/cli/service.py`.
-- [ ] `[tool.setuptools.package-data]` entry for `start.sh` (and any other asset).
-- [ ] New deps as a `[project.optional-dependencies]` extra, added to the Dockerfile's install list and pinned in `requirements.txt`.
+- [ ] `src/ndif/services/myservice/{__init__.py,start.sh}`; the script exports `NDIF_SERVICE` and `exec`s its server.
+- [ ] Registered in `SERVICES` or `OPTIONAL_SERVICES`.
+- [ ] `package-data` entry for `start.sh` and any other asset.
+- [ ] New deps as an extra, added to the Dockerfile's install line and pinned in `requirements.txt`.
 - [ ] A compose service with `NDIF_SERVICE: myservice` and explicit service-name URLs.
-- [ ] Port claimed and documented in [ports.md](../reference/ports.md); env vars documented in [env-vars.md](../reference/env-vars.md).
-- [ ] `ndif start myservice`, `ndif logs myservice`, `ndif stop myservice` all work from a checkout **and** from a wheel.
+- [ ] Port in [Ports](../reference/ports.md); env vars in [Environment variables](../reference/env-vars.md).
+- [ ] `ndif start myservice`, `ndif logs myservice`, `ndif stop myservice` work from a checkout **and** from a wheel.
 
 ## Related
 
-- [cli-internals.md](./cli-internals.md) — the CLI machinery behind `Service`, `resolve_targets`, and PID-file state.
-- [providers.md](./providers.md#writing-a-new-provider) — if your service needs a backing store nothing else talks to.
-- [repo-layout.md](./repo-layout.md) — where the pieces you're copying live.
-- [docs/operating/compose-stack.md](../operating/compose-stack.md) — the compose file service by service.
-- [telemetry-internals.md](./telemetry-internals.md) — how the `service` label flows into Loki and Influx.
+[CLI internals](cli-internals.md) for the machinery behind `Service`,
+`resolve_targets` and PID-file state; [Repo layout](repo-layout.md) for where the
+pieces live; [Compose stack](../operating/compose-stack.md) for the compose file
+service by service.

@@ -10,20 +10,19 @@ sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, 
 
 ## What this covers
 
-The top-down map for everything else in `docs/developing/`. Where
-[Request Lifecycle](../concepts/request-lifecycle.md) follows one request forward
-through the system, this page cuts the other way: it lays out the **processes**,
-says which code runs in each, and marks the boundaries you cannot cross. Read it
-before changing anything that spans two subsystems.
+The processes, which code runs in each, and the boundaries you cannot cross.
+[Request Lifecycle](../concepts/request-lifecycle.md) follows one request
+forward through the same system. Read this before changing anything that spans
+two subsystems.
 
 Four facts frame the whole design:
 
 1. **One image, one service per container.** Every service is the same Docker
    image, whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
-   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` — one
-   name, a space/comma list, or the image's default `all` (redis, minio, ray,
-   api) — selects which service(s) that container runs
-   (`cli/service.py:88`). There is no per-service build.
+   `start --foreground` (`docker/Dockerfile`); `NDIF_SERVICE` — one name, a
+   space/comma list, or the image's default `all` (redis, minio, ray, api) —
+   selects which service(s) that container runs
+   (`src/ndif/cli/service.py` `resolve_targets`). There is no per-service build.
 2. **The API process cannot talk to Ray.** Only the dispatcher — a *separate
    process* spawned by gunicorn's `on_starting` hook — holds a Ray client. Every
    API endpoint that appears to know about the cluster is really reading a
@@ -32,10 +31,15 @@ Four facts frame the whole design:
    traced block runs inside the model actor process or in a separate runner
    process driven over a Unix socket. With auth off a client-supplied `trusted`
    is honored, and an unspecified one defaults to trusted
-   (`services/api/auth.py:180`-`184`).
+   (`src/ndif/services/api/auth.py` `validate_request`).
 4. **Redis is the only durable handoff.** Once a request leaves the Redis list it
    is a Python object in the dispatcher's memory until it reaches a terminal
    response. Nothing in between survives a restart.
+
+**There is no Ray Serve.** Model deployments are detached Ray actors named
+`{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace, created and
+killed by the controller. Ray Serve's docs, concepts (applications, ingress,
+autoscaling config) and APIs do not apply anywhere in this codebase.
 
 ## The process map
 
@@ -84,8 +88,8 @@ flowchart TB
 `src/ndif/services/api/`. `start.sh` execs gunicorn with uvicorn workers.
 `gunicorn_conf.py` does two things that matter more than the routes themselves:
 `on_starting` spawns the **dispatcher** as a child process, and `post_fork`
-connects the Loki and InfluxDB providers *per worker* — telemetry providers open
-connections and own threads at import, and those do not survive `fork()`.
+connects the telemetry providers per worker (why: [Telemetry
+Internals](telemetry-internals.md)).
 
 An API worker's job is narrow: authenticate, validate, stamp the request, and
 `LPUSH` it. It never imports Ray. See [API Service](api-service.md).
@@ -96,8 +100,8 @@ An API worker's job is narrow: authenticate, validate, stamp the request, and
 owns everything downstream of the Redis list:
 
 - `Dispatcher` — `BRPOP`s the shared list, drains a batch, routes by `model_key`.
-- `Processor` — one per model. Holds that model's in-memory `asyncio.Queue`,
-  provisions replicas, and decides when to scale up.
+- `Processor` — one per model. Holds that model's in-memory `RequestQueue` (an
+  `asyncio.PriorityQueue`), provisions replicas, and decides when to scale up.
 - `Replica` — one per deployed actor. Waits for `__ray_ready__`, then pulls from
   the model's queue and makes the Ray call.
 
@@ -110,21 +114,23 @@ model. See [Queue Internals](queue-internals.md).
 node by a custom `head=10` resource. It owns the cluster model
 (`cluster/{cluster,node,deployment,evaluator}.py`): what nodes exist, what GPU and
 CPU memory each has, which models are HOT/WARM/COLD, and what may be evicted to
-make room. Deploys are **detached Ray actors** — not Ray Serve deployments, which
-the README wrongly claims. See [Controller Internals](controller-internals.md).
+make room. Deploys are detached Ray actors. See [Controller Internals](controller-internals.md).
 
 ### 4. Execution — the model actor and the fork
 
-`src/ndif/services/ray/deployments/modeling/base.py` defines `run()` as a
-**template**: publish `RUNNING`, run `execute()` on a worker thread raced against
-the execution timeout and a cancel signal, emit metrics, upload, respond. A
-subclass overrides only five hooks — `execute`, `execution_scope`, `interrupt`,
-`format_error`, `cleanup`.
+`src/ndif/services/ray/deployments/modeling/base.py` defines
+`BaseModelDeployment.run` as a **template**: publish `RUNNING`, run `execute()`
+on a worker thread raced against the execution timeout and a cancel signal, emit
+metrics, upload or return the result inline, respond. A subclass overrides six
+hooks — `execute`, `execution_scope`, `interrupt`, `format_error`, `error_name`,
+`cleanup` — plus `commit` and `restart`.
 
 `SandboxModelDeployment` (`src/ndif/services/ray/sandbox/model.py`) overrides
-those five — plus `restart`, which discards the request's runner before the actor
-is killed (`sandbox/model.py:174`) — to implement the untrusted path. Trusted
-requests fall through to the base and run in-process (`sandbox/model.py:218`). See [Model Actor](model-actor.md),
+all six, plus `restart` (which discards the request's runner before the actor
+is killed), to implement the untrusted path; the shared runner-side half lives in its
+`SandboxHost` mixin. Trusted requests fall through to the base and run
+in-process (`src/ndif/services/ray/sandbox/model.py`
+`SandboxModelDeployment.execute`). See [Model Actor](model-actor.md),
 [Sandbox Internals](sandbox-internals.md), and the sandbox's own
 `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
 
@@ -147,8 +153,7 @@ layer is a real API with a second consumer — the dashboard backend calls into 
 
 ## Concurrency model
 
-The single most confusing thing about this codebase is that four different
-concurrency mechanisms are in play at once. This table is the map:
+Four concurrency mechanisms are in play at once:
 
 | Code | Runs in | Mechanism |
 |---|---|---|
@@ -173,7 +178,7 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 | Status / env caches | Redis, TTL'd | Rebuilt on demand |
 | Live status updates | Redis pub/sub → websocket | Not stored at all |
 | Non-blocking responses | object store, latest only | Yes |
-| Result blobs | object store, `{request_id}.pt` | Yes — nothing deletes them |
+| Result blobs too large to return inline | object store, `{request_id}.pt` | Yes — nothing deletes them |
 | Deployment state | controller actor memory + Ray | Rebuilt from the cluster |
 | Model weights (WARM) | node CPU RAM | No |
 | Dashboard schedule/logs | `dashboard_data` volume | Yes |
@@ -185,24 +190,14 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 - **Never import `sandbox/nns.py` on the host.** Importing it installs
   process-wide nnsight patches that would redirect the real model's `interleave`
   to a socket. It is imported only inside the runner process.
-- **Connect telemetry providers after forking.** They connect at import and own
-  threads; a new entry point that imports them pre-fork gets neither console
-  formatting nor telemetry.
+- **Connect telemetry providers after forking.** See
+  [Telemetry Internals](telemetry-internals.md).
 - **Don't assume more than one dispatcher.** The queue design assumes exactly one
   consumer of the Redis list.
 
 ## Where to make a change
 
-| Change | Open |
-|---|---|
-| A new HTTP endpoint | `services/api/app.py`, then [API Service](api-service.md) |
-| Queue or autoscaling behavior | `services/api/queue/`, then [Queue Internals](queue-internals.md) |
-| Placement, eviction, GPU accounting | `services/ray/deployments/controller/`, then [Controller Internals](controller-internals.md) |
-| How a request executes against a model | `services/ray/deployments/modeling/base.py`, then [Model Actor](model-actor.md) |
-| The untrusted execution path | `services/ray/sandbox/`, then [Sandbox Internals](sandbox-internals.md) |
-| A new backing service | `common/providers/`, then [Writing a new provider](providers.md#writing-a-new-provider) |
-| A new service container | [Adding a Service](adding-a-service.md) |
-| A new admin command | `cli/commands/` + `cli/lib/`, then [CLI Internals](cli-internals.md) |
+The "I want to change X, open Y" table is in [Repo Layout](repo-layout.md).
 
 ## Related
 

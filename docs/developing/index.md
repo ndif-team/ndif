@@ -40,9 +40,9 @@ If you want to *run* NDIF rather than modify it, start at
   Evaluator model, sizing, placement, and eviction.
 - [Model Actor](model-actor.md) — loading, the `run()` template, results, timeouts,
   metrics.
-- [Sandbox Internals](sandbox-internals.md) — the untrusted path: the wire
-  protocol, the split interleaver, and one proxy per worker. The densest page in
-  the tree; the subsystem also has its own
+- [Sandbox Internals](sandbox-internals.md) — the untrusted path, which aims to
+  reproduce the trusted path's results: the wire protocol, the split interleaver,
+  and one proxy per worker. The subsystem also has its own
   `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
 
 ### Shared foundations
@@ -50,8 +50,8 @@ If you want to *run* NDIF rather than modify it, start at
   its fail-open behavior.
 - [The Redis Layer](redis-layer.md) — the coalesced status/env caches, the event
   stream, response pub/sub.
-- [Telemetry Internals](telemetry-internals.md) — logger tree, `event()`, every
-  metric, and the fork-safe connect points.
+- [Telemetry Internals](telemetry-internals.md) — logging, metrics, and when to
+  connect the providers.
 - [nnsight Integration](nnsight-integration.md) — the client/server contract and
   which nnsight internals the server depends on.
 
@@ -64,7 +64,7 @@ If you want to *run* NDIF rather than modify it, start at
 
 ## Extending
 
-- [Adding a Model Actor](adding-a-model-actor.md) — the five hooks `run()` calls,
+- [Adding a Model Actor](adding-a-model-actor.md) — the six hooks `run()` calls,
   plus the `commit()` seam.
 - [Writing a new provider](providers.md#writing-a-new-provider) — the base-class contract and
   fail-open discipline.
@@ -73,9 +73,8 @@ If you want to *run* NDIF rather than modify it, start at
 
 ## Working on the code
 
-- [Testing](testing.md) — the live-server suite, the four files that run without a
-  server, and how to force the untrusted path that local dev never exercises. No
-  workflow runs any of it.
+- [Testing](testing.md) — the live-server suite, the files that run without a
+  server, and how to force the untrusted path. No CI workflow runs the tests.
 - [Contributing](contributing.md) — the conventions this codebase actually follows.
 
 ## Related
