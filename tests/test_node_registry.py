@@ -20,9 +20,12 @@ from ndif.services.dashboard.jobs.util import summarize_error
 
 @pytest.fixture(autouse=True)
 def no_ray(monkeypatch):
-    """``update_nodes`` asks the runtime context for the GCS address, and
-    ``ray.get_runtime_context()`` starts a local Ray instance when none is up."""
-    monkeypatch.setattr(cluster_mod, "gcs_address", lambda: "10.9.8.7:7111")
+    """``update_nodes`` reads the GCS address off the runtime context."""
+    monkeypatch.setattr(
+        cluster_mod.ray,
+        "get_runtime_context",
+        lambda: SimpleNamespace(gcs_address="10.9.8.7:7111"),
+    )
 
 
 def _node(ip, gpus=4):
