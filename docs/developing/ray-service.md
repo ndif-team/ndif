@@ -33,7 +33,8 @@ if [ -z "$HEAD_ADDRESS" ]; then
     unset RAY_ADDRESS
     resources=$(python -m ndif.services.ray.resources --head)
     ray start --head --resources="$resources" ...
-    python -m ndif.services.ray.deployments.controller.controller
+    RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
+        python -m ndif.services.ray.deployments.controller.controller
 else
     # ---- Worker node ----
     HEAD_ADDRESS="${HEAD_ADDRESS#ray://}"
@@ -57,10 +58,24 @@ Three things to note:
   container can start before the head.
 
 Only the head launches the controller. `python -m ...controller.controller`
-runs as a short-lived *driver*: it `ray.init(address="auto", namespace="NDIF")`,
-calls `app()` to schedule the detached actor (`get_if_exists=True`, so a relaunch
+runs as a short-lived *driver*: it `ray.init(address="auto", namespace="NDIF")`
+against the head just started, which `start.sh` names in `RAY_ADDRESS` for that
+one command, then calls `app()` to schedule the detached actor (`get_if_exists=True`, so a relaunch
 reuses a live one), then exits. `start.sh` ends in `tail -f /dev/null` because
 `ray start` daemonizes and the container needs a foreground process.
+
+**The controller names its own cluster to Ray.** Given no address, Ray's
+`ray.init(address="auto")`, its state API (`list_nodes`, `list_actors`) and its
+bootstrap lookup guess: `RAY_ADDRESS`, then `ray_current_cluster` under the
+*default* temp dir (not `--temp-dir`'s), then any running GCS process visible on
+the host. With another Ray cluster's processes visible, the state API raised
+`Found multiple active Ray instances` and the controller died in `__init__`, and
+`ray.init(address="auto")` could pick the other cluster. So the launcher gets
+`RAY_ADDRESS`, and the controller passes `gcs_address()`
+(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`), its runtime
+context's own GCS, to `list_nodes`, `list_actors` and `Cluster.state`. A
+compose `ray` container has its own process namespace and only ever saw one
+GCS; a from-source `ndif start` on a shared host did not.
 
 ## Ports
 
