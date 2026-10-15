@@ -15,7 +15,7 @@ pages cover running it, operating it, and changing its code.
 
 | You want to | Start at | Then |
 |---|---|---|
-| Run your own NDIF | [Quickstart](operating/quickstart.md) | [Compose stack](operating/compose-stack.md), [Configuration](operating/configuration.md) |
+| Run your own NDIF | [Quickstart](operating/quickstart.md) | [Compose stack](operating/compose-stack.md), [Configuration](operating/configuration.md), [Kubernetes](operating/kubernetes.md) |
 | Deploy, pin, evict or size a model | [Models and deployment](operating/models-and-deployment.md) | [Deploy and pin](runbooks/deploy-and-pin-a-model.md), [Model OOM on deploy](runbooks/model-oom-on-deploy.md) |
 | Fix something that broke | [Troubleshooting](operating/troubleshooting.md) | it routes to the runbooks and [Error messages](reference/error-messages.md) |
 | Secure it, or expose it to other people | [Going to production](operating/production.md) | [Enable auth](runbooks/enable-auth.md), [Auth and limits](concepts/auth-and-limits.md) |

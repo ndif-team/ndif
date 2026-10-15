@@ -1,0 +1,117 @@
+{{- if .Values.rustfs.enabled }}
+{{- $secret := .Values.rustfs.existingSecret | default (include "ndif.fullname" .) }}
+# StatefulSet for the volumeClaimTemplate: the blobs live on the pod's own
+# claim, which survives restarts and upgrades.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ndif.fullname" . }}-rustfs
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "ndif.fullname" . }}-rustfs
+  selector:
+    matchLabels:
+      {{- include "ndif.selectorLabels" (dict "ctx" . "component" "rustfs") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ndif.selectorLabels" (dict "ctx" . "component" "rustfs") | nindent 8 }}
+      annotations:
+        {{- include "ndif.secretChecksum" (dict "ctx" . "component" "rustfs") | nindent 8 }}
+    spec:
+      {{- with .Values.rustfs.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: rustfs
+          image: "{{ .Values.rustfs.image.repository }}:{{ .Values.rustfs.image.tag }}"
+          imagePullPolicy: {{ .Values.rustfs.image.pullPolicy }}
+          env:
+            - name: RUSTFS_ACCESS_KEY
+              {{- include "ndif.secretRef" (dict "name" $secret "key" "NDIF_OBJECT_STORE_ACCESS_KEY") | nindent 14 }}
+            - name: RUSTFS_SECRET_KEY
+              {{- include "ndif.secretRef" (dict "name" $secret "key" "NDIF_OBJECT_STORE_SECRET_KEY") | nindent 14 }}
+          ports:
+            - {name: s3, containerPort: 9000}
+          livenessProbe:
+            httpGet: {path: /health, port: s3}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet: {path: /health, port: s3}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.rustfs.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      {{- with .Values.rustfs.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.rustfs.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.rustfs.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.rustfs.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ndif.fullname" . }}-rustfs
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
+spec:
+  type: {{ .Values.rustfs.service.type }}
+  selector:
+    {{- include "ndif.selectorLabels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
+  ports:
+    - {name: s3, port: {{ .Values.rustfs.service.port }}, targetPort: s3}
+{{- if .Values.rustfs.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ndif.fullname" . }}-rustfs
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
+  {{- with .Values.rustfs.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.rustfs.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.rustfs.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ $.Values.rustfs.ingress.host | quote }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.rustfs.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ndif.fullname" . }}-rustfs
+                port:
+                  name: s3
+{{- end }}
+{{- end }}

@@ -1,0 +1,35 @@
+# Production shape: AWS S3 through the pod's IAM role, no in-cluster store,
+# auth on, two GPU workers beside a GPU head, dashboard and ingress on.
+environment: prod
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/ndif-results
+rustfs:
+  enabled: false
+objectStore:
+  url: ""
+  bucket: my-ndif-results
+  region: us-east-2
+hfToken:
+  existingSecret: ndif-hf
+api:
+  postgres:
+    existingSecret: ndif-postgres
+  ingress:
+    enabled: true
+    className: nginx
+    host: ndif.example.com
+    tlsSecretName: ndif-tls
+ray:
+  deployments: [openai-community/gpt2, meta-llama/Llama-3.1-8B]
+  head:
+    gpus: 8
+  workers:
+    replicas: 2
+    gpus: 8
+hfCache:
+  accessModes: [ReadWriteMany]
+  storageClass: efs
+dashboard:
+  enabled: true
+  existingSecret: ndif-dashboard

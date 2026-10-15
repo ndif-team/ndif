@@ -2,7 +2,7 @@
 title: Going to Production
 one_liner: What has to change before an NDIF faces users — auth, the sandboxed actor class, dashboard credentials, object store, multi-node Ray, sizing, timeouts, retention — and what the code does not provide.
 tags: [operating, auth, ray, telemetry, gotchas]
-related: [docs/operating/quickstart.md, docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/runbooks/enable-auth.md, docs/runbooks/add-a-gpu-node.md, docs/runbooks/model-oom-on-deploy.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/reference/env-vars.md, docs/reference/ports.md]
+related: [docs/operating/quickstart.md, docs/operating/kubernetes.md, docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/runbooks/enable-auth.md, docs/runbooks/add-a-gpu-node.md, docs/runbooks/model-oom-on-deploy.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/reference/env-vars.md, docs/reference/ports.md]
 sources: [docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/api/app.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/api/queue/config.py, src/ndif/common/providers/objectstore.py, src/ndif/services/dashboard/backend/config.py, docker/postgres/init.sql]
 ---
 
@@ -20,7 +20,8 @@ Actual deployment specifics are out of scope. **Bring your own TLS termination,
 orchestration, secret store, and infrastructure.** A real deployment is your own
 orchestration wrapping the same images and the same `NDIF_*` environment; there is
 no production compose file, and nothing here prescribes a proxy config, a tuning
-number, or a topology.
+number, or a topology. On Kubernetes, the Helm chart wires the services together
+and leaves these same decisions to its values; see [Kubernetes (Helm)](kubernetes.md).
 
 ## 1. Turn on auth, and run untrusted code out of process
 
@@ -279,7 +280,8 @@ durable volumes and retention policy for anything it needs to keep. See
   carry no prefix, so two deployments sharing one Redis take each other's
   requests. Give each deployment its own Redis, or its own logical database.
 - **No test CI and no compatibility guarantees.** `.github/workflows/` builds and
-  publishes images and the PyPI package; none of them run tests. The test suite
+  publishes images and the PyPI package and lints the Helm chart; none of them
+  run the test suite. The test suite
   under `tests/` needs a live stack. There is no stable public API.
 - **No horizontal API tier.** `NDIF_API_WORKERS` scales gunicorn workers in one
   process group, and the queue dispatcher is started exactly once by the gunicorn

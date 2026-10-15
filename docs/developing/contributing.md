@@ -3,7 +3,7 @@ title: Contributing
 one_liner: House style and conventions this codebase follows — comments, docstrings, env vars, logging, where code belongs, commit form — and what CI does and does not do.
 tags: [internals, dev]
 related: [docs/developing/testing.md, docs/developing/repo-layout.md, docs/developing/providers.md, docs/developing/adding-a-service.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md]
-sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, src/ndif/common/telemetry.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/sandbox/ARCHITECTURE.md, pyproject.toml, .github/workflows/build_images.yml, .github/workflows/publish_docker.yml, .github/workflows/publish.yml]
+sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, src/ndif/common/telemetry.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/sandbox/ARCHITECTURE.md, pyproject.toml, .github/workflows/build_images.yml, .github/workflows/publish_docker.yml, .github/workflows/publish.yml, .github/workflows/helm.yml]
 ---
 
 # Contributing
@@ -137,14 +137,15 @@ hold: name the failure mode and the counterfactual.
 
 ## CI and releases
 
-The workflows in `.github/workflows/` build and publish; none runs the tests or
-`ruff`.
+The workflows in `.github/workflows/` build and publish, and lint the Helm
+chart; none runs the tests or `ruff`.
 
 | Workflow | Trigger | Does |
 |---|---|---|
 | `build_images.yml` | push to `main` (or manual) | builds the hosted image |
 | `publish_docker.yml` | a `v*` tag (or manual) | publishes the `ndif/ndif` images to Docker Hub; `latest` moves only for a final `X.Y.Z` |
 | `publish.yml` | a published GitHub release (or manual) | builds and publishes the wheel to PyPI |
+| `helm.yml` | a PR touching `charts/` (or manual) | `helm lint`, `helm template` and `kubeconform` on `charts/ndif` with its default values and each `charts/ndif/ci/*-values.yaml` |
 
 Creating a GitHub release pushes its tag, so one release fires both publish
 workflows; a tag is a release, not a checkpoint. The package version is the git tag

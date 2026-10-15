@@ -92,6 +92,9 @@ docker run -d --name ndif-worker \
   <the head's image:tag>
 ```
 
+On Kubernetes, raise `ray.workers.replicas` in the Helm chart instead; see
+[Kubernetes (Helm)](../operating/kubernetes.md#add-gpu-nodes).
+
 `NDIF_SERVICE=ray` is required: the image defaults to `all`, which would start
 Redis, RustFS and the API on the worker too (`docker/Dockerfile`). `--network host`
 avoids the port-mapping problem above; without it you must publish Ray's ports

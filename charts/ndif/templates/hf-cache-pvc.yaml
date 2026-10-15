@@ -1,0 +1,20 @@
+{{- if and .Values.hfCache.enabled (not .Values.hfCache.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ndif.fullname" . }}-hf-cache
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "hf-cache") | nindent 4 }}
+  annotations:
+    # Weights outlive the release; delete the claim by hand if you mean it.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml .Values.hfCache.accessModes | nindent 4 }}
+  {{- with .Values.hfCache.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.hfCache.size }}
+{{- end }}

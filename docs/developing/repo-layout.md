@@ -29,12 +29,13 @@ Where everything lives, and why. Two structural facts explain most of the layout
 |---|---|
 | `src/ndif/` | the package: CLI, shared library, services |
 | `docker/` | the Dockerfile, the dev compose stack, the nnsight bind-mount override, and provisioning for Grafana / Prometheus / Postgres |
+| `charts/ndif/` | the Helm chart for Kubernetes ([Kubernetes (Helm)](../operating/kubernetes.md)) |
 | `tests/` | live-server, model-only and offline tests ([Testing](testing.md)) |
 | `docs/` | these docs; [docs/index.md](../index.md) is the map |
 | `justfile` | a thin wrapper over `docker compose` |
 | `pyproject.toml` | package metadata, extras, the `ndif` console script, `package-data` |
 | `requirements.txt` | the pinned dependency set the image installs as its own layer. torch is not here — the Dockerfile installs it from a build arg, since the wheel depends on the host's CUDA driver |
-| `.github/workflows/` | build and publish only ([Contributing](contributing.md#ci-and-releases)) |
+| `.github/workflows/` | build and publish, plus the Helm chart lint ([Contributing](contributing.md#ci-and-releases)) |
 | `README.md`, `CONTRIBUTING.md`, `CLAUDE.md`, `AGENTS.md` | install/quickstart, contribution rules, and the agent guide |
 
 ## `src/ndif/cli/` — the `ndif` command
@@ -194,6 +195,7 @@ editable nnsight is found. `just ta <svc>` tears the **whole** stack down and br
 | A Redis key, channel, or stream name | `src/ndif/common/redis/` |
 | What a log line or metric carries | `src/ndif/common/telemetry.py`, `src/ndif/common/metrics.py` |
 | The dev stack's topology, ports, or env | `docker/docker-compose.yml` |
+| How the services run on Kubernetes | `charts/ndif/values.yaml`, `charts/ndif/templates/` |
 | What's installed in the image | `requirements.txt` (pins) + `pyproject.toml` (extras) |
 | A Grafana dashboard | `docker/grafana/provisioning/dashboards/json/` |
 | The admin UI | `src/ndif/services/dashboard/backend/routers/`, then rebuild `frontend/` |
