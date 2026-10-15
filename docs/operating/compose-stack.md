@@ -1,9 +1,9 @@
 ---
 title: The Compose Stack
-one_liner: Every container in docker/docker-compose.yml — image, purpose, ports, volumes, health, and what breaks without it.
+one_liner: Every container in docker/docker-compose.yml — image, purpose, ports, persistence, health, the service-name wiring between them, and what breaks without each.
 tags: [operating, api, ray, dashboard, redis, telemetry]
-related: [docs/operating/quickstart.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/observability.md, docs/operating/cli.md, docs/concepts/services-and-topology.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/developing/ray-service.md]
-sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, docker/prometheus/prometheus.yml, docker/postgres/init.sql, src/ndif/cli/service.py, src/ndif/services/ray/start.sh]
+related: [docs/operating/quickstart.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/observability.md, docs/operating/dashboard.md, docs/operating/cli.md, docs/concepts/services-and-topology.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/developing/ray-service.md]
+sources: [docker/docker-compose.yml, docker/docker-compose.nnsight.yml, docker/Dockerfile, justfile, docker/prometheus/prometheus.yml, docker/postgres/init.sql, src/ndif/cli/service.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
 ---
 
 # The Compose Stack
@@ -11,188 +11,95 @@ sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, docker/prometh
 ## What this covers
 
 `docker/docker-compose.yml` — ten containers, three of which are NDIF code and
-seven of which are off-the-shelf infrastructure. This page is the service-by-
-service reading: what each one is, what it costs you to drop it, and the four
-compose-level decisions (one image, project name `dev`, the GPU reservation,
-`shm_size`) that aren't obvious from the file.
+seven off-the-shelf infrastructure: what each one is, what it costs you to drop
+it, how they find each other, and what survives `just down`.
 
-The stack is a **development** stack: it builds the image from this checkout and
-publishes almost everything to `localhost` with default credentials and no TLS
-(`docker-compose.yml:4-8`). To just *run* NDIF, `docker run --gpus all ndif/ndif`
-starts redis, minio, ray and the API in one container from the published image
-instead — see `docs/operating/quickstart.md`. `docs/operating/production.md`
-covers what has to change before either faces users.
+It is a **development** stack: it builds the image from this checkout and
+publishes almost everything on every interface with default credentials and no
+TLS. To just *run* NDIF, `docker run --gpus all ndif/ndif` starts redis, minio,
+ray and the API in one container from the published image instead — see
+[Quickstart](quickstart.md). [Going to Production](production.md) covers what
+has to change before either faces users.
 
 ## The services
 
 | Service | Image / build | Required? | Host ports | What breaks without it |
 |---|---|---|---|---|
 | `redis` | `redis:7-alpine` | **yes** | 6379 | Everything. Queue, response pub/sub, status caches, the `ray:connected` flag. |
-| `minio` | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | **yes** | 9000, 9001 | Results have nowhere to go; the API blocks on it at startup (`depends_on: service_healthy`). |
+| `minio` | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | **yes** | 9000, 9001 | Large results have nowhere to go; `api` and `ray` wait on its health check. |
 | `api` | built from `docker/Dockerfile` | **yes** | 8001 | No client entry point. |
 | `ray` | built from `docker/Dockerfile` | **yes** | 8265, 10001 | No compute. `/request`, `/status`, `/env` all 503. |
-| `postgres` | `postgres:16-alpine` | health-gated | 5432 | The API won't start (it waits on the health check) — but auth stays off regardless unless you set `NDIF_POSTGRES_URL`. |
+| `postgres` | `postgres:16-alpine` | health-gated | 5432 | `api` won't start (it waits on the health check) — but auth stays off regardless unless you set `NDIF_POSTGRES_URL`. |
 | `influxdb` | `influxdb:2.7` | health-gated | 8086 | Same: `api` and `ray` wait on its health check, then metrics are dropped silently. |
 | `loki` | `grafana/loki:3.0.0` | optional | 3100 | Logs stay on stdout; `just logs` still works. |
 | `prometheus` | `prom/prometheus:v2.53.0` | optional | 9090 | No Ray infrastructure metrics in Grafana. |
 | `grafana` | `grafana/grafana:11.1.0` | optional | 3000 | No dashboards; the data is still in Loki/Influx/Prometheus. |
 | `dashboard` | built from `docker/Dockerfile` | optional | 8081 | No admin UI, no monitor/reconcile crons. Deploys still work via the CLI. |
 
-"Required" means the request path cannot function. "Health-gated" is a compose
-artifact: `api` declares `depends_on: {postgres: service_healthy, influxdb:
-service_healthy}` (`docker-compose.yml:177-185`), so those two containers must
-reach healthy before the API starts, whether or not the API will use them. `api`
-has a health check of its own — `GET /ping` through python, since the image has
-no curl (`docker-compose.yml:171-176`).
+"Health-gated" is a compose artifact: the `api` service's `depends_on` waits for
+`redis`, `minio`, `influxdb` and `postgres` to be `service_healthy`, whether or
+not the API will use them. `api` has its own health check — `GET /ping` through
+python, since the image has no curl.
 
-### redis (`docker-compose.yml:17`)
-
-The central nervous system. The API pushes requests onto a Redis list, the
-dispatcher pops them, model actors publish status/response JSON onto per-session
-pub/sub channels, cached `/status` and `/env` blobs live here, and the
-`ray:connected` flag gates the API's routes. Health check: `redis-cli ping`.
-
-> **Gotcha:** `NDIF_REDIS_URL` must be set explicitly on the `ray` service. Its
-> default is `redis://localhost:6379`, and nothing listens there inside the `ray`
-> container. See [Service names, not localhost](#service-names-not-localhost).
-
-### minio (`docker-compose.yml:126`)
-
-S3-compatible object store for result blobs. Results are far too large for the
-Redis pub/sub channel, so the model actor uploads them and publishes a presigned
-GET URL on the `COMPLETED` response; the client downloads directly. Two ports:
-9000 is the S3 API, 9001 the web console. Credentials are `minioadmin` /
-`minioadmin` on both sides.
-
-The image is pulled from **quay.io** and pinned to a release
-(`docker-compose.yml:127`): `minio/minio` on Docker Hub no longer resolves at all
-(`docker manifest inspect` fails), while quay.io still serves every release. The
-same release is where `docker/Dockerfile` copies the `minio` binary from for the
-all-in-one image, so the two stay in step.
-
-This is where the two-endpoint split matters. `NDIF_OBJECT_STORE_URL` is
-`http://minio:9000` (what the server uploads through) while
-`NDIF_OBJECT_STORE_PUBLIC_URL` is `http://localhost:9000` (what the URL is
-*signed* with, because your client is on the host). Both are set on `api` and
-`ray` (`docker-compose.yml:159-160`, `247-248`).
-
-### postgres (`docker-compose.yml:104`)
-
-The users/keys database for API-key auth. `docker/postgres/init.sql` runs once on
-an empty data dir and creates the full production schema — `users`, `profiles`,
-`keys`, `user_tags`, `key_user_tag_assignments`, `models`, `audit_logs` — plus
-the read-only `ndifapi` role the API connects as and the `login_page` role the
-account portal uses (`init.sql:161-171`).
-
-**No users or keys are seeded, and `NDIF_POSTGRES_URL` is commented out**
-(`docker-compose.yml:165`). Auth is therefore off, and with auth off a
-request is `trusted` unless it says otherwise (`src/ndif/services/api/auth.py:180-184`). Uncommenting
-that one line is the switch; `docs/runbooks/enable-auth.md` walks the rest.
-
-### influxdb / loki / prometheus / grafana (`docker-compose.yml:44, 29, 65, 78`)
-
-The telemetry tier, all fail-open.
-
-- **InfluxDB** stores numeric time series. It boots in `setup` mode with a
-  hardcoded org/bucket/token (`ndif` / `metrics` / `ndif-dev-token`) that the
-  `NDIF_INFLUX_*` env on `api` and `ray` matches, so it works with no manual step.
-- **Loki** takes shipped log lines. Services push to it only when
-  `NDIF_LOKI_URL` is set — which compose does for `api` and `ray`, not for
-  `dashboard`.
-- **Prometheus** scrapes exactly one target, `ray:8080`
-  (`docker/prometheus/prometheus.yml:20`) — Ray's metrics-export port, set by
-  `--metrics-export-port` in `services/ray/start.sh:66`. Ray is the only thing in
-  the stack that speaks Prometheus. There is deliberately no `depends_on: ray`;
-  Prometheus starts and retries until the slow GPU container is up.
-- **Grafana** runs with anonymous admin and the login form disabled, with the
-  Loki/Influx/Prometheus/Postgres datasources provisioned from
-  `docker/grafana/provisioning`. It lands on the NDIF Overview dashboard.
-
-Drop all four and NDIF runs identically — you just lose visibility. See
-`docs/operating/observability.md`.
-
-### api (`docker-compose.yml:141`)
-
-`NDIF_SERVICE=api` → `ndif start api` → `api/start.sh` → gunicorn with uvicorn
-workers serving `ndif.services.api.app:app`, plus the queue dispatcher spawned
-once in the master. Publishes 8001, the only port a client ever touches.
-
-### ray (`docker-compose.yml:228`)
-
-`NDIF_SERVICE=ray` → `ray/start.sh`. Because `NDIF_RAY_HEAD_ADDRESS` is unset it
-starts a Ray **head** and then launches the NDIF controller
-(`ray/start.sh:50-70`). Model deployments are plain detached Ray actors placed by
-the controller (`cluster/deployment.py:210-215`), looked up by name in the `NDIF`
-namespace — there is no Ray Serve involved anywhere in this repo.
-
-Publishes 8265 (Ray dashboard) and 10001 (the `ray://` client server the API and
-CLI connect through). Its Prometheus port 8080 and GCS port stay internal.
-
-The `ray` service bind-mounts the host Hugging Face cache
-(`${HOME}/.cache/huggingface` → `/root/.cache/huggingface`) and passes `HF_TOKEN`
-through (`HF_TOKEN: ${HF_TOKEN:-}`), so downloaded weights persist across
-`just down` and gated repos resolve when the token is in your environment.
-
-> **Gotcha:** compose sets
-> `NDIF_DEFAULT_MODEL_ACTOR_CLASS=ndif.services.ray.sandbox.model.SandboxModelActor`
-> (`docker-compose.yml:252`), but the code default is the in-process
-> `ndif.services.ray.deployments.modeling.base.ModelActor`. A bare `pip install`
-> plus `ndif start` therefore does **not** run the same execution path as
-> `just up`. If you reproduce a compose behavior outside compose, set this
-> variable.
-
-### dashboard (`docker-compose.yml:191`)
-
-Same image, `NDIF_SERVICE=dashboard` → uvicorn serving the Vue UI and its FastAPI
-backend on 8081, plus a cron daemon running the monitor and reconcile jobs
-(`dashboard/start.sh:48-74`). It reaches the API, Ray and Redis by compose
-service name.
-
-`NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml:216`) makes
-`require_auth` return the configured username without checking anything
-(`dashboard/backend/auth.py:73`) — the UI opens with no login. The compose
-comment spells out the production alternative: drop dev mode, set
-`NDIF_DASHBOARD_USERNAME`, a bcrypt `NDIF_DASHBOARD_PASSWORD_HASH`, and a random
-`NDIF_DASHBOARD_SESSION_SECRET`. See `docs/operating/dashboard.md`.
+- **redis** — the API pushes requests onto a Redis list, the dispatcher pops
+  them, model actors publish status and responses on per-session pub/sub
+  channels, and cached `/status` and `/env` blobs live here.
+- **minio** — S3-compatible store for result blobs too large to inline; the
+  model actor uploads them and publishes a presigned GET URL the client
+  downloads directly. 9000 is the S3 API, 9001 the web console. Pulled from
+  quay.io and pinned because `minio/minio` on Docker Hub no longer resolves; the
+  image copies its own `minio` binary from the same release.
+- **postgres** — the users/keys database for API-key auth.
+  `docker/postgres/init.sql` runs once on an empty data dir and creates the
+  schema plus the read-only `ndifapi` role the API connects as. No users or keys
+  are seeded and `NDIF_POSTGRES_URL` is commented out on `api`, so auth is off;
+  [Enable auth](../runbooks/enable-auth.md) walks turning it on.
+- **influxdb / loki / prometheus / grafana** — the telemetry tier, all
+  fail-open. InfluxDB boots in `setup` mode with an org/bucket/token
+  (`ndif` / `metrics` / `ndif-dev-token`) that the `NDIF_INFLUX_*` env on `api`
+  and `ray` matches. Prometheus scrapes exactly one target, `ray:8080` (Ray's
+  `--metrics-export-port`), and has no `depends_on: ray`, so it retries until
+  Ray is up. Grafana runs with anonymous admin and provisioned datasources. Drop
+  all four and NDIF runs identically; see [Observability](observability.md).
+- **api** — `NDIF_SERVICE=api` → `ndif start api` → gunicorn with uvicorn
+  workers serving `ndif.services.api.app:app`, plus the queue dispatcher spawned
+  once by the master.
+- **ray** — `NDIF_SERVICE=ray` → `src/ndif/services/ray/start.sh`. With
+  `NDIF_RAY_HEAD_ADDRESS` unset it starts a Ray **head** and launches the NDIF
+  controller. Model replicas are detached Ray actors in the `NDIF` namespace —
+  no Ray Serve. Publishes 8265 (Ray dashboard) and 10001 (the `ray://` client
+  server the API and CLI connect through); its metrics port 8080 and GCS port
+  stay internal. It sets `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to the sandbox actor,
+  which the image and a from-source install do not — see
+  [Configuration](configuration.md#what-must-differ-from-the-dev-defaults).
+- **dashboard** — same image, `NDIF_SERVICE=dashboard` → uvicorn on 8081 plus a
+  cron daemon running the monitor, reconcile and report jobs. Compose turns its
+  login off with `NDIF_DASHBOARD_DEV_MODE: "true"`; see
+  [Admin Dashboard](dashboard.md).
 
 ## Four decisions in the file
 
 ### One image, `NDIF_SERVICE` picks the role
 
-`api`, `ray` and `dashboard` are the same build (`context: ..`, `docker/Dockerfile`).
-The image's entrypoint is the `ndif` CLI with `start --foreground` as its command
-(`Dockerfile:141-142`), and with no argument `ndif start` resolves its targets
-from `$NDIF_SERVICE` — which the image defaults to `all` (`Dockerfile:34`)
-(`env_services`, `src/ndif/cli/service.py:83-85`). A single target is `exec`'d so it becomes PID 1
-and gets signals directly (`cli/commands/start.py:59-66`).
+`api`, `ray` and `dashboard` are the same build. The image's entrypoint is the
+`ndif` CLI with `start --foreground` as its command, and with no argument
+`ndif start` resolves its targets from `$NDIF_SERVICE` (`src/ndif/cli/service.py`
+`env_services`), which the image defaults to `all`. A single target is `exec`'d
+so it becomes PID 1 and gets signals directly. `NDIF_SERVICE` accepts a
+space/comma list and `resolve_targets` expands `all` in place, so
+`"all dashboard"` is the core stack plus the admin UI.
 
-This is why the heavy layers — torch (its own layer, from the `TORCH_CUDA` build
-arg, `cu126` by default, `Dockerfile:76-79`) and `requirements.txt` (Ray,
-transformers, nnsight, `Dockerfile:83-84`) — are shared across all three
-containers, and why the compose
-`environment:` blocks are the entire difference between them. `NDIF_SERVICE`
-accepts a space/comma list and expands `all` in place
-(`src/ndif/cli/service.py:88-98`), so one container can supervise several
-services — `"all dashboard"` is the core stack plus the admin UI.
-
-The image installs `ndif` with the `api,ray,metrics,postgres,dashboard` extras and
-`--no-deps`, since `requirements.txt` already pins everything (`Dockerfile:93`).
-It then installs the `ext` extra — the packages a user's traced block is allowed
-to import — by reading the list back out of `pyproject.toml` (`Dockerfile:102-104`).
-
-Two things that only the all-in-one image needs are in there too: `redis-server`
-from apt and the `minio` binary copied out of
-`quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` (`Dockerfile:26-27`, `:46-50`).
-Compose never runs either — it has its own `redis` and `minio` containers — but
-`NDIF_SERVICE=all` spawns both in-process, which is what `docker run ndif/ndif`
-does.
+That is why the heavy layers — torch, then `requirements.txt` — are shared
+across all three containers, and why the compose `environment:` blocks are the
+entire difference between them. The image also carries `redis-server` and a
+`minio` binary that only `NDIF_SERVICE=all` uses; compose runs its own `redis`
+and `minio` containers instead.
 
 ### `name: dev`
 
-`docker-compose.yml:14` sets the compose project name, so containers and networks
-are `dev-api-1`, `dev-ray-1`, `dev_default` — rather than being named after the
-`docker/` directory the file lives in. Useful to know when you reach past `just`
-for `docker logs dev-ray-1` or `docker exec`.
+The compose project name is `dev`, so containers and the network are
+`dev-api-1`, `dev-ray-1`, `dev_default` — useful when you reach past `just` for
+`docker logs dev-ray-1` or `docker exec`.
 
 ### The GPU reservation
 
@@ -206,26 +113,24 @@ for `docker logs dev-ray-1` or `docker exec`.
               capabilities: [gpu]
 ```
 
-(`docker-compose.yml:281-287`) — the compose equivalent of `docker run --gpus
-all`. It requires the NVIDIA container toolkit on the host; without it the `ray`
-container fails to create. Only `ray` gets GPUs; nothing else needs one.
+The compose equivalent of `docker run --gpus all`, on the `ray` service only. It
+requires the NVIDIA container toolkit on the host; without it the `ray`
+container fails to create.
 
 ### `shm_size: "4gb"`
 
 Ray's plasma object store lives in `/dev/shm`, and Docker's default shared-memory
-size is **64 MB** — far too small (`docker-compose.yml:278-280`). Ray will either
-spill to disk and crawl or fail outright, and neither failure mentions
-`shm_size`. 4 GB is a development floor; size it to your real object traffic in
-production. Running the `ray` service anywhere else needs the same setting —
-`docker run --shm-size=4gb`, a Kubernetes `emptyDir` with `medium: Memory`, or
-your orchestrator's equivalent.
+size is **64 MB**. Ray then spills to disk and crawls or fails outright, and
+neither failure mentions `shm_size`. 4 GB is a development floor. Running the
+`ray` service anywhere else needs the same setting — `docker run
+--shm-size=4gb`, a Kubernetes `emptyDir` with `medium: Memory`, or your
+orchestrator's equivalent.
 
 ## Service names, not localhost
 
-Every provider defaults to `localhost` — `redis://localhost:6379`,
-`ray://localhost:10001`, `http://localhost:9000` — which is right for a
-single-host `ndif start` and wrong on the compose network. Compose overrides them
-**per service**; a service that misses one silently talks to itself.
+Every provider defaults to `localhost`, which is right for a single-host
+`ndif start` and wrong on the compose network. Compose overrides them **per
+service**; a service that misses one silently talks to itself.
 
 | Variable | Provider default | Compose sets | On |
 |---|---|---|---|
@@ -235,24 +140,24 @@ single-host `ndif start` and wrong on the compose network. Compose overrides the
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | falls back to the above | `http://localhost:9000` | `api`, `ray` |
 | `NDIF_LOKI_URL` | unset (shipping off) | `http://loki:3100/loki/api/v1/push` | `api`, `ray` |
 | `NDIF_INFLUX_URL` | unset (metrics off) | `http://influxdb:8086` | `api`, `ray`; `dashboard` only reads it, for its report cron |
-| `NDIF_API_URL` | `http://localhost:8001` | `http://api:8001` | `dashboard` |
+| `NDIF_API_URL` | `http://localhost:8001` | `http://api:8001` | `dashboard` (its report cron) |
 | `NDIF_POSTGRES_URL` | empty (auth off) | commented out | — |
 
-`NDIF_OBJECT_STORE_PUBLIC_URL` is the one URL here about someone else's network:
-it signs result URLs for the *client*, so `localhost:9000` works only for a client
+`NDIF_OBJECT_STORE_PUBLIC_URL` is the one URL about someone else's network: it
+signs result URLs for the *client*, so `localhost:9000` works only for a client
 on this host. A colleague on your LAN needs an address they can resolve.
 
 The costly omission is `NDIF_REDIS_URL` on `ray`. It is not a startup crash: the
-controller and model actors come up, a request runs to completion on the GPU, and
-then the response cannot be published — the client sits at `DISPATCHED` or
+controller and model actors come up, a request runs to completion on the GPU,
+and then the response cannot be published — the client sits at `DISPATCHED` or
 `RUNNING` while the job is already done. Model actors inherit the controller's
 provider config through their Ray `runtime_env`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
-`_provider_runtime_env`), so setting it on `ray` fixes every actor, and missing it
-breaks every actor at once.
+`_provider_runtime_env`), so setting it on `ray` fixes every actor, and missing
+it breaks every actor at once.
 
-Reproducing compose behavior outside compose means reproducing this table, plus
-`NDIF_DEFAULT_MODEL_ACTOR_CLASS` (see the `ray` service above).
+Reproducing compose outside compose means reproducing this table, plus the
+actor class.
 
 ```bash
 # What did each service actually resolve its providers to?
@@ -266,57 +171,50 @@ docker compose -f docker/docker-compose.yml exec ray \
 ## `just` is the interface
 
 Every recipe is a thin wrapper over `docker compose -f docker/docker-compose.yml`
-(`justfile:28`).
+(`just --list` shows them).
 
 | Recipe | Does | When |
 |---|---|---|
-| `just` | Lists the recipes | — |
-| `just up [services...]` | `compose up -d` | Start everything, or a subset: `just up api redis` |
+| `just up [services...]` | `compose up -d` | Start everything, or a subset. Also recreates a container whose `environment:` changed |
 | `just down [args...]` | `compose down` | Stop and remove. `just down -v` also drops volumes |
-| `just build [services...]` | `compose build` | Rebuild the image after a code change |
-| `just ta [services...]` | `down` → `build` → `up` | **The full refresh.** Use after any change to `src/` |
-| `just restart [services...]` | `compose restart` | Bounce a container to re-read nothing but its own state |
+| `just build [services...]` | `compose build` | Rebuild the image |
+| `just ta [services...]` | `just down` → `build` → `up` | **The full refresh** after any change to `src/` |
+| `just restart [services...]` | `compose restart` | Restart processes with their *existing* environment — not a way to apply config |
 | `just logs [services...]` | `compose logs -f` | Follow; Ctrl-C detaches without stopping anything |
 | `just ps` | `compose ps` | Container status and health |
+| `just nnsight` | — | Which nnsight, if any, would be bind-mounted |
 
-`just ta` exists because the source is **baked into the image** — there is no bind
-mount of `src/` — so `just restart` or `just up` after editing code runs the old
-build. `just ta ray` narrows the rebuild to one service, but note that the recipe
-runs a full `just down` first (`justfile:51-54`): the whole stack comes down
-either way.
+`just ta` exists because the source is **baked into the image** — there is no
+bind mount of `src/` — so `just restart` or `just up` after editing code runs the
+old build. The `ta` recipe always runs a bare `just down` first, so
+`just ta ray` takes the **whole stack** down, rebuilds `ray`, and starts only
+`ray` and its dependencies; follow it with `just up` to bring the rest back.
 
-The one exception is nnsight. It ships in the image (`nnsight>=0.8.0rc1,<0.9` in
-`requirements.txt:25`), but `just up`/`just ta` also include
-`docker/docker-compose.nnsight.yml`, which bind-mounts an **editable** nnsight
-checkout over the image's copy (resolved from `NNSIGHT_PATH`, `justfile:25-28`).
-Install nnsight editable and client-side changes are picked up without a rebuild.
-A non-editable nnsight under site-packages is deliberately **not** mounted — it
-would replace the image's pinned copy with whatever your shell happens to have —
-and no nnsight at all skips the override. `just nnsight` prints which applies.
+**nnsight is the exception.** It ships in the image (`nnsight>=0.8.0rc1,<0.9`
+in `requirements.txt`), but when the shell you run `just` from has an
+**editable** nnsight installed (`pip install -e /path/to/nnsight`), or
+`NNSIGHT_PATH` is set, `just up`/`just ta` add
+`docker/docker-compose.nnsight.yml`, which bind-mounts that checkout over the
+image's copy in `api`, `ray` and `dashboard`. Client-side changes are then
+picked up without a rebuild. A non-editable nnsight under site-packages is
+deliberately **not** mounted — it would replace the image's pinned copy with
+whatever your shell has — and no nnsight at all skips the override.
 
 ## Persistence
 
-Only `dashboard_data` is a named volume (`docker-compose.yml:220, 291-292`),
-holding the dashboard's logs, `schedule.json`, config and cache. The `ray`
-service also bind-mounts the host HF cache, so model weights persist. Everything
-else is stateless or a read-only bind mount of config:
+| Survives `just down` | Lost on `just down` |
+|---|---|
+| Model weights — the `ray` service bind-mounts `${HOME}/.cache/huggingface` | Result blobs (MinIO writes to the container filesystem) |
+| Dashboard state — the named volume `dashboard_data` (logs, `schedule.json`, config, cache); `just down -v` drops it | The Postgres database: `init.sql` runs again on the next boot and recreates the schema empty, so **every API key you created is gone** |
+| | Metrics, logs and UI-edited Grafana panels (InfluxDB, Loki, Prometheus, Grafana) |
 
-- **Result blobs, metrics, logs, and the Postgres database do not survive
-  `just down`** — MinIO, InfluxDB, Loki and Postgres all write to the container
-  filesystem. This is deliberate: the dev stack is disposable and keeps no
-  telemetry or Redis volumes.
-- Postgres losing its data dir means `init.sql` runs again on the next boot,
-  recreating the schema empty. Any API keys you created are gone.
-- Downloaded model weights survive `just down` — they live in the host HF cache
-  the `ray` service bind-mounts (`${HOME}/.cache/huggingface`).
-
-Add volumes for anything else you want to keep. `docs/operating/production.md`
-covers which.
+The dev stack is disposable by design. Add volumes for anything you want to
+keep; [Going to Production](production.md) lists which.
 
 ## Related
 
-- `docs/operating/quickstart.md` — bringing this up for the first time.
-- `docs/operating/configuration.md` — where these `environment:` blocks sit in the layering.
-- `docs/reference/ports.md` — every port, published or not.
-- `docs/concepts/services-and-topology.md` — what talks to what, and why.
-- `docs/operating/production.md` — what to change before this faces users.
+- [Quickstart](quickstart.md) — bringing this up for the first time.
+- [Configuration](configuration.md) — where these `environment:` blocks sit in the precedence.
+- [Ports](../reference/ports.md) — every port, published or not.
+- [Services and Topology](../concepts/services-and-topology.md) — what talks to what, and why.
+- [Going to Production](production.md) — what to change before this faces users.

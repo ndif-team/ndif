@@ -1,9 +1,9 @@
 ---
 title: Configuration
-one_liner: How NDIF is configured — environment variables only, no config file, layered per process, with a working single-host default for everything.
+one_liner: How NDIF is configured — environment variables only, no config file, layered per process with a fixed precedence, and the handful of defaults that must change off a single host.
 tags: [operating, cli, dev, telemetry, auth]
 related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/production.md, docs/operating/cli.md, docs/developing/providers.md, docs/reference/ports.md, docs/runbooks/enable-auth.md]
-sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/docker-compose.yml, docker/Dockerfile, pyproject.toml, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/config.py]
+sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/docker-compose.yml, docker/Dockerfile, pyproject.toml, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/api/versioning.py, src/ndif/services/dashboard/backend/config.py]
 ---
 
 # Configuration
@@ -11,150 +11,122 @@ sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/dock
 ## What this covers
 
 The *model* of configuration — where values come from, what wins, what crosses a
-process boundary, and which parts of it you must change to run somewhere other
-than one laptop. The exhaustive variable-by-variable table lives in
-`docs/reference/env-vars.md`; this page deliberately doesn't repeat it.
+process boundary, and what must change to run anywhere but one machine. Every
+variable with its default and reader is in
+[Environment Variables](../reference/env-vars.md).
 
-Two facts frame the whole design:
+- **There is no config file.** Every knob is an `NDIF_*` environment variable,
+  read once at process start. Changing a value means restarting the process that
+  reads it — and for anything baked into the image, a `just ta`.
+- **Every knob has a working single-host default**, so a bare `ndif start` —
+  Redis on `localhost:6379`, MinIO on `localhost:9000`, the API on
+  `localhost:8001` — comes up with nothing set. You set variables to *move away*
+  from single-host.
+- **A missing variable never falls back to another service's value.** It falls
+  back to that process's own default, which is almost always `localhost`. Most
+  cross-service breakage is a `localhost` default nobody overrode.
 
-1. **There is no config file.** No YAML, no TOML, no `settings.py`. Every knob is
-   an `NDIF_*` environment variable, and nearly all of them are read once at
-   process start. Changing a value means restarting the process that reads it.
-2. **Every knob has a working single-host default.** Each service and each
-   provider carries its own defaults, tuned so that a bare `ndif start` on one
-   machine — Redis on `localhost:6379`, MinIO on `localhost:9000`, the API on
-   `localhost:8001` — comes up with nothing set. Config is therefore additive:
-   you set variables to *move away* from single-host, not to get started.
-
-The cost of (1) is that there is no single place to look at "the config". The
-benefit is that every process is self-describing: whatever is in its environment
-is its entire configuration, and nothing is inherited from a service you forgot
-about.
-
-## Where defaults live
-
-Four shapes, all equivalent in effect:
-
-- A **provider `CONFIG` spec** — `{"url": ("NDIF_REDIS_URL", "redis://localhost:6379", str)}`.
-  `Provider.from_env()` walks it and sets class attributes, casting the env
-  string (`Provider.from_env`, `src/ndif/common/providers/base.py:39-43`). This covers Redis, the
-  object store, Postgres, Loki and Influx.
-- A bare **`os.environ.get(name, default)`** — the queue config, the controller's
-  `ControllerDeploymentArgs`, gunicorn's settings.
-- A **`${VAR:-default}` fallback in a `start.sh`** — the Ray node's ports and
-  timings.
-- A **pydantic `Field(default=...)`** on the dashboard's `Settings`, matched to a
-  variable by `env_prefix = "NDIF_DASHBOARD_"` (`dashboard/backend/config.py:38`).
+Defaults live in four places: a provider's `CONFIG` spec, read by
+`Provider.from_env` (`src/ndif/common/providers/base.py`); a bare
+`os.environ.get` (the queue config, `ControllerDeploymentArgs`, gunicorn); a
+`${VAR:-default}` in a `start.sh`; and the dashboard's pydantic `Settings`,
+which reads the `NDIF_DASHBOARD_` prefix.
 
 ## Precedence
 
-Later layers win.
+Lowest to highest; later layers win.
 
 1. **Code defaults**, as above.
-2. **CLI defaults** — the `DEFAULTS` dict in `src/ndif/cli/config.py:22-31`,
-   merged *underneath* the real environment by `build_env` (`config.py:60`:
-   `{**DEFAULTS, **os.environ}`). They exist to fix the handful of code defaults
-   that are wrong for a single host — most importantly `NDIF_RAY_HEAD_PORT`,
-   which the CLI sets to **6385** because Ray's own GCS default is 6379, the same
-   port as Redis.
-3. **`.env` files** — `config.load_env_files` runs before any CLI command
-   (`config.py:42-46`). A CWD-relative `./.env` is loaded *without* `override`,
-   so it only fills gaps the shell left; an explicit `ndif --env-file path`
-   is loaded with `override=True` and beats the shell.
-4. **The shell environment** of the process.
-5. **Per-invocation CLI overrides** — `ndif start -e KEY=VALUE` (repeatable) and
-   the four typed shortcuts `--redis-url`, `--ray-address`, `--ray-head-address`,
-   `--api-port` (`config.py:34-39`). These are applied last and win outright.
+2. **CLI defaults** — `DEFAULTS` in `src/ndif/cli/config.py`, merged *underneath*
+   the real environment by `build_env`. They exist for the few code defaults
+   that are wrong on a single host; most importantly `NDIF_RAY_HEAD_PORT=6385`,
+   because Ray's own GCS default is 6379, the same port as Redis.
+3. **`./.env`** in the current directory — loaded by `load_env_files` without
+   `override`, so it only fills gaps the shell left.
+4. **The shell environment** of the process (under compose, the service's
+   `environment:` block).
+5. **`ndif --env-file PATH`** — loaded with `override=True`, so it beats the shell.
+6. **Per-invocation overrides** — `ndif start -e KEY=VALUE` (repeatable) and the
+   typed shortcuts `--redis-url`, `--ray-address`, `--ray-head-address`,
+   `--api-port` (`ENV_OPTIONS`). Applied last.
 
-Under Docker, the container entrypoint is `ndif start --foreground`
-(`docker/Dockerfile:49`), so **the CLI layer applies inside compose too**. Both
-the CLI `DEFAULTS` and `ray/start.sh:60` fall back to the same
-`NDIF_RAY_HEAD_PORT` of 6385, so the head port is unambiguous however Ray is
-launched. The compose `environment:` block is layer 4 (the process
-environment) as far as the CLI is concerned, and beats everything except an
-explicit `-e`.
+Under Docker the entrypoint is `ndif start --foreground`, so the CLI layers
+apply inside every container too. Two consequences:
 
-> **Gotcha:** the auto-discovered `.env` is relative to the **current working
-> directory**, which inside every NDIF container is `/app` (`Dockerfile:36`) —
-> a directory with no `.env` in it. Configuring a container through `.env`
-> requires bind-mounting the file to `/app/.env`. The compose file also uses no
-> `${VAR}` interpolation and no `env_file:` key, so a `docker/.env` would have
-> nothing to substitute into. In compose, `environment:` blocks are the layer
-> that matters.
+- The auto-discovered `.env` is relative to the working directory, which in
+  every NDIF container is `/app` — a directory with no `.env`. Configuring a
+  container through `.env` means bind-mounting the file to `/app/.env`.
+- The compose file uses `${VAR}` interpolation only for `HF_TOKEN`, `HOME` and
+  `NDIF_VERSION`, and has no `env_file:` key. Everything else is set in each
+  service's `environment:` block.
 
 ## One boundary config crosses by itself
 
 A Ray worker inherits only its node's ambient environment, not the controller's.
-So when the controller creates a model actor, it explicitly exports its own
-Redis, object-store, Loki and Influx settings into the actor's Ray
-`runtime_env` (`cluster/deployment.py:16-39`, applied at `deployment.py:191-206`),
-plus `NDIF_SERVICE=model` so the actor's telemetry attributes correctly.
+So when the controller creates a model actor it exports its own Redis,
+object-store, Loki and Influx settings into the actor's Ray `runtime_env`
+(`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+`_provider_runtime_env`, applied in `Deployment.create`), plus
+`NDIF_SERVICE=model` so the actor's telemetry attributes correctly.
 
-The practical consequence: **you configure model actors by configuring the `ray`
-service.** There is no separate actor environment to set, and a value you set on
-the head propagates to actors placed on any node.
+**You configure model actors by configuring the `ray` service** on the head.
+There is no separate actor environment, and a value set on the head reaches
+actors placed on any node.
 
 ## What must differ from the dev defaults
 
-Everything below has a default that only makes sense on one machine. This is the
-short list — see `docs/reference/env-vars.md` for the full set and the exact
-reader of each.
-
 | Variable | Dev default | Why it must change |
 |---|---|---|
-| `NDIF_REDIS_URL` | `redis://localhost:6379` | Must name the real Redis host from *every* service. Inside the `ray` container, `localhost:6379` is Ray's own GCS. |
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | Must name the real Redis host from *every* service. Inside the `ray` container nothing listens on `localhost:6379`. |
 | `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | The API/dashboard/CLI client address of the head node. |
-| `NDIF_RAY_HEAD_ADDRESS` | *(empty)* | Empty ⇒ this node starts a head. Every worker node must set it to the head's `HOST:6385`. |
+| `NDIF_RAY_HEAD_ADDRESS` | *(empty)* | Empty ⇒ this node starts a head. Every worker node sets it to the head's `HOST:6385`. |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | The endpoint the *server* uploads through. Empty means real AWS S3 for `NDIF_OBJECT_STORE_REGION`. |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → falls back to the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Real credentials. Both empty ⇒ no credentials are passed and boto3 uses its own chain (on AWS, the instance/task role). |
-| `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth ⇒ every request trusted. See below. |
-| `NDIF_API_URL` | `http://localhost:8001` | The address other components use to reach the API (compose sets `http://api:8001`). |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Real credentials, or both empty to use boto3's own chain (on AWS, the instance/task role). |
+| `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth: a client-supplied `trusted` is honored and an unspecified one defaults to trusted. See below. |
+| `NDIF_MODEL_IMPORT_PATH` | in-process `ModelActor` in code; compose sets `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to `SandboxModelActor` | Decides whether an untrusted request gets a separate runner process at all. See below. |
+| `NDIF_API_URL` | `http://localhost:8001` | Where the CLI (`env`, `doctor`, `info`) and the dashboard's report cron reach the API. Compose sets `http://api:8001` on `dashboard`. |
 | `NDIF_DASHBOARD_DEV_MODE` | `false` in code, **`true` in compose** | `true` disables the dashboard login entirely. |
 | `NDIF_DASHBOARD_SESSION_SECRET` | `change-me-please-this-is-not-secure` | Anyone with the default can forge a session cookie. |
 | `NDIF_DASHBOARD_PASSWORD_HASH` | *(empty)* | Required once dev mode is off. |
 | `NDIF_ENVIRONMENT` | `dev` | The prod/staging/dev label on every log line and metric point. |
-| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | in-process `ModelActor` in code, `SandboxModelActor` in compose | Decides whether untrusted user code gets a separate runner process at all. |
 
-That last row is worth dwelling on: the code default and the compose value
-**differ**. `just up` runs `ndif.services.ray.sandbox.model.SandboxModelActor`
-(`docker-compose.yml:252`); a plain `pip install` plus `ndif start ray` runs the
-base in-process actor. If you are reproducing a compose behavior outside compose,
-set the variable.
+**The actor class.** The controller reads `NDIF_MODEL_IMPORT_PATH`, falls back
+to `NDIF_DEFAULT_MODEL_ACTOR_CLASS`, and falls back to the in-process
+`ndif.services.ray.deployments.modeling.base.ModelActor`
+(`src/ndif/services/ray/deployments/controller/controller.py`
+`ControllerDeploymentArgs`). Compose sets the second to
+`ndif.services.ray.sandbox.model.SandboxModelActor`; the image and a from-source
+install set neither, so they run untrusted code in-process. To reproduce compose
+behavior outside compose, set it. See
+[Going to Production](production.md#the-sandboxed-actor-class).
+
+**An empty `NDIF_POSTGRES_URL`.** `verify_api_key` returns `None`, and
+`validate_request` keeps a `trusted` the client sent and sets it to true when
+the client sent none (`src/ndif/services/api/auth.py` `validate_request`). The
+nnsight client sends none, so its requests run trusted: the traced block runs
+in-process in the model actor, and the flag becomes `trust_remote_code=` when a
+model loads. [Auth and Limits](../concepts/auth-and-limits.md) and
+[Enable auth](../runbooks/enable-auth.md) cover turning it on.
 
 ## The fail-open switches
 
-Several subsystems are off by default and turn on when you give them a URL. An
-empty value is never an error; it silently disables the feature.
+Telemetry is off until you give it a URL, and an empty value is never an error.
 
 | Empty value | Effect |
 |---|---|
-| `NDIF_LOKI_URL` | No log shipping. The console handler is always configured, so logs still reach stdout and `just logs` (`providers/loki.py:159-180`). The `logging_loki` package is never even imported. |
-| `NDIF_INFLUX_*` | Metrics are dropped. `NDIF_INFLUX_ENABLED=false` short-circuits `connect` outright (`providers/influx.py:112`); with it true but no reachable server or valid token, points are buffered and discarded by the background writer. Either way nothing blocks and nothing raises. |
-| `NDIF_POSTGRES_URL` | **Not a telemetry switch.** See below. |
+| `NDIF_LOKI_URL` | No log shipping; the console handler still writes to stdout (`LokiProvider.connect`). `logging_loki` is never imported. |
+| `NDIF_INFLUX_URL` | No metrics. `NDIF_INFLUX_ENABLED=false` short-circuits `InfluxProvider.connect` outright; with no reachable server, points are buffered and dropped by the background writer. Nothing blocks or raises. |
 
-Postgres is deliberately shaped the opposite way from the telemetry providers.
-If the URL is set but `asyncpg` isn't installed, `connect` raises loudly rather
-than quietly running without auth — "auth silently off" would be a security hole,
-whereas "no metrics" is harmless (`providers/postgres.py:12-17`).
-
-**What an empty `NDIF_POSTGRES_URL` really means.** It is not just "no API keys
-required". `verify_api_key` returns `None` when Postgres is unconfigured, and
-`validate_request` then defaults `request.trusted` to `True` when the request
-doesn't set it (`src/ndif/services/api/auth.py:180`). `trusted` is the fork that decides how
-user code executes: a trusted request's traced block runs **in-process inside the
-model actor, next to the weights**, with no runner subprocess; and the same flag
-becomes `trust_remote_code=` when the model loads
-(`cluster/cluster.py:183`, `:225`, `:296`). So an unauthenticated NDIF runs every caller's
-arbitrary Python in-process and loads models with remote code execution enabled.
-That is the trade the zero-config default makes. `docs/concepts/auth-and-limits.md`
-and `docs/runbooks/enable-auth.md` cover flipping it.
+Postgres is the opposite: with the URL set but `asyncpg` not installed,
+`PostgresProvider.connect` raises rather than running without auth — silent
+"auth off" would be a security hole, where silent "no metrics" is harmless.
 
 ## The client version gate
 
 The nnsight client stamps `nnsight-version` and `python-version` headers on every
 `POST /request`, and `src/ndif/services/api/versioning.py`
-`validate_client_versions` checks them before any other work.
+`validate_client_versions` checks them once the request has been authenticated.
 
 | Variable | Example | Unset or empty |
 |---|---|---|
@@ -171,9 +143,9 @@ outdated nnsight), an unparseable version, and a version below the floor. Python
 compares major.minor only. The exact messages are in
 [Error messages](../reference/error-messages.md#the-client-version-gate).
 
-- Both variables are read **once at import**, so a change needs a fresh API
-  process. After editing the compose `environment:` block, `just up api` recreates
-  the container; `just restart api` restarts the process with the old environment.
+- Both are read **once at import**. After editing the compose `environment:`
+  block, `just up api` recreates the container; `just restart api` restarts the
+  process with the old environment.
 - An **empty string counts as unset**: `NDIF_MIN_NNSIGHT_VERSION=""` disables the
   gate rather than rejecting everyone.
 - An nnsight run from a source tree with no installed distribution reports an
@@ -182,66 +154,41 @@ compares major.minor only. The exact messages are in
 
 ## Pip extras
 
-The package's core dependency set is deliberately small — nnsight, pydantic,
-redis, click, python-dotenv, pyyaml, boto3 (`pyproject.toml:23-36`). Everything
-else is an extra, so a machine that only runs one role installs only that role's
-dependencies.
+The core dependency set is small (nnsight, pydantic, redis, click, python-dotenv,
+pyyaml, boto3); each role's dependencies are an extra in `pyproject.toml`:
 
-| Extra | Pulls in | Unlocks |
-|---|---|---|
-| `api` (`pyproject.toml:39`) | fastapi, uvicorn, gunicorn, python-multipart | Running `ndif start api` — the HTTP surface and the queue dispatcher. |
-| `ray` (`:45`) | ray[default], transformers, accelerate, numpy, zstandard, peft | Running a Ray node and the model actors: loading checkpoints, decompressing request payloads (nnsight compresses by default), applying per-request PEFT adapters. |
-| `dashboard` (`:110`) | fastapi, uvicorn, pydantic-settings, itsdangerous, bcrypt, requests | `ndif start dashboard`. The reconcile cron additionally needs the `ray` extra; the monitor cron's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
-| `metrics` (`:91`) | influxdb-client, python-logging-loki | Telemetry shipping. Both providers fail open without it — services run console-only and metrics-free. |
-| `postgres` (`:100`) | asyncpg | API-key auth. Without it (or without the URL), the API runs unauthenticated. |
-| `dev` (`:119`) | ruff, httpx, pytest, pytest-asyncio | The live-server test suite under `tests/`. |
+| Extra | Unlocks |
+|---|---|
+| `api` | `ndif start api` — the HTTP surface and the queue dispatcher. |
+| `ray` | A Ray node and the model actors: transformers, accelerate, zstandard for compressed payloads, peft for per-request adapters. |
+| `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
+| `metrics` | Loki and InfluxDB shipping. Without it both providers fail open. |
+| `postgres` | API-key auth (`asyncpg`). |
+| `ext` | Packages a user's traced block may import (datasets, einops, pillow, ...). Not used by NDIF itself. |
+| `dev` | The test suite under `tests/`. |
 
-The docker image takes `[api,ray,metrics,postgres,dashboard]` in a single install
-so one image can play any role (`docker/Dockerfile:93`), plus the `ext` extra —
-the packages a user's block may import — installed from the same list
-(`Dockerfile:102-104`). It uses `--no-deps`
-because `requirements.txt` already pins every transitive dependency — the extras
-there only declare intent, so a source change reinstalls the package alone rather
-than re-resolving multiple GB of wheels.
+The image installs `[api,ray,metrics,postgres,dashboard]` with `--no-deps`,
+because `requirements.txt` already pins every transitive dependency, and then
+the `ext` list read back out of `pyproject.toml`. So one image can play any role.
 
 ## Checking what a process actually sees
 
 ```bash
 ndif info                # CLI config, tracked PIDs, endpoint reachability
 ndif doctor              # probes redis / minio / api / ray from the same vars
-ndif env                 # the cluster's python version + installed packages
+docker compose -f docker/docker-compose.yml exec ray ndif info     # inside compose
 ```
 
-`ndif info` prints the resolved value of `NDIF_REDIS_URL`,
-`NDIF_OBJECT_STORE_URL`, `NDIF_API_URL` and `NDIF_RAY_ADDRESS` alongside a
-reachability check for each (`cli/commands/info.py:13-19`) — the fastest way to
-find out that a variable you thought you set didn't reach the process. Inside
-compose, run it in the container whose config you're questioning:
-
-```bash
-docker compose -f docker/docker-compose.yml exec ray ndif info
-```
-
-## Gotchas
-
-- **Values are read at import, not per request.** Changing a variable requires
-  restarting the process — and for anything baked into the image, a `just ta`.
-- **A missing variable never falls back to another service's value.** It falls
-  back to that process's hardcoded default, which is almost always `localhost`.
-  Most cross-service breakage in this stack is a `localhost` default that nobody
-  overrode.
-- **`NDIF_SERVICE` does double duty**: it selects which service(s) `ndif start`
-  launches *and* becomes the `service` label on every log line and metric point.
-  The image defaults it to `all` (`Dockerfile:34`), which means the core stack —
-  redis, minio, ray, api — in one container; compose overrides it per container.
-- **The dashboard reads `NDIF_DASHBOARD_API_URL` first, then `NDIF_API_URL`**
-  (`dashboard/backend/config.py`), so setting only the shared variable is
-  enough.
+`ndif info` prints the resolved `NDIF_REDIS_URL`, `NDIF_OBJECT_STORE_URL`,
+`NDIF_API_URL` and `NDIF_RAY_ADDRESS` with a reachability check for each — the
+fastest way to find out a variable you set didn't reach the process.
+`NDIF_SERVICE` does double duty: it selects which service(s) `ndif start`
+launches *and* becomes the `service` label on every log line and metric point.
 
 ## Related
 
-- `docs/reference/env-vars.md` — every variable, its default, and the line that reads it.
-- `docs/operating/compose-stack.md` — the `environment:` blocks in context.
-- `docs/operating/production.md` — the minimum set to change before going live.
-- `docs/developing/providers.md` — how `CONFIG` specs and fail-open behavior are implemented.
-- `docs/runbooks/enable-auth.md` — turning `NDIF_POSTGRES_URL` on properly.
+- [Environment Variables](../reference/env-vars.md) — every variable, its default, and its reader.
+- [The Compose Stack](compose-stack.md) — the `environment:` blocks in context.
+- [Going to Production](production.md) — the minimum set to change before going live.
+- [Providers](../developing/providers.md) — how `CONFIG` specs and fail-open behavior are implemented.
+- [Enable auth](../runbooks/enable-auth.md) — turning `NDIF_POSTGRES_URL` on.

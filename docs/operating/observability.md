@@ -3,7 +3,7 @@ title: Observability
 one_liner: Running NDIF's telemetry side — Loki for logs, InfluxDB for NDIF's own metrics, Prometheus for Ray's, Grafana as the viewer, and what to look at for the four questions you actually ask.
 tags: [operating, telemetry, runbook, gotchas]
 related: [docs/developing/telemetry-internals.md, docs/operating/compose-stack.md, docs/operating/dashboard.md, docs/operating/troubleshooting.md, docs/operating/production.md, docs/developing/providers.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/runbooks/trace-a-users-failed-job.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [docker/docker-compose.yml, docker/prometheus/prometheus.yml, docker/grafana/provisioning/datasources/loki.yml, docker/grafana/provisioning/datasources/influx.yml, docker/grafana/provisioning/datasources/prometheus.yml, docker/grafana/provisioning/datasources/postgres.yml, docker/grafana/provisioning/dashboards/dashboards.yml, src/ndif/common/logging_setup.py, src/ndif/common/telemetry.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/ray/start.sh, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/dashboard/jobs/monitor.py, pyproject.toml]
+sources: [docker/docker-compose.yml, docker/prometheus/prometheus.yml, docker/grafana/provisioning/datasources/loki.yml, docker/grafana/provisioning/datasources/influx.yml, docker/grafana/provisioning/datasources/prometheus.yml, docker/grafana/provisioning/datasources/postgres.yml, docker/grafana/provisioning/dashboards/dashboards.yml, src/ndif/common/logging_setup.py, src/ndif/common/telemetry.py, src/ndif/common/metrics.py, src/ndif/common/schema/request.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/gunicorn_conf.py, pyproject.toml]
 ---
 
 # Observability
@@ -15,14 +15,15 @@ reach it, and which one answers which question. Two design constraints run
 through all of it:
 
 - **Everything is fail-open.** Loki or InfluxDB being down, unconfigured, or not
-  even installed must never break a request. Both providers degrade to
-  console-only and the stack keeps serving.
+  even installed never breaks a request. Both providers degrade to console-only
+  and the stack keeps serving.
 - **Nothing NDIF writes is Prometheus-shaped.** NDIF ships logs to Loki and
   metrics to InfluxDB. Prometheus exists solely to scrape *Ray's* own metrics.
   Grafana is where the three meet.
 
 The metric-by-metric field reference lives in
-`docs/developing/telemetry-internals.md`; this page is the operator's view.
+[Telemetry Internals](../developing/telemetry-internals.md); this page is the
+operator's view.
 
 ## The four surfaces
 
@@ -33,164 +34,141 @@ The metric-by-metric field reference lives in
 | **Prometheus** | Ray's cluster/node/actor metrics | scraped from `ray:8080/metrics` | `http://localhost:9090` |
 | **Grafana** | Nothing — it queries the other three (plus Postgres) | — | `http://localhost:3000` |
 
-Grafana is the one you open. It runs with anonymous admin auth in the dev stack
-(`GF_AUTH_ANONYMOUS_ENABLED`, `GF_AUTH_DISABLE_LOGIN_FORM`,
-`docker/docker-compose.yml:80-91`) and lands on the **NDIF — Overview** dashboard
-(`GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH`, `:85`). See
-`docs/reference/ports.md` for every port the stack binds.
+Grafana is the one you open. In the dev stack it runs with anonymous admin and
+the login form disabled (the `grafana` service's `GF_AUTH_*` settings) and lands
+on the **NDIF — Overview** dashboard.
 
-> **Gotcha:** none of loki, influxdb, prometheus, or grafana declares a volume in
-> `docker/docker-compose.yml` — only the dashboard does. `just down` destroys
-> every log, metric, and UI-edited panel. Add volumes before you rely on any of
-> it (`docs/operating/production.md`).
+None of loki, influxdb, prometheus or grafana has a volume in the compose file,
+so `just down` destroys every log, metric and UI-edited panel. Add volumes
+before you rely on any of it ([Going to Production](production.md)).
 
 ## Logs — Loki
 
-`LokiProvider.connect()` (`src/ndif/common/providers/loki.py:159`) attaches a
+`LokiProvider.connect` (`src/ndif/common/providers/loki.py`) attaches a
 `LokiQueueHandler` to the `ndif` logger when `NDIF_LOKI_URL` is set, and always
-installs the readable console handler regardless. Records are formatted as a
-single JSON object; a bounded queue and a background shipper thread mean `emit`
-never blocks the event loop.
+installs the readable console handler. Records are formatted as a single JSON
+object; a bounded queue and a background shipper thread mean `emit` never
+blocks the event loop.
 
 **Stream labels** (what you put in `{}` in LogQL) are deliberately few, because
 label cardinality is what kills Loki:
 
 | Label | Source | Values |
 |---|---|---|
-| `service` | `NDIF_SERVICE` env (default `unknown`) | `api`, `ray`, `dashboard`, **`model`** |
+| `service` | `NDIF_SERVICE` (default `unknown`) | `api`, `ray`, `dashboard`, **`model`** |
 | `environment` | `NDIF_ENVIRONMENT`, default `dev` | your choice |
 | `logger` | added by `logging_loki` | the `ndif.*` sub-logger |
 | `severity` | added by `logging_loki` | `info`, `warning`, `error`, … |
-| `model_key` | promoted per record by `_LabelFilter` (`loki.py:71`) | bounded by served models |
+| `model_key` | promoted per record by `_LabelFilter` | bounded by served models |
 
-> **Gotcha: there are four `service` values, but only three appear in any config
-> file.** `NDIF_SERVICE` does double duty — it selects which service `ndif start`
-> runs *and* labels that process's telemetry — so `api`, `ray` and `dashboard`
-> are visible in `docker/docker-compose.yml`. **`model` is not.** The controller
-> injects `"NDIF_SERVICE": "model"` into each model actor's Ray `runtime_env`
-> (`cluster/deployment.py:200-205`) precisely so a replica's logs and metrics
-> attribute to the model rather than to the controller that spawned it. A replica
-> is a separate process on the ray node, and its logs are **not** under
-> `{service="ray"}` — that label carries only the Ray node's own output
-> (`ndif.controller`, raylet). Chasing a request through execution means
-> `{service="model"}`, or dropping the label entirely.
+**Model-actor logs are under `service="model"`, not `service="ray"`.** The
+controller injects `NDIF_SERVICE=model` into each model actor's Ray
+`runtime_env`, so a replica's logs and metrics attribute to the model rather
+than to the controller that spawned it. `{service="ray"}` carries only the Ray
+node's own output (`ndif.controller`, raylet). Chasing a request through
+execution means `{service="model"}`, or dropping the label entirely.
 
-**Everything else is in the JSON line**, queryable with `| json` but not indexed:
-`message`, `host`, `pid`, `thread`, `func`, `file`, `line` (`logging_setup.py:49`),
-plus every `extra=` field, plus `exception_type` / `exception_message` /
-`stacktrace` when the record carries an exception (`:61`). `request_id` and
-`session_id` live here on purpose — they're unbounded.
-
-Logger names, all children of `ndif`:
+**Everything else is in the JSON line**, queryable with `| json` but not
+indexed: `message`, the `source_context` fields (`host`, `pid`, `thread`,
+`func`, `file`, `line`), every `extra=` field, and `exception_type` /
+`exception_message` / `stacktrace` when the record carries an exception
+(`src/ndif/common/logging_setup.py`). `request_id` and `session_id` live here on
+purpose — they're unbounded.
 
 | Logger | `service` | Emits |
 |---|---|---|
 | `ndif.api` | `api` | HTTP ingress: rejections with `status_code`/`path`, unhandled 500s |
-| `ndif.request` | `api` **and** `model` | The lifecycle event on every status change, with `stage`, `prev_stage`, `prev_stage_ms` — `respond()` is called from both sides |
+| `ndif.request` | `api` **and** `model` | The lifecycle event on every status change, with `stage`, `prev_stage`, `prev_stage_ms` |
 | `ndif.queue.dispatcher` | `api` | Redis/Ray connection state, status workers |
 | `ndif.queue.processor` | `api` | Enqueue, provisioning, autoscaling |
 | `ndif.queue.replica` | `api` | Dispatch to an actor, replica loss |
 | `ndif.controller` | `ray` | Node updates, placement decisions, evictions |
-| `ndif.modeling` | `model` | Model load, execution errors, timeouts, cancellations |
+| `ndif.modeling` | `model` | Model load, execution errors, timeouts, preemptions |
 | `ndif.dashboard.reconcile` | `dashboard` | The schedule reconcile cron |
-
-Useful LogQL:
 
 ```logql
 {service="api"} | json | stage=`received`          # ingress rate
 {severity="error"} | json                          # every error, all services
-{service="model"} | json | request_id=`<id>`       # one job on the model side
 {environment=~".+"} | json | request_id=`<id>`     # one job end to end
 {logger="ndif.controller"} |= "Evicting"           # eviction history
 {service="api"} | json | status_code >= 500        # server-side rejections
 {service="model"} | json | model_key=`<key>`       # one model's replicas
 ```
 
-When in doubt, filter on `logger` rather than `service` — `{logger="ndif.modeling"}`
-finds model-actor logs whatever the process is labelled, and `{environment=~".+"}`
-matches everything without committing to a service at all.
-
+When in doubt, filter on `logger` rather than `service`, and use
+`{environment=~".+"}` to match everything without committing to a service.
 Grafana's Loki datasource adds **derived fields**
-(`docker/grafana/provisioning/datasources/loki.yml:22`): `request_id`, `email`,
-and `host` in any log line render as links — `request_id` to every log for that
-request across all services, `email` to that user's dashboard, `host` to
-everything from that process.
+(`docker/grafana/provisioning/datasources/loki.yml`): `request_id`, `email` and
+`host` in any log line render as links to every log for that request, that
+user's dashboard, and that process.
 
 ## Metrics — InfluxDB
 
 `ndif.common.metrics` defines one class per measurement; each writes through
-`InfluxProvider.write` (`providers/influx.py:165`), which merges the process base
-tags (`service`, `environment`), stamps an explicit nanosecond timestamp, and
+`InfluxProvider.write` (`src/ndif/common/providers/influx.py`), which merges the
+process base tags (`service`, `environment`), stamps a nanosecond timestamp, and
 enqueues onto a batching writer that flushes from a background thread.
 
 | Measurement | Records | Key fields |
 |---|---|---|
 | `request_size` | Incoming payload size at ingress | `payload_bytes`, `ip_address`, `user_agent` |
 | `response_size` | Result blob staged in the object store | `response_bytes`, `compressed` |
-| `execution_time` | Time on the model actor, split by phase | `deserialize_ms`, `exec_ms`, `upload_ms` |
+| `execution_time` | Time on the model actor, split by phase, tagged with the outcome | `deserialize_ms`, `exec_ms`, `upload_ms` |
 | `status_time` | Time spent in each lifecycle status | `duration_ms`, tagged by the status it *left* |
 | `gpu_mem` | Extra GPU a request drove past the resident weights | `baseline_bytes`, `peak_bytes`, `extra_bytes` |
 | `model_load_time` | Weights onto GPU | `duration_ms`, `num_gpus`, tagged `load_type` |
 
-The tag/field split is the load-bearing convention: **tags** are `service`,
-`environment`, `model_key`, `api_key`, `email`, and small enumerations
-(`status`, `load_type`, `gpu_index`) — group by these. **Fields** carry the
-values plus unbounded context (`request_id`, `session_id`, `replica_id`,
-`ip_address`) — retrievable per point, never a group-by dimension. Field types
-are fixed per name because InfluxDB rejects a type conflict on an existing
-series. Full per-metric detail is in `docs/developing/telemetry-internals.md`.
+**Tags** are `service`, `environment`, `model_key`, `api_key`, `email`, and small
+enumerations (`status`, `load_type`, `gpu_index`) — group by these. **Fields**
+carry the values plus unbounded context (`request_id`, `session_id`,
+`replica_id`, `ip_address`) — retrievable per point, never a group-by dimension.
+Field types are fixed per name, because InfluxDB rejects a type conflict on an
+existing series.
 
-`status_time` is the one people miss. Every status transition emits a point for
-the phase just *left* (`common/schema/request.py:112`), so a request walking
-`SENT → received → queued → dispatched → running → completed` produces one point
-per hop and end-to-end latency is attributable without extra instrumentation.
+**`status_time`** is the one people miss. Every status transition emits a point
+for the phase just *left* (`src/ndif/common/schema/request.py`
+`BackendRequestModel._advance_status`), so end-to-end latency is attributable
+hop by hop without extra instrumentation.
+
+**`execution_time`'s `status` tag** is one of `completed`, `error`, `timeout`,
+`cancelled` or `preempted` (`BaseModelDeployment.report` in
+`src/ndif/services/ray/deployments/modeling/base.py`). `preempted` means the
+replica was parked mid-run and the request went back on the queue, so that
+request has a second point for its re-run. A request stopped with `ndif kill` is
+not marked here: the kill stops the dispatch, the actor finishes the block, and
+the point carries the block's own outcome. Count user-visible failures from
+the `ndif.request` lifecycle events (`stage` = `error`), not from this tag.
 
 ## Ray metrics — Prometheus
 
 Ray's per-node metrics agent exports Prometheus format on the
-**`--metrics-export-port`**, which `start.sh` sets from `NDIF_RAY_METRICS_PORT`
-(default `8080`):
-
-```bash
-ray start --head \
-    ...
-    --metrics-export-port="${NDIF_RAY_METRICS_PORT:-8080}" \
-```
-
-(`src/ndif/services/ray/start.sh:66`.) That is exactly the target Prometheus
-scrapes — `targets: ["ray:8080"]` at a 10s interval
-(`docker/prometheus/prometheus.yml:20`), reached by service name on the compose
-network, not published to the host. NDIF does not use Ray Serve anywhere.
-
-Retention is `--storage.tsdb.retention.time=15d`
-(`docker/docker-compose.yml:61-64`). Prometheus has no `depends_on: ray` and simply
-retries until the (slow, GPU-bound) ray container is up.
+`--metrics-export-port`, which `src/ndif/services/ray/start.sh` sets from
+`NDIF_RAY_METRICS_PORT` (default `8080`). That is the one target Prometheus
+scrapes — `ray:8080` at a 10s interval (`docker/prometheus/prometheus.yml`),
+reached by service name on the compose network, not published to the host.
+Retention is the compose flag `--storage.tsdb.retention.time=15d`.
 
 Useful series: `ray_node_cpu_utilization`, `ray_node_gpus_utilization`,
 `ray_node_mem_used`, `ray_actors` (by state), `ray_tasks` (by state),
 `ray_object_store_memory`. The **NDIF — Ray Cluster** dashboard charts all of
-these.
-
-> For a real multi-node cluster, replace `static_configs` with `file_sd_configs`
-> pointing at Ray's `<temp_dir>/prom_metrics_service_discovery.json`, which Ray
-> rewrites as nodes join and leave (`docker/prometheus/prometheus.yml:8`).
+them. For a multi-node cluster, replace `static_configs` with `file_sd_configs`
+pointing at Ray's `<temp_dir>/prom_metrics_service_discovery.json`, which Ray
+rewrites as nodes join and leave.
 
 ## Grafana — the viewer
 
-Four datasources are provisioned from
-`docker/grafana/provisioning/datasources/`: **Loki** (default), **InfluxDB**
-(Flux, org `ndif`, bucket `metrics`), **Prometheus**, and **Postgres** — the last
-so dashboards can resolve an `api_key` to a user email against the same
-read-only `ndifapi` account the API uses.
-
-Nine dashboards are provisioned into an **NDIF** folder
-(`dashboards/dashboards.yml`), rescanned every 30s:
+Four datasources are provisioned from `docker/grafana/provisioning/datasources/`:
+**Loki** (default), **InfluxDB** (Flux, org `ndif`, bucket `metrics`),
+**Prometheus**, and **Postgres** — the last so dashboards can resolve an
+`api_key` to a user email through the same read-only `ndifapi` account the API
+uses. Nine dashboards are provisioned into an **NDIF** folder, rescanned every
+30s:
 
 | Dashboard | Source | Use it for |
 |---|---|---|
 | **NDIF — Overview** (home) | Loki + Influx + Prom | Request rate, error rate, exec p95, active users, Ray CPU/GPU |
 | NDIF — Requests & Throughput | Loki | Rate by model, lifecycle stage rates, queue depth, top users |
-| NDIF — Errors & Health | Loki | Error/warning counts, errors by type and by user, API rejections by status code, recent error logs |
+| NDIF — Errors & Health | Loki | Errors by type and by user, API rejections by status code, recent error logs |
 | NDIF — Latency & Performance | Influx | Exec p50/p95, deserialize/exec/upload split, outcomes by status |
 | NDIF — Latency Distributions | Influx | Heatmaps and histograms of total/queued/exec time |
 | NDIF — GPU & Model Load | Influx | Extra GPU bytes per request by model and device, load p95 |
@@ -201,32 +179,31 @@ Nine dashboards are provisioned into an **NDIF** folder
 ## What to look at
 
 **Is the cluster healthy?** Overview → *Ray CPU / GPU utilization* and *Error
-rate*, then Ray Cluster → *Nodes* and *Actors by state*. A node that vanished
-shows up there before anywhere else. Cross-check `ndif status` for what the
-controller *thinks* it has — the controller's placement bookkeeping is
-independent of Ray's own accounting, and a disagreement is the interesting
-signal.
+rate*, then Ray Cluster → *Nodes* and *Actors by state*. Cross-check
+`ndif status` for what the controller *thinks* it has — its placement
+bookkeeping is independent of Ray's own accounting, and a disagreement is the
+interesting signal. For whether a trace works end to end on an idle cluster, the
+dashboard's monitor cron is the source ([Admin Dashboard](dashboard.md#the-monitor)).
 
 **Why is this request slow?** Latency & Performance → *Lifecycle phases* tells
 you which phase. `status_time` tagged `queued` means it waited for a replica
 (check queue depth on Requests & Throughput); `status_time` tagged `running`, or
 `execution_time.exec_ms`, means the user's code is slow. A large
-`deserialize_ms` means a big serialized block; a large `upload_ms` means a big
-result blob (see Sizes & Throughput).
+`deserialize_ms` means a big serialized block; a large `upload_ms`, a big result
+blob.
 
 **Which model is eating GPU?** GPU & Model Load → *GPU extra bytes p95 by model*
-for per-request footprint, and `ndif status` for resident weights. These measure
-different things: `gpu_mem.extra_bytes` is the activation/KV footprint a single
-request drove *on top of* the weights, not the weights themselves.
+for per-request footprint, and `ndif status` for resident weights.
+`gpu_mem.extra_bytes` is the activation/KV footprint a single request drove *on
+top of* the weights, not the weights themselves.
 
-**Did this user's job fail?** Errors & Health → *Errors by user*, or go straight
-to Loki with the cross-service request query above: it returns the API's ingress
-record, every lifecycle transition, and the model actor's traceback in one
-stream. If you only have an email, the Users & Usage dashboard
-(`/d/ndif-users/?var-email=...`) narrows it down first. See
-`docs/runbooks/trace-a-users-failed-job.md`.
+**Did this user's job fail?** Errors & Health → *Errors by user*, or Loki with
+the end-to-end request query above: it returns the API's ingress record, every
+lifecycle transition, and the model actor's traceback in one stream. If you only
+have an email, the Users & Usage dashboard narrows it down first. See
+[Trace a user's failed job](../runbooks/trace-a-users-failed-job.md).
 
-## Configuration
+## Configuration and fail-open
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -234,69 +211,43 @@ stream. If you only have an email, the Users & Usage dashboard
 | `NDIF_LOKI_LEVEL` | `INFO` | Minimum level shipped (console keeps its own) |
 | `NDIF_LOKI_QUEUE_MAX` | `10000` | In-memory queue bound; records drop when full |
 | `NDIF_LOG_LEVEL` | `INFO` | Console handler level |
-| `NDIF_INFLUX_URL` | `""` (metrics off) | InfluxDB 2.x endpoint; set it to turn metrics on |
+| `NDIF_INFLUX_URL` | *(empty)* | **Empty disables metrics**; set it to an InfluxDB 2.x endpoint |
 | `NDIF_INFLUX_TOKEN` / `_ORG` / `_BUCKET` | *(empty)* / `ndif` / `metrics` | Auth and destination |
 | `NDIF_INFLUX_ENABLED` | `true` | Hard off switch |
-| `NDIF_INFLUX_BATCH_SIZE` | `500` | Flush at N points… |
-| `NDIF_INFLUX_FLUSH_INTERVAL_MS` | `1000` | …or after this long |
-| `NDIF_INFLUX_TIMEOUT_MS` | `10000` | Per-write HTTP timeout |
-| `NDIF_SERVICE` | `unknown` for the providers (`loki.py:142`, `influx.py:74`); `all` in the image | Label/tag on everything this process emits, **and** which service(s) `ndif start` runs |
-| `NDIF_ENVIRONMENT` | `dev` | Label/tag distinguishing prod / staging / dev |
+| `NDIF_INFLUX_BATCH_SIZE` / `_FLUSH_INTERVAL_MS` / `_TIMEOUT_MS` | `500` / `1000` / `10000` | Flush at N points or after this long; per-write HTTP timeout |
+| `NDIF_SERVICE` | `unknown` for the providers; `all` in the image | Label on everything this process emits, **and** which service(s) `ndif start` runs |
+| `NDIF_ENVIRONMENT` | `dev` | Label distinguishing prod / staging / dev |
 
-Full table in `docs/reference/env-vars.md`. Retention: Prometheus 15d (compose
-flag); Loki and InfluxDB run their images' defaults with no retention policy set
-here, and no volumes, so their real "retention" is the container's lifetime.
+Both providers are optional in three independent ways, and in every case the
+console handler is still installed, so `docker compose logs api` never goes
+quiet:
 
-## Fail-open
+1. **Not installed.** `influxdb-client` and `python-logging-loki` are the
+   `metrics` extra. Without it `InfluxProvider` never constructs a client, and
+   `LokiProvider` catches the `ImportError` and warns once.
+2. **Not configured.** An empty `NDIF_LOKI_URL` or `NDIF_INFLUX_URL` (or
+   `NDIF_INFLUX_ENABLED=false`) short-circuits `connect`.
+3. **Down.** The Loki handler drops on a full queue rather than raising, with its
+   per-record error output silenced. Influx writes with no retries and logs a
+   failed batch at DEBUG.
 
-Both telemetry providers are optional in three independent ways:
+Both providers own a background thread, and threads don't survive `fork()`. The
+gunicorn master avoids importing them until after it forks; each worker connects
+in `post_fork` (`src/ndif/services/api/gunicorn_conf.py` `post_fork`). Ray actors
+are separate processes, so the controller and every model actor connect in their
+own `__init__`. A new entry point must connect *after* forking.
 
-1. **Not installed.** `influxdb-client` and `python-logging-loki` are in the
-   `metrics` extra (`pyproject.toml:62`), not the core deps. Without it,
-   `InfluxProvider` never constructs a client (`_HAS_CLIENT = False`,
-   `influx.py:55`) and `LokiProvider` catches the `ImportError` and warns once
-   (`loki.py:185`). Every write is a no-op.
-2. **Not configured.** An empty `NDIF_LOKI_URL` short-circuits before
-   `logging_loki` is even imported (`loki.py:179`); `NDIF_INFLUX_ENABLED=false`
-   does the same for metrics.
-3. **Down.** The Loki handler drops on a full queue rather than raising, and its
-   inner `handleError` is silenced so an outage doesn't flood stderr with one
-   traceback per record (`loki.py:122`). Influx writes with `max_retries=0` and
-   logs a failed batch at DEBUG (`influx.py:131`).
-
-In all three cases the readable console handler is still installed — structured
-output on stdout is worth having on its own, so `docker compose logs api` never
-goes quiet.
-
-> **Gotcha:** both providers own a background thread, and threads don't survive
-> `fork()`. The gunicorn master avoids importing them until after it forks; each
-> worker connects in `post_fork` (`api/gunicorn_conf.py:35`). Ray actors are
-> separate processes, so the controller and every model actor call
-> `LokiProvider.connect()` / `InfluxProvider.connect()` in their own `__init__`.
-> If you add a new entry point, connect *after* forking.
-
-## The fifth source: the dashboard monitor cron
-
-The admin dashboard runs a monitor cron (default `*/10 * * * *`) that is
-NDIF-specific uptime data no Grafana panel produces: it probes `/connected` and
-`/status`, and every `--model-interval` seconds (default 2h) runs a real remote
-nnsight trace against every HOT model
-(`src/ndif/services/dashboard/jobs/monitor.py`). Results land in rotating
-`connected_*.log` / `cluster_*.log` / `models_*.log` files under the dashboard's
-data dir and drive its uptime charts; down/up transitions and newly-failing model
-sets fire Discord notifications.
-
-The distinction that matters: Grafana tells you what *happened to traffic*; the
-monitor tells you whether an *end-to-end trace still works* on a cluster with no
-traffic at all. See `docs/operating/dashboard.md`.
+Loki and InfluxDB run their images' default retention, and with no volumes their
+real retention is the container's lifetime.
 
 ## Related
 
-`docs/developing/telemetry-internals.md` is the per-metric and per-field
-reference and the code behind `event()`; `docs/developing/providers.md` covers
-the provider pattern these two sinks share. For where each container gets its
-telemetry env, `docs/operating/compose-stack.md`; for the variables themselves,
-`docs/reference/env-vars.md`; for the ports, `docs/reference/ports.md`.
-`docs/operating/dashboard.md` covers the monitor and reconcile crons, and
-`docs/runbooks/trace-a-users-failed-job.md` and
-`docs/runbooks/debug-a-stuck-request.md` put this page to work.
+[Telemetry Internals](../developing/telemetry-internals.md) is the per-metric and
+per-field reference; [Providers](../developing/providers.md) covers the pattern
+these two sinks share. For where each container gets its telemetry env,
+[The Compose Stack](compose-stack.md); for every variable,
+[Environment Variables](../reference/env-vars.md).
+[Admin Dashboard](dashboard.md) covers the monitor, reconcile and report crons,
+and [Trace a user's failed job](../runbooks/trace-a-users-failed-job.md) and
+[Debug a stuck request](../runbooks/debug-a-stuck-request.md) put this page to
+work.

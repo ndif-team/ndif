@@ -1,9 +1,9 @@
 ---
 title: Troubleshooting
-one_liner: Operator triage — the four commands to run first, then a symptom → diagnosis → fix table for the whole stack rather than one request.
+one_liner: The single "something broke" entry point — a route table to the runbooks and error lookup, the first commands to run, and a symptom → diagnosis → fix table for the stack as a whole.
 tags: [operating, runbook, gotchas, api, ray, redis, dashboard, telemetry]
 related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/observability.md, docs/operating/production.md, docs/concepts/services-and-topology.md, docs/reference/error-messages.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/add-a-gpu-node.md, docs/reference/ports.md, docs/reference/env-vars.md]
-sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
+sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
 ---
 
 # Troubleshooting
@@ -21,129 +21,105 @@ The single entry point for "something broke". Find the row, follow it.
 | A new GPU node that doesn't show up | [Add a GPU node](../runbooks/add-a-gpu-node.md) |
 | The stack itself: a service down, everything hanging, no UI, no telemetry | the rest of this page |
 
-## The first four commands
+## The first commands
 
 ```bash
 just ps                # container status + health, for the whole compose stack
 just logs api          # follow one service (api | ray | dashboard | redis | minio | ...)
-ndif status            # what the controller thinks is deployed, and on which GPUs
-ndif doctor            # local prerequisites: python, binaries, GPU, reachability
-```
-
-`just ps` and `just logs` are thin wrappers over
-`docker compose -f docker/docker-compose.yml` (`justfile:14`); `just logs` follows
-until Ctrl-C, which detaches without stopping anything. `ndif status` and
-`ndif queue` talk to the cluster, not to docker — from the host they use
-`NDIF_RAY_ADDRESS` (`ray://localhost:10001`) and `NDIF_REDIS_URL`
-(`redis://localhost:6379`), both published by compose, or run them inside a
-container with `docker compose exec api ndif status`.
-
-Two caveats on `ndif doctor`: its Binaries section checks for `ray`,
-`redis-server` and `minio` **on this host's PATH**, which you don't have if you
-only ever run compose, and it treats a missing `nvidia-smi` as a hard failure
-even though the non-GPU half of the stack runs fine without one. Connectivity is
-informational and never sets the exit code (`_report_connectivity`,
-`cli/commands/doctor.py:92-104`). Its Environment section now also reports torch
-(with its CUDA build), transformers and ray, which are informational rather than
-failures (`doctor.py:44-52`). Reach for it when a *host* install misbehaves; reach
-for `just ps` when compose does. `ndif version` (or
-`docker run --rm ndif/ndif version`) answers the narrower "what is installed"
-question on its own.
-
-A third caveat: doctor's `minio not on PATH` hint says "install the MinIO server
-binary", and there is no longer a binary to download — see
-[The ndif CLI](cli.md#ndif-doctor) for the two realistic ways to get one.
-
-Two more worth having in the muscle memory:
-
-```bash
+docker compose -f docker/docker-compose.yml exec ray ndif status   # what the controller thinks is deployed
 curl -s localhost:8001/ping        # "pong" — the API process is alive, no dependencies
-curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher reconnecting
+curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher not connected
 ```
+
+`just logs` follows until Ctrl-C, which detaches without stopping anything.
+`ndif status` and `ndif queue` talk to the cluster, not to docker: run them
+inside a container as above, or from the host against `NDIF_RAY_ADDRESS`
+(`ray://localhost:10001`) and `NDIF_REDIS_URL` with the same Python and Ray
+versions as the cluster.
+
+`ndif doctor` checks the *host*: Python, the `ray`, `redis-server` and `minio`
+binaries on this PATH, a GPU visible to both `nvidia-smi` and torch, and
+reachability. Its Binaries section fails by design on a machine that only runs
+compose, and a missing `nvidia-smi` is a hard failure. torch, transformers and
+ray versions and the Connectivity section are informational and never set the
+exit code. Reach for it when a *host* install misbehaves, and for `just ps` when
+compose does; [The ndif CLI](cli.md#ndif-doctor) covers getting a `minio`
+binary. `ndif version` (or `docker run --rm ndif/ndif version`) answers the
+narrower "what is installed".
 
 ## Symptom → diagnosis → fix
 
 | Symptom | Likely cause | Confirm | Fix |
 |---|---|---|---|
 | `just up` returns but a container is `Restarting` | Crash at startup | `just logs <svc>` | See [service won't start](#a-service-wont-start) |
-| `api` never starts, no logs | It waits on `postgres` and `influxdb` health checks | `just ps` — are those two `healthy`? | Fix or remove the `depends_on` entry |
+| `api` never starts, no logs | It waits on `redis`, `minio`, `postgres` and `influxdb` health checks | `just ps` — are they `healthy`? | Fix the unhealthy one, or remove its `depends_on` entry |
 | `ray` container fails to create | No NVIDIA container toolkit on the host | `docker info \| grep -i nvidia` | Install the toolkit; see [no GPU](#the-ray-container-has-no-gpu) |
 | `ndif status` shows 0 nodes, deploys fail `No GPU nodes available.` | Ray started without a `GPU` resource | `just logs ray` — the `Starting Ray head node with resources:` line | [no GPU](#the-ray-container-has-no-gpu) |
 | `/ping` 200 but every request hangs | The dispatcher died; `ray:connected` has no TTL | `redis-cli llen queue` is growing | [ping works, requests hang](#ping-works-but-requests-hang) |
-| `/request` 503 "compute backend is reconnecting" | `ray:connected` is absent — dispatcher looping in `connect()` | `redis-cli get ray:connected` | `just logs api`; check the ray container |
-| Dashboard loads JSON, not a UI | `frontend/dist/` was never built | `GET localhost:8081/` returns a `hint` field | [dashboard has no UI](#the-dashboard-has-no-ui) |
+| `/request` 503 "compute backend is reconnecting" | `ray:connected` is absent — the dispatcher is reconnecting to Ray | `redis-cli get ray:connected` | `just logs api`; check the ray container |
+| Dashboard loads JSON, not a UI | No built frontend where it looks | `GET localhost:8081/` returns a `hint` field | [dashboard has no UI](#the-dashboard-has-no-ui) |
 | Jobs `COMPLETED`, clients can't download | Presigned URL signed with an unreachable host | `curl` the URL from the client machine | [presigned URLs](#presigned-urls-are-unreachable-from-the-client) |
-| Model actors can't publish responses | `NDIF_REDIS_URL` unset inside the ray container | `just logs ray` — connection refused on localhost:6379 | [No Redis on localhost](#no-redis-on-localhost-inside-the-ray-container) |
-| Ray head won't start, port in use | `NDIF_RAY_HEAD_PORT` collides with Redis | `ss -ltnp \| grep 6379` | Set `NDIF_RAY_HEAD_PORT=6385` explicitly |
+| Requests run but never report a status | `NDIF_REDIS_URL` unset inside the ray container | `just logs ray` — connection refused on localhost:6379 | [Service names, not localhost](compose-stack.md#service-names-not-localhost) |
+| Ray head won't start, port in use | `NDIF_RAY_HEAD_PORT` set to Redis's 6379 | `ss -ltnp \| grep 6379` | Leave it at the default 6385 |
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
 | `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
-| `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status` per-GPU `available_memory_bytes` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
-| `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are `trusted=False` unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>` (`cli/commands/deploy.py:23`), or the dashboard, which deploys trusted |
-| `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision is part of the key), or the replica is only WARM | `ndif status --show-cold` | Name the exact revision, or `--all` |
+| `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status --verbose` per-GPU free memory | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
+| `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are untrusted unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) |
+| `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision and task are part of the key), or the replica is only WARM | `ndif status --json-output` for the exact key | Pass the deployment's `--revision` / `--task` |
 | `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not | `curl localhost:8001/ping` | Restart `api` |
-| `ndif start` printed ✓ but `/connected` never leaves `reconnecting` | The service died right after spawning (a ✓ now waits 2 s, but a slower death still gets one) | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
-| `ndif stop` said stopped but `gcs_server` / `raylet` are still running | An older `ndif stop` only killed the `start.sh` process group; `ray start` daemonises | `ps -ef \| grep gcs_server` | `ndif stop` now runs `ray stop --force` for the ray service; on older installs run it yourself |
-| Code changes have no effect | The source is baked into the image; there is no bind mount | — | `just ta` (down → build → up) |
-| `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth — grpc fork handlers skipped while its threads were busy | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` right before `SpecificServer startup failed` | `ray/start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it. Retry: the API's dispatcher loops, so it only slows boot |
+| `ndif start` printed ✓ but `/connected` never leaves 503 | A service died after its 2-second startup check | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
+| Code changes have no effect | The source is baked into the image | — | `just ta` (down → build → up) |
+| `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth (grpc fork handlers skipped) | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` before `SpecificServer startup failed` | `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it |
 
 ## A service won't start
 
-Every NDIF container is the **same image** with a different `NDIF_SERVICE`, whose
-default command is `ndif start --foreground` (`docker/Dockerfile:141-142`). So a startup
-crash is almost always in that service's `start.sh` or its first import.
+Every NDIF container is the **same image** with a different `NDIF_SERVICE`,
+whose default command is `ndif start --foreground`. So a startup crash is almost
+always in that service's `start.sh` or its first import.
 
 ```bash
 just ps                      # STATUS column: Restarting / Exited (1)
-just logs api                # or ray / dashboard
-docker compose -f docker/docker-compose.yml logs --tail=50 api
+docker compose -f docker/docker-compose.yml logs --tail=50 api   # or ray / dashboard
 ```
 
 | What the log shows | Cause |
 |---|---|
 | Nothing at all, container never runs | A `depends_on: service_healthy` gate. `api` waits on `postgres` **and** `influxdb` even though it can run without either |
-| `ERROR: Cannot write to Ray temp directory` | `NDIF_RAY_TEMP_DIR` isn't writable (`services/ray/start.sh:22`) |
+| `ERROR: Cannot write to Ray temp directory` | `NDIF_RAY_TEMP_DIR` isn't writable |
 | `Waiting for Ray head at ...` forever, then `not reachable after N attempts` | A worker node with `NDIF_RAY_HEAD_ADDRESS` set can't reach the head. Check the port — see [Add a GPU node](../runbooks/add-a-gpu-node.md) |
-| A Python `ImportError` for an extra | The image installs `[api,ray,metrics,postgres,dashboard]` with `--no-deps`; a new dependency needs a `requirements.txt` entry |
-| `queue/config.py` raising at import | A non-integer or non-positive `NDIF_QUEUE_*` / `NDIF_AUTOSCALING_*` value. Deliberate: a typo fails the process rather than silently defaulting |
+| A Python `ImportError` for an extra | The image installs its extras with `--no-deps`; a new dependency needs a `requirements.txt` entry |
+| `queue/config.py` raising at import | A non-integer or non-positive `NDIF_QUEUE_*` / `NDIF_AUTOSCALING_*` value. A typo fails the process rather than silently defaulting |
 
-Remember the compose project is named `dev` (`docker-compose.yml:14`), so the
-containers are `dev-api-1`, `dev-ray-1`, `dev-dashboard-1` if you reach past
-`just` for `docker logs` or `docker exec`.
+The compose project is named `dev`, so the containers are `dev-api-1`,
+`dev-ray-1`, `dev-dashboard-1` if you reach past `just`.
 
 ## The ray container has no GPU
 
-`services/ray/start.sh` shells out to `python -m ndif.services.ray.resources
---head`, which reports `cuda_memory_bytes` from `torch.cuda` and passes it as a
-custom Ray resource. With no visible GPU that number is 0 and Ray advertises no
-`GPU` resource at all — and `Cluster.update_nodes` **skips every node without
-one** (`cluster/cluster.py:106`). The cluster then has zero nodes, and every
-deploy fails with:
-
-```
-No GPU nodes available.
-```
-
-(`cluster/cluster.py:247`). This is a different failure from `CANT_ACCOMMODATE`,
-which means nodes exist but none has room.
-
-Check, in order:
+`src/ndif/services/ray/start.sh` runs `python -m ndif.services.ray.resources
+--head`, which reports `cuda_memory_bytes` from `torch.cuda` as a custom Ray
+resource. With no visible GPU, Ray advertises no `GPU` resource at all, and
+`Cluster.update_nodes` skips every node without one
+(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`). The cluster
+then has zero nodes, and every deploy fails with `No GPU nodes available.` — a
+different failure from `CANT_ACCOMMODATE`, which means nodes exist but none has
+room.
 
 ```bash
 nvidia-smi                                             # on the host
 docker compose -f docker/docker-compose.yml exec ray nvidia-smi
-just logs ray | head -20                               # the "resources:" line
-ndif status                                            # Nodes: N | Total GPUs: N
+docker compose -f docker/docker-compose.yml logs ray | grep "resources:"
 ```
 
-The compose file reserves GPUs with a `deploy.resources.reservations.devices`
-block (`docker-compose.yml:281`-`287`) — the compose equivalent of
-`docker run --gpus all` — which requires the **NVIDIA container toolkit** on the
-host. Without it the container fails to create outright. Only `ray` gets GPUs;
-nothing else in the stack needs one.
+The `ray` service reserves GPUs with a `deploy.resources.reservations.devices`
+block — the compose equivalent of `docker run --gpus all` — which requires the
+**NVIDIA container toolkit** on the host. Without it the container fails to
+create outright. `nvidia-smi` working inside the container but
+`cuda_memory_bytes: 0` means torch can't use the driver: a torch wheel built for
+a newer CUDA line than the driver supports, which `ndif doctor` names.
 
-> **Gotcha:** `shm_size: "4gb"` (`docker-compose.yml:280`) is not optional either.
-> Ray's plasma store lives in `/dev/shm` and Docker's default is 64 MB, which
-> makes Ray spill to disk or fail outright.
+`shm_size: "4gb"` on the `ray` service is not optional either: Ray's plasma
+store lives in `/dev/shm`, and Docker's 64 MB default makes Ray spill to disk or
+fail outright.
 
 ## `/ping` works but requests hang
 
@@ -157,33 +133,30 @@ process dies outright the flag survives, and every health signal keeps passing:
 | `GET /ping` | No dependencies at all — a live gunicorn worker is enough |
 | `GET /connected` | Reads `ray:connected` |
 | `POST /request` | Same flag; the request is accepted and `LPUSH`ed, then never popped |
-| `GET /status`, `GET /env` | Serve the last cached blob until its TTL (60 s / 300 s) expires; only then do they 503/504 |
+| `GET /status`, `GET /env` | Serve the last cached blob until its TTL (`NDIF_STATUS_TTL_S` 60 s / `NDIF_ENV_TTL_S` 300 s) expires; only then do they fail |
 
 Requests pile up in the Redis list unserved and clients sit on `RECEIVED`. A
-check that actually detects a dead dispatcher observes the *queue*:
+check that detects a dead dispatcher observes the *queue*:
 
 ```bash
-redis-cli get ray:connected      # "1" — but that proves nothing on its own
-redis-cli llen queue             # should be 0 or a small transient number
-ndif queue                       # asks the dispatcher directly; 5s timeout
+docker compose -f docker/docker-compose.yml exec redis redis-cli llen queue   # 0 or small
+docker compose -f docker/docker-compose.yml exec api ndif queue               # 5 s timeout
 ```
 
-A growing `llen queue` plus `No response from the dispatcher` from `ndif queue`
-is the signature: the flag says connected, the process is gone. The dispatcher
-runs as a child of the API's gunicorn master
-(`src/ndif/services/api/gunicorn_conf.py` `on_starting`), so restarting the API
-brings it back:
+A growing `llen queue` plus `No response from the dispatcher` is the signature:
+the flag says connected, the process is gone. The dispatcher is spawned by the
+API's gunicorn master (`src/ndif/services/api/gunicorn_conf.py` `on_starting`),
+so restarting the API brings it back:
 
 ```bash
 just restart api
 ```
 
-> **Gotcha:** that restart **drops every queued and in-flight request.** Redis's
-> `queue` list is the only durable point in the path; the moment the dispatcher
-> pops a request it exists only as a Python object in that process. Clients on a
-> blocking websocket get no further status at all, not even an `ERROR`. Only
-> requests still sitting in the Redis list survive. See
-> [Queue internals](../developing/queue-internals.md).
+That restart **drops every in-flight request.** Redis's `queue` list is the only
+durable point in the path; once the dispatcher pops a request it exists only in
+that process's memory. Clients on a blocking websocket get no further status,
+not even an `ERROR`. Only requests still in the Redis list survive. See
+[Queue Internals](../developing/queue-internals.md).
 
 If the dispatcher is alive but the queue still isn't draining, the request is
 stuck further down the path — go to
@@ -199,29 +172,22 @@ stuck further down the path — go to
  "frontend_dist": "..."}
 ```
 
-The backend mounts the built Vue app only if `frontend_dist` exists and contains
-`index.html` (`dashboard/backend/app.py:57`); otherwise it registers that hint
-route. The build is **committed** — `.gitignore:14-15` re-includes
-`src/ndif/services/dashboard/frontend/dist/` and `pyproject.toml` packages it —
+The backend's `create_app` (`src/ndif/services/dashboard/backend/app.py`)
+serves the built Vue app only if `frontend_dist` contains an `index.html`;
+otherwise it registers that hint route. The build is **committed** and packaged,
 so a fresh clone, the image and a `pip install` all carry it. Seeing the hint
-therefore means one of: `NDIF_DASHBOARD_FRONTEND_DIST` points somewhere else, a
-checkout where `dist/` was deleted, or an `npm run build` that failed halfway.
-Rebuild it with
+means `NDIF_DASHBOARD_FRONTEND_DIST` points somewhere else, `dist/` was deleted
+from the checkout, or an `npm run build` failed halfway. Rebuild it:
 
 ```bash
 cd src/ndif/services/dashboard/frontend
-npm install && npm run build       # writes dist/
-cd - && just ta dashboard          # rebuild the image so dist/ is copied in
+npm ci && npm run build            # writes dist/
+cd - && just ta dashboard          # rebuild the image so dist/ is copied in; then `just up`
 ```
 
-For iterating on the UI, `npm run dev` runs Vite and proxies `/api` to the
-backend, so you don't rebuild the image at all.
-
-Two neighbouring dashboard symptoms:
-
-| Symptom | Cause |
+| Neighbouring symptom | Cause |
 |---|---|
-| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` (`docker-compose.yml`) makes `require_auth` return the configured username unchecked |
+| The UI opens with no login prompt | `NDIF_DASHBOARD_DEV_MODE: "true"` on the compose `dashboard` service — see [Admin Dashboard](dashboard.md#auth) |
 | The reconcile/monitor crons never run | `start.sh` wires cron only when `cron` is on PATH and `/etc/cron.d` is writable — true in the container, false outside it |
 
 ## Presigned URLs are unreachable from the client
@@ -229,47 +195,37 @@ Two neighbouring dashboard symptoms:
 Jobs reach `COMPLETED` and then the client fails to download. A presigned URL is
 an HMAC **over the request including the host**, so it has to be signed with the
 address the downloader will actually hit — which is not the address the server
-uploads through.
+uploads through (`src/ndif/common/providers/objectstore.py`
+`ObjectStoreProvider`).
 
 | Variable | Compose value | Role |
 |---|---|---|
-| `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client (`objectstore.py:40`) |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET (`objectstore.py:42`, `:110`) |
+| `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client: uploads and bucket ops |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET |
 
-Both are set on `api` and `ray` (`docker-compose.yml:159`-`160`, `247`-`248`).
-Swap them and every job completes and then fails to download; leave the public
-one empty and `public_client` falls back to `url`, which is correct for a
-single-host install and wrong for compose. To reproduce end to end, take the
-`data` field of a completed job's `GET /response/{id}` and `curl -I` it *from the
-client machine* — that is exactly what the user's download does.
+Both are set on `api` and `ray`. Swap them and every job completes and then
+fails to download; leave the public one empty and it falls back to the first,
+which is correct for a single-host install and wrong for compose. To reproduce,
+take the `data` field of a completed job's `GET /response/{id}` and `curl -I` it
+*from the client machine* — exactly what the user's download does.
 
-In production the public URL is whatever your users reach — a load-balanced S3
-endpoint or a CDN hostname — and it must be *reachable from outside your
-network*. URLs expire after one hour (`objectstore.py:178`), which is a real
-constraint for non-blocking jobs polled much later.
-
-## No Redis on localhost inside the ray container
-
-`RedisProvider` defaults to `redis://localhost:6379`, and nothing listens there
-inside the `ray` container. Leave `NDIF_REDIS_URL` unset on that service and
-requests run to completion on the GPU and then never report a status. Compose sets
-it explicitly; see
-[Service names, not localhost](compose-stack.md#service-names-not-localhost).
+In production the public URL is whatever your users reach, and it must be
+reachable from outside your network. URLs expire after one hour, which matters
+for non-blocking jobs polled much later.
 
 ## Telemetry is missing
 
-Both telemetry providers are **fail-open**: nothing errors when they are
-unconfigured, so "no data" is the only symptom.
+Both telemetry providers are **fail-open** and off until given a URL, so "no
+data" is the only symptom.
 
 | Check | Meaning |
 |---|---|
-| `just logs api \| grep "Loki telemetry enabled"` | Loki is opt-in on `NDIF_LOKI_URL` (`providers/loki.py:139`). Unset → logs go to the console only. Compose sets it for `api` and `ray`, **not** for `dashboard` |
-| `just logs api \| grep "InfluxDB telemetry enabled"` | Influx is on by default (`NDIF_INFLUX_ENABLED`, `providers/influx.py:70`) but silently no-ops if the client library is missing or the URL is wrong |
-| `NDIF_LOKI_URL is set but python-logging-loki is not installed` | The `metrics` extra wasn't installed (`providers/loki.py:187`) |
-| Prometheus target down | It scrapes exactly one target, `ray:8080` (`docker/prometheus/prometheus.yml:20`) — Ray's `--metrics-export-port`, set from `NDIF_RAY_METRICS_PORT` (`services/ray/start.sh:66`). NDIF uses no Ray Serve |
+| `just logs api \| grep "Loki telemetry enabled"` | Absent: `NDIF_LOKI_URL` unset, so logs go to the console only. Compose sets it for `api` and `ray`, **not** for `dashboard` |
+| `just logs api \| grep "InfluxDB telemetry enabled"` | Absent: `NDIF_INFLUX_URL` unset, `NDIF_INFLUX_ENABLED=false`, or the client library missing |
+| `NDIF_LOKI_URL is set but python-logging-loki is not installed` | The `metrics` extra wasn't installed |
+| Prometheus target down | It scrapes exactly one target, `ray:8080` — Ray's `--metrics-export-port`, from `NDIF_RAY_METRICS_PORT` |
 
-Model-actor logs are the ones people can't find: the controller overrides
-`NDIF_SERVICE` to `model` in each actor's `runtime_env`, so they are under
+Model-actor logs are the ones people can't find: they are under
 `service="model"`, not `service="ray"`. Details in
 [Observability](observability.md).
 
@@ -277,31 +233,26 @@ Model-actor logs are the ones people can't find: the controller overrides
 
 | Error | Meaning | Next |
 |---|---|---|
-| `No GPU nodes available.` | The cluster model has zero nodes | [ray has no GPU](#the-ray-container-has-no-gpu) |
+| `No GPU nodes available.` | The cluster has zero GPU nodes | [ray has no GPU](#the-ray-container-has-no-gpu) |
 | `CANT_ACCOMMODATE: placed N of M new replicas before the cluster ran out of room.` | Nodes exist; none can fit the padded size, even after every legal eviction | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
+| A node-stated reason (for example a `gpus` count the model can't split into) | The request itself can't be placed as asked | Fix the `gpus` / `max_tp` you passed |
 | An evaluator traceback (gated repo, 401, unknown repo id) | Sizing failed before placement. `HF_TOKEN` must be present wherever the deploy runs | Set `HF_TOKEN` |
 | An HF "requires you to execute the code" error | The deployment is untrusted; the repo ships custom modeling code | Redeploy trusted: `ndif deploy --trusted`, a `trusted: true` YAML entry, or the dashboard |
 | `ndif status` shows the actor `UNHEALTHY`, repeatedly | The actor dies during weight load and Ray restarts it | The actor's log in the Ray dashboard; usually a load-time OOM |
-| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`queue/replica.py:130`) | `ndif queue` — a Processor at `deploying` with rising depth |
+| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/api/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
 
-> **Gotcha:** raising `NDIF_MODEL_CACHE_PERCENTAGE` does **not** help a GPU
-> shortage. It scales the fraction of a node's **CPU** RAM usable as WARM cache
-> (`controller.py:547`), not GPU memory. For GPU pressure: evict explicitly, lower
-> `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600, which protects young
-> deployments from automatic eviction), deploy `--pinned` (which waives the age
-> check for the incoming model), or tune `NDIF_DEFAULT_PADDING_FACTOR` /
-> `NDIF_DEFAULT_PADDING_BIAS`.
+Raising `NDIF_MODEL_CACHE_PERCENTAGE` does **not** help a GPU shortage: it sizes
+the **CPU** RAM used as WARM cache. For GPU pressure: evict explicitly, lower
+`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600, which protects young
+deployments from automatic eviction), deploy `--pinned` (which waives the age
+check for the incoming model), or tune the padding.
 
 ## Related
 
 - [The Compose Stack](compose-stack.md) — every container, port, volume, and the
-  four non-obvious compose decisions.
-- [Configuration](configuration.md) and [Environment variables](../reference/env-vars.md) —
+  non-obvious compose decisions.
+- [Configuration](configuration.md) and [Environment Variables](../reference/env-vars.md) —
   what each `NDIF_*` knob actually changes.
-- [Debug a stuck request](../runbooks/debug-a-stuck-request.md) — when the stack
-  is fine and one request isn't.
-- [Model OOM on deploy](../runbooks/model-oom-on-deploy.md),
-  [Add a GPU node](../runbooks/add-a-gpu-node.md) — the full procedures.
 - [Error messages](../reference/error-messages.md) — every error text, both sides.
 - [Observability](observability.md) — the log labels and metric measurements the
   checks above assume.
