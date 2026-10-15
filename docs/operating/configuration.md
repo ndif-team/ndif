@@ -19,7 +19,7 @@ variable with its default and reader is in
   read once at process start. Changing a value means restarting the process that
   reads it — and for anything baked into the image, a `just ta`.
 - **Every knob has a working single-host default**, so a bare `ndif start` —
-  Redis on `localhost:6379`, MinIO on `localhost:9000`, the API on
+  Redis on `localhost:6379`, RustFS on `localhost:9000`, the API on
   `localhost:8001` — comes up with nothing set. You set variables to *move away*
   from single-host.
 - **A missing variable never falls back to another service's value.** It falls
@@ -82,7 +82,7 @@ actors placed on any node.
 | `NDIF_RAY_HEAD_ADDRESS` | *(empty)* | Empty ⇒ this node starts a head. Every worker node sets it to the head's `HOST:6385`. |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | The endpoint the *server* uploads through. Empty means real AWS S3 for `NDIF_OBJECT_STORE_REGION`. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Real credentials, or both empty to use boto3's own chain (on AWS, the instance/task role). |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `rustfsadmin` / `rustfsadmin` | Real credentials, or both empty to use boto3's own chain (on AWS, the instance/task role). |
 | `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth: a client-supplied `trusted` is honored and an unspecified one defaults to trusted. See below. |
 | `NDIF_MODEL_IMPORT_PATH` | in-process `ModelActor` in code; compose sets `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to `SandboxModelActor` | Decides whether an untrusted request gets a separate runner process at all. See below. |
 | `NDIF_API_URL` | `http://localhost:8001` | Where the CLI (`env`, `doctor`, `info`) and the dashboard's report cron reach the API. Compose sets `http://api:8001` on `dashboard`. |
@@ -172,7 +172,7 @@ the `ext` list read back out of `pyproject.toml`. So one image can play any role
 
 ```bash
 ndif info                # CLI config, tracked PIDs, endpoint reachability
-ndif doctor              # probes redis / minio / api / ray from the same vars
+ndif doctor              # probes redis / rustfs / api / ray from the same vars
 docker compose -f docker/docker-compose.yml exec ray ndif info     # inside compose
 ```
 

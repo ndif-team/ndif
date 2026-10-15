@@ -291,7 +291,7 @@ ndif start ray
 
 `ndif start` with `NDIF_RAY_HEAD_ADDRESS` set defaults its target list to just
 the ray service (`src/ndif/cli/commands/start.py` `start`) — a worker host does
-not need Redis, MinIO or the API. The worker's GPUs appear in the controller
+not need Redis, RustFS or the API. The worker's GPUs appear in the controller
 within `NDIF_CONTROLLER_SYNC_INTERVAL_S` (30s), when its node-sync pass next
 runs.
 

@@ -32,7 +32,7 @@ def check_redis(url: str) -> bool:
         return False
 
 
-def check_minio(url: str) -> bool:
+def check_rustfs(url: str) -> bool:
     """True if something is listening on the object store's host:port."""
     p = urlparse(url)
     return _tcp_open(p.hostname or "localhost", p.port or 9000)

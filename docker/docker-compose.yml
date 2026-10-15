@@ -120,20 +120,21 @@ services:
       retries: 10
 
   # S3-compatible object store for result blobs. 9000 = S3 API, 9001 = console.
-  # Pulled from quay.io and pinned: the Docker Hub repository no longer lists
-  # tags, and MinIO stopped shipping standalone binaries. The same release is
-  # what the image copies its `minio` binary from (docker/Dockerfile).
-  minio:
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    command: server /data --console-address ":9001"
+  # Pinned to the release the image copies its `rustfs` binary from
+  # (docker/Dockerfile).
+  rustfs:
+    image: rustfs/rustfs:1.0.1
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CONSOLE_ENABLE: "true"
+    volumes:
+      - rustfs_data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:9000/health"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -159,8 +160,8 @@ services:
       NDIF_INFLUX_TOKEN: ndif-dev-token
       NDIF_INFLUX_ORG: ndif
       NDIF_INFLUX_BUCKET: metrics
-      # Object store: reach minio internally; sign download urls for the host.
-      NDIF_OBJECT_STORE_URL: http://minio:9000
+      # Object store: reach rustfs internally; sign download urls for the host.
+      NDIF_OBJECT_STORE_URL: http://rustfs:9000
       NDIF_OBJECT_STORE_PUBLIC_URL: http://localhost:9000
       # API-key auth against the postgres user/keys DB, as the read-only
       # `ndifapi` role (reached by service name). Set -> the API verifies keys;
@@ -181,7 +182,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
       influxdb:
         condition: service_healthy
@@ -250,9 +251,9 @@ services:
       NDIF_INFLUX_TOKEN: ndif-dev-token
       NDIF_INFLUX_ORG: ndif
       NDIF_INFLUX_BUCKET: metrics
-      # Object store: the model actor uploads results to minio internally, but
+      # Object store: the model actor uploads results to rustfs internally, but
       # signs download urls with the host-facing address the client will hit.
-      NDIF_OBJECT_STORE_URL: http://minio:9000
+      NDIF_OBJECT_STORE_URL: http://rustfs:9000
       NDIF_OBJECT_STORE_PUBLIC_URL: http://localhost:9000
       # Model actor class the controller deploys per replica. Default the sandbox
       # actor: loads the model on the host, runs user code in a separate process
@@ -276,7 +277,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
       influxdb:
         condition: service_healthy
@@ -294,7 +295,9 @@ services:
               count: all
               capabilities: [gpu]
 
-# Persist the dashboard's writable state (logs, schedule.json, cache) across
-# restarts; everything else in this file is stateless or bind-mounted config.
+# Persist the dashboard's writable state (logs, schedule.json, cache) and the
+# object store's blobs across restarts; everything else in this file is
+# stateless or bind-mounted config.
 volumes:
   dashboard_data:
+  rustfs_data:

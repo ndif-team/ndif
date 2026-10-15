@@ -46,7 +46,7 @@ The console script `ndif = "ndif.cli:cli"`: a click group with one command per m
 |---|---|
 | `main.py` | the click group; registers every subcommand and loads `.env` first |
 | `config.py` | `DEFAULTS` (single-host fallbacks) and `build_env` |
-| `service.py` | the service registry: `SERVICES` (redis, minio, ray, api) and `OPTIONAL_SERVICES` (dashboard) |
+| `service.py` | the service registry: `SERVICES` (redis, rustfs, ray, api) and `OPTIONAL_SERVICES` (dashboard) |
 | `state.py` | PID/log files under `$NDIF_HOME` (default `~/.ndif`) |
 | `util.py` | presentation helpers and process signalling |
 | `commands/*.py` | one module per verb — click decoration only |
@@ -146,8 +146,8 @@ build ships.
 
 | Path | What it is |
 |---|---|
-| `Dockerfile` | one image for all services: `python:3.12-slim`, torch from a `--index-url` build arg (`TORCH_CUDA`), `requirements.txt` in its own layer, then the package with `--no-deps` and the `ext` extra's list; `redis-server` and a minio binary so `NDIF_SERVICE=all` runs them in-container; `ndif version --write /etc/ndif/build.json` records what resolved |
-| `docker-compose.yml` | the dev stack: redis, loki, influxdb, prometheus, grafana, postgres, minio, api, dashboard, ray — every NDIF service shares one `build:` block and differs by env |
+| `Dockerfile` | one image for all services: `python:3.12-slim`, torch from a `--index-url` build arg (`TORCH_CUDA`), `requirements.txt` in its own layer, then the package with `--no-deps` and the `ext` extra's list; `redis-server` and a rustfs binary so `NDIF_SERVICE=all` runs them in-container; `ndif version --write /etc/ndif/build.json` records what resolved |
+| `docker-compose.yml` | the dev stack: redis, loki, influxdb, prometheus, grafana, postgres, rustfs, api, dashboard, ray — every NDIF service shares one `build:` block and differs by env |
 | `docker-compose.nnsight.yml` | bind-mounts an editable nnsight over the image's copy ([how](nnsight-integration.md#developing-against-a-local-nnsight)) |
 | `grafana/provisioning/` | datasources and the pre-built NDIF dashboards |
 | `prometheus/prometheus.yml` | scrapes Ray's metrics port; Ray is the only Prometheus speaker |

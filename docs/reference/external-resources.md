@@ -102,7 +102,7 @@ alongside the code.
 | `README.md` | Install and quickstart; configuration links to [Environment variables](env-vars.md). |
 | `docker/docker-compose.yml` | The most honest description of how the services are wired; its comments explain several non-obvious settings. |
 | `pyproject.toml` / `requirements.txt` | What is actually installed, and comments explaining why each non-obvious dependency is there (`zstandard`, `peft`), plus the `ext` extra — the packages a *user's* block may import, which the server has to provide or the import dies on the far side. |
-| `docker/Dockerfile` | Why each layer is ordered as it is, why torch comes from a build arg rather than `requirements.txt`, and where the `minio` and `redis-server` binaries in the image come from. |
+| `docker/Dockerfile` | Why each layer is ordered as it is, why torch comes from a build arg rather than `requirements.txt`, and where the `rustfs` and `redis-server` binaries in the image come from. |
 | `docker/README.md` | The Docker Hub page: how to run the published image. Pushed to Docker Hub by `publish_docker.yml`, so it and the listing cannot drift. |
 | `justfile` | Every supported operational command against the dev stack. |
 

@@ -178,8 +178,9 @@ set `NDIF_OBJECT_STORE_PUBLIC_URL` on both `api` and `ray`. The mechanism is in
 Confirm the blob exists and has a sane size:
 
 ```bash
-docker compose -f docker/docker-compose.yml exec minio \
-  mc ls local/ndif-results/3f9c1e2b....pt
+docker compose -f docker/docker-compose.yml exec api python -c \
+  "from ndif.common.providers.objectstore import ObjectStoreProvider as S; S.connect(); \
+   print(S.client.head_object(Bucket=S.bucket, Key='3f9c1e2b....pt')['ContentLength'])"
 ```
 
 ## Step 6 — cross-check the metrics

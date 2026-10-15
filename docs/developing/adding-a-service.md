@@ -36,7 +36,7 @@ flowchart TB
 `src/ndif/cli/service.py` `env_services`. It is also the `service` label on every
 log and metric, so pick the name you want to see in Grafana. The image defaults it
 to `all`, which `resolve_targets` expands to what a bare `ndif start` brings up: the
-`SERVICES` list (redis, minio, ray, api), or just `ray` on a worker node where
+`SERVICES` list (redis, rustfs, ray, api), or just `ray` on a worker node where
 `NDIF_RAY_HEAD_ADDRESS` is set. An optional service is never in that expansion, so a
 container running yours sets `NDIF_SERVICE: myservice`, or `"all myservice"` to add
 it to the core stack in one container.
@@ -94,7 +94,7 @@ writable.
 # walks this list; `ndif stop` reverses it.
 SERVICES: list[Service] = [
     Service("redis", _redis_command, "Redis (request queue + response pub/sub)"),
-    Service("minio", _minio_command, "MinIO object store (execution results)", _minio_env),
+    Service("rustfs", _rustfs_command, "RustFS object store (execution results)", _rustfs_env),
     Service("ray", _script_command("ray/start.sh"), "Ray node + NDIF controller (head)"),
     Service("api", _script_command("api/start.sh"), "FastAPI served by gunicorn"),
 ]
@@ -111,8 +111,8 @@ Add to `SERVICES` only if your service is part of the minimum viable NDIF;
 appears in `--help` with no further edits.
 
 `Service`'s optional fourth field, `build_env`, is for third-party env naming:
-`_minio_env` translates `NDIF_OBJECT_STORE_*` into MinIO's `MINIO_ROOT_USER` /
-`MINIO_ROOT_PASSWORD`. Don't use it for your own config.
+`_rustfs_env` translates `NDIF_OBJECT_STORE_*` into RustFS's `RUSTFS_ACCESS_KEY` /
+`RUSTFS_SECRET_KEY`. Don't use it for your own config.
 
 ## Dependencies, extras and the image
 

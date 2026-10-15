@@ -5,14 +5,14 @@ import json
 import click
 
 from .. import config
-from ..lib.checks import check_api, check_minio, check_ray, check_redis
+from ..lib.checks import check_api, check_ray, check_redis, check_rustfs
 from ..service import SERVICES
 from ..state import State
 
 # (label, env var, reachability check) for each backing service.
 _ENDPOINTS = [
     ("redis", "NDIF_REDIS_URL", check_redis),
-    ("minio", "NDIF_OBJECT_STORE_URL", check_minio),
+    ("rustfs", "NDIF_OBJECT_STORE_URL", check_rustfs),
     ("api", "NDIF_API_URL", check_api),
     ("ray", "NDIF_RAY_ADDRESS", check_ray),
 ]

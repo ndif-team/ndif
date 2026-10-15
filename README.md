@@ -73,7 +73,7 @@ docker run -d --name ndif --gpus all --shm-size 4g \
 docker logs -f ndif
 ```
 
-`NDIF_SERVICE` defaults to `all`, so the container starts redis, minio, ray and
+`NDIF_SERVICE` defaults to `all`, so the container starts redis, rustfs, ray and
 the API together. 8001 is the API; 9000 is the object store, which the client
 downloads results from, so publish it too. Tags: `0.1.0-cu126`, `0.1.0-cu130`,
 `0.1.0` (= cu126) and `latest`; pick the CUDA line your driver supports. The
@@ -104,15 +104,16 @@ No checkout needed — the package is on PyPI:
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cu126   # first, or pip picks PyPI's default (CUDA 13) wheel
 pip install "ndif[api,ray]"                                              # add metrics,postgres,dashboard as you need them
-conda install --override-channels -c conda-forge redis-server minio-server
+conda install --override-channels -c conda-forge redis-server
+# rustfs: a release from https://github.com/rustfs/rustfs/releases on PATH
 ndif doctor        # versions, binaries, GPU, connectivity
-ndif start         # redis, minio, ray, api — detached
+ndif start         # redis, rustfs, ray, api — detached
 ndif stop          # ...and back down, Ray daemons included
 ```
 
 From a checkout, `pip install -r requirements.txt` first gives you the pinned
 dependency set the image is built from, then `pip install ".[api,ray]"`.
-Other ways to get a `minio` binary are in
+Other ways to get a `rustfs` binary are in
 [docs/operating/cli.md](docs/operating/cli.md#ndif-doctor).
 
 ### Then run a remote trace
@@ -141,7 +142,7 @@ all three routes is in [docs/operating/quickstart.md](docs/operating/quickstart.
 | `ray` | GPU node | Loads models and runs the traced blocks (plain detached Ray actors — NDIF does not use Ray Serve). |
 | `dashboard` | `localhost:8081` | Deploy/evict/status, schedules, request monitor. Compose only; not part of `NDIF_SERVICE=all`. |
 
-Redis, MinIO (object store), Postgres (API-key auth), and Loki/InfluxDB/Grafana
+Redis, RustFS (object store), Postgres (API-key auth), and Loki/InfluxDB/Grafana
 (telemetry) round out the compose file; see `docker/docker-compose.yml`.
 
 ## Development

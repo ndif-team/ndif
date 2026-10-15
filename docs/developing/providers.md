@@ -157,13 +157,13 @@ slim `--no-deps` install.
 ## ObjectStoreProvider
 
 `src/ndif/common/providers/objectstore.py`. boto3 over S3, so the same code serves
-MinIO and AWS S3. Results over the inline cap go here and the client gets a presigned
+RustFS and AWS S3. Results over the inline cap go here and the client gets a presigned
 GET URL.
 
 Two clients, because upload and download happen from different networks
 (`ObjectStoreProvider.connect`). A presigned URL is an HMAC over the request
 *including the host*, so it must be signed with the host the downloader will hit —
-`minio:9000` inside compose, `localhost:9000` or a public name outside. That is
+`rustfs:9000` inside compose, `localhost:9000` or a public name outside. That is
 `NDIF_OBJECT_STORE_PUBLIC_URL`; unset, it falls back to the server-side URL. A custom
 endpoint also forces path-style addressing (`_make_client`). Credentials are passed
 only when both are set; both empty uses boto3's own chain (an IAM role on AWS).
@@ -291,7 +291,7 @@ Checklist:
 
 - **Defaults are localhost.** Correct for `ndif start` on one host, wrong inside
   compose, where each container needs `NDIF_REDIS_URL=redis://redis:6379`,
-  `NDIF_OBJECT_STORE_URL=http://minio:9000` and so on (set per service in
+  `NDIF_OBJECT_STORE_URL=http://rustfs:9000` and so on (set per service in
   `docker/docker-compose.yml`). A container that forgets them reaches for itself.
 - **The object store's two URLs.** With `NDIF_OBJECT_STORE_PUBLIC_URL` unset,
   presigned URLs carry the server-side host and a client outside that network can't

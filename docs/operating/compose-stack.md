@@ -16,7 +16,7 @@ it, how they find each other, and what survives `just down`.
 
 It is a **development** stack: it builds the image from this checkout and
 publishes almost everything on every interface with default credentials and no
-TLS. To just *run* NDIF, `docker run --gpus all ndif/ndif` starts redis, minio,
+TLS. To just *run* NDIF, `docker run --gpus all ndif/ndif` starts redis, rustfs,
 ray and the API in one container from the published image instead — see
 [Quickstart](quickstart.md). [Going to Production](production.md) covers what
 has to change before either faces users.
@@ -26,7 +26,7 @@ has to change before either faces users.
 | Service | Image / build | Required? | Host ports | What breaks without it |
 |---|---|---|---|---|
 | `redis` | `redis:7-alpine` | **yes** | 6379 | Everything. Queue, response pub/sub, status caches, the `ray:connected` flag. |
-| `minio` | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | **yes** | 9000, 9001 | Large results have nowhere to go; `api` and `ray` wait on its health check. |
+| `rustfs` | `rustfs/rustfs:1.0.1` | **yes** | 9000, 9001 | Large results have nowhere to go; `api` and `ray` wait on its health check. |
 | `api` | built from `docker/Dockerfile` | **yes** | 8001 | No client entry point. |
 | `ray` | built from `docker/Dockerfile` | **yes** | 8265, 10001 | No compute. `/request`, `/status`, `/env` all 503. |
 | `postgres` | `postgres:16-alpine` | health-gated | 5432 | `api` won't start (it waits on the health check) — but auth stays off regardless unless you set `NDIF_POSTGRES_URL`. |
@@ -41,18 +41,17 @@ entry in `docker/docker-compose.yml`. The justfile passes `-f` explicitly, so
 compose does not read a `docker-compose.override.yml`.
 
 "Health-gated" is a compose artifact: the `api` service's `depends_on` waits for
-`redis`, `minio`, `influxdb` and `postgres` to be `service_healthy`, whether or
+`redis`, `rustfs`, `influxdb` and `postgres` to be `service_healthy`, whether or
 not the API will use them. `api` has its own health check — `GET /ping` through
 python, since the image has no curl.
 
 - **redis** — the API pushes requests onto a Redis list, the dispatcher pops
   them, model actors publish status and responses on per-session pub/sub
   channels, and cached `/status` and `/env` blobs live here.
-- **minio** — S3-compatible store for result blobs too large to inline; the
+- **rustfs** — S3-compatible store for result blobs too large to inline; the
   model actor uploads them and publishes a presigned GET URL the client
-  downloads directly. 9000 is the S3 API, 9001 the web console. Pulled from
-  quay.io and pinned because `minio/minio` on Docker Hub no longer resolves; the
-  image copies its own `minio` binary from the same release.
+  downloads directly. 9000 is the S3 API, 9001 the web console. Pinned to the
+  release the image copies its own `rustfs` binary from.
 - **postgres** — the users/keys database for API-key auth.
   `docker/postgres/init.sql` runs once on an empty data dir and creates the
   schema plus the read-only `ndifapi` role the API connects as. No users or keys
@@ -96,8 +95,8 @@ space/comma list and `resolve_targets` expands `all` in place, so
 That is why the heavy layers — torch, then `requirements.txt` — are shared
 across all three containers, and why the compose `environment:` blocks are the
 entire difference between them. The image also carries `redis-server` and a
-`minio` binary that only `NDIF_SERVICE=all` uses; compose runs its own `redis`
-and `minio` containers instead.
+`rustfs` binary that only `NDIF_SERVICE=all` uses; compose runs its own `redis`
+and `rustfs` containers instead.
 
 ### `name: dev`
 
@@ -142,7 +141,7 @@ service**; a service that misses one silently talks to itself.
 |---|---|---|---|
 | `NDIF_REDIS_URL` | `redis://localhost:6379` | `redis://redis:6379` | `api`, `ray`, `dashboard` |
 | `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://ray:10001` | `api`, `dashboard` — not `ray`, which starts the cluster rather than dialing it |
-| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `http://minio:9000` | `api`, `ray` |
+| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `http://rustfs:9000` | `api`, `ray` |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | falls back to the above | `http://localhost:9000` | `api`, `ray` |
 | `NDIF_LOKI_URL` | unset (shipping off) | `http://loki:3100/loki/api/v1/push` | `api`, `ray` |
 | `NDIF_INFLUX_URL` | unset (metrics off) | `http://influxdb:8086` | `api`, `ray`; `dashboard` only reads it, for its report cron |
@@ -210,9 +209,9 @@ whatever your shell has — and no nnsight at all skips the override.
 
 | Survives `just down` | Lost on `just down` |
 |---|---|
-| Model weights — the `ray` service bind-mounts `${HOME}/.cache/huggingface` | Result blobs (MinIO writes to the container filesystem) |
-| Dashboard state — the named volume `dashboard_data` (logs, `schedule.json`, config, cache); `just down -v` drops it | The Postgres database: `init.sql` runs again on the next boot and recreates the schema empty, so **every API key you created is gone** |
-| | Metrics, logs and UI-edited Grafana panels (InfluxDB, Loki, Prometheus, Grafana) |
+| Model weights — the `ray` service bind-mounts `${HOME}/.cache/huggingface` | The Postgres database: `init.sql` runs again on the next boot and recreates the schema empty, so **every API key you created is gone** |
+| Dashboard state — the named volume `dashboard_data` (logs, `schedule.json`, config, cache); `just down -v` drops it | Metrics, logs and UI-edited Grafana panels (InfluxDB, Loki, Prometheus, Grafana) |
+| Result blobs — the named volume `rustfs_data`; `just down -v` drops it | |
 
 The dev stack is disposable by design. Add volumes for anything you want to
 keep; [Going to Production](production.md) lists which.

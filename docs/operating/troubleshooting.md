@@ -29,7 +29,7 @@ The single entry point for "something broke". Find the row, follow it.
 
 ```bash
 just ps                # container status + health, for the whole compose stack
-just logs api          # follow one service (api | ray | dashboard | redis | minio | ...)
+just logs api          # follow one service (api | ray | dashboard | redis | rustfs | ...)
 docker compose -f docker/docker-compose.yml exec ray ndif status   # what the controller thinks is deployed
 curl -s localhost:8001/ping        # "pong" — the API process is alive, no dependencies
 curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher not connected
@@ -41,13 +41,13 @@ inside a container as above, or from the host against `NDIF_RAY_ADDRESS`
 (`ray://localhost:10001`) and `NDIF_REDIS_URL` with the same Python and Ray
 versions as the cluster.
 
-`ndif doctor` checks the *host*: Python, the `ray`, `redis-server` and `minio`
+`ndif doctor` checks the *host*: Python, the `ray`, `redis-server` and `rustfs`
 binaries on this PATH, a GPU visible to both `nvidia-smi` and torch, and
 reachability. Its Binaries section fails by design on a machine that only runs
 compose, and a missing `nvidia-smi` is a hard failure. torch, transformers and
 ray versions and the Connectivity section are informational and never set the
 exit code. Reach for it when a *host* install misbehaves, and for `just ps` when
-compose does; [The ndif CLI](cli.md#ndif-doctor) covers getting a `minio`
+compose does; [The ndif CLI](cli.md#ndif-doctor) covers getting a `rustfs`
 binary. `ndif version` (or `docker run --rm ndif/ndif version`) answers the
 narrower "what is installed".
 
@@ -56,7 +56,7 @@ narrower "what is installed".
 | Symptom | Likely cause | Confirm | Fix |
 |---|---|---|---|
 | `just up` returns but a container is `Restarting` | Crash at startup | `just logs <svc>` | See [service won't start](#a-service-wont-start) |
-| `api` never starts, no logs | It waits on `redis`, `minio`, `postgres` and `influxdb` health checks | `just ps` — are they `healthy`? | Fix the unhealthy one, or remove its `depends_on` entry |
+| `api` never starts, no logs | It waits on `redis`, `rustfs`, `postgres` and `influxdb` health checks | `just ps` — are they `healthy`? | Fix the unhealthy one, or remove its `depends_on` entry |
 | `ray` container fails to create | No NVIDIA container toolkit on the host | `docker info \| grep -i nvidia` | Install the toolkit; see [no GPU](#the-ray-container-has-no-gpu) |
 | `ndif status` shows 0 nodes, deploys fail `No GPU nodes available.` | Ray started without a `GPU` resource | `just logs ray` — the `Starting Ray head node with resources:` line | [no GPU](#the-ray-container-has-no-gpu) |
 | `/ping` 200 but every request hangs | The dispatcher died; `ray:connected` has no TTL | `redis-cli llen queue` is growing | [ping works, requests hang](#ping-works-but-requests-hang) |
@@ -204,7 +204,7 @@ uploads through (`src/ndif/common/providers/objectstore.py`
 
 | Variable | Compose value | Role |
 |---|---|---|
-| `NDIF_OBJECT_STORE_URL` | `http://minio:9000` | the server's own client: uploads and bucket ops |
+| `NDIF_OBJECT_STORE_URL` | `http://rustfs:9000` | the server's own client: uploads and bucket ops |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | signs the client's GET |
 
 Both are set on `api` and `ray`. Swap them and every job completes and then

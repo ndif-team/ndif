@@ -60,7 +60,7 @@ environment handed to spawned services, never written into `os.environ`:
 | `NDIF_RAY_DASHBOARD_PORT` | `8265` | |
 
 **`NDIF_HOME` state** (`src/ndif/cli/state.py` `State`): `run/<service>.pid`,
-`logs/<service>.log`, and `minio/` when the CLI spawns MinIO. Liveness is the PID
+`logs/<service>.log`, and `rustfs/` when the CLI spawns RustFS. Liveness is the PID
 file plus `kill(pid, 0)`; a PID file whose process is gone is cleared on read.
 Nothing about deployments is stored here — that lives in the controller.
 
@@ -72,7 +72,7 @@ Nothing about deployments is stored here — that lives in the controller.
 
 | Option | Type / default | Effect |
 |---|---|---|
-| `SERVICES...` | `$NDIF_SERVICE`, else the core stack | `redis`, `minio`, `ray`, `api`, `dashboard`, or `all` (which expands to the core stack in place) |
+| `SERVICES...` | `$NDIF_SERVICE`, else the core stack | `redis`, `rustfs`, `ray`, `api`, `dashboard`, or `all` (which expands to the core stack in place) |
 | `-e/--env` | `KEY=VALUE`, repeatable | injected into every started service |
 | `--redis-url`, `--ray-address`, `--api-port` | str, str, int | set the matching `NDIF_*` var |
 | `--ray-head-address` | `HOST:PORT` | sets `NDIF_RAY_HEAD_ADDRESS`; makes this a worker node |
@@ -80,7 +80,7 @@ Nothing about deployments is stored here — that lives in the controller.
 | `-f/--foreground` | flag, off | run attached instead of detaching |
 
 With `NDIF_RAY_HEAD_ADDRESS` set the default target becomes **just `ray`** — a
-worker node runs nothing else. Otherwise it is the core stack `redis, minio,
+worker node runs nothing else. Otherwise it is the core stack `redis, rustfs,
 ray, api` in dependency order (`src/ndif/cli/service.py` `SERVICES`).
 `dashboard` is opt-in (`OPTIONAL_SERVICES`) and never pulled in by a bare
 `ndif start`. `NDIF_SERVICE` is split on spaces and commas and `all` expands in
@@ -89,9 +89,9 @@ dashboard.
 
 `ray`, `api` and `dashboard` are launched by running their own `start.sh`
 verbatim — every knob there is env-driven, so the CLI only injects an
-environment. `redis` and `minio` are external binaries spawned directly, ports
-derived from `NDIF_REDIS_URL` / `NDIF_OBJECT_STORE_URL`; MinIO also gets
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` from `NDIF_OBJECT_STORE_ACCESS_KEY` /
+environment. `redis` and `rustfs` are external binaries spawned directly, ports
+derived from `NDIF_REDIS_URL` / `NDIF_OBJECT_STORE_URL`; RustFS also gets
+`RUSTFS_ACCESS_KEY`/`RUSTFS_SECRET_KEY` from `NDIF_OBJECT_STORE_ACCESS_KEY` /
 `_SECRET_KEY`. Detached services get their own session/process group, so each
 survives the CLI exiting and can be signalled as a unit. A detached service is
 given 2 seconds; one that has already exited is reported `✗ exited immediately`
@@ -99,7 +99,7 @@ with its log path instead of getting a PID file.
 
 **As the container entrypoint.** The image's `ENTRYPOINT` is `["ndif"]` and its
 `CMD` is `["start", "--foreground"]`, with `NDIF_SERVICE=all` as the image
-default — so a bare `docker run ndif/ndif` brings up redis, minio, ray and api
+default — so a bare `docker run ndif/ndif` brings up redis, rustfs, ray and api
 in one container, and `docker run ndif/ndif doctor` runs that command instead.
 Compose picks one role per container by setting `NDIF_SERVICE`. In foreground
 mode a **single** service replaces the CLI via `execvpe` (it becomes PID 1 and
@@ -111,7 +111,7 @@ appears verbatim in your logs.
 ### `ndif stop`
 
 `ndif stop [SERVICES...]` — no options. Default target is the core stack
-**reversed** (api, ray, minio, redis). SIGTERM to each service's process group,
+**reversed** (api, ray, rustfs, redis). SIGTERM to each service's process group,
 escalating to SIGKILL after 10s (`src/ndif/cli/util.py` `terminate_pid`), then
 the PID file is cleared. For `ray` it then runs `ray stop --force`, because
 `ray start` daemonises the GCS server and raylet outside the tracked process
@@ -123,7 +123,7 @@ stack.
 ### `ndif logs`
 
 `ndif logs SERVICE [-f/--follow] [-n/--lines N]` — `SERVICE` is one of
-`redis|minio|ray|api|dashboard`; `--lines` defaults to 100. Shells out to `tail`
+`redis|rustfs|ray|api|dashboard`; `--lines` defaults to 100. Shells out to `tail`
 on `$NDIF_HOME/logs/<service>.log`. Only detached services have a log file — a
 `--foreground` service writes to the terminal, a compose service to docker
 (`just logs api`).
@@ -133,7 +133,7 @@ on `$NDIF_HOME/logs/<service>.log`. Only detached services have a log file — a
 `ndif info [--json-output]` — prints `NDIF_HOME`, the tracked PID of each
 **core** service (the dashboard is not listed), and a reachability probe per
 endpoint (`src/ndif/cli/lib/checks.py`): Redis gets a real `PING`, the API
-`GET /ping` falling back to a TCP connect, MinIO and Ray TCP connects only.
+`GET /ping` falling back to a TCP connect, RustFS and Ray TCP connects only.
 
 ### `ndif doctor`
 
@@ -143,9 +143,9 @@ endpoint (`src/ndif/cli/lib/checks.py`): Redis gets a real `PING`, the API
 | Section | Checks | Counts as failure? |
 |---|---|---|
 | Environment | Python ≥ 3.12; `ndif` and `nnsight` installed; then `torch` (with its CUDA build), `transformers` and `ray` | Python/ndif/nnsight yes; torch/transformers/ray **no** — reported, not required |
-| Binaries | `ray`, `redis-server`, `minio` on `PATH` | yes |
+| Binaries | `ray`, `redis-server`, `rustfs` on `PATH` | yes |
 | Compute | `nvidia-smi` returns ≥1 GPU, **and** `torch.cuda.is_available()` is true. The second catches a torch wheel built for a newer CUDA line than the driver supports: nvidia-smi lists the card, torch quietly sees nothing, and Ray would advertise `cuda_memory_bytes: 0` | yes |
-| Connectivity | redis / minio / api / ray at their `NDIF_*` URLs | **no** — a stopped service is a normal answer |
+| Connectivity | redis / rustfs / api / ray at their `NDIF_*` URLs | **no** — a stopped service is a normal answer |
 
 Exit code is 1 if any of the first three sections failed. Reach for it first
 when `ndif start` fails or a fresh host install misbehaves; it checks *this
@@ -165,37 +165,28 @@ Environment
 Binaries
   ✓ ray → /usr/local/bin/ray
   ✓ redis-server → /usr/bin/redis-server
-  ✗ minio not on PATH
-      → conda install --override-channels -c conda-forge minio-server (MinIO no longer publishes standalone binaries)
+  ✗ rustfs not on PATH
+      → a release from https://github.com/rustfs/rustfs/releases (zip, deb or rpm), or `docker cp` it out of the rustfs/rustfs image
 Compute
   ✓ 2× GPU (NVIDIA A100-SXM4-80GB, 81920 MiB)
   ✓ torch sees 2 GPU(s) (driver CUDA 12.8, torch CUDA 12.6)
 Connectivity
-  ○ minio not reachable at http://localhost:9000 (start it with `ndif start minio`)
+  ○ rustfs not reachable at http://localhost:9000 (start it with `ndif start rustfs`)
 
 ✗ 1 issue found.
 ```
 
-**Getting a `minio` binary.** MinIO no longer publishes standalone server
-binaries (`dl.min.io` returns 410 and the GitHub releases carry no assets). Two
-ways that work:
+**Getting a `rustfs` binary.** RustFS publishes standalone server binaries on
+its [GitHub releases](https://github.com/rustfs/rustfs/releases): a zip, `.deb`
+and `.rpm` per platform, in `gnu` and static `musl` builds. Unpack the zip and
+put `rustfs` on `PATH`, or install the package. The other way is to lift the
+binary out of the official image, as `docker/Dockerfile` does for the published
+image (its `rustfs` stage):
 
-- The conda-forge package, as the hint says. `--override-channels` matters on a
-  stock miniconda, which otherwise stops on the default channels'
-  terms-of-service prompt:
-
-  ```bash
-  conda install --override-channels -c conda-forge minio-server
-  ```
-
-- Lift the binary out of the official image, as `docker/Dockerfile` does for the
-  published image (its `minio` stage). quay.io, not Docker Hub — the
-  `minio/minio` Hub repository no longer resolves:
-
-  ```bash
-  cid=$(docker create quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z)
-  docker cp "$cid:/usr/bin/minio" /usr/local/bin/minio && docker rm "$cid"
-  ```
+```bash
+cid=$(docker create rustfs/rustfs:1.0.1)
+docker cp "$cid:/usr/bin/rustfs" /usr/local/bin/rustfs && docker rm "$cid"
+```
 
 If you already run an S3-compatible store, point `NDIF_OBJECT_STORE_URL` at it
 and skip the binary — this failure does not stop the rest of NDIF.

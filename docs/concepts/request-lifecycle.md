@@ -43,7 +43,7 @@ sequenceDiagram
     participant D as Dispatcher (spawned proc)
     participant K as Controller actor (Ray head)
     participant M as ModelActor replica (GPU)
-    participant S as Object store (MinIO/S3)
+    participant S as Object store (RustFS/S3)
 
     C->>A: WS connect /subscribe
     A->>R: SUBSCRIBE <session_id>

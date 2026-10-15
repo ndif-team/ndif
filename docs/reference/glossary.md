@@ -189,7 +189,7 @@ separation, not a security boundary. See
 
 ## Service
 
-A long-running process NDIF starts: `redis`, `minio`, `ray`, `api` (the `all` set)
+A long-running process NDIF starts: `redis`, `rustfs`, `ray`, `api` (the `all` set)
 and the optional `dashboard`, each a name in `src/ndif/cli/service.py` plus a
 start command. `NDIF_SERVICE` picks which and labels telemetry. See
 [adding-a-service.md](../developing/adding-a-service.md).
