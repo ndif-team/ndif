@@ -2,7 +2,7 @@
 
 ``ray`` and ``api`` reuse their service directory's ``start.sh`` verbatim
 (every knob is env-driven, so the CLI just injects the environment). ``redis``
-and ``minio`` are external servers spawned directly, deriving their ports from
+and ``rustfs`` are external servers spawned directly, deriving their ports from
 the matching ``NDIF_*`` URL.
 """
 
@@ -32,21 +32,21 @@ def _redis_command(env: dict) -> list[str]:
     return ["redis-server", "--port", str(port), "--daemonize", "no"]
 
 
-def _minio_command(env: dict) -> list[str]:
-    """Spawn ``minio server`` on the port from ``NDIF_OBJECT_STORE_URL``."""
+def _rustfs_command(env: dict) -> list[str]:
+    """Spawn ``rustfs server`` on the port from ``NDIF_OBJECT_STORE_URL``."""
     port = urlparse(env.get("NDIF_OBJECT_STORE_URL", "http://localhost:9000")).port or 9000
     console = env.get("NDIF_OBJECT_STORE_CONSOLE_PORT", "9001")
-    data_dir = Path(env.get("NDIF_HOME", "~/.ndif")).expanduser() / "minio"
+    data_dir = Path(env.get("NDIF_HOME", "~/.ndif")).expanduser() / "rustfs"
     data_dir.mkdir(parents=True, exist_ok=True)
-    return ["minio", "server", str(data_dir),
-            "--address", f":{port}", "--console-address", f":{console}"]
+    return ["rustfs", "server", str(data_dir), "--address", f":{port}",
+            "--console-enable", "--console-address", f":{console}"]
 
 
-def _minio_env(env: dict) -> dict:
-    """MinIO reads its root credentials from its own env vars, not NDIF_*."""
+def _rustfs_env(env: dict) -> dict:
+    """RustFS reads its root credentials from its own env vars, not NDIF_*."""
     return {
-        "MINIO_ROOT_USER": env.get("NDIF_OBJECT_STORE_ACCESS_KEY", "minioadmin"),
-        "MINIO_ROOT_PASSWORD": env.get("NDIF_OBJECT_STORE_SECRET_KEY", "minioadmin"),
+        "RUSTFS_ACCESS_KEY": env.get("NDIF_OBJECT_STORE_ACCESS_KEY", "rustfsadmin"),
+        "RUSTFS_SECRET_KEY": env.get("NDIF_OBJECT_STORE_SECRET_KEY", "rustfsadmin"),
     }
 
 
@@ -59,13 +59,13 @@ class Service:
     build_env: Callable[[dict], dict] = lambda env: {}
 
 
-# The core stack, ordered by startup dependency: redis/minio come up before the
+# The core stack, ordered by startup dependency: redis/rustfs come up before the
 # ray and api that use them. `start`/`stop` with no args walk this list (stop
 # reverses). Whether ray comes up as head or worker is decided by
 # NDIF_RAY_HEAD_ADDRESS (see ray/start.sh), not by anything here.
 SERVICES: list[Service] = [
     Service("redis", _redis_command, "Redis (request queue + response pub/sub)"),
-    Service("minio", _minio_command, "MinIO object store (execution results)", _minio_env),
+    Service("rustfs", _rustfs_command, "RustFS object store (execution results)", _rustfs_env),
     Service("ray", _script_command("ray/start.sh"), "Ray node + NDIF controller (head)"),
     Service("api", _script_command("api/start.sh"), "FastAPI served by gunicorn"),
 ]

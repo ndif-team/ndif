@@ -44,7 +44,7 @@ once; every other page zooms into one of its hops.
 - **Source is baked into the image.** Run `just ta` after a code change.
   `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 - **The published image runs the core stack in one container.** `NDIF_SERVICE`
-  defaults to `all`: redis, minio, ray and the API. The dashboard is optional and
+  defaults to `all`: redis, rustfs, ray and the API. The dashboard is optional and
   is not part of `all`.
 - **Provider defaults are `localhost`.** Inside the `ray` container nothing listens
   on `localhost:6379`, so compose sets `NDIF_REDIS_URL` explicitly. Ray's head port

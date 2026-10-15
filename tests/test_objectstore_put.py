@@ -1,6 +1,6 @@
 """Large result blobs upload as a parallel multipart upload and read back intact.
 
-Needs a reachable object store (the dev MinIO by default, configured by the
+Needs a reachable object store (the dev RustFS by default, configured by the
 same ``NDIF_OBJECT_STORE_*`` env the server reads); skips without one.
 """
 

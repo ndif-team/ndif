@@ -16,9 +16,9 @@ shape:
 1. **One image, one service per container.** `docker/Dockerfile` builds a single
    image whose entrypoint is the `ndif` CLI, running `start --foreground`;
    `NDIF_SERVICE` picks which service that container becomes — `api`, `ray`,
-   `dashboard`, `redis`, `minio`, or a list of those
+   `dashboard`, `redis`, `rustfs`, or a list of those
    (`src/ndif/cli/service.py` `env_services`). The image's default is `all`,
-   which expands to the core stack — redis, minio, ray, api, but not dashboard —
+   which expands to the core stack — redis, rustfs, ray, api, but not dashboard —
    in one container; compose sets one name per container instead. Every knob is
    an `NDIF_*` env var read at process start.
 2. **The API and the Ray cluster never speak directly.** The API talks to Redis;
@@ -45,7 +45,7 @@ flowchart TB
 
     subgraph support[Supporting containers]
         RED[("redis :6379")]
-        MIN[("minio :9000/:9001")]
+        MIN[("rustfs :9000/:9001")]
         PG[("postgres :5432")]
         LOKI[("loki :3100")]
         INF[("influxdb :8086")]
@@ -111,7 +111,7 @@ including the internal Ray ones compose does not publish, is in
   `ray:connected` flag, the TTL'd `/status` and `/env` caches, the CLI event
   stream, and every response pub/sub channel. The compose file declares no
   volume for it, so it is purely ephemeral; losing it loses in-flight requests.
-- **MinIO** — result blobs (`{request_id}.pt`) and non-blocking status responses
+- **RustFS** — result blobs (`{request_id}.pt`) and non-blocking status responses
   (`responses/{id}.json`) in the `ndif-results` bucket. Also no compose volume:
   results do not survive `just down`.
 - **Postgres** — users, API keys, and their tags. Schema from
@@ -133,7 +133,7 @@ re-reads nodes from Ray and re-pins `NDIF_DEPLOYMENTS` on boot.
 | `loki` / `NDIF_LOKI_URL` unset | Fail-open: services keep running, logs go to console only. |
 | `influxdb` / `NDIF_INFLUX_ENABLED=false` | Fail-open: no metric points recorded. |
 | `prometheus`, `grafana` | No dashboards; nothing else notices. |
-| `minio` unreachable | Results over the inline cap error at upload after the run; non-blocking requests have nowhere to write or read status. |
+| `rustfs` unreachable | Results over the inline cap error at upload after the run; non-blocking requests have nowhere to write or read status. |
 | `ray` down, dispatcher reconnecting | The dispatcher clears `ray:connected`, and `/request`, `/status`, `/env`, `/connected` all 503 (`require_ray_connection` in `src/ndif/services/api/app.py`). |
 | dispatcher process dead, or its Ray connection dead without an error reaching it | `ray:connected` has no TTL and stays set. Health endpoints pass and `POST /request` returns `RECEIVED`, while requests never progress. |
 | `redis` down | The API cannot enqueue and the dispatcher cannot pop; nothing works. |

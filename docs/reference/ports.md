@@ -71,8 +71,8 @@ guessing, since this repo doesn't pin them.
 | Port | Service | Protocol | Purpose | Env var | Host-published (dev compose) | Public in prod |
 |---|---|---|---|---|---|---|
 | 6379 | redis | RESP | Request queue, response pub/sub, status/env caches, trigger streams. | address side: `NDIF_REDIS_URL`; the CLI starts `redis-server` on that URL's port (`src/ndif/cli/service.py` `_redis_command`) | yes — `6379:6379` (compose `redis` `ports`) | no |
-| 9000 | minio | HTTP (S3) | Result blobs. Servers upload here; clients download via presigned GET URLs. | address side: `NDIF_OBJECT_STORE_URL` / `NDIF_OBJECT_STORE_PUBLIC_URL`; the CLI's MinIO takes the URL's port (`_minio_command`) | yes — `9000:9000` (compose `minio` `ports`) | **yes** — clients must be able to reach whatever host `NDIF_OBJECT_STORE_PUBLIC_URL` names |
-| 9001 | minio | HTTP | MinIO web console. Compose hardcodes `--console-address ":9001"` in the `minio` `command`; only a CLI-spawned MinIO reads the variable. | `NDIF_OBJECT_STORE_CONSOLE_PORT` (CLI only) | yes — `9001:9001` (compose `minio` `ports`) | no |
+| 9000 | rustfs | HTTP (S3) | Result blobs. Servers upload here; clients download via presigned GET URLs. | address side: `NDIF_OBJECT_STORE_URL` / `NDIF_OBJECT_STORE_PUBLIC_URL`; the CLI's RustFS takes the URL's port (`_rustfs_command`) | yes — `9000:9000` (compose `rustfs` `ports`) | **yes** — clients must be able to reach whatever host `NDIF_OBJECT_STORE_PUBLIC_URL` names |
+| 9001 | rustfs | HTTP | RustFS web console. Compose turns it on with `RUSTFS_CONSOLE_ENABLE` on the image's default port; only a CLI-spawned RustFS reads the variable. | `NDIF_OBJECT_STORE_CONSOLE_PORT` (CLI only) | yes — `9001:9001` (compose `rustfs` `ports`) | no |
 | 5432 | postgres | Postgres wire | User/API-key database for auth. Nothing connects unless `NDIF_POSTGRES_URL` is set — the dev compose leaves it commented out on the `api` service. | address side: `NDIF_POSTGRES_URL` | yes — `5432:5432` (compose `postgres` `ports`) | no |
 | 3100 | loki | HTTP | Log ingest (`/loki/api/v1/push`) and query. Services ship here only when `NDIF_LOKI_URL` is set. | address side: `NDIF_LOKI_URL` | yes — `3100:3100` | no |
 | 8086 | influxdb | HTTP | Metrics write API (InfluxDB 2.x). | address side: `NDIF_INFLUX_URL` | yes — `8086:8086` | no |
@@ -96,12 +96,12 @@ as the union of two different deployments:
 | 8001 | the `api` container | the one container |
 | 8081 | the `dashboard` container | **not bound** — the dashboard is optional and not in `all`; set `NDIF_SERVICE="all dashboard"` to add it |
 | 8265, 10001 | the `ray` container | the one container |
-| 9000, 9001 | the separate `minio` container | **the one container** — the image carries the `minio` server binary, copied from the pinned `quay.io/minio/minio` image, and the CLI spawns it |
+| 9000, 9001 | the separate `rustfs` container | **the one container** — the image carries the `rustfs` server binary, copied from the pinned `rustfs/rustfs` image, and the CLI spawns it |
 | 6379 | the separate `redis` container | **the one container** — `redis-server` is installed from apt and the CLI spawns it on the port in `NDIF_REDIS_URL` |
 
 `NDIF_SERVICE` defaults to `all` in the image, so a bare
 `docker run --gpus all ndif/ndif` binds every port in that list except 8081. Compose sets
-`NDIF_SERVICE` per container and runs redis and minio as their own services, so
+`NDIF_SERVICE` per container and runs redis and rustfs as their own services, so
 the in-image copies never start there.
 
 > **Not exposed, and deliberately:** 8080 (Ray's metrics export), 8076 (Ray's

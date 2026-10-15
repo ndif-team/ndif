@@ -16,7 +16,7 @@ import warnings
 import click
 
 from .. import config
-from ..lib.checks import check_api, check_minio, check_ray, check_redis
+from ..lib.checks import check_api, check_ray, check_redis, check_rustfs
 from .version import collect as version_info
 
 
@@ -60,7 +60,7 @@ def _check_binaries() -> int:
     for binary, hint in [
         ("ray", "pip install 'ray[default]'"),
         ("redis-server", "conda install --override-channels -c conda-forge redis-server (or your package manager)"),
-        ("minio", "conda install --override-channels -c conda-forge minio-server (MinIO no longer publishes standalone binaries)"),
+        ("rustfs", "a release from https://github.com/rustfs/rustfs/releases (zip, deb or rpm), or `docker cp` it out of the rustfs/rustfs image"),
     ]:
         path = shutil.which(binary)
         if path:
@@ -124,7 +124,7 @@ def _report_connectivity() -> None:
     """Reachability is informational — a stopped service is not a failure."""
     for name, var, fn in [
         ("redis", "NDIF_REDIS_URL", check_redis),
-        ("minio", "NDIF_OBJECT_STORE_URL", check_minio),
+        ("rustfs", "NDIF_OBJECT_STORE_URL", check_rustfs),
         ("api", "NDIF_API_URL", check_api),
         ("ray", "NDIF_RAY_ADDRESS", check_ray),
     ]:

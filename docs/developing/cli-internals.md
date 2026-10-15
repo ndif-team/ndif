@@ -69,7 +69,7 @@ own fallback, so the CLI, compose and a hand-run `start.sh` agree.
 `src/ndif/cli/service.py` is a table: a `Service` is a name, a `build_command(env)`,
 a description, and an optional `build_env(env)`. `ray`, `api` and `dashboard` use
 `_script_command` — their `start.sh` is the canonical launcher in and out of a
-container, so the CLI passes no flags; `redis` and `minio` are external servers whose
+container, so the CLI passes no flags; `redis` and `rustfs` are external servers whose
 commands are built from the matching `NDIF_*` URL. `SERVICES` is the ordered core
 stack, `OPTIONAL_SERVICES` the opt-in ones, and `SERVICE_MAP` their union, which
 `resolve_targets` and `ndif logs`'s `click.Choice` validate against. Adding a service
@@ -162,7 +162,7 @@ one report that doesn't:
 | Function | What it does |
 |---|---|
 | `_check_environment` | Python ≥ 3.12, then `ndif` and `nnsight` as hard requirements; `torch` (with its CUDA line), `transformers` and `ray` from `version.collect` — a missing one still counts |
-| `_check_binaries` | `shutil.which` for `ray`, `redis-server`, `minio`, each with an install hint |
+| `_check_binaries` | `shutil.which` for `ray`, `redis-server`, `rustfs`, each with an install hint |
 | `_check_gpu` | `nvidia-smi` lists GPUs and gives the driver's CUDA version; then `torch.cuda.is_available()` — a torch wheel built for a newer CUDA line than the driver imports fine and silently sees no GPU, so the mismatch is reported with both versions |
 | `_report_connectivity` | `src/ndif/cli/lib/checks.py` probes; **never** counted as failures |
 

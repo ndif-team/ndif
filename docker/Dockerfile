@@ -1,7 +1,7 @@
 # Single, configurable NDIF service image.
 #
 # One image runs any NDIF service; pick it at runtime with NDIF_SERVICE
-# (api | ray | redis | minio | dashboard | all, or a space/comma list). The
+# (api | ray | redis | rustfs | dashboard | all, or a space/comma list). The
 # entrypoint is the `ndif` CLI and the default command is `start --foreground`,
 # so:
 #
@@ -18,13 +18,11 @@
 # install instead of redownloading it. GPU services (ray) must be run with
 # `--gpus all`.
 
-# MinIO no longer publishes standalone binaries (dl.min.io returns 410 and the
-# GitHub releases carry no assets), so the server binary is copied out of the
-# official image. quay.io, not Docker Hub: the Hub repository's tag list is
-# gone ("object not found"), quay.io still serves every release. Pinned to a
-# release, not `latest`, so a rebuild is reproducible.
-ARG MINIO_IMAGE=quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
-FROM ${MINIO_IMAGE} AS minio
+# The RustFS server binary is copied out of the official image: it is a static
+# musl build, so it runs on the python base below. Pinned to a release, not
+# `latest`, so a rebuild is reproducible.
+ARG RUSTFS_IMAGE=rustfs/rustfs:1.0.1
+FROM ${RUSTFS_IMAGE} AS rustfs
 
 FROM python:3.12-slim
 
@@ -35,7 +33,7 @@ ENV PIP_NO_CACHE_DIR=1 \
 
 WORKDIR /app
 
-# redis-server + minio: the in-container stack for NDIF_SERVICE=all (the CLI
+# redis-server + rustfs: the in-container stack for NDIF_SERVICE=all (the CLI
 # spawns both; compose runs them as their own containers instead and never
 # starts these). cron: the dashboard service runs the monitor + reconcile jobs
 # from cron; its start.sh only wires them up when `cron` is on PATH. gcc +
@@ -47,7 +45,7 @@ RUN apt-get update -y \
     && apt-get install -y --no-install-recommends cron gcc libc6-dev git redis-server \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=minio /usr/bin/minio /usr/local/bin/minio
+COPY --from=rustfs /usr/bin/rustfs /usr/local/bin/rustfs
 
 # torch, from a build arg rather than requirements.txt: the wheel you need is a
 # property of the *host's* CUDA driver, not of this repo. A CUDA 13 wheel on a
@@ -134,7 +132,7 @@ LABEL org.opencontainers.image.title="NDIF" \
 
 # Ports the services listen on (documentation only; publish with -p). The Ray
 # GCS/object-manager ports and the dashboard agent are internal.
-#   8001 API   9000 MinIO S3   9001 MinIO console   8081 admin dashboard
+#   8001 API   9000 RustFS S3   9001 RustFS console   8081 admin dashboard
 #   8265 Ray dashboard   10001 Ray client   6379 Redis
 EXPOSE 8001 9000 9001 8081 8265 10001 6379
 

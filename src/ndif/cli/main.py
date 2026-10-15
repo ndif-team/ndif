@@ -33,7 +33,7 @@ def cli(env_file):
     """Manage NDIF services.
 
     \b
-    ndif start          Start all services (redis, minio, ray, api)
+    ndif start          Start all services (redis, rustfs, ray, api)
     ndif deploy gpt2    Deploy a model
     ndif status         View cluster and deployment status
     ndif stop           Stop all services

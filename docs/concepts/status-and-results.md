@@ -158,7 +158,7 @@ the cap is kept as the size limit for the inline route.
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually
 > reach, jobs complete and then fail at download. In compose it is
-> `http://localhost:9000` while the server uploads to `http://minio:9000`.
+> `http://localhost:9000` while the server uploads to `http://rustfs:9000`.
 
 Nothing deletes result blobs or `responses/*.json`: no TTL, no lifecycle rule,
 no cleanup job. Expiring them is a bucket-policy concern; see

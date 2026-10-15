@@ -36,10 +36,10 @@ controller's Redis, object-store, Loki and Influx settings into the actor's Ray
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_SERVICE` | `all` (image `ENV` in `docker/Dockerfile`); `unknown` as a telemetry label | `src/ndif/cli/service.py` `env_services`; `LokiProvider.CONFIG`, `InfluxProvider.CONFIG` | Which service(s) a bare `ndif start` brings up (space/comma list; `all` = redis, minio, ray, api), **and** the `service` label on every log line and metric point. The start scripts export it per service; `Deployment.create` overrides it to `model` for actor processes. |
+| `NDIF_SERVICE` | `all` (image `ENV` in `docker/Dockerfile`); `unknown` as a telemetry label | `src/ndif/cli/service.py` `env_services`; `LokiProvider.CONFIG`, `InfluxProvider.CONFIG` | Which service(s) a bare `ndif start` brings up (space/comma list; `all` = redis, rustfs, ray, api), **and** the `service` label on every log line and metric point. The start scripts export it per service; `Deployment.create` overrides it to `model` for actor processes. |
 | `NDIF_ENVIRONMENT` | `dev` | `LokiProvider.CONFIG`, `InfluxProvider.CONFIG`; the report cron's `parse_args` | Second static label on all telemetry — the prod/staging/dev discriminator. The report cron filters usage by it. |
 | `NDIF_LOG_LEVEL` | `INFO` | `src/ndif/common/logging_setup.py` `configure_console` | Level of the `ndif` logger (not the root; `propagate` is off). Applied only if it *lowers* the current level. |
-| `NDIF_HOME` | `~/.ndif` | `src/ndif/cli/state.py` `State.from_env`; `src/ndif/cli/config.py` `DEFAULTS` | CLI state root: `run/<name>.pid`, `logs/<name>.log`, and MinIO's data dir when the CLI spawns it. CLI-only. |
+| `NDIF_HOME` | `~/.ndif` | `src/ndif/cli/state.py` `State.from_env`; `src/ndif/cli/config.py` `DEFAULTS` | CLI state root: `run/<name>.pid`, `logs/<name>.log`, and RustFS's data dir when the CLI spawns it. CLI-only. |
 
 ## API service
 
@@ -136,18 +136,18 @@ Read by the controller launcher,
 
 Read by the API and by model actors through
 `src/ndif/common/providers/objectstore.py` `ObjectStoreProvider.CONFIG`. Boto3:
-MinIO in dev, S3 in production.
+RustFS in dev, S3 in production.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | Server-side endpoint for uploads and bucket creation. **Empty means real AWS S3** — boto3 derives the endpoint from the region. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | Client-facing endpoint used *only for presigning*; empty falls back to the URL above. A presigned URL signs the host, so this must be the host the downloader actually hits. |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` | `minioadmin` | S3 access key; also MinIO's `MINIO_ROOT_USER` when the CLI spawns MinIO. |
-| `NDIF_OBJECT_STORE_SECRET_KEY` | `minioadmin` | S3 secret key; likewise `MINIO_ROOT_PASSWORD`. |
+| `NDIF_OBJECT_STORE_ACCESS_KEY` | `rustfsadmin` | S3 access key; also RustFS's `RUSTFS_ACCESS_KEY` when the CLI spawns RustFS. |
+| `NDIF_OBJECT_STORE_SECRET_KEY` | `rustfsadmin` | S3 secret key; likewise `RUSTFS_SECRET_KEY`. |
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket result blobs are written to. |
 | `NDIF_OBJECT_STORE_REGION` | `us-east-1` | Set explicitly so presigning never round-trips to discover the region. |
-| `NDIF_OBJECT_STORE_VERIFY` | `true` | TLS verification (`_boolish`: `1`/`true`/`yes`/`on`). Set false for self-signed MinIO over HTTPS. |
-| `NDIF_OBJECT_STORE_CONSOLE_PORT` | `9001` | **CLI only** (`src/ndif/cli/service.py` `_minio_command`): the console port of a MinIO the CLI spawns. Compose hardcodes its own. |
+| `NDIF_OBJECT_STORE_VERIFY` | `true` | TLS verification (`_boolish`: `1`/`true`/`yes`/`on`). Set false for a self-signed store over HTTPS. |
+| `NDIF_OBJECT_STORE_CONSOLE_PORT` | `9001` | **CLI only** (`src/ndif/cli/service.py` `_rustfs_command`): the console port of a RustFS the CLI spawns. Compose hardcodes its own. |
 
 Set both keys empty to authenticate as the host's own IAM role: the keys are used
 only when **both** are set (`ObjectStoreProvider._make_client`); otherwise boto3
@@ -229,7 +229,7 @@ editing that heredoc.
 | `NDIF_RAY_HEAD_ADDRESS` | This node starts a Ray head rather than joining one. |
 | `NDIF_TP_MODEL_ACTOR_CLASS` | No tensor parallelism. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | Presigned URLs carry the internal endpoint — clients outside the network can't download large results. |
-| `NDIF_OBJECT_STORE_URL` | boto3 talks to real AWS S3, not a local MinIO. |
+| `NDIF_OBJECT_STORE_URL` | boto3 talks to real AWS S3, not a local RustFS. |
 | `NDIF_OBJECT_STORE_ACCESS_KEY` **and** `_SECRET_KEY` | boto3's own credential chain (environment, shared config, container or instance role). |
 
 ## Minimum viable config
@@ -299,7 +299,7 @@ NDIF_API_KEY=<a real client key>          # the monitor cron's traces need one
 | `GRPC_ENABLE_FORK_SUPPORT` | `src/ndif/services/ray/start.sh` | Defaulted to `0` before `ray start` so the Ray client proxier's per-client fork doesn't die intermittently. An explicit value wins. |
 | `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES`, `PYTORCH_CUDA_ALLOC_CONF` | set by `Deployment.create` | `1`: Ray doesn't mask GPUs from a model actor, which targets its GPUs through `max_memory` instead. `expandable_segments:True`: less CUDA fragmentation. |
 | `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `MASTER_ADDR`, `MASTER_PORT` | set per rank by `src/ndif/services/ray/tp/common.py` `rank_env` | A tensor-parallel group's rendezvous: `127.0.0.1` and an OS-chosen free port (`ShardGroup.__init__`). |
-| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | written by `src/ndif/cli/service.py` `_minio_env`; set on the compose `minio` service | MinIO reads its root credentials from these; the CLI mirrors the object-store keys into them. |
+| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | written by `src/ndif/cli/service.py` `_rustfs_env`; set on the compose `rustfs` service | RustFS reads its root credentials from these; the CLI mirrors the object-store keys into them. |
 | `HF_TOKEN`, `HF_HOME` | compose `ray` service (`HF_TOKEN` passthrough, HF cache bind mount); the dashboard cron block | Hugging Face auth and cache, read by `transformers` / `huggingface_hub`. The image declares `/root/.cache/huggingface` a `VOLUME`, and compose bind-mounts the host cache there, so weights persist. |
 | `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH` and `PYTHONHASHSEED=0`. |
 | `NDIF_VERSION` | a `docker build` ARG in `docker/Dockerfile`, not read at runtime | Carries the version into the build (setuptools-scm has no `.git` there); `VCS_REF` and `BUILD_DATE` are its siblings. Resolved versions go to `/etc/ndif/build.json` via `ndif version --write`. |

@@ -6,7 +6,7 @@ models on your GPUs, so anything you write with `remote=True` runs on your own
 machine instead of the public NDIF service.
 
 This image contains the **whole stack**: the HTTP API, a Ray node that loads
-models and runs traced code, and the Redis and MinIO instances they use. One
+models and runs traced code, and the Redis and RustFS instances they use. One
 `docker run` gives you a working backend.
 
 - Source and docs: <https://github.com/ndif-team/ndif>
@@ -100,11 +100,11 @@ stack:
 | `api` | Accepts nnsight requests, queues them, streams status and results back | 8001 |
 | `ray` | Ray head node; loads models on the GPU and runs the traced blocks | 8265 (Ray dashboard), 10001 (Ray client) |
 | `redis` | Request queue and response pub/sub | 6379 |
-| `minio` | S3-compatible store for results too large to ride on the response | 9000 (S3), 9001 (console) |
+| `rustfs` | S3-compatible store for results too large to ride on the response | 9000 (S3), 9001 (console) |
 | `dashboard` | Admin web UI: deploy / evict / status / schedules. Opt-in, see below | 8081 |
 
 Publish only what you use. `8001` is the one port a client needs; `9000` is
-needed as well for results over 20 MB (they come back as a presigned MinIO
+needed as well for results over 20 MB (they come back as a presigned RustFS
 URL the client downloads); `8265` if you want the Ray dashboard.
 
 ## Configuration
@@ -114,11 +114,11 @@ ones you are likely to want:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `NDIF_SERVICE` | `all` | Which services to run: `all`, or a space/comma list of `redis minio ray api dashboard`. `all dashboard` adds the admin UI. |
+| `NDIF_SERVICE` | `all` | Which services to run: `all`, or a space/comma list of `redis rustfs ray api dashboard`. `all dashboard` adds the admin UI. |
 | `HF_TOKEN` | unset | Hugging Face token for gated checkpoints (Llama, Gemma, ...). |
 | `HF_HOME` | `/root/.cache/huggingface` | Model weight cache. Mount your host cache there so weights persist. |
 | `NDIF_DEPLOYMENTS` | unset | Model *keys* (the long `TransformersModel:{"repo_id": ...}` strings `ndif status --verbose` prints) to load pinned at start, `\|`-separated. Repo ids are not accepted here; to pre-load a checkpoint by name run `docker exec ndif ndif deploy <repo-id>` once the container is up. Otherwise models load on first request. |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | The MinIO address **as the client sees it**. Set it to `http://<this-host>:9000` when clients run on other machines, or large results fail to download. |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | `http://localhost:9000` | The RustFS address **as the client sees it**. Set it to `http://<this-host>:9000` when clients run on other machines, or large results fail to download. |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Head-room added to a model's memory estimate when placing it. It also caps how much GPU memory a block may allocate beyond the weights; raise it if your interventions die with `CUDA out of memory ... MiB allowed`. |
 | `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Share of host RAM evicted models may occupy before being dropped. |
 | `NDIF_API_PORT` | `8001` | API port inside the container. |
@@ -203,7 +203,7 @@ More: [docs/operating/troubleshooting.md](https://github.com/ndif-team/ndif/blob
   https://github.com/ndif-team/ndif && cd ndif && just up`. See
   [docs/operating/quickstart.md](https://github.com/ndif-team/ndif/blob/main/docs/operating/quickstart.md).
 - **From source, no Docker** — `pip install ndif[api,ray]` plus `redis-server`
-  and `minio` on the PATH, then `ndif start`. Same page.
+  and `rustfs` on the PATH, then `ndif start`. Same page.
 - **Multiple GPU machines** — run `ray` on each extra node with
   `NDIF_RAY_HEAD_ADDRESS` pointing at the head:
   [docs/runbooks/add-a-gpu-node.md](https://github.com/ndif-team/ndif/blob/main/docs/runbooks/add-a-gpu-node.md).

@@ -1,6 +1,6 @@
 """Object-store provider: an S3-compatible bucket for result blobs.
 
-Uses **boto3**, so the same code talks to MinIO in dev and AWS S3 in prod.
+Uses **boto3**, so the same code talks to RustFS in dev and AWS S3 in prod.
 
 Results over the inline cap (``RedisProvider.max_publish_bytes``, derived from
 the Redis server's own pubsub output-buffer limits) are too big to ride the
@@ -9,7 +9,7 @@ publishes a presigned GET url on the COMPLETED response; the client downloads
 them directly.
 
 Two endpoints, because upload and download happen from different networks:
-    ``url``         reached by the server (e.g. ``minio:9000`` on the compose
+    ``url``         reached by the server (e.g. ``rustfs:9000`` on the compose
                     network) — used to upload and ensure the bucket. Leave empty
                     for real AWS S3 (boto3 derives the endpoint from ``region``).
     ``public_url``  reached by the client (e.g. ``localhost:9000`` on the host)
@@ -46,20 +46,20 @@ def _boolish(value: str) -> bool:
 class ObjectStoreProvider(Provider):
     CONFIG = {
         # Server-side endpoint. Empty -> boto3 derives the real AWS S3 endpoint
-        # from `region` (prod); set to e.g. http://minio:9000 for dev.
+        # from `region` (prod); set to e.g. http://rustfs:9000 for dev.
         "url": ("NDIF_OBJECT_STORE_URL", "http://localhost:9000", str),
         # Client-facing endpoint used only for presigning. Empty -> use `url`.
         "public_url": ("NDIF_OBJECT_STORE_PUBLIC_URL", "", str),
         # Static keys, for a store that has no other way to authenticate — the
-        # default pair is MinIO's. Set both empty to authenticate as whatever
+        # default pair is RustFS's. Set both empty to authenticate as whatever
         # role the host already carries; see _make_client.
-        "access_key": ("NDIF_OBJECT_STORE_ACCESS_KEY", "minioadmin", str),
-        "secret_key": ("NDIF_OBJECT_STORE_SECRET_KEY", "minioadmin", str),
+        "access_key": ("NDIF_OBJECT_STORE_ACCESS_KEY", "rustfsadmin", str),
+        "secret_key": ("NDIF_OBJECT_STORE_SECRET_KEY", "rustfsadmin", str),
         "bucket": ("NDIF_OBJECT_STORE_BUCKET", "ndif-results", str),
         # Set explicitly so presigning never round-trips to discover the region
         # (the public endpoint isn't reachable from the server's network).
         "region": ("NDIF_OBJECT_STORE_REGION", "us-east-1", str),
-        # TLS cert verification; set false for self-signed MinIO over https.
+        # TLS cert verification; set false for a self-signed store over https.
         "verify": ("NDIF_OBJECT_STORE_VERIFY", True, _boolish),
     }
 
@@ -79,9 +79,9 @@ class ObjectStoreProvider(Provider):
     def _make_client(cls, endpoint: str):
         """Build an S3 client for ``endpoint`` (empty -> real AWS from region).
 
-        A custom endpoint (MinIO or any non-AWS host) needs **path-style**
+        A custom endpoint (RustFS or any non-AWS host) needs **path-style**
         addressing — the bucket goes in the path, not as a subdomain of the
-        host, which wouldn't resolve for ``minio:9000`` / an IP. Real AWS uses
+        host, which wouldn't resolve for ``rustfs:9000`` / an IP. Real AWS uses
         the default virtual-hosted style. SigV4 everywhere for presigned-url
         compatibility.
 

@@ -21,7 +21,7 @@ Three facts decide everything below:
    controller. Set to the head's `HOST:PORT`, it runs `ray start --address` and
    nothing else. `NDIF_RAY_ADDRESS` is unrelated: it is the `ray://` client
    address the API and CLI dial.
-2. **A worker runs Ray and nothing else** — no API, Redis, MinIO or controller.
+2. **A worker runs Ray and nothing else** — no API, Redis, RustFS or controller.
    `ndif start` with `NDIF_RAY_HEAD_ADDRESS` set starts only `ray`
    (`src/ndif/cli/commands/start.py` `start`), and the controller actor requires
    the `head` custom resource, which only the head advertises
@@ -43,7 +43,7 @@ On the new machine:
 | A HuggingFace cache, and `HF_TOKEN` for gated repos | the actor downloads weights on its own node. The controller passes its Redis, object-store and telemetry settings into each actor, but **not** `HF_TOKEN` / `HF_HOME` — those must be in the worker's own environment | `ls ~/.cache/huggingface/hub` |
 
 `ndif doctor` checks the prerequisites on a host install; on a worker its
-`redis-server` and `minio` lines fail, which is expected. Details in
+`redis-server` and `rustfs` lines fail, which is expected. Details in
 [Troubleshooting](../operating/troubleshooting.md).
 
 ## Open the ports
@@ -93,7 +93,7 @@ docker run -d --name ndif-worker \
 ```
 
 `NDIF_SERVICE=ray` is required: the image defaults to `all`, which would start
-Redis, MinIO and the API on the worker too (`docker/Dockerfile`). `--network host`
+Redis, RustFS and the API on the worker too (`docker/Dockerfile`). `--network host`
 avoids the port-mapping problem above; without it you must publish Ray's ports
 and make the container's advertised address routable from the head.
 

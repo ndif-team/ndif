@@ -15,7 +15,7 @@ against it. There are three routes, and this page has a section per route:
 
 | Route | Command | Use it when |
 |---|---|---|
-| **1. `docker run`** | `docker run --gpus all ndif/ndif` | You want an NDIF, not a checkout. One container runs redis, minio, ray and the API. |
+| **1. `docker run`** | `docker run --gpus all ndif/ndif` | You want an NDIF, not a checkout. One container runs redis, rustfs, ray and the API. |
 | **2. Compose** | `just up` | You are changing this repo, or want Postgres + the telemetry tier alongside. |
 | **3. From source** | `ndif start` | No Docker on the box, or you want the services as ordinary host processes. |
 
@@ -41,7 +41,7 @@ That is the intended default for an NDIF only you can reach, and the wrong one
 the moment anyone else can. Two more things are open by default:
 
 - **The compose stack publishes its backing services on every interface** with
-  default or no credentials: Redis (6379), Postgres (5432), MinIO (9000/9001),
+  default or no credentials: Redis (6379), Postgres (5432), RustFS (9000/9001),
   the Ray client port (10001), the Ray dashboard (8265), InfluxDB, Loki,
   Prometheus and Grafana. Anyone who reaches Redis or 10001 can run code on the
   cluster. On a machine others can reach, change each `ports:` entry to a
@@ -76,7 +76,7 @@ controller. NDIF needs at least one GPU node to do work.
 ## Route 1: `docker run` — the published image
 
 One container runs the whole request path. `NDIF_SERVICE` defaults to `all` in
-the image, which resolves to the core stack — **redis, minio, ray, api**
+the image, which resolves to the core stack — **redis, rustfs, ray, api**
 (`src/ndif/cli/service.py` `SERVICES`). The dashboard is opt-in
 (`OPTIONAL_SERVICES`); `NDIF_SERVICE="all dashboard"` adds it.
 
@@ -92,7 +92,7 @@ docker logs -f ndif
 - **`--shm-size 4g`**: Ray's object store lives in `/dev/shm`, and Docker's
   64 MB default is far too small.
 - **8001** is the API — the only port a client posts to.
-- **9000** is MinIO's S3 API. Publish it: a result too large to inline comes
+- **9000** is RustFS's S3 API. Publish it: a result too large to inline comes
   back as a presigned URL the *client* fetches, signed with
   `NDIF_OBJECT_STORE_PUBLIC_URL` (default `http://localhost:9000`). Unpublished,
   large results fail to download. See
@@ -154,7 +154,7 @@ the right wheel is a property of your driver.
 
 ```bash
 ndif doctor        # versions, binaries, GPU, connectivity — read this before starting
-ndif start         # redis, minio, ray, api, detached
+ndif start         # redis, rustfs, ray, api, detached
 ndif info          # tracked PIDs + reachability
 ndif logs api -f
 ndif stop
@@ -162,8 +162,8 @@ ndif stop
 
 `ndif start` brings up the core stack in dependency order; `ndif start
 dashboard` adds the admin UI. `ndif doctor` checks for `ray`, `redis-server` and
-`minio` on `PATH`. `redis-server` comes from your package manager or
-conda-forge; getting a `minio` binary is covered in
+`rustfs` on `PATH`. `redis-server` comes from your package manager or
+conda-forge; getting a `rustfs` binary is covered in
 [The ndif CLI](cli.md#ndif-doctor). With an S3-compatible store of your own,
 point `NDIF_OBJECT_STORE_URL` at it and run `ndif start redis ray api`.
 
@@ -179,7 +179,7 @@ curl localhost:8001/ping            # "pong" — the API process is alive
 curl localhost:8001/connected       # {"status":"connected"} once Ray is reachable
 ```
 
-Under compose you want `redis`, `minio`, `influxdb` and `postgres` reporting
+Under compose you want `redis`, `rustfs`, `influxdb` and `postgres` reporting
 `(healthy)` — the `api` service's `depends_on` waits on exactly those — plus
 `api` `(healthy)` on its own `/ping` check, and the rest `running`.
 
@@ -200,7 +200,7 @@ The compose stack also publishes these (route 1 publishes only what you pass
 | http://localhost:8081 | Admin dashboard (no login — dev mode is on) |
 | http://localhost:8265 | Ray dashboard: actors, nodes, logs |
 | http://localhost:3000 | Grafana (anonymous admin), lands on the NDIF Overview |
-| http://localhost:9001 | MinIO console (`minioadmin` / `minioadmin`) |
+| http://localhost:9001/rustfs/console/ | RustFS console (`rustfsadmin` / `rustfsadmin`) |
 
 ## Deploy a first model
 
@@ -249,7 +249,7 @@ auth is off.
 What happened: the client `POST`ed the serialized block to `/request`, the API
 queued it in Redis, the dispatcher handed it to a gpt2 replica (deploying one
 first), and the result came back over the `/subscribe` websocket or a presigned
-MinIO URL. [Request Lifecycle](../concepts/request-lifecycle.md) walks each hop.
+RustFS URL. [Request Lifecycle](../concepts/request-lifecycle.md) walks each hop.
 
 The repo's own test suite runs this same trace against `localhost:8001`; see
 [Testing](../developing/testing.md).
@@ -275,7 +275,7 @@ above, for the default). What a wrong address looks like is in
 ## Gotchas
 
 - **`just down` removes containers,** but downloaded weights survive in the
-  host HF cache the `ray` service bind-mounts. The Postgres database, MinIO
+  host HF cache the `ray` service bind-mounts. The Postgres database, RustFS
   blobs and telemetry do not; see
   [The Compose Stack](compose-stack.md#persistence).
 - **After a code change, `just up` is not enough** — the source is baked into

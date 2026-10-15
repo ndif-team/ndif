@@ -3,7 +3,7 @@
 Detached by default (each service in its own session/process group, tracked by
 a PID file), or in the foreground with ``--foreground`` for containers and
 process supervisors. Which services: the args, else ``$NDIF_SERVICE``, else all
-of them (redis, minio, ray, api).
+of them (redis, rustfs, ray, api).
 """
 
 import os
@@ -125,7 +125,7 @@ def _run_foreground(targets: list[Service], env: dict) -> None:
               help="Run in the foreground (for containers/supervisors) instead of detaching.")
 def start(services, env_pairs, redis_url, ray_address, ray_head_address, api_port,
           restart, foreground):
-    """Start NDIF services (default: all — redis, minio, ray, api).
+    """Start NDIF services (default: all — redis, rustfs, ray, api).
 
     Detached by default; --foreground runs them attached for a container or
     supervisor. Deploy models separately with `ndif deploy` once services are

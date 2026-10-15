@@ -126,12 +126,13 @@ volume; its schedule and monitor state live there. See
 
 ## 3. Real object storage, reachable from two networks
 
-`NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` default to `minioadmin` on both
-the server and the MinIO container. Replace them, and put the bucket somewhere
-durable — the dev MinIO writes to the container filesystem and loses everything
-on `just down`. Results over 8 MiB upload as parallel multipart uploads; one that
-dies halfway leaves parts that are stored and billed until removed, so give the
-bucket a lifecycle rule that aborts incomplete multipart uploads after a day.
+`NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` default to `rustfsadmin` on both
+the server and the `rustfs` container. Replace them, and put the bucket somewhere
+durable — the dev RustFS writes to the named volume `rustfs_data`, which lives
+only as long as the docker host keeps it. Results over 8 MiB upload as parallel
+multipart uploads; one that dies halfway leaves parts that are stored and billed
+until removed, so give the bucket a lifecycle rule that aborts incomplete
+multipart uploads after a day.
 
 On a cloud host, prefer holding no key at all. Set **both** variables empty and
 boto3 falls back to its own credential chain, which on AWS finds the instance or
@@ -269,7 +270,7 @@ durable volumes and retention policy for anything it needs to keep. See
 - **No secret management.** Credentials are environment variables. Bring your own
   secret store.
 - **No authentication on the backing services.** The dev compose publishes Redis,
-  Postgres, MinIO (`minioadmin`), InfluxDB, Loki, Prometheus, Grafana (anonymous
+  Postgres, RustFS (`rustfsadmin`), InfluxDB, Loki, Prometheus, Grafana (anonymous
   admin), the Ray dashboard and the Ray client port on every interface. Anyone who
   can reach Redis or the Ray client port can run code on the cluster. Bind them to
   `127.0.0.1` or drop the `ports:` entries before the machine is reachable;
@@ -300,9 +301,9 @@ durable volumes and retention policy for anything it needs to keep. See
 | 8 | `NDIF_REDIS_URL` explicitly set on **every** service — never left at localhost | all | `ndif info` in each container shows the right host |
 | 9 | Head/worker split correct: `NDIF_RAY_HEAD_ADDRESS` set on workers only | ray | `ndif status` lists every GPU node |
 | 10 | 6385 / 8076 / 52366 open between nodes only | network | — |
-| 11 | Never public: Redis 6379, Postgres 5432, Ray client 10001, Ray dashboard 8265, MinIO console 9001, dashboard 8081 without TLS, the telemetry ports | network | A scan from outside shows only your TLS endpoint (and the object store, if public) |
+| 11 | Never public: Redis 6379, Postgres 5432, Ray client 10001, Ray dashboard 8265, RustFS console 9001, dashboard 8081 without TLS, the telemetry ports | network | A scan from outside shows only your TLS endpoint (and the object store, if public) |
 | 12 | TLS terminating proxy in front of 8001; 8001 not directly exposed | network | `https://` endpoint answers `/ping` |
-| 13 | Persistent volumes for HF cache, MinIO, Postgres, Loki, Influx, dashboard data | all | Survives a container recreate |
+| 13 | Persistent volumes for HF cache, RustFS, Postgres, Loki, Influx, dashboard data | all | Survives a container recreate |
 | 14 | `HF_TOKEN` set on `ray` if you serve gated checkpoints | ray | The gated model deploys |
 | 15 | `NDIF_ENVIRONMENT` set to something other than `dev` | all | Grafana can separate this deployment |
 | 16 | `NDIF_MODEL_CACHE_PERCENTAGE` sized for what else runs on the node | ray | — |

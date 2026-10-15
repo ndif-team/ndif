@@ -38,7 +38,7 @@ dependencies = [
     # The CLI reads/writes models.yaml deployment configs (deploy -f / export).
     "pyyaml",
     # Result blobs are staged in an S3-compatible object store via boto3, which
-    # speaks S3 to both MinIO (dev) and AWS S3 (prod). The server uploads and
+    # speaks S3 to both RustFS (dev) and AWS S3 (prod). The server uploads and
     # presigns, so the client (with the returned url) needs nothing extra here.
     "boto3",
 ]

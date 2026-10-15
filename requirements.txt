@@ -63,7 +63,7 @@ python-multipart==0.0.32
 redis==8.0.1
 
 # Object store client (boto3/S3) — result blobs are staged there. boto3 speaks
-# S3 to both MinIO (dev) and AWS S3 (prod).
+# S3 to both RustFS (dev) and AWS S3 (prod).
 boto3==1.35.49
 
 # Telemetry sinks (the `metrics` extra) — bundled in the image so the
