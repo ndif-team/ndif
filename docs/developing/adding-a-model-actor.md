@@ -129,6 +129,9 @@ Replace `execute` only and you get all of this for free. Go further and keep it:
 7. **Don't let request state outlive the request.** `cleanup()` runs after every
    outcome; the base's `block_scope` restores the global linecache and nnsight memos
    around your `execute`, which matters only if you deserialize in-process.
+   The reverse also holds: the constructor freezes every object alive after
+   `load_from_disk` (`freeze_loaded_objects`), so per-request state must not
+   exist yet at that point, or it is never collected.
 
 ## Copy the sandbox actor
 
