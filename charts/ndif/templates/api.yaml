@@ -1,0 +1,146 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ndif.apiHost" . }}
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  # Exactly one: each API pod runs its own queue dispatcher. Recreate keeps a
+  # rollout from overlapping two.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ndif.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ndif.selectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
+      annotations:
+        {{- include "ndif.secretChecksum" (dict "ctx" . "component" "api") | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "ndif.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: NDIF_SERVICE
+              value: api
+            - name: NDIF_API_PORT
+              value: "8001"
+            - name: NDIF_API_WORKERS
+              value: {{ .Values.api.workers | quote }}
+            {{- if .Values.api.postgres.existingSecret }}
+            - name: NDIF_POSTGRES_URL
+              {{- include "ndif.secretRef" (dict "name" .Values.api.postgres.existingSecret "key" "NDIF_POSTGRES_URL") | nindent 14 }}
+            {{- else if .Values.api.postgres.url }}
+            - name: NDIF_POSTGRES_URL
+              {{- include "ndif.secretRef" (dict "name" (include "ndif.fullname" .) "key" "NDIF_POSTGRES_URL") | nindent 14 }}
+            {{- end }}
+            {{- include "ndif.commonEnv" . | nindent 12 }}
+            {{- include "ndif.objectStoreEnv" . | nindent 12 }}
+            {{- with .Values.api.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8001
+          # All on /ping: while Ray is down the API stays routable and answers
+          # 503 with a message rather than vanishing from the Service.
+          startupProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: {path: /ping, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ndif.apiHost" . }}
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.api.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.api.service.type }}
+  selector:
+    {{- include "ndif.selectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: http
+{{- if .Values.api.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ndif.apiHost" . }}
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+  {{- with .Values.api.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.api.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.api.ingress.tlsSecretName }}
+  tls:
+    - hosts: [{{ $.Values.api.ingress.host | quote }}]
+      secretName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.api.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ndif.apiHost" . }}
+                port:
+                  name: http
+{{- end }}

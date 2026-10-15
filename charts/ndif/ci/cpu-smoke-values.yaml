@@ -1,0 +1,20 @@
+# CPU-only stack for a laptop or kind cluster: no GPU requests, the Ray head
+# only, in-cluster Redis and RustFS, small shm and volumes.
+image:
+  tag: latest
+ray:
+  # Ray puts its object store on /tmp below about 11Gi; a memory emptyDir
+  # only uses what is written.
+  shmSize: 12Gi
+  head:
+    gpus: 0
+    resources:
+      requests: {cpu: 500m, memory: 2Gi}
+hfCache:
+  size: 1Gi
+rustfs:
+  persistence:
+    size: 1Gi
+api:
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}

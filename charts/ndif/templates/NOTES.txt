@@ -1,0 +1,28 @@
+NDIF {{ .Chart.AppVersion }} ({{ include "ndif.image" . }}) is installing as {{ include "ndif.fullname" . }}.
+
+The API is Ready once it reaches Ray. Check from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ndif.apiHost" . }} 18001:{{ .Values.api.service.port }}
+  curl http://localhost:18001/connected      # {"status":"connected"}
+
+Point nnsight at it with CONFIG.API.HOST = "http://localhost:18001"{{ if .Values.api.ingress.enabled }} (or https://{{ .Values.api.ingress.host }}){{ end }}.
+{{- if not (or .Values.api.postgres.url .Values.api.postgres.existingSecret) }}
+
+WARNING: api.postgres is unset, so there is no API-key auth and every request
+runs trusted. Anyone who can reach the API can run code on your GPUs.
+{{- end }}
+{{- if and .Values.rustfs.enabled (not (include "ndif.objectStorePublicUrl" .)) }}
+
+WARNING: the in-cluster RustFS has no public address. Large results are
+presigned against {{ include "ndif.objectStoreUrl" . }}, which clients outside
+the cluster cannot reach. Set rustfs.ingress or objectStore.publicUrl.
+{{- end }}
+{{- if and .Values.rustfs.enabled (not .Values.rustfs.existingSecret) (eq .Values.rustfs.accessKey "rustfsadmin") }}
+
+WARNING: RustFS uses the default rustfsadmin credentials. Set rustfs.accessKey
+and rustfs.secretKey before anything outside the cluster can reach it.
+{{- end }}
+{{- if and (eq (int .Values.ray.head.gpus) 0) (eq (int .Values.ray.workers.replicas) 0) }}
+
+NOTE: no Ray pod requests a GPU, so the controller has nowhere to place models.
+{{- end }}

@@ -1,0 +1,98 @@
+{{- if gt (int .Values.ray.workers.replicas) 0 }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ndif.fullname" . }}-ray-worker
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "ray-worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.ray.workers.replicas }}
+  # Recreate: a surged pod would need a free GPU node the old pod still holds.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-worker") | nindent 8 }}
+      annotations:
+        {{- include "ndif.secretChecksum" (dict "ctx" . "component" "ray") | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ray.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.ray.terminationGracePeriodSeconds }}
+      containers:
+        - name: ray
+          image: {{ include "ndif.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "ndif.rayEnv" . | nindent 12 }}
+            # Set: start.sh joins this head as a worker instead of starting one.
+            - name: NDIF_RAY_HEAD_ADDRESS
+              value: "{{ include "ndif.rayHead" . }}:{{ .Values.ray.gcsPort }}"
+          # The raylet exits when it loses the head (e.g. the head restarted)
+          # while the container stays up; restart the pod so it rejoins.
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import psutil, sys; sys.exit(not any(p.info['name'] == 'raylet' for p in psutil.process_iter(['name'])))"
+            initialDelaySeconds: 180
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 4
+          lifecycle:
+            preStop:
+              exec:
+                command: [ray, stop]
+          resources:
+            {{- include "ndif.gpuResources" (dict "resources" .Values.ray.workers.resources "gpus" .Values.ray.workers.gpus) | nindent 12 }}
+          volumeMounts:
+            {{- include "ndif.rayVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "ndif.rayVolumes" . | nindent 8 }}
+      {{- with .Values.ray.workers.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ray.workers.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.ray.workers.affinity }}
+        {{- toYaml .Values.ray.workers.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              # Away from the head too: each Ray pod advertises its node's RAM.
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: {{ include "ndif.name" . }}
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+                matchExpressions:
+                  - {key: app.kubernetes.io/component, operator: In, values: [ray-head, ray-worker]}
+        {{- end }}
+{{- end }}

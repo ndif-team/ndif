@@ -1,0 +1,48 @@
+name: Helm chart
+
+# Lints and renders charts/ndif with its default values and with every
+# charts/ndif/ci/*-values.yaml (external S3 with no in-cluster store, and the
+# CPU-only smoke stack), then validates the manifests against the Kubernetes
+# schemas.
+
+on:
+  pull_request:
+    paths:
+      - "charts/**"
+      - ".github/workflows/helm.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      KUBECONFORM_VERSION: v0.6.7
+      KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+      # Kubernetes schema version the manifests are validated against.
+      KUBERNETES_VERSION: 1.33.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo kubeconform.tar.gz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tar.gz" | sha256sum -c
+          tar xzf kubeconform.tar.gz -C /usr/local/bin kubeconform
+
+      - name: Lint, render and validate
+        run: |
+          set -euo pipefail
+          for values in "" charts/ndif/ci/*-values.yaml; do
+            echo "::group::${values:-default values}"
+            helm lint --strict charts/ndif ${values:+-f "$values"}
+            helm template ndif charts/ndif ${values:+-f "$values"} \
+              | kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION"
+            echo "::endgroup::"
+          done

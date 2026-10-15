@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ndif
+description: The NDIF server (the backend behind nnsight's remote=True) on Kubernetes, as plain pods running the ndif/ndif image.
+type: application
+kubeVersion: ">=1.25.0-0"
+# Chart version; bump on any change under charts/ndif.
+version: 0.1.0
+# The NDIF release the default image tag points at (<appVersion>-<image.cuda>).
+appVersion: "0.1.1"
+home: https://ndif.us
+sources:
+  - https://github.com/ndif-team/ndif
+keywords: [ndif, nnsight, ray, interpretability]

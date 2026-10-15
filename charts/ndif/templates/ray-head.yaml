@@ -1,0 +1,113 @@
+{{- $gcs := .Values.ray.gcsPort }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ndif.rayHead" . }}
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "ray-head") | nindent 4 }}
+spec:
+  # One head per cluster: it holds the GCS and the controller in memory, so a
+  # second head is a second cluster. Recreate never runs two at once.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-head") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-head") | nindent 8 }}
+      annotations:
+        {{- include "ndif.secretChecksum" (dict "ctx" . "component" "ray") | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ray.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.ray.terminationGracePeriodSeconds }}
+      containers:
+        - name: ray
+          image: {{ include "ndif.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- include "ndif.rayEnv" . | nindent 12 }}
+            - name: NDIF_RAY_HEAD_PORT
+              value: {{ $gcs | quote }}
+            {{- with .Values.ray.modelActorClass }}
+            - name: NDIF_MODEL_IMPORT_PATH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.ray.deployments }}
+            - name: NDIF_DEPLOYMENTS
+              value: {{ join "|" . | quote }}
+            {{- end }}
+          ports:
+            - {name: gcs, containerPort: {{ $gcs }}}
+            - {name: client, containerPort: 10001}
+            - {name: dashboard, containerPort: 8265}
+          # Ready once the GCS first answers. No liveness or readiness after
+          # that: a GCS slowed by a model load must neither restart the head
+          # (and every model) nor drop it from the Service the API dials.
+          startupProbe:
+            exec:
+              command: [ray, health-check, --address, "127.0.0.1:{{ $gcs }}"]
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 60
+          lifecycle:
+            preStop:
+              exec:
+                command: [ray, stop]
+          resources:
+            {{- include "ndif.gpuResources" (dict "resources" .Values.ray.head.resources "gpus" .Values.ray.head.gpus) | nindent 12 }}
+          volumeMounts:
+            {{- include "ndif.rayVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "ndif.rayVolumes" . | nindent 8 }}
+      {{- with .Values.ray.head.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ray.head.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ray.head.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+# Stable name for the head: workers join on gcs, the API and dashboard dial
+# client (ray://); the other Ray ports are reached by pod IP. Cluster-internal
+# only: anyone reaching 10001 runs code.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ndif.rayHead" . }}
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "ray-head") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-head") | nindent 4 }}
+  ports:
+    - {name: gcs, port: {{ $gcs }}, targetPort: gcs}
+    - {name: client, port: 10001, targetPort: client}
+    - {name: dashboard, port: 8265, targetPort: dashboard}

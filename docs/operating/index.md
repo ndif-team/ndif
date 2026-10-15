@@ -2,7 +2,7 @@
 title: Operating NDIF
 one_liner: Running an NDIF — from a first `docker run` or `just up` to a deployment that faces real users.
 tags: [operating]
-related: [docs/operating/quickstart.md, docs/operating/production.md, docs/runbooks/index.md, docs/reference/env-vars.md]
+related: [docs/operating/quickstart.md, docs/operating/production.md, docs/operating/kubernetes.md, docs/runbooks/index.md, docs/reference/env-vars.md]
 sources: []
 ---
 
@@ -35,6 +35,7 @@ Step-by-step procedures live in [Runbooks](../runbooks/index.md).
 | [Admin Dashboard](dashboard.md) | Running the web UI, its auth, and its crons. |
 | [Observability](observability.md) | Finding the logs, metrics, and dashboards. |
 | [Going to Production](production.md) | Before anyone but you can reach it. |
+| [Kubernetes (Helm)](kubernetes.md) | Installing on a Kubernetes cluster with the chart in `charts/ndif`. |
 | [Troubleshooting](troubleshooting.md) | Something is broken. The single entry point; it routes to the runbooks and error lookup. |
 
 ## Related

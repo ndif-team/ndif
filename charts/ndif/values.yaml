@@ -1,0 +1,256 @@
+# NDIF Helm chart values. Every NDIF process is configured by NDIF_* environment
+# variables (docs/reference/env-vars.md); this file sets the ones that wire the
+# services together and leaves the rest to the extraEnv lists.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- Image -------------------------------------------------------------------
+# One image runs every NDIF service; the chart sets NDIF_SERVICE per pod.
+image:
+  repository: ndif/ndif
+  # CUDA line of the torch wheel in the image: cu126 (any 12.x driver >= 525)
+  # or cu130 (CUDA 13 drivers, Blackwell). Picks the default tag.
+  cuda: cu126
+  # Full tag override. Empty means "<Chart appVersion>-<cuda>", e.g. 0.1.1-cu126.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# --- Applied to every pod that runs the ndif image (api, ray, dashboard) ------
+# NDIF_ENVIRONMENT labels all telemetry; set it to tell deployments apart.
+environment: ""
+# Extra env for every ndif pod, as a list of EnvVar objects
+# (e.g. NDIF_LOKI_URL, NDIF_INFLUX_URL, NDIF_LOG_LEVEL).
+extraEnv: []
+# Pod- and container-level security contexts for the ndif pods. Empty runs as
+# the image's user. For a non-root image set e.g. runAsUser/runAsGroup/fsGroup
+# here and point hfCache.mountPath at that user's home.
+podSecurityContext: {}
+securityContext: {}
+podAnnotations: {}
+
+# --- Secrets -----------------------------------------------------------------
+# Hugging Face token for gated checkpoints, passed to the ray pods as HF_TOKEN.
+# Either inline (stored in the chart's Secret) or from an existing Secret with
+# key HF_TOKEN.
+hfToken:
+  value: ""
+  existingSecret: ""
+
+# --- API ---------------------------------------------------------------------
+# FastAPI behind gunicorn on 8001: the only port clients use. One replica: the
+# queue dispatcher runs once per API process group, and two API pods on one
+# Redis would run two dispatchers. For more throughput raise api.workers.
+api:
+  # gunicorn workers (NDIF_API_WORKERS).
+  workers: 1
+  resources:
+    requests: {cpu: "1", memory: 2Gi}
+    limits: {memory: 4Gi}
+  service:
+    type: ClusterIP
+    port: 8001
+    annotations: {}
+  # Put TLS in front of the API; NDIF serves plain HTTP. Clients use a
+  # websocket on the same host, so the controller must allow upgrades and long
+  # reads (ingress-nginx: nginx.ingress.kubernetes.io/proxy-read-timeout).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ndif.example.com
+    # Name of a TLS Secret for host; empty means no TLS block.
+    tlsSecretName: ""
+  # API-key auth. Empty: no auth, and every request runs trusted (in-process,
+  # with trust_remote_code). Set to a postgresql:// URL of a database created
+  # with docker/postgres/init.sql, or reference a Secret holding it under key
+  # NDIF_POSTGRES_URL.
+  postgres:
+    url: ""
+    existingSecret: ""
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# --- Ray ---------------------------------------------------------------------
+# The head runs the Ray GCS and the NDIF controller; workers add GPUs.
+ray:
+  # The head's GCS port; workers join on it (NDIF_RAY_HEAD_PORT). The other
+  # head ports are start.sh's defaults: Ray client 10001, Ray dashboard 8265,
+  # object manager 8076, dashboard agent 52366, metrics 8080.
+  gcsPort: 6385
+  # Model actor class for every replica. The sandbox actor runs untrusted
+  # requests in a separate runner process; the base ModelActor runs every
+  # request in-process.
+  modelActorClass: ndif.services.ray.sandbox.model.SandboxModelActor
+  # Models deployed and pinned when the controller starts (NDIF_DEPLOYMENTS):
+  # a list of model keys, e.g. ["openai-community/gpt2"].
+  deployments: []
+  # Shared memory for Ray's object store (/dev/shm, a memory-backed emptyDir;
+  # what Ray writes there is charged to the pod's memory). Ray sizes its store
+  # at no less than 10 GB, so below about 11Gi it puts the store on /tmp, which
+  # is much slower.
+  shmSize: 16Gi
+  # Seconds the pod gets to stop Ray (a preStop runs `ray stop`).
+  terminationGracePeriodSeconds: 60
+  # Pod runtime class for GPU pods, if the cluster needs one (e.g. "nvidia").
+  runtimeClassName: ""
+  # Env for head and workers (e.g. NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  # NDIF_MODEL_CACHE_PERCENTAGE, NDIF_TP_MODEL_ACTOR_CLASS).
+  extraEnv: []
+
+  head:
+    # GPUs requested as nvidia.com/gpu. 0 runs a CPU-only head, which the
+    # controller ignores for placement: add workers with GPUs.
+    gpus: 1
+    # No memory limit by default: the controller sizes its CPU model cache
+    # from the node's total RAM (NDIF_MODEL_CACHE_PERCENTAGE, default 0.9), not
+    # from the pod limit. If you set one, lower that percentage to fit under it.
+    resources:
+      requests: {cpu: "4", memory: 32Gi}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  workers:
+    # Ray worker pods; each joins the head and adds its GPUs.
+    replicas: 0
+    gpus: 1
+    resources:
+      requests: {cpu: "4", memory: 32Gi}
+    nodeSelector: {}
+    tolerations: []
+    # Empty keeps each worker on a node without the head or another worker
+    # (each Ray pod advertises its whole node's RAM, so two on one node
+    # double-count it). Anything set here replaces that rule.
+    affinity: {}
+
+# Hugging Face cache (HF_HOME) on a PersistentVolumeClaim, mounted on every ray
+# pod. Once ray pods run on more than one node it must be ReadWriteMany.
+# Disabled, each pod re-downloads weights into its own filesystem on start.
+hfCache:
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 500Gi
+  mountPath: /root/.cache/huggingface
+
+# --- Object store ------------------------------------------------------------
+# Results larger than the Redis inline cap go to an S3 bucket and reach clients
+# as presigned URLs. Production: a cloud bucket (set rustfs.enabled=false, url
+# empty, region set, credentials or the pod's IAM role). Evaluation: the
+# in-cluster RustFS below.
+objectStore:
+  # Server-side S3 endpoint. Empty with rustfs.enabled=false means AWS S3 for
+  # `region`; with rustfs.enabled it defaults to the in-cluster Service.
+  url: ""
+  # Endpoint presigned URLs are signed with: must resolve from the *client*.
+  # Empty falls back to `url`, or to https://<rustfs.ingress.host> when the
+  # RustFS ingress is on. Not needed for AWS S3.
+  publicUrl: ""
+  bucket: ndif-results
+  region: us-east-1
+  # TLS verification toward the store; false for a self-signed endpoint.
+  verify: true
+  # Static credentials for an external store; rustfs.enabled supplies its own
+  # and ignores these. Leave both and existingSecret empty to use the pod's own
+  # identity (IRSA, EKS Pod Identity, GKE Workload Identity or an instance
+  # role) through the serviceAccount annotations below.
+  accessKey: ""
+  secretKey: ""
+  # Secret with keys NDIF_OBJECT_STORE_ACCESS_KEY / NDIF_OBJECT_STORE_SECRET_KEY.
+  existingSecret: ""
+
+# In-cluster RustFS (S3-compatible), for clusters without a cloud bucket.
+rustfs:
+  enabled: true
+  image:
+    repository: rustfs/rustfs
+    tag: "1.0.1"
+    pullPolicy: IfNotPresent
+  # Root credentials; NDIF uses them too. Change them (the chart refuses the
+  # default with the ingress on), or reference a Secret with keys
+  # NDIF_OBJECT_STORE_ACCESS_KEY / NDIF_OBJECT_STORE_SECRET_KEY.
+  accessKey: rustfsadmin
+  secretKey: rustfsadmin
+  existingSecret: ""
+  # The claim is kept on helm uninstall.
+  persistence:
+    storageClass: ""
+    size: 100Gi
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  # The rustfs image runs as uid 10001.
+  podSecurityContext:
+    fsGroup: 10001
+  service:
+    type: ClusterIP
+    port: 9000
+  # Clients download large results from this store, so it needs an address
+  # they can reach: this Ingress (or service.type LoadBalancer plus
+  # objectStore.publicUrl).
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: results.ndif.example.com
+    tlsSecretName: ""
+  nodeSelector: {}
+  tolerations: []
+
+# --- Redis -------------------------------------------------------------------
+# Queue, response pub/sub and status caches. Holds no durable state.
+redis:
+  # Use an existing Redis instead (redis:// or rediss:// URL); disables the
+  # in-chart one. One Redis (or logical DB) per NDIF: keys carry no prefix.
+  url: ""
+  image:
+    repository: redis
+    tag: 7.4.11-alpine
+    pullPolicy: IfNotPresent
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+  nodeSelector: {}
+  tolerations: []
+
+# --- Admin dashboard ---------------------------------------------------------
+# Deploy/evict/status UI on 8081. Admin-only: reach it with port-forward or an
+# authenticating proxy. Its monitor/reconcile crons need a root container.
+dashboard:
+  enabled: false
+  # Admin login. passwordHash is a bcrypt hash from
+  # `python -m ndif.services.dashboard.backend.auth hash <password>`;
+  # sessionSecret is a random 32+ byte string. Or reference a Secret with keys
+  # NDIF_DASHBOARD_USERNAME / NDIF_DASHBOARD_PASSWORD_HASH /
+  # NDIF_DASHBOARD_SESSION_SECRET.
+  username: admin
+  passwordHash: ""
+  sessionSecret: ""
+  existingSecret: ""
+  # Volume for schedules, monitor state and logs; kept on helm uninstall.
+  persistence:
+    storageClass: ""
+    size: 1Gi
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  service:
+    type: ClusterIP
+    port: 8081
+  extraEnv: []
+  nodeSelector: {}
+  tolerations: []
+
+# --- Service account ---------------------------------------------------------
+# Used by every ndif pod, with the Kubernetes API token not mounted. Annotate it
+# for cloud IAM (e.g. eks.amazonaws.com/role-arn) to reach S3 without static
+# keys; trusted requests run in-process and can use that role too.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
