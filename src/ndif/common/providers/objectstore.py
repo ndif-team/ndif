@@ -19,14 +19,24 @@ Two endpoints, because upload and download happen from different networks:
                     ``url`` when unset.
 """
 
+import io
 from datetime import timedelta
 from typing import Optional
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from .base import Provider
+
+
+# 8 MiB parts, 8 in flight. A single put_object of a large result ran at about
+# 225 MB/s against MinIO; this config took a 128 MiB upload from 650 to 210 ms.
+# Anything at or under one part (status JSON, small results) is a plain put_object.
+_TRANSFER = TransferConfig(
+    multipart_threshold=8 << 20, multipart_chunksize=8 << 20, max_concurrency=8
+)
 
 
 def _boolish(value: str) -> bool:
@@ -142,13 +152,25 @@ class ObjectStoreProvider(Provider):
     def put(
         cls, key: str, data: bytes, content_type: str = "application/octet-stream"
     ) -> None:
-        """Upload ``data`` under ``key`` (creating the bucket on first use)."""
+        """Upload ``data`` under ``key`` (creating the bucket on first use).
+
+        Past ``_TRANSFER.multipart_threshold`` the upload is split into parts
+        sent in parallel. Below it, a plain ``put_object``: the transfer
+        manager adds about 0.6 ms per call, paid by every status update of a
+        non-blocking request.
+        """
         cls._ensure_bucket()
-        cls.client.put_object(
-            Bucket=cls.bucket,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
+        if len(data) <= _TRANSFER.multipart_threshold:
+            cls.client.put_object(
+                Bucket=cls.bucket, Key=key, Body=data, ContentType=content_type
+            )
+            return
+        cls.client.upload_fileobj(
+            io.BytesIO(data),
+            cls.bucket,
+            key,
+            ExtraArgs={"ContentType": content_type},
+            Config=_TRANSFER,
         )
 
     @classmethod
