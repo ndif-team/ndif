@@ -18,6 +18,13 @@ from ndif.services.ray.deployments.controller.cluster.cluster import Cluster
 from ndif.services.dashboard.jobs.util import summarize_error
 
 
+@pytest.fixture(autouse=True)
+def no_ray(monkeypatch):
+    """``update_nodes`` asks the runtime context for the GCS address, and
+    ``ray.get_runtime_context()`` starts a local Ray instance when none is up."""
+    monkeypatch.setattr(cluster_mod, "gcs_address", lambda: "10.9.8.7:7111")
+
+
 def _node(ip, gpus=4):
     """A NodeState stand-in. Ray reports DEAD nodes with resources intact, so
     these deliberately carry full ``resources_total`` regardless of state."""

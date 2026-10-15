@@ -22,6 +22,7 @@ from .....common.types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
+from .cluster.cluster import gcs_address
 
 logger = logging.getLogger("ndif.controller")
 
@@ -554,7 +555,7 @@ class _ControllerActor:
 
     def status(self):
         """Dashboard view: per-deployment health + cluster resources + COLD models."""
-        ray_status = list_actors()
+        ray_status = list_actors(address=gcs_address())
 
         status = {}
 
