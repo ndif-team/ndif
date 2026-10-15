@@ -59,30 +59,21 @@ Face cache.
 
 | Tag | Torch wheel | Use when |
 |---|---|---|
-| `latest`, `0.1.0`, `0.1.0-cu126` | CUDA 12.6 | Default. Runs on any CUDA 12.x driver (>= 525). |
-| `0.1.0-cu130` | CUDA 13.0 | Drivers at 580 or newer, and Blackwell GPUs (RTX 50xx, B200), which the cu126 wheel has no kernels for. |
+| `latest`, `<version>`, `<version>-cu126` | CUDA 12.6 | Default. Runs on any CUDA 12.x driver (>= 525). |
+| `<version>-cu130` | CUDA 13.0 | Drivers at 580 or newer, and Blackwell GPUs (RTX 50xx, B200), which the cu126 wheel has no kernels for. |
 
 Pick by the CUDA version in `nvidia-smi`'s header: a 12.x driver runs cu126;
 a 13.x driver runs either. A wheel newer than your driver supports fails at
 runtime with `the NVIDIA driver on your system is too old`. There is no cu128
 tag: PyTorch's cu128 index stopped at torch 2.11.
 
-Ask an image what it carries:
+`<version>` is an ndif release number: the repository's tags without the `v`.
+To see what a tag carries (ndif, nnsight, torch, transformers, ray and Python
+versions), ask the image:
 
 ```bash
-docker run --rm ndif/ndif version
+docker run --rm ndif/ndif:<tag> version
 ```
-
-The versions that decide server behaviour, for `0.1.0`:
-
-| | cu126 | cu130 |
-|---|---|---|
-| ndif | 0.1.0 | 0.1.0 |
-| nnsight | 0.8.0rc1 | 0.8.0rc1 |
-| torch | 2.14.0+cu126 | 2.14.0+cu130 |
-| transformers | 5.17.0 | 5.17.0 |
-| ray | 2.55.1 | 2.55.1 |
-| Python | 3.12 | 3.12 |
 
 The client and server should run the same nnsight minor version and the same
 transformers major version: a traced block refers to modules by their position
