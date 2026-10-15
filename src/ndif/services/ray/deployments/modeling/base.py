@@ -82,6 +82,25 @@ def _is_unrecoverable_cuda_error(exception: BaseException) -> bool:
     return any(marker in message for marker in _UNRECOVERABLE_CUDA_ERRORS)
 
 
+def freeze_loaded_objects() -> None:
+    """Collect garbage, then move every surviving object out of the GC's reach.
+
+    A loaded model is several hundred thousand long-lived Python objects
+    (modules, parameters, config, hooks). Without this, the full ``gc.collect``
+    in ``cleanup()`` re-scans all of them after every request. Frozen objects
+    are never collected, so call this only at points where what is alive is
+    meant to live as long as the replica.
+
+    Called once, from the constructor, before any request exists. ``from_cache``
+    does not refreeze: a request preempted by ``to_cache`` is not waited for,
+    so its thread can still be running then, and its reference cycles would be
+    frozen and never freed. The objects ``from_cache`` creates (one accelerate
+    hook per module) stay young; scanning them costs about 0.2 ms per request.
+    """
+    gc.collect()
+    gc.freeze()
+
+
 class BaseModelDeploymentArgs(BaseModel):
     """Constructor arguments the controller passes to a model actor.
 
@@ -169,6 +188,7 @@ class BaseModelDeployment:
         self.runtime_context = ray.get_runtime_context()
 
         self.model = self.load_from_disk()
+        freeze_loaded_objects()
 
         logger.info(f"ModelActor constructed for {model_key}")
 
