@@ -44,14 +44,14 @@ The paper's citation, as committed in `README.md`:
 
 | Artifact | Where | Go there when |
 |---|---|---|
-| NDIF server image | [hub.docker.com/r/ndif/ndif](https://hub.docker.com/r/ndif/ndif) | You want to *run* a server rather than build one. `docker run --gpus all ndif/ndif` starts the whole stack in one container (`NDIF_SERVICE=all`). Tags are one per CUDA line — `<version>-cu126`, `<version>-cu130` — plus a bare `<version>` and `latest` that both point at the cu126 build, pushed by `.github/workflows/publish_docker.yml` on a `v*` tag. The page's README is `docker/README.md` in this repo, pushed by the same workflow. |
+| NDIF server image | [hub.docker.com/r/ndif/ndif](https://hub.docker.com/r/ndif/ndif) | You want to *run* a server rather than build one. `docker run --gpus all ndif/ndif` starts the whole stack in one container (`NDIF_SERVICE=all`). Tags are one per CUDA line — `<version>-cu126`, `<version>-cu130` — plus a bare `<version>` and `latest` that both point at the cu126 build (final releases only), pushed by `.github/workflows/publish_docker.yml` on a `v*` tag. The page's README is `docker/README.md` in this repo, pushed by the same workflow. |
 | `ndif` on PyPI | [pypi.org/project/ndif](https://pypi.org/project/ndif/) | You are installing the server (or just its CLI) into an existing environment: `pip install ndif[api,ray]`, then `ndif start`. Published by `.github/workflows/publish.yml` on a GitHub release. `torch` is deliberately **not** a dependency — the right wheel depends on your CUDA driver, so install it yourself first. |
 | `nnsight` on PyPI | [pypi.org/project/nnsight](https://pypi.org/project/nnsight/) | You need the client, or you are checking what version range this server accepts — `requirements.txt` pins `nnsight>=0.8.0rc1,<0.9`, and 0.8 is a pre-release, so `pip` only picks it up because the specifier names it explicitly. |
 | Hosted-deployment images | private | `.github/workflows/build_images.yml` builds the hosted image on a push to `main`, separately from the Docker Hub workflow. |
 
 The versions a published image actually resolved to are baked in at build time
-(`ndif version --write /etc/ndif/build.json`, `docker/Dockerfile:111`) and the
-build inputs are OCI labels (`Dockerfile:118-128`), so
+(`ndif version --write /etc/ndif/build.json` in `docker/Dockerfile`) and the
+build inputs are OCI labels, so
 `docker run --rm ndif/ndif version` and `docker image inspect` between them
 answer "what is in this tag" without a rebuild.
 
@@ -63,13 +63,13 @@ every Serve page you find.
 
 | Ray topic | Go there when |
 |---|---|
-| Ray Core: actors, `lifetime="detached"`, namespaces, `ray.get_actor` | You are reading the controller. Deployments are `actor_class.options(name=..., namespace="NDIF", lifetime="detached")` (`.../cluster/deployment.py:210-216`); every deploy/evict is an actor create or `ray.kill`. |
+| Ray Core: actors, `lifetime="detached"`, namespaces, `ray.get_actor` | You are reading the controller. Deployments are `actor_class.options(name=..., namespace="NDIF", lifetime="detached")` (`.../cluster/deployment.py` `Deployment.create`); every deploy/evict is an actor create or `ray.kill`. |
 | Ray Client (`ray://`) | You are debugging why the API can't reach the cluster. The dispatcher holds the one client connection; port 10001 is Ray's own default and NDIF never overrides it. |
 | `ray start` flags and the cluster port map | You are adding a node. `services/ray/start.sh` passes five port flags and lets Ray default the rest — the raylet, node-manager, and worker port range are Ray's business, and Ray's port documentation is the only place they're enumerated. |
-| Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes`, `head=10` and an optional node label, and the controller reads them back off the node list. |
+| Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes` and, on the head, `head=10`; the controller reads them back off the node list. |
 | `runtime_env` / `env_vars` | You are wondering how a model actor got its Redis address. The controller copies its provider config into each actor's `runtime_env`. |
 | The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [Compose stack](../operating/compose-stack.md#shm_size-4gb) for the `shm_size` requirement. |
-| Ray metrics / Prometheus export | You are wiring monitoring. `--metrics-export-port` is what Prometheus scrapes; the NDIF variable that sets it is `NDIF_RAY_METRICS_PORT` (`start.sh:66`). |
+| Ray metrics / Prometheus export | You are wiring monitoring. `--metrics-export-port` is what Prometheus scrapes; the NDIF variable that sets it is `NDIF_RAY_METRICS_PORT`. |
 
 Ray's version is pinned in `requirements.txt` (`ray[default]==2.55.1`); read the
 docs for **that** version, not `latest` — port defaults and actor options have
@@ -114,8 +114,8 @@ an afternoon:
 - **Ray Serve tutorials and `serve.deployment` examples.** NDIF's model
   deployments are detached Ray actors created and killed by the controller.
   Nothing in this repo imports `ray.serve`, and the dependency is `ray[default]`
-  (`pyproject.toml:46`, `requirements.txt:40`) — `ray[serve]` is not installed at
-  all.
+  in both `pyproject.toml` and `requirements.txt` — `ray[serve]` is not installed
+  at all.
 - **Writeups of NDIF's previous server.** An older design used Ray Serve
   applications and sandboxed user code *in-process* behind an import/attribute
   whitelist. Both are gone: execution is a detached actor, and isolation is
@@ -125,7 +125,7 @@ an afternoon:
 - **Anything describing VM or microVM isolation.** NDIF's isolation is a
   separate OS process per request, driven over a Unix socket — no VM, no
   hardening beyond the process boundary and an environment allowlist
-  (`sandbox/host.py:29-69`). Read
+  (`src/ndif/services/ray/sandbox/host.py` `RUNNER_ENV`). Read
   [Sandbox internals](../developing/sandbox-internals.md), and do not describe
   the sandbox as a security boundary.
 

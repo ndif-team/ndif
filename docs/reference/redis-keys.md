@@ -12,7 +12,7 @@ sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndi
 
 Every key, pub/sub channel and stream any part of `src/ndif` touches, grouped by
 subsystem. Names are literal unless shown with `{braces}`, which mark interpolated
-parts. All names are top-level in database 0 — there is no global prefix.
+parts. All names are top-level in the database `NDIF_REDIS_URL` names — there is no prefix.
 
 The constants live in `src/ndif/common/redis/`, but not all of them: the queue key
 comes from `src/ndif/services/api/queue/config.py`, the `ray:connected` flag is an
@@ -24,48 +24,38 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `queue` | List | API `POST /request` — `lpush` on the **binary** client (`app.py:183`) | Dispatcher `get()` — `brpop` (`dispatcher.py:141`) then up to `fetch_batch_max-1` `rpop`s (`:148`) | none | One pickled `BackendRequestModel` per element, payload blob included |
+| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/api/queue/dispatcher.py` `Dispatcher.get` — `brpop`, then up to `fetch_batch_max - 1` `rpop`s | none | One pickled `BackendRequestModel` per element, payload blob included |
 
-The name is `NDIF_QUEUE_KEY`, default `queue`
-(`src/ndif/services/api/queue/config.py:58`). `lpush` + `brpop` gives FIFO. This is
-the only key that holds non-UTF-8 data, which is why `RedisProvider` keeps a
-separate `async_bytes_client` — decoding would corrupt the pickle.
-
-The blocking pop uses `NDIF_QUEUE_FETCH_TIMEOUT_S` (default `10`) so an idle
-dispatch loop still wakes to drain errors; `NDIF_QUEUE_FETCH_BATCH_MAX` (default
-`32`) caps one drain.
+The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
+`brpop` gives FIFO. The pickles are not UTF-8, which is one reason
+`RedisProvider` keeps a separate non-decoding `async_bytes_client`. The blocking
+pop uses `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle dispatch loop still wakes to
+drain errors; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one drain.
 
 ## Control-plane health
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `ray:connected` | String | Dispatcher `connect()` — `delete` on entry (`dispatcher.py:105`), `set "1"` once Ray *and* the Controller actor answer (`:129`) | API `require_ray_connection` dependency (`app.py:114`) | none — presence is the signal | `"1"` |
+| `ray:connected` | String | `Dispatcher.connect` — deleted on entry, set to `"1"` once Ray *and* the Controller actor answer | `src/ndif/services/api/app.py` `require_ray_connection` | none — presence is the signal | `"1"` |
 
 Guards `POST /request`, `GET /status`, `GET /env` and `/connected`; absence yields
-a 503 with "compute backend is reconnecting".
+a 503 "compute backend is reconnecting".
 
-## Cluster status cache
+## Cluster status and env caches
 
-Constants in `src/ndif/common/redis/status.py`.
-
-| Key | Type | Written by | Read by | TTL | Holds |
-|---|---|---|---|---|---|
-| `status` | String | Dispatcher `status_worker` — `set ... ex=STATUS_TTL_S` (`dispatcher.py:259-261`); deleted on Ray reconnect (`:113-114`) | API `_coalesced_fetch` (`app.py:226`, `:235`, `:255`) | `NDIF_STATUS_TTL_S`, default **60s** | The controller's `status()` dict, JSON-encoded |
-| `status:requested` | String | API `SET NX EX timeout_s` (`app.py:240`); deleted by the worker on both success and failure (`dispatcher.py:262`, `:267`) and on Ray reconnect (`:113-114`) | Nobody reads the value — only the `NX` result matters | `NDIF_STATUS_TIMEOUT_S`, default **60s** | `"1"`. Coalescing lock; the TTL is a dead-man's switch |
-| `status:trigger` | Stream | API `xadd(..., maxlen=16, approximate=True)`, winner of the lock only (`app.py:241-243`) | Dispatcher `status_worker` — `xread(block=0, count=1)` from `$` (`dispatcher.py:246`) | capped at ~16 entries, no time TTL | `{"t": "1"}` — the entry is a doorbell, its content is unused |
-| `status:ready` | Pub/sub channel | Dispatcher `status_worker` — `"ok"` (`dispatcher.py:263`) or `"error"` (`:268`) | Waiting `/status` requests — `subscribe` (`app.py:231`), `listen` (`:247`) | n/a | `"ok"` / `"error"` |
-
-## Cluster env cache
-
-Constants in `src/ndif/common/redis/env.py`. Identical mechanism, different TTL —
-the cluster env (python version + installed packages) changes only on a redeploy.
+`/status` and `/env` share one mechanism (`src/ndif/services/api/app.py`
+`_coalesced_fetch` on the API side; `Dispatcher.status_worker` and
+`Dispatcher.env_worker` on the other). Constants in `src/ndif/common/redis/status.py`
+and `src/ndif/common/redis/env.py`; rows below are for `status`, and the `env`
+rows are identical with `env` in the name and `NDIF_ENV_TTL_S` (default **300s**)
+/ `NDIF_ENV_TIMEOUT_S` (default 60s) as the TTLs.
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `env` | String | Dispatcher `env_worker` (`dispatcher.py:298`); deleted on Ray reconnect (`:113-114`) | API `_coalesced_fetch` via `GET /env` (`app.py:297-304`) | `NDIF_ENV_TTL_S`, default **300s** | The controller's `env()` dict, JSON-encoded |
-| `env:requested` | String | API `SET NX EX timeout_s` (`app.py:240`); deleted by the worker (`dispatcher.py:299`, `:304`) and on reconnect (`:113-114`) | Only the `NX` result | `NDIF_ENV_TIMEOUT_S`, default **60s** | `"1"` |
-| `env:trigger` | Stream | API `xadd(..., maxlen=16)` (`app.py:241-243`) | Dispatcher `env_worker` `xread` (`dispatcher.py:285`) | ~16 entries | `{"t": "1"}` |
-| `env:ready` | Pub/sub channel | Dispatcher `env_worker` — `"ok"` (`dispatcher.py:300`) / `"error"` (`:305`) | Waiting `/env` requests | n/a | `"ok"` / `"error"` |
+| `status` | String | The worker — `set ... ex=STATUS_TTL_S`; deleted by `Dispatcher.connect` on (re)connect | `_coalesced_fetch` | `NDIF_STATUS_TTL_S`, default **60s** | The controller's `status()` dict, JSON |
+| `status:requested` | String | `_coalesced_fetch` — `SET NX EX timeout_s`; deleted by the worker on success and failure, and on reconnect | Nobody reads the value — only the `NX` result matters | `NDIF_STATUS_TIMEOUT_S`, default **60s** | `"1"`. Coalescing lock; the TTL is a dead-man's switch |
+| `status:trigger` | Stream | `_coalesced_fetch` — `xadd(..., maxlen=16, approximate=True)`, lock winner only | The worker — `xread(block=0, count=1)` from `$` | ~16 entries, no time TTL | `{"t": "1"}` — a doorbell; content unused |
+| `status:ready` | Pub/sub channel | The worker — `"ok"` or `"error"` | Waiting `/status` requests | n/a | `"ok"` / `"error"` |
 
 ## Operational events (CLI → dispatcher)
 
@@ -73,55 +63,46 @@ Constants in `src/ndif/common/redis/events.py`.
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `dispatcher:events` | Stream | CLI `xadd(..., maxlen=64, approximate=True)` — `ndif queue`, `ndif kill` (`cli/lib/events.py:38-40`), and `notify_reconcile` after `ndif deploy` / `ndif evict` (`:72-73`) | Dispatcher `events_worker` — `xread(block=0, count=1)` from `$` (`dispatcher.py:327`) | capped at ~64 entries, no time TTL | `event_type` plus per-type fields |
-| `ndif:cli:{event_type}:{pid}:{time_ns}` | List | Dispatcher `_respond` — `lpush` of the JSON reply, then `expire` (`dispatcher.py:344-348`) | The CLI process that minted it — `brpop`, default timeout 5s (`cli/lib/events.py:41`) | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded (`events.py:27`) | One JSON reply |
+| `dispatcher:events` | Stream | The CLI — `xadd(..., maxlen=64, approximate=True)`: `ndif queue` and `ndif kill` (`src/ndif/cli/lib/events.py` `_request`), and `notify_reconcile` after `ndif deploy` / `ndif evict` | `Dispatcher.events_worker` — `xread(block=0, count=1)` from `$` | ~64 entries, no time TTL | `event_type` plus per-type fields |
+| `ndif:cli:{event_type}:{pid}:{time_ns}` | List | `Dispatcher._respond` — `lpush` of the JSON reply, then `expire` | The CLI process that minted it (`_request`) — `brpop`, default timeout 5 s | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded | One JSON reply |
 
-Event types carried on `dispatcher:events`:
+The response key is minted per call from the PID and `time.time_ns()`, so it is
+never reused. Event types on `dispatcher:events`:
 
 | `event_type` | Fields | Dispatcher does |
 |---|---|---|
-| `queue_state_request` | `response_key` | Replies with `{"processors": {model_key: snapshot}}` (`dispatcher.py:350-354`) |
-| `kill_request` | `response_key`, `request_id` | Dequeues the request, or cancels it on its replica; replies `removed_from_queue` / `cancelled_execution` / `not_found` (`dispatcher.py:356-357`, `_kill` at `:359`) |
-| `reconcile_model` | `model_key` | Re-syncs that Processor's replica pool. Fire-and-forget, no reply (`dispatcher.py:377-380`) |
-
-The response key is minted per call as
-`f"ndif:cli:{event_type}:{os.getpid()}:{time.time_ns()}"`
-(`cli/lib/events.py:37`), so it is unique per invocation and never reused.
+| `queue_state_request` | `response_key` | Replies `{"processors": {model_key: snapshot}}` (`Dispatcher._handle_queue_state`) |
+| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one has its dispatch-side replica worker cancelled, which errors the request; the model actor's execution is not interrupted. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
+| `reconcile_model` | `model_key` | Re-syncs that Processor's replica pool. Fire-and-forget, no reply (`Dispatcher._handle_reconcile`) |
 
 ## Response channels
 
 | Channel | Type | Published by | Subscribed by | TTL | Carries |
 |---|---|---|---|---|---|
-| `{session_id}` | Pub/sub channel | `BackendRequestModel.respond` (sync, `request.py:190-193`) and `arespond` (async, `:222-225`) — so the queue's processor/replica workers, the dispatcher's kill handler (`dispatcher.py:359`), the model actor (`modeling/base.py:317` onward), `LogStream.write` (`modeling/util.py:31`), and `SandboxDriver.next_event` (`sandbox/driver.py:254-256`, reached through the `on_log` callback the actor supplies at `sandbox/model.py:134`) | The API's `/subscribe` websocket handler (`app.py:393-394`), which forwards each message verbatim to the client | n/a | `BackendResponseModel.model_dump_json()` — `id`, `status`, `description`, optional `data`. A COMPLETED response carrying the result itself is published as `.pickle()` (`torch.save`) bytes instead, and forwarded as a binary frame |
+| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message verbatim | n/a | A JSON `BackendResponseModel` (text frame), or — for a COMPLETED response carrying the result itself, at most `RedisProvider.max_publish_bytes` — the response's `torch.save` bytes (binary frame) |
 
-`session_id` is a bare `uuid4().hex` generated per websocket (`app.py:384`) and
-used as the channel name with no prefix. The handler subscribes *before* sending
-the id to the client, so the channel is live before any status can be published —
-pub/sub has no replay.
+`session_id` is a bare `uuid4().hex` minted per websocket and used as the channel
+name with no prefix. The handler subscribes *before* sending the id to the client,
+so the channel is live before any status can be published — pub/sub has no replay.
 
-**Traffic is not one message per request.** A channel carries every status
-transition (`RECEIVED` → `QUEUED` → `RUNNING` → `COMPLETED`/`ERROR`) *plus* one
-`Status.LOG` message per line the user's code prints. `LogStream.write`
-(`modeling/util.py:31`) buffers stdout and publishes one LOG per complete line, and
-in the sandboxed path each `PRINT` event the runner subprocess sends is republished
-as a LOG (`sandbox/driver.py:254-256`). A chatty traced block therefore produces
-hundreds of publishes on one channel, all forwarded down the same websocket.
+**What is published:** `QUEUED`, `RUNNING`, `COMPLETED`/`ERROR` and the other
+transitions — but not `RECEIVED`, which is only the HTTP response to
+`POST /request` (`create_request` builds it with `response`, not `respond`) —
+plus one `Status.LOG` message per line the user's code prints. A chatty block
+therefore produces hundreds of publishes on one channel.
 
-A request with **no** `session_id` (non-blocking submit) has no channel; its latest
-response goes to the object store instead, and `LOG` updates are dropped there —
-so a non-blocking job's prints are not retrievable.
+A request with **no** `session_id` (non-blocking submit) has no channel: its latest
+non-LOG response goes to the object store as JSON instead (see below), so its prints
+are not retrievable.
 
 ## Not in Redis
 
-Two things that look like they belong here but are object-store keys, not Redis:
+Two object-store keys that look like they belong here:
 
 | Key | Store | Written by | Read by |
 |---|---|---|---|
-| `responses/{request_id}.json` | Object store bucket (`NDIF_OBJECT_STORE_BUCKET`) | `respond`/`arespond` for non-blocking requests (`request.py:194-199`, `:226-233`; the key is built by `_response_key`, `request.py:16-17`) | `GET /response/{id}` (`app.py:316-318`) |
-| `{request_id}.pt` | Same bucket | Model actor `upload_bytes` (`modeling/base.py:688`) | The client, via a presigned URL returned on the COMPLETED response (`modeling/base.py:698`) |
-
-Ray's internal GCS also uses a Redis-like store, but that is Ray's own, not this
-one, and none of the keys above appear in it.
+| `responses/{request_id}.json` | Object store bucket (`NDIF_OBJECT_STORE_BUCKET`) | `respond`/`arespond` for non-blocking requests (key from `_response_key` in `src/ndif/common/schema/request.py`) | `GET /response/{id}` (`get_response`) |
+| `{request_id}.pt` | Same bucket | `BaseModelDeployment.upload_bytes`, when the result exceeds the inline cap or the request is non-blocking | The client, via the presigned URL in the COMPLETED response's `data` |
 
 ## Inspecting a live instance
 
@@ -147,7 +128,7 @@ redis-cli -u "$NDIF_REDIS_URL" subscribe <session_id>
 
 `ndif queue` reports the same queue state through the events stream without
 touching Redis by hand, and `ndif info` / `ndif doctor` check that Redis answers
-`PING` at all (`src/ndif/cli/lib/checks.py:21-30`).
+`PING` at all (`src/ndif/cli/lib/checks.py` `check_redis`).
 
 > **Gotcha:** deleting `status:requested` by hand while a refresh is genuinely in
 > flight lets a second refresh start; deleting `ray:connected` makes every guarded
@@ -160,7 +141,7 @@ touching Redis by hand, and `ndif info` / `ndif doctor` check that Redis answers
 
 ## Related
 
-- `docs/developing/redis-layer.md` — the handshakes these keys implement.
-- `docs/developing/providers.md` — the three Redis clients and their modes.
-- `docs/developing/queue-internals.md` — what happens after a request is popped.
-- `docs/reference/env-vars.md` — the TTL and timeout vars in the wider table.
+- [redis-layer.md](../developing/redis-layer.md) — the handshakes these keys implement.
+- [providers.md](../developing/providers.md) — the three Redis clients and their modes.
+- [queue-internals.md](../developing/queue-internals.md) — what happens after a request is popped.
+- [env-vars.md](env-vars.md) — the TTL and timeout vars in the wider table.

@@ -49,6 +49,8 @@ the detail as a field.
 | `Service temporarily unavailable: compute backend is reconnecting. Please try again in a few minutes.` | 503 | Server: the `ray:connected` flag is absent, the dispatcher is reconnecting (`src/ndif/services/api/app.py` `require_ray_connection`) | yes |
 | `Auth backend unavailable.` | 503 | Server: Postgres errored. Auth fails closed. Also logged as `API-key verification failed: Postgres unavailable` | yes |
 | `Internal server error.` | 500 | Server: anything unhandled at ingress. The traceback is only in the API log, as `api unhandled error` (`log_unhandled_exception`) | maybe |
+| `Could not retrieve cluster status.` / `Could not retrieve cluster env.` | 503 | Server: on `GET /status` or `/env`, the dispatcher's refresh from the controller failed (`_coalesced_fetch`) | yes |
+| `Timed out waiting for cluster status.` / `… cluster env.` | 504 | Server: no refresh arrived within `NDIF_STATUS_TIMEOUT_S` / `NDIF_ENV_TIMEOUT_S` — the dispatcher is busy, wedged or gone | yes |
 
 A 401 or 403 proves auth is configured: with `NDIF_POSTGRES_URL` unset,
 `verify_api_key` returns before any key check.
@@ -74,7 +76,7 @@ side in every case; retry after upgrading.
 The request was accepted and something failed later. `RemoteBackend` raises
 `RemoteError(response.description)`, so the description is the text.
 
-| Text the user sees | What the server logs say | Whose fault | Fatal / retry |
+| Text the user sees | What the server logs say | Whose fault | Fatal? Retry? |
 |---|---|---|---|
 | A traceback through the user's own lines | `model execution errored` (`ndif.modeling`); `error_type` is the exception's class — on the sandboxed path the terminal exception carried by `RunnerError`, not the wrapper | User | Not fatal. Retry is pointless until the code changes. Two CUDA messages are the exception — [below](#the-two-fatal-cuda-errors) |
 | `OutOfOrderError: '<location>' was requested but the model already ran past it` | as above | User: a block accessed modules out of forward-pass order | Not fatal |
@@ -83,7 +85,7 @@ The request was accepted and something failed later. `RemoteBackend` raises
 | `The model architecture on this server doesn't match the one your code was traced against: it has no module at '<path>'.` followed by the `ndif.compare()` recipe | the same sentence | User's environment: the client built a different module tree, nearly always a `transformers` difference. `<path>` is the *first* diverging path, not the layer the user reached for | Not fatal. Align versions, then retry |
 | `Your job exceeded the execution timeout of {n}s.` | `model execution timed out`, `error_type=timeout` | Usually user. Only emitted when `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` or a per-model `execution_timeout_seconds` is set — there is no default | Not fatal. The in-process interrupt lands at a bytecode boundary and cannot preempt a running CUDA kernel; the sandboxed path kills the runner process |
 | `Your job was cancelled or preempted by the server.` | `model execution cancelled`, `error_type=cancelled` | Operator: the actor's `cancel()` fired for a reason other than a HOT→WARM demotion (a demotion re-queues instead) (`src/ndif/services/ray/deployments/modeling/base.py` `BaseModelDeployment.run`) | Re-submit |
-| `Request cancelled by operator.` | the kill reply in the CLI | Operator: `ndif kill`. A queued request is removed. An executing one is errored and its replica's worker is cancelled; the Ray call into the actor is not, so the block keeps running there until it finishes (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`) | Re-submit |
+| `Request cancelled by operator.` | `ndif kill` prints `removed_from_queue` or `cancelled_execution` | Operator: `ndif kill`. A queued request is removed. An executing one is errored and its replica's worker is cancelled; the Ray call into the actor is not, so the block keeps running there until it finishes (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`) | Re-submit |
 | `Replica was evicted while processing your request. Sorry for the inconvenience. Please try again later.` | `request errored: cancelled mid-dispatch`, `error_type=cancelled` (`ndif.queue.replica`) | Server/operator: the replica's worker task was cancelled mid-dispatch. Because it is sent after any more specific message, it is also the last status a non-blocking job records after a kill or a purge | Retry |
 | `Error submitting request to model deployment. Please try again later. Sorry for the inconvenience.` | `request errored during execution` (`ndif.queue.replica`) with the traceback; `error_type` is the Ray-side exception class | Server: the dispatch to the actor failed with something that is not an eviction. If the class is `ActorUnavailableError` the actor is restarting after a fatal CUDA error and the worker waits for it | Retry |
 | `Error provisioning model. Please try again later. Sorry for the inconvenience.` / `Error starting model. …` | the same text (`ndif.queue.processor`) with the traceback | Server: the controller could not place or ready a replica and did not say why. The failing phase picks the wording. Every queued request for that model gets it at once (`src/ndif/services/api/queue/processor.py` `Processor.start`, `Processor.purge`) | Retry later |
