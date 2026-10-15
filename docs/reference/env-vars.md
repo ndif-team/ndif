@@ -39,7 +39,7 @@ controller's Redis, object-store, Loki and Influx settings into the actor's Ray
 | `NDIF_SERVICE` | `all` (image `ENV` in `docker/Dockerfile`); `unknown` as a telemetry label | `src/ndif/cli/service.py` `env_services`; `LokiProvider.CONFIG`, `InfluxProvider.CONFIG` | Which service(s) a bare `ndif start` brings up (space/comma list; `all` = redis, rustfs, ray, api), **and** the `service` label on every log line and metric point. The start scripts export it per service; `Deployment.create` overrides it to `model` for actor processes. |
 | `NDIF_ENVIRONMENT` | `dev` | `LokiProvider.CONFIG`, `InfluxProvider.CONFIG`; the report cron's `parse_args` | Second static label on all telemetry — the prod/staging/dev discriminator. The report cron filters usage by it. |
 | `NDIF_LOG_LEVEL` | `INFO` | `src/ndif/common/logging_setup.py` `configure_console` | Level of the `ndif` logger (not the root; `propagate` is off). Applied only if it *lowers* the current level. |
-| `NDIF_HOME` | `~/.ndif` | `src/ndif/cli/state.py` `State.from_env`; `src/ndif/cli/config.py` `DEFAULTS` | CLI state root: `run/<name>.pid`, `logs/<name>.log`, and RustFS's data dir when the CLI spawns it. CLI-only. |
+| `NDIF_HOME` | `~/.ndif` | `src/ndif/cli/state.py` `State.from_env`; `src/ndif/cli/config.py` `DEFAULTS` | CLI state root: `run/<name>.pid`, `logs/<name>.log`, and the `redis/` and `rustfs/` data dirs when the CLI spawns them. CLI-only. |
 
 ## API service
 
@@ -301,6 +301,8 @@ NDIF_API_KEY=<a real client key>          # the monitor cron's traces need one
 | `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `MASTER_ADDR`, `MASTER_PORT` | set per rank by `src/ndif/services/ray/tp/common.py` `rank_env` | A tensor-parallel group's rendezvous: `127.0.0.1` and an OS-chosen free port (`ShardGroup.__init__`). |
 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | written by `src/ndif/cli/service.py` `_rustfs_env`; set on the compose `rustfs` service | RustFS reads its root credentials from these; the CLI mirrors the object-store keys into them. |
 | `HF_TOKEN`, `HF_HOME` | compose `ray` service (`HF_TOKEN` passthrough, HF cache bind mount); the dashboard cron block | Hugging Face auth and cache, read by `transformers` / `huggingface_hub`. The image declares `/root/.cache/huggingface` a `VOLUME`, and compose bind-mounts the host cache there, so weights persist. |
+| `HOME` | `docker/Dockerfile` `ENV` | `/root` for every uid, and `/root` is world-writable, so `HF_HOME`, `NDIF_HOME` and library caches under `~` resolve to writable paths under `docker run --user`. |
+| `NDIF_UID` / `NDIF_GID` | compose `ray` service `user:` | The uid:gid the compose `ray` container runs as; default `0:0` (root). Set them to your own to keep the bind-mounted HF cache yours. |
 | `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH` and `PYTHONHASHSEED=0`. |
 | `NDIF_VERSION` | a `docker build` ARG in `docker/Dockerfile`, not read at runtime | Carries the version into the build (setuptools-scm has no `.git` there); `VCS_REF` and `BUILD_DATE` are its siblings. Resolved versions go to `/etc/ndif/build.json` via `ndif version --write`. |
 | `DOCKER_INFLUXDB_INIT_*`, `POSTGRES_*`, `GF_*` | compose `influxdb`, `postgres`, `grafana` services | Image bootstrap variables; keep them consistent with the `NDIF_INFLUX_*` and `NDIF_POSTGRES_URL` the services use. |

@@ -136,6 +136,14 @@ LABEL org.opencontainers.image.title="NDIF" \
 #   8265 Ray dashboard   10001 Ray client   6379 Redis
 EXPOSE 8001 9000 9001 8081 8265 10001 6379
 
+# The image runs as root by default and as any uid given with `--user`, so
+# files written to a mounted cache belong to the caller. Every uid shares
+# HOME=/root, which is world-writable, so HF_HOME (/root/.cache/huggingface),
+# NDIF_HOME (~/.ndif) and library caches under ~ resolve to the same writable
+# paths whether or not the uid has a passwd entry.
+ENV HOME=/root
+RUN mkdir -p /root/.cache/huggingface /root/.ndif && chmod -R a+rwX /root
+
 # Model weights go here (HF_HOME); mount the host cache so they persist.
 VOLUME ["/root/.cache/huggingface"]
 

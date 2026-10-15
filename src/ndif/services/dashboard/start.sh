@@ -83,7 +83,8 @@ EOF
     cron
 else
     echo "[dashboard] cron not available — schedules won't run from this start.sh."
-    echo "             (intended for non-Docker dev; the docker container runs cron)"
+    echo "             (cron needs root to write /etc/cron.d; non-root containers and"
+    echo "             non-Docker dev run uvicorn alone)"
 fi
 
 # ---- uvicorn (foreground; PID 1 in the container) --------------------------
