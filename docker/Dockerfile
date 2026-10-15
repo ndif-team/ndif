@@ -41,8 +41,10 @@ WORKDIR /app
 # when nnsight installs from an sdist (it mounts `.save()` on objects; without a
 # compiler setuptools skips it and `value.save()` breaks on the server). git:
 # lets requirements.txt point at a git ref when a fix hasn't reached PyPI.
+# procps: `ps` for debugging inside the container. tini: the init process (see
+# ENTRYPOINT).
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends cron gcc libc6-dev git redis-server \
+    && apt-get install -y --no-install-recommends cron gcc libc6-dev git procps redis-server tini \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=rustfs /usr/bin/rustfs /usr/local/bin/rustfs
@@ -139,7 +141,9 @@ EXPOSE 8001 9000 9001 8081 8265 10001 6379
 # Model weights go here (HF_HOME); mount the host cache so they persist.
 VOLUME ["/root/.cache/huggingface"]
 
-# `ndif start --foreground` runs the service(s) named by NDIF_SERVICE attached
-# to PID 1 (a single service is exec'd directly; several are supervised).
-ENTRYPOINT ["ndif"]
+# `ndif start --foreground` runs the service(s) named by NDIF_SERVICE in the
+# foreground (a single service is exec'd directly; several are
+# supervised). tini is PID 1: it forwards signals to ndif and reaps orphaned
+# processes. -s keeps it a subreaper when `docker run --init` adds another init.
+ENTRYPOINT ["tini", "-s", "--", "ndif"]
 CMD ["start", "--foreground"]

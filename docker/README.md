@@ -52,8 +52,10 @@ Nothing is deployed ahead of time: the first request for a checkpoint downloads
 its weights and loads it, later requests reuse it. No API key is needed — the
 image runs with authentication off.
 
-Stop it with `docker stop ndif`; the downloaded weights stay in your Hugging
-Face cache.
+Stop it with `docker stop ndif`. The services stop in reverse dependency
+order (API, Ray, RustFS, Redis); anything still running after 8 seconds is
+killed, so the stop fits inside Docker's default 10-second grace period. The downloaded weights stay in
+your Hugging Face cache.
 
 ## Tags
 
