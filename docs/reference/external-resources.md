@@ -46,7 +46,7 @@ The paper's citation, as committed in `README.md`:
 |---|---|---|
 | NDIF server image | [hub.docker.com/r/ndif/ndif](https://hub.docker.com/r/ndif/ndif) | You want to *run* a server rather than build one. `docker run --gpus all ndif/ndif` starts the whole stack in one container (`NDIF_SERVICE=all`). Tags are one per CUDA line — `<version>-cu126`, `<version>-cu130` — plus a bare `<version>` and `latest` that both point at the cu126 build (final releases only), pushed by `.github/workflows/publish_docker.yml` on a `v*` tag. The page's README is `docker/README.md` in this repo, pushed by the same workflow. |
 | `ndif` on PyPI | [pypi.org/project/ndif](https://pypi.org/project/ndif/) | You are installing the server (or just its CLI) into an existing environment: `pip install ndif[api,ray]`, then `ndif start`. Published by `.github/workflows/publish.yml` on a GitHub release. `torch` is deliberately **not** a dependency — the right wheel depends on your CUDA driver, so install it yourself first. |
-| `nnsight` on PyPI | [pypi.org/project/nnsight](https://pypi.org/project/nnsight/) | You need the client, or you are checking what version range this server accepts — `requirements.txt` pins `nnsight>=0.8.0rc1,<0.9`, and 0.8 is a pre-release, so `pip` only picks it up because the specifier names it explicitly. |
+| `nnsight` on PyPI | [pypi.org/project/nnsight](https://pypi.org/project/nnsight/) | You need the client: `pip install nnsight`. The server's accepted range is pinned in `requirements.txt`. |
 | Hosted-deployment images | private | `.github/workflows/build_images.yml` builds the hosted image on a push to `main`, separately from the Docker Hub workflow. |
 
 The versions a published image actually resolved to are baked in at build time

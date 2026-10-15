@@ -143,10 +143,8 @@ curl -s localhost:8001/response/3f9c1e2b... | jq '{status, description, meta}'
 ```
 
 `GET /response/{id}` 404s when nothing was written, which for a blocking job is
-always (`src/ndif/services/api/app.py` `get_response`). `meta` is present only
-when both server and client run an nnsight newer than 0.8.0; the 0.8.0 and rc1
-releases lack the field and pydantic drops it silently. Where present, `meta` on
-a terminal response is what the run cost — `runtime`, per-GPU memory above the weights, and
+always (`src/ndif/services/api/app.py` `get_response`). `meta` on a terminal
+response is what the run cost — `runtime`, per-GPU memory above the weights, and
 on an OOM `alloc_shortfall_by_gpu` ([Model OOM on deploy](model-oom-on-deploy.md)).
 
 How a successful result travels — inline on the response, or as a presigned URL

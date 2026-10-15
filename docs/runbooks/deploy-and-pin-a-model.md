@@ -207,11 +207,6 @@ the `ray` container when the CLI runs there.) Only non-default fields are
 written, and replicas with different settings under one key are merged into one
 entry, so dump `ndif status --json-output` first if per-replica state matters.
 
-A server whose nnsight predates task-in-key mints task-less keys: current
-clients never match them, a client trace provisions a separate deployment, and
-`--task` does not reach the key. On such a server, deploy through a verbatim
-`model_key:` entry that carries the task, and evict by exact key (below).
-
 **The dashboard schedule** — the only mechanism that keeps re-asserting itself.
 
 ## 5. Schedule it from the dashboard

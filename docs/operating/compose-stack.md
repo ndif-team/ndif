@@ -196,7 +196,7 @@ old build. The `ta` recipe always runs a bare `just down` first, so
 `just ta ray` takes the **whole stack** down, rebuilds `ray`, and starts only
 `ray` and its dependencies; follow it with `just up` to bring the rest back.
 
-**nnsight is the exception.** It ships in the image (`nnsight>=0.8.0rc1,<0.9`
+**nnsight is the exception.** It ships in the image (pinned in `requirements.txt`
 in `requirements.txt`), but when the shell you run `just` from has an
 **editable** nnsight installed (`pip install -e /path/to/nnsight`), or
 `NNSIGHT_PATH` is set, `just up`/`just ta` add

@@ -84,8 +84,7 @@ With no stack, collection still succeeds and every live test is skipped:
 means editing `HOST` in `tests/conftest.py`; there is no environment variable for
 it. Through an SSH tunnel, use the tunnel's local port.
 
-Two client-side requirements: the tests that check `meta` need a client nnsight
-newer than 0.8.0 (0.8.0 and rc1 drop the field), and the non-blocking tests
+One client-side requirement: the non-blocking tests
 download from `NDIF_OBJECT_STORE_PUBLIC_URL`, which must be reachable from the
 machine running pytest
 ([Quickstart](../operating/quickstart.md#client-on-another-machine)).

@@ -28,7 +28,7 @@ Two facts frame the design:
    recompiles it. Source is not tied to a CPython version, which is why a 3.11
    client can drive a 3.12 server.
 
-The server pins the 0.8 line: `nnsight>=0.8.0rc1,<0.9` in both `pyproject.toml` and
+The server pins nnsight in both `pyproject.toml` and
 `requirements.txt`. The specifier names the pre-release explicitly because pip only
 considers pre-releases when the specifier does; a bare `nnsight` resolves to 0.7.
 

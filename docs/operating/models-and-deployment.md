@@ -53,13 +53,6 @@ wrapper class on the meta device (no weights, no GPU) and calling nnsight's
 - **The wrapper class**, `nnsight.modeling.transformers.TransformersModel` by
   default (`DEFAULT_ENVOY_CLASS`).
 
-A server whose nnsight predates task-in-key mints **task-less** keys. Current
-clients never match them: a client trace provisions a separate deployment beside
-the task-less one, and `--task` does not reach the key. On such a server, deploy
-through a verbatim `model_key:` entry in `models.yaml` that spells the task out,
-and evict by the exact key
-([Deploy and pin a model](../runbooks/deploy-and-pin-a-model.md#removing-it)).
-
 The client sends the key it computed; the server never guesses. "Model not
 deployed" is almost always a key mismatch — compare `ndif status --json-output`
 with what nnsight computed locally.
