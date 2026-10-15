@@ -14,9 +14,9 @@ Three pieces:
 ## Running it
 
 The dashboard ships as a docker-compose service alongside `api` and `ray`.
-The image is built from the unified `docker/Dockerfile` with `NAME=dashboard`;
-the Vue SPA is pre-built on the host by `make dashboard-frontend` (host-side
-`npm ci && npm run build`) and copied into the image. A `cron` daemon runs
+The image is the unified one from `docker/Dockerfile`, run with
+`NDIF_SERVICE=dashboard`; the built Vue SPA (`frontend/dist/`) is committed and
+copied in with the source. A `cron` daemon runs
 alongside uvicorn for the monitor + reconcile jobs.
 
 ```bash
@@ -31,7 +31,7 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'
 #    NDIF_API_KEY=...                                  # for monitor cron's model traces
 
 # 3. Build images and bring the stack up:
-make build && make up
+just up
 
 # 4. Browse to http://<host>:8081/  (default port; override via NDIF_DASHBOARD_PORT)
 ```

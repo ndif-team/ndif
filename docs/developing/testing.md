@@ -1,269 +1,205 @@
 ---
 title: Testing
-one_liner: The single live-server suite — how to bring a stack up and run it, what it covers, and how to force the untrusted sandbox path that local dev never exercises.
+one_liner: The test suite — which files need a live server and which run anywhere, how to bring a stack up and run it, what each file covers, and how to force the untrusted sandbox path that local dev never exercises.
 tags: [internals, dev, sandbox]
 related: [docs/developing/contributing.md, docs/developing/repo-layout.md, docs/developing/sandbox-internals.md, docs/concepts/sandbox-execution.md, docs/concepts/auth-and-limits.md, docs/operating/quickstart.md, docs/developing/nnsight-integration.md, docs/runbooks/enable-auth.md]
-sources: [tests/conftest.py, tests/test_nnsight_remote.py, tests/test_tensor_parallel_remote.py, tests/test_placement.py, pyproject.toml, justfile, docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/controller/controller.py]
+sources: [tests/conftest.py, tests/conftest_untrusted.py, tests/test_nnsight_remote.py, tests/test_tensor_parallel_remote.py, tests/test_placement.py, pyproject.toml, justfile, docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/controller/controller.py]
 ---
 
 # Testing
 
 ## What this covers
 
-The honest current state: **no workflow runs the tests, and the suite that
-matters needs a live server.** CI (`.github/workflows/`) builds and publishes —
-ECR images on a push to `main` (`build_images.yml`), Docker Hub images and a PyPI
-wheel on a `v*` tag (`publish_docker.yml`, `publish.yml`) — and none of the three
-runs `pytest`. So a change is only exercised when someone brings a stack up and
-runs it.
+Everything lives in `tests/`. **No workflow runs it** — the workflows build and
+publish ([Contributing](contributing.md#ci-and-releases)) — so a change is exercised
+when someone runs the suite. The files fall into three groups.
 
-Everything lives in `tests/`. Three files drive the real `nnsight` client against
-a real running NDIF over HTTP and skip themselves if nothing answers at
-`http://localhost:8001`; four are pure-Python and run anywhere; one sits between
-— no server, but a real model and a real runner process:
+**Live server** — drive the real nnsight client against a running NDIF over HTTP,
+and skip themselves if nothing answers at `http://localhost:8001`:
 
 | File | Needs | Covers |
 |---|---|---|
-| `test_nnsight_remote.py` | a stack + gpt2 | the remote trace surface, end to end |
-| `test_sandbox_conformance.py` | a stack + gpt2 | trusted and untrusted run the same script and get the same bytes |
-| `test_tensor_parallel_remote.py` | a stack + a **deployed tensor-parallel replica** | a model split across GPUs — see the module docstring for the deploy |
-| `test_placement.py` | nothing | placement arithmetic and eviction bookkeeping, over a synthetic node |
-| `test_replica_wait.py` | nothing | what counts as "not yet" versus "never" when waiting on a replica |
-| `test_fanout.py` | nothing | the `Fanout` barrier that lets one runner drive several ranks |
-| `test_sandbox_iter_pins.py` | nnsight + the gpt2 weights (no server, no Ray) | the `tracer.iter` pin surviving control events (`#296`): a real gpt2 on CPU, a spawned runner, a `SandboxDriver` over the socket, values compared step-by-step against the local run |
-| `test_sandbox_barriers.py` | nnsight + the gpt2 weights (no server, no Ray) | `tracer.barrier()` across the socket (`#294`): cross-invoke releases, the embedding transplant, reuse, and a wrong count raising the trusted path's `ValueError` instead of warning |
-| `test_sandbox_error_masking.py` | nnsight + the gpt2 weights (no server, no Ray; the two `report`-wiring tests also need `ray` importable) | errors cross the sandbox as themselves (`#280`): the out-of-order repro arrives as its `OutOfOrderError`, a host-side apply failure arrives as the host's own exception, never `BrokenPipeError`, and telemetry's `error_type` is the real type on both paths |
-| `test_sandbox_recursive_source.py` | nnsight + the gpt2 weights (no server, no Ray) | recursive `.source` over the socket (`#281`): the eager attention-probabilities route, one-level `.source` untouched, the drill beside module reads and across generation steps, and a missing op failing with the available names — values against the local run |
-| `test_node_registry.py` | nothing | the two regressions behind the 2026-09-08 prod outage: a stale node registry and a swallowed trace error |
+| `test_nnsight_remote.py` | a stack + gpt2 | the remote trace surface end to end ([below](#the-live-suite)) |
+| `test_sandbox_conformance.py` | a stack + gpt2 | trusted and untrusted run the same script and are compared |
+| `test_tensor_parallel_remote.py` | a stack + a deployed tensor-parallel replica | a model split across GPUs; skips unless that replica is HOT (the module docstring has the deploy) |
 
-`test_tensor_parallel_remote.py` skips itself unless a replica of its model is
-actually HOT, so it costs nothing when you have not set one up. The four
-pure-Python files are the ones that run in a checkout with nothing else going.
+**Model, no server** — a real gpt2 on CPU, a spawned runner and a `SandboxDriver`
+over the socket, compared against the local run; no Ray:
 
-That shape is deliberate rather than accidental: the parts that can be tested
-without a server are the ones that are pure arithmetic or pure protocol.
-Everything else NDIF does is a cross-process, cross-container interaction — a serialized traced block leaving a
-client, crossing Redis, crossing Ray, running against real weights, coming back as
-a presigned blob. Mocking that proves nothing. So the suite tests the seam that
-actually matters and accepts needing a GPU box to run.
+| File | Covers |
+|---|---|
+| `test_sandbox_iter_pins.py` | the `tracer.iter` pin surviving control events |
+| `test_sandbox_barriers.py` | `tracer.barrier()` across the socket: cross-invoke releases, reuse, and an unsatisfiable count raising the trusted path's `ValueError` |
+| `test_sandbox_error_masking.py` | errors crossing the sandbox as themselves (`OutOfOrderError`, the host's own exception — never `BrokenPipeError`), and telemetry's `error_type` naming the real type on both paths (the `report`-wiring tests also need `ray` importable) |
+| `test_sandbox_recursive_source.py` | recursive `.source` over the socket, against the local run |
+| `test_sandbox_adhoc_calls.py` | an ad-hoc module call (`hook=False` and `hook=True`) leaving the module's real occurrence alone |
+
+**Offline** — no model, no server, no GPU:
+
+| File | Covers |
+|---|---|
+| `test_placement.py` | placement arithmetic, eviction bookkeeping and placement overrides over synthetic nodes, plus process-free checks of the tensor-parallel and sandbox actor plumbing (seeding, runner env, error reporting, the opt-in switch) |
+| `test_fanout.py` | the `Fanout` barrier that lets one runner drive several ranks |
+| `test_replica_wait.py` | what counts as "not yet" versus "never" when waiting on a replica |
+| `test_node_registry.py` | the controller noticing nodes that are gone (a stale registry after mass node loss) and `summarize_error` producing a useful line |
+| `test_inline_result_cap.py` | `RedisProvider.max_publish_bytes`: the derivation from Redis's pubsub limits and every fallback |
+| `test_result_serialization.py` | the result pickler: client classes round-trip as themselves, block-born classes as working twins, CUDA tensors to CPU |
+| `test_task_key_offline.py` | the pipeline task's place in the model key, config files and spec normalization |
+| `test_utils.py` | the per-request report helpers in `src/ndif/services/ray/deployments/modeling/util.py` (`request_meta`, OOM shortfall) |
+| `test_docs.py` | the docs gate: cited paths and symbols exist, links and anchors resolve, line-number citations don't grow |
+
+The live files are the ones that test the seam that matters most — a serialized
+block leaving a client, crossing Redis and Ray, running against real weights and
+coming back — which no mock reproduces; the offline ones pin the parts that are
+pure arithmetic or pure protocol.
 
 ## Running it
 
-Install the test dependencies (the `dev` extra — `ruff`, `httpx`, `pytest`,
-`pytest-asyncio`; `pyproject.toml:119`) plus a client `nnsight`:
+Install the `dev` extra (`ruff`, `httpx`, `pytest`, `pytest-asyncio`) plus a client
+nnsight:
 
 ```bash
+python -m venv --system-site-packages .venv && . .venv/bin/activate   # optional: keeps the dev extra out of a shared env
 pip install -e ".[dev]"
 ```
 
-Bring a stack up and let it settle — the `ray` service needs a GPU and the NVIDIA
-container toolkit, and it is slow to boot:
+The offline and model-only files run with nothing else: `pytest tests/test_placement.py`.
+For the live files, bring a stack up and let it settle — the `ray` service needs a
+GPU and the NVIDIA container toolkit, and it is slow to boot:
 
 ```bash
 just up            # docker compose -f docker/docker-compose.yml up -d
 just logs api ray  # watch until the api is serving and the controller is up
-```
-
-Then run the suite:
-
-```bash
 pytest tests/
 ```
 
-You do **not** need to `ndif deploy` anything first. The suite uses
-`openai-community/gpt2`, and the queue's `Processor` provisions a replica on
-demand for any model key it hasn't seen; the first test pays the deploy time and
-the module-scoped `model` fixture (`tests/conftest.py:68`) keeps it deployed for
-the rest of the run.
+You don't need to `ndif deploy` first: the suite uses `openai-community/gpt2`, the
+queue provisions a replica on demand for a model key it hasn't seen, and the
+module-scoped `model` fixture in `tests/conftest.py` keeps it deployed for the run —
+only the first test pays the deploy time.
 
-> **Gotcha:** run `pytest tests/`, not a bare `pytest`. There is no
-> `[tool.pytest.ini_options]` in `pyproject.toml` and no `testpaths`, so a bare
-> invocation from the repo root collects whatever else is under it — including an
-> nnsight checkout you have parked there for `just up` to bind-mount, whose
-> hundreds of client-side tests have nothing to do with the server.
+With no stack, collection still succeeds and every live test is skipped:
+`tests/conftest.py` probes `GET /ping` once at import and builds the
+`requires_server` marker from the answer. Pointing at a non-default host or port
+means editing `HOST` in `tests/conftest.py`; there is no environment variable for
+it. Through an SSH tunnel, use the tunnel's local port.
 
-If the stack is down, collection still succeeds and every test is skipped —
-`conftest.py:53` probes `GET /ping` once at import and `conftest.py:62` builds
-the module-level `requires_server` marker from the answer. A full skip therefore means "no server",
-never "nothing to run".
+Two client-side requirements: the tests that check `meta` need a client nnsight
+newer than 0.8.0 (0.8.0 and rc1 drop the field), and the non-blocking tests
+download from `NDIF_OBJECT_STORE_PUBLIC_URL`, which must be reachable from the
+machine running pytest
+([Quickstart](../operating/quickstart.md#client-on-another-machine)).
 
-Pointing at a non-default host means editing `HOST` in `tests/conftest.py:28`;
-there is no environment variable for it.
+> **Gotcha:** run `pytest tests/`, not a bare `pytest`. `pyproject.toml` has no
+> `[tool.pytest.ini_options]` or `testpaths`, so a bare invocation from the repo
+> root collects whatever else is under it — such as an nnsight checkout parked there
+> for development.
 
-## What the suite covers
+## The live suite
 
-51 tests across 18 classes in `tests/test_nnsight_remote.py`, each one opening a
-real `with model.trace(..., remote=True):`.
+`tests/test_nnsight_remote.py`: 65 tests in 22 classes, each opening a real
+`remote=True` trace or session.
 
-| Class | What it proves about the server |
+| Class | What it exercises on the server |
 |---|---|
-| `TestRemoteTrace` | Reading hidden states, logits, and module inputs over the wire. |
-| `TestRemoteIntervention` | Writes land on the *real* forward — a zeroed early block changes a later block and the logits. |
-| `TestRemoteEarlyStop` | `tracer.stop()` unwinds cleanly server-side. |
-| `TestRemoteAdhocModule` | Calling a submodule out of execution order (logit lens). |
-| `TestRemoteSource` | `.source` op-level reads, writes, and `skip()` inside a module's forward. |
-| `TestRemoteAliasing` | `rename=` aliases resolve to the same remote module. |
-| `TestRemoteSkip` | Skipping a whole block substitutes its output. |
-| `TestRemoteSession` | A `model.session(remote=True)` runs several traces as one job with values flowing between them. |
-| `TestRemoteGenerate` | Multi-token generation, `tracer.iter[:3]`, the streamer, `tracer.result`. |
-| `TestRemoteGradients` | Backward works once an activation is opted in — the server loads weights with `requires_grad_(False)`. |
-| `TestRemoteCache` | `tracer.cache()` round-trips and captures every reached module. |
-| `TestRemotePeft` | A per-request PEFT adapter id rides on the request env and is applied before the run. |
-| `TestNdif` | `nnsight.status()`, `is_model_running`, `get_remote_env`, `compare` against the live `/status` and `/env`; also `test_persistent_objects`, which tokenizes inside the block and asserts it matches a local tokenization — on the sandbox path that only passes because the runner resolves `Tokenizer` from its own meta model. |
-| `TestRemoteLocalCode` | Non-installed local modules/classes ship to the server by value automatically. |
-| `TestRemoteNonBlocking` | `blocking=False` submit, then poll `GET /response/{id}` — needs object-store response persistence. |
-| `TestRemoteEdit` | `model.edit()` edits ride to the server and apply. |
-| `TestRemoteBatching` | Several `tracer.invoke(...)` blocks in one forward: batched results match solo runs and edits stay scoped to their rows. |
-| `TestRemoteSaving` | Both `nnsight.save(v)` and `v.save()`, including values computed inside the block. |
+| `TestRemoteTrace` | reading hidden states, logits and module inputs over the wire |
+| `TestRemoteIntervention` | writes landing on the real forward — a zeroed early block changes later blocks and the logits |
+| `TestRemoteEarlyStop` | `tracer.stop()` unwinding server-side |
+| `TestRemoteAdhocModule` | calling a submodule out of execution order (logit lens) |
+| `TestRemoteSource` | `.source` op-level reads, writes and `skip()` |
+| `TestRemoteAliasing` | `rename=` aliases resolving to the same module |
+| `TestRemoteSkip` | skipping a whole block |
+| `TestRemoteSession` | a `model.session(remote=True)` running several traces as one job |
+| `TestRemoteGenerate` | multi-token generation, `tracer.iter[:3]`, the streamer, `tracer.result` |
+| `TestRemoteGradients` | backward through an activation opted into the graph (weights load with `requires_grad_(False)`) |
+| `TestRemoteCache` | `tracer.cache()` round-tripping |
+| `TestRemotePeft` | a per-request PEFT adapter applied before the run (skips unless the client has `peft`) |
+| `TestNdif` | `nnsight.status()`, `is_model_running`, `get_remote_env`, `compare`; and tokenizing inside the block, which on the sandbox path depends on the runner's meta-model tokenizer |
+| `TestRemoteLocalCode` | non-installed local modules shipping by value (resets `nnsight.ndif._PULLED_ENV` per test) |
+| `TestRemoteNonBlocking` | `blocking=False` submit, then `GET /response/{id}` from the object store |
+| `TestRemoteEdit` | `model.edit()` edits applied server-side |
+| `TestRemoteBatching` | several invokes in one forward: results match solo runs, edits stay in their rows |
+| `TestRemoteBarrier` | `tracer.barrier(n)` sequencing invokes |
+| `TestRemoteSaving` | `nnsight.save(v)` and `v.save()`, including values computed in the block |
+| `TestRemoteMeta` | the job-cost report (`meta`) the actor attaches to `COMPLETED` |
+| `TestRemoteAsync` | the async backend (`await`, `async for`) against a live job |
+| `TestRemoteOOM` | an allocation over the job's GPU budget failing as a bounded, non-fatal error |
 
-And in `test_tensor_parallel_remote.py`, against a replica whose weights are split
-across GPUs by `TPModelActor`. None of these traces mention sharding — that is the
-point; they assert the two things a broken shard-and-gather gets wrong, the
-**width** of a value and whether the answer matches an unsharded run:
-
-| Class | What it proves about the server |
-|---|---|
-| `TestShardedWidths` | A value arrives whole — neither a fraction of the real tensor nor, on a tied LM head, a multiple of it. |
-| `TestShardedIntervention` | An edit to a sharded value reaches the model, including one straddling a rank boundary. |
-| `TestShardedDeterminism` | Every rank runs the block, so the replica answers consistently and generation reproduces. |
-| `TestShardedFailure` | A block that raises costs the request, not the replica — every rank raised it, which is a settled group. |
-| `TestShardedBatching` | Several invokes narrow the same gathered tensor identically on every rank, so no invoke answers another's prompt. |
-
-Two classes carry their own guards rather than the server marker: `TestRemotePeft`
-skips unless the *client* has `peft` (it needs it to graft the adapter
-architecture onto the meta model), and `TestRemoteLocalCode` resets
-`nnsight.ndif._PULLED_ENV` per test so `pull_env` re-scans and picks up the module
-it just wrote.
-
-## The xfail convention
-
-The suite's convention for a limitation of the *server* — as opposed to a client
-bug — is a class-level
-
-```python
-@pytest.mark.xfail(reason="<what the server can't do yet>", strict=False)
-```
-
-`strict=False` is the load-bearing part. It means the test still executes the real
-remote path, a failure is reported as an expected `XFAIL` and doesn't break the
-run, and — the point — the day the server gains support, pytest reports an
-**XPASS**. An XPASS is a notification: a documented limitation is gone, and the
-xfail marker plus its `reason` should be deleted in the same change that made it
-pass. That is how gradients and `tracer.cache()` were retired (`git show
-c6a0292`), each flip carrying the explanation into an inline comment.
-
-**There are currently no xfail classes** — the suite is fully green. Add one when
-you find a genuine server-side limitation, rather than deleting or `skip`ping the
-test.
+`tests/test_tensor_parallel_remote.py` runs against a replica sharded by
+`TPModelActor`. Its traces never mention sharding; they check what a broken
+shard-and-gather gets wrong — a value's **width** and agreement with an unsharded
+run — in `TestShardedWidths`, `TestShardedIntervention`, `TestShardedDeterminism`,
+`TestShardedFailure` and `TestShardedBatching`.
 
 ## Testing the untrusted / sandbox path
 
-This is the part local dev gets wrong by default, and it is worth being explicit
-about, because **a normal `just up` never runs a single line of sandbox code.**
+**A normal `just up` never runs sandbox code.** Two things must hold for a block to
+run in a runner process:
 
-Two independent things have to be true for a request's Python to run in a runner
-process rather than in the model actor:
+1. **The request is untrusted.** `SandboxModelDeployment.execute`
+   (`src/ndif/services/ray/sandbox/model.py`) sends a trusted request to the base
+   in-process path. With auth off an unspecified `trusted` defaults to `True`, but
+   `validate_request` (`src/ndif/services/api/auth.py`) honors an explicit value —
+   so sending `trusted: false` forces the sandbox path with no Postgres.
+2. **The deployed actor class is the sandbox one.** The controller's default is the
+   in-process `ModelActor`; the compose stack selects `SandboxModelActor` through
+   `NDIF_DEFAULT_MODEL_ACTOR_CLASS`. A hand-run `ndif start ray` that sets neither
+   has no sandbox to use.
 
-1. **The request must be untrusted.** The fork is `if request.trusted:` in
-   `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:207`),
-   which defers straight to the base in-process implementation. Under auth-off
-   (`NDIF_POSTGRES_URL` unset, which the dev compose leaves commented out) an
-   *unspecified* `trusted` **defaults** to `True`, so a plain local request is
-   trusted — but `validate_request` honors an explicitly supplied one (it checks
-   `model_fields_set` to tell "unspecified" from an explicit value,
-   `src/ndif/services/api/auth.py:170`, `:180`), so **sending `trusted: false` in
-   the request forces the sandbox path with no Postgres and no code patch.**
-2. **The deployed actor class must be the sandbox one.** The controller's code
-   default is the plain in-process actor —
-   `ndif.services.ray.deployments.modeling.base.ModelActor`
-   (`controller.py:745`). The dev compose selects the sandbox actor via
-   `NDIF_DEFAULT_MODEL_ACTOR_CLASS: ndif.services.ray.sandbox.model.SandboxModelActor`
-   (`docker/docker-compose.yml:252`, the fallback for `NDIF_MODEL_IMPORT_PATH`), but
-   a hand-rolled `ndif start ray` that sets neither gets the base actor, where
-   `trusted` is irrelevant because there is no sandbox to skip.
-
-So: with compose you already have condition 2. Condition 1 is a change to the
-**request**, not the server — but note that nnsight's `RequestModel` has no
-`trusted` field (the server reads it from the request body, where an API key
-would normally stamp it), so a client cannot set it through the nnsight API. It
-has to be injected into the envelope — patch `RequestModel.metadata` to add
-`"trusted": false` to the JSON body. `tests/conftest_untrusted.py` does exactly
-that, in about ten lines, as a pytest plugin that forces the *whole* suite
-untrusted:
+With compose, condition 2 holds. nnsight's request envelope has no `trusted` field,
+so condition 1 means injecting it: `tests/conftest_untrusted.py` patches
+`RequestModel.metadata` to add `"trusted": false`, as a plugin that forces the
+whole run untrusted:
 
 ```bash
 PYTHONPATH=tests pytest tests/test_nnsight_remote.py -p conftest_untrusted
 ```
 
-Every test must produce the same result as the trusted run, bar
-`TestRemoteGradients`, which is a real sandbox limitation (see
-`sandbox/ARCHITECTURE.md`).
+Compare against the trusted run. The untrusted path's known limits — gradients,
+weight access, training — are listed in
+[Sandbox internals](sandbox-internals.md#what-the-untrusted-path-cannot-do), so
+`TestRemoteGradients` is expected to fail there.
 
-`tests/test_sandbox_conformance.py` is the same invariant as an assertion rather
-than a manual comparison: it runs one script both ways against a live server and
-compares the bytes. It refuses to run beneath `-p conftest_untrusted`, because
-that plugin patches the same method the file toggles, and the two together would
-compare untrusted against untrusted — passing the equality tests for the wrong
-reason. If you are checking this by hand, run the same path twice first: trusted
-against trusted is bit-exact, which is what makes a trusted-vs-untrusted
-difference mean anything.
+`tests/test_sandbox_conformance.py` turns the comparison into an assertion: it runs
+one script both ways against a live server and compares the results. It refuses to
+run under `-p conftest_untrusted`, which patches the same method and would compare
+untrusted against untrusted. The comparison holds because both paths enter the
+same `request_dtype` autocast region — the runner around the block, the
+`SandboxDriver` around the forward it drives.
 
-Both paths bracket their work in one `request_dtype` region
-(`deployments/modeling/nns.py:75`) — the runner around the block, the
-`SandboxDriver` around the forward it drives — which is what makes them
-bit-identical. Without the host half the *model's own* arithmetic runs uncast:
-measured on gpt2, identical token ids and embeddings, diverging inside the first
-transformer block, 6.5e-3 relative in the logits, and nothing raises.
+**With real auth** instead of a client-set flag: enable Postgres
+([Enable auth](../runbooks/enable-auth.md)), create a key *without* the `trusted`
+tag, and set `NDIF_API_KEY` for the client. The key's tag then decides and a
+client-supplied `trusted` is overwritten; this also exercises `verify_api_key`'s
+401/400/403/503 responses, which nothing else does.
 
-That invariant — the two paths are observationally identical — is the whole
-reason the sandbox is shaped the way it is. Any divergence is a sandbox bug (or a
-new xfail), and `src/ndif/services/ray/sandbox/ARCHITECTURE.md`'s "Current
-simplifications" section is where the deliberate ones are listed. Read that list
-against the code before believing it: `tracer.cache()` is listed as unsupported
-but is in fact served over IPC (`sandbox/driver.py:38`, `sandbox/nns.py:349`).
-
-**The faithful way**, if you want the real trust plumbing rather than a client-set
-flag: uncomment `NDIF_POSTGRES_URL` in `docker/docker-compose.yml:165`, insert a
-user and a key into the compose Postgres (`docker/postgres/init.sql` creates the
-schema but seeds nothing), and *don't* grant that key the `trusted` user_tag. Then
-set `NDIF_API_KEY` for the client. With auth on, the key's `trusted` user_tag
-decides and a client-supplied `trusted` is overwritten; this also exercises the
-401/400/403/503 ladder in `verify_api_key`, which nothing else does.
-
-Confirm which path a request actually took by watching the ray service —
-a sandboxed request spawns a runner subprocess per request:
+To confirm which path a request took, look for a runner process per request:
 
 ```bash
-just logs ray
 docker compose -f docker/docker-compose.yml exec ray \
     pgrep -af 'ndif.services.ray.sandbox.runner'
 ```
 
 ## Gotchas
 
-- **A skipped suite is not a passing suite.** `pytest tests/` with no server
-  reports all-skipped and exits 0.
-- **Ray is slow to boot and needs a GPU.** `just up` returns long before the
-  controller is serving; the first test will otherwise fail on deploy.
-- **The client's nnsight must match the server's.** These are live end-to-end
-  tests of a serialization contract; a client/server nnsight mismatch shows up as
-  a deserialization error, not a version message unless `NDIF_MIN_NNSIGHT_VERSION`
-  is set. See [nnsight-integration.md](./nnsight-integration.md).
-- **`shm_size`.** Ray's plasma store lives in `/dev/shm`; compose sets `4gb`
-  (`docker/docker-compose.yml:280`) because the Docker default of 64MB is far too
-  small.
-- **No unit tests exist** for the dispatcher, the API app, the providers, or the
-  CLI. The controller's placement math, the replica wait, and the fan-out barrier
-  *are* covered without a server (`test_placement.py`, `test_replica_wait.py`,
-  `test_fanout.py`); everything else means exercising it through the live suite or
-  writing the first unit test for it.
-- **Nothing in CI runs any of this.** A green `publish_docker.yml` means the image
-  built, not that the server works.
+- **A skipped suite is not a passing suite.** `pytest tests/` with no server skips
+  every live test and exits 0.
+- **Ray is slow to boot.** `just up` returns long before the controller serves; a
+  run started too early fails on the first deploy.
+- **The client's nnsight must match the server's.** A mismatch shows up as a
+  deserialization error, not a version message, unless `NDIF_MIN_NNSIGHT_VERSION` is
+  set — see [nnsight integration](nnsight-integration.md#when-client-and-server-versions-differ).
+- **`shm_size`.** Ray's object store lives in `/dev/shm`; compose sets `4gb` on the
+  `ray` service because Docker's 64 MB default is far too small.
+- **Coverage is uneven.** The dispatcher, the API app and the providers other than
+  Redis's publish cap are exercised only through the live suite.
+
+Changing behavior that a doc describes? Update the doc in the same PR — the docs
+standard is in the root [CONTRIBUTING.md](../../CONTRIBUTING.md#docs).
 
 ## Related
 
-- [contributing.md](./contributing.md) — house style and what to run before a PR.
-- [sandbox-internals.md](./sandbox-internals.md) — what you're actually exercising when you force `trusted=False`.
-- [docs/concepts/auth-and-limits.md](../concepts/auth-and-limits.md) — why auth-off implies trusted.
-- [docs/runbooks/enable-auth.md](../runbooks/enable-auth.md) — the full Postgres-auth setup.
-- [docs/operating/quickstart.md](../operating/quickstart.md) — getting a stack up in the first place.
+[Contributing](contributing.md) for house style; [Sandbox internals](sandbox-internals.md)
+for what `trusted=False` exercises; [Auth and limits](../concepts/auth-and-limits.md)
+for why auth-off implies trusted; [Quickstart](../operating/quickstart.md) for
+bringing a stack up.

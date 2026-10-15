@@ -1,9 +1,9 @@
 ---
 title: Auth and Limits
-one_liner: API keys, the Postgres-backed check, and the one fact that matters most — with auth off a request is trusted by default (a client-supplied trusted is honored), which decides where user code runs and how models load.
+one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/gotchas/client-server-versions.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, docker/postgres/init.sql]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -11,185 +11,188 @@ sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, sr
 ## What this covers
 
 Who the server thinks you are, what that identity buys you, and every bound the
-code actually enforces on a request.
+code actually enforces on a request. This is the one home for the `trusted`
+flag; other pages link here.
 
-**Start here.** Auth is optional and off by default: nothing connects to
-Postgres unless `NDIF_POSTGRES_URL` is set. With it unset, `validate_request`
-takes this branch (`src/ndif/services/api/auth.py:180`):
+## The `trusted` flag
 
-```python
-elif not client_set_trusted:
-    # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev mode.
-    # Default to trusted when the client didn't ask; an explicit request
-    # value (True or False) is left untouched.
-    request.trusted = True
-```
+`request.trusted` is stamped at ingress by `validate_request`
+(`src/ndif/services/api/auth.py`) and decides two things:
 
-Auth-off is a trusted-network / dev mode, not a blanket override: a
-client-supplied `trusted` is **honored** (True *or* False), and only a request
-that leaves it unspecified defaults to `True`. So a zero-config `just up` still
-runs every request trusted — that default has two consequences, and they are the
-highest-stakes facts in this documentation set for anyone self-hosting:
+1. **Where the block runs.** On a sandbox actor class, a trusted block runs
+   *inside the model actor process*, next to the weights; an untrusted one runs
+   in a separate runner process driven over a Unix socket
+   ([Sandbox Execution](sandbox-execution.md)).
+2. **How a model it provisions loads.** The request that first provisions a
+   model passes its flag into the deployment, which loads with
+   `trust_remote_code=trusted` — so the model repo's own Python executes at load
+   time. The value is sticky for the life of the deployment
+   ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
 
-1. **User code runs inside the model actor process.** The sandbox actor's
-   `execute` defers to the base implementation for a trusted request
-   (`src/ndif/services/ray/sandbox/model.py:218`), so the submitted block is
-   deserialized and run in the same process as the loaded weights, with no
-   process boundary between it and the model.
-2. **Models deploy with `trust_remote_code=True`.** The flag rides from the
-   request through the queue's `DeploymentConfig` into the actor's model load
-   (`src/ndif/services/ray/deployments/controller/controller.py:450`), so the
-   model repo's own Python executes at load time.
+**How it is set.**
 
-A bare `just up` therefore runs everything trusted by default. That is fine for
-a laptop and not fine for anything reachable by other people. Turning auth on is
-the switch that separates the two — see
-[Enable auth](../runbooks/enable-auth.md).
+| Mode | `trusted` on the request |
+|---|---|
+| Auth on (`NDIF_POSTGRES_URL` set) | from the key: `True` iff the key carries the `trusted` user_tag. A client-supplied value is overwritten. |
+| Auth off, client sent `trusted` | left as sent — `True` or `False` |
+| Auth off, client sent nothing | `True` |
 
-Because the auth-off default honors a client-supplied flag, you can exercise the
-untrusted/sandbox path in dev without standing up Postgres: send `trusted: false`
-in the request and ingress leaves it false, so the request takes the runner path.
-See [docs/developing/testing.md](../developing/testing.md).
+Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
+every request that does not say otherwise as trusted: user code in-process, and
+models loaded with `trust_remote_code=True`. That is fine for a laptop and not
+for anything reachable by other people; turning auth on is the switch — see
+[Enable auth](../runbooks/enable-auth.md). To exercise the untrusted path in dev
+without Postgres, send `trusted: false`; ingress leaves it false. See
+[testing](../developing/testing.md).
 
-Trust is not only an ingress concept. A **dashboard** operator who deploys a model
-is trusted for the same reasons: dashboard access is shell-equivalent trust on the
-node, so a dashboard deploy loads with `trust_remote_code` and its requests run
-in-process — see [the dashboard docs](../operating/dashboard.md).
+**Which actor class honors it.** The fork lives in the actor class, not the
+request path:
+
+| Actor class | Untrusted request runs |
+|---|---|
+| `ModelActor` (the default when `NDIF_MODEL_IMPORT_PATH` is unset) | in-process — this class has no fork |
+| `SandboxModelActor` (compose sets it) | in a runner process |
+| `TPModelActor` (via `NDIF_TP_MODEL_ACTOR_CLASS`) | in-process on every rank — no fork |
+| `SandboxedTPModelActor` (via `NDIF_TP_MODEL_ACTOR_CLASS`) | in one runner the whole group hosts |
+
+So untrusted traffic is only separated from the model when the configured
+classes are the sandboxed ones: `NDIF_MODEL_IMPORT_PATH` (or
+`NDIF_DEFAULT_MODEL_ACTOR_CLASS`) set to
+`ndif.services.ray.sandbox.model.SandboxModelActor`, and, if tensor parallelism
+is on, `NDIF_TP_MODEL_ACTOR_CLASS` set to
+`ndif.services.ray.tp.model.SandboxedTPModelActor`. Only the compose file sets
+the first; nothing sets the second.
+
+**What the untrusted path cannot do.** The runner holds a weightless meta model
+and the backward pass runs on the host, so today a block on the untrusted path:
+
+- cannot read weights — `model.lm_head.weight` is the runner's meta parameter,
+  with a shape and no data;
+- cannot edit weights — a write lands on the meta copy and is a no-op on the
+  host;
+- cannot train — an optimizer stepping `model.parameters()` updates meta tensors
+  and changes nothing;
+- cannot take gradients — `.grad` fails with `OutOfOrderError`.
+
+Activations — reads, swaps, in-place edits, `.source`, module calls, caches —
+behave as they do in-process. The mechanics are in
+[Sandbox internals](../developing/sandbox-internals.md#what-the-untrusted-path-cannot-do).
+
+**Observing the fork.** No log record carries `trusted`. Runners are child
+processes of the model actor, one used per untrusted request and then replaced,
+so new runner pids under the actor show a request took the untrusted path
+([Enable auth](../runbooks/enable-auth.md#what-an-untagged-key-can-do) has the
+command).
+
+**Deploy-time trust.** A dashboard deploy sets `DeploymentConfig.trusted=True`,
+because dashboard access is shell-equivalent on the node, so the model loads with
+`trust_remote_code`. That is the deployment's flag only: each request routed to
+it still forks on its own `request.trusted`. See
+[the dashboard docs](../operating/dashboard.md).
 
 ## How the check works
 
-`validate_request` (`src/ndif/services/api/auth.py:140`) is a FastAPI dependency
-on `POST /request`. It parses the multipart `data` field into a
-`BackendRequestModel` (422 on a bad envelope), copies the `ndif-api-key` header
-onto it, and calls `verify_api_key`. Failures short-circuit before the request
-is ever enqueued.
+`validate_request` is a FastAPI dependency on `POST /request`. It parses the
+multipart `data` field into a `BackendRequestModel` (422 on a bad envelope),
+copies the `ndif-api-key` header onto it, and calls `verify_api_key`. Failures
+short-circuit before the request is ever enqueued.
 
 | Situation | Result |
 |---|---|
-| Postgres not configured | `verify_api_key` returns `None`; request allowed, and a client-supplied `trusted` (True *or* False) is left untouched — only an unspecified one defaults to `True` (`auth.py:180`) |
+| Postgres not configured | `verify_api_key` returns `None`; request allowed, `trusted` as in the table above |
 | No key sent | `401` — "Missing or invalid API key" |
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
 | Postgres unreachable or erroring | `503` — fail **closed**, never allow on a backend error |
 | Key found | `Identity` returned; `email` / `trusted` / `priority` stamped on the request |
 
-The validity criterion is deliberately narrow: **a key is valid iff its row
-exists in the `keys` table.** The owning user's `verification_status` is *not*
-checked here — issuing and gating keys is the account portal's job. The API
-connects as the read-only `ndifapi` role and only ever issues `SELECT`
-(`docker/postgres/init.sql`).
+**A key is valid iff its row exists in the `keys` table.** The owning user's
+`verification_status` is not checked — issuing and gating keys is the account
+portal's job. The API connects as the read-only `ndifapi` role and only issues
+`SELECT` (`docker/postgres/init.sql`). The query `LEFT JOIN`s through
+`key_user_tag_assignments` to `user_tags`, so a known key with no tags still
+returns one row — that is how "unknown key" differs from "known key, no tags".
 
-The query `LEFT JOIN`s through `key_user_tag_assignments` to `user_tags`, so a
-known key with no tags still returns one row (tag `NULL`) — that's how "unknown
-key" is distinguished from "known key, no tags".
+`GET /whoami` (`src/ndif/services/api/app.py` `whoami`) resolves a key to
+`{"email": ..., "tags": [...]}`. A missing or unknown key resolves to
+`{"email": None, "tags": []}`, as does any key with auth off; with auth on, a
+malformed key returns `400` and a Postgres failure `503`.
 
 ## What identity buys you
 
-`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`
-(`auth.py:66`). Exactly two tags mean anything to the server:
+`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly two
+tags mean anything to the server:
 
 | Tag | Effect |
 |---|---|
-| `trusted` | The request's block runs in-process in the model actor, and any deployment it triggers loads with `trust_remote_code` |
-| `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests (with auth off there is no key to read it from, so `priority` is left as the client sent it — `False` unless the client set it) |
+| `trusted` | `request.trusted = True` — see above |
+| `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests. With auth off, `priority` is left as the client sent it (`False` by default). |
 
-Everything else about identity is **observability only**. `email` is carried on
-the request — across the Ray boundary via pickling — so every downstream log
-line and metric point can be attributed to a person rather than an opaque key
-(`src/ndif/common/schema/request.py:50`). `api_key` and `email` appear on the
-request-size, status-time, execution-time, GPU-memory, and response-size
-metrics.
-
-There is **no tier system, no quota, and no per-model authorization** on the
-request path: any valid key may request any `model_key`, and a key with no tags
-is as capable as one with ten (minus `trusted`/`priority`).
-
-`GET /whoami` resolves a key to `{"email": ..., "tags": [...]}`. It is
-deliberately lenient — a missing, malformed, or unknown key resolves to
-`{"email": None, "tags": []}` rather than erroring; only a 503 propagates
-(`src/ndif/services/api/app.py:344`).
+Everything else about identity is **observability only**. `email` travels with
+the request across the Ray boundary so every downstream log line and metric
+point can be attributed to a person. There is **no tier system, no quota, and no
+per-model authorization**: any valid key may request any `model_key`.
 
 ## Client version gating
 
 The nnsight client stamps `nnsight-version` and `python-version` headers on
 every `POST /request`. Two env vars gate on them, both read **once at import**
-(`src/ndif/services/api/versioning.py:23`):
+(`src/ndif/services/api/versioning.py` `validate_client_versions`):
 
 | Variable | Example | Unset behavior |
 |---|---|---|
 | `NDIF_MIN_NNSIGHT_VERSION` | `0.5.0` | no nnsight gating at all |
 | `NDIF_MIN_PYTHON_VERSION` | `3.10` | no python gating at all |
 
-When a minimum *is* set, three things produce a `400`: a missing header (treated
-as "outdated nnsight, please upgrade"), an unparseable version, and a version
-below the minimum. The python check compares major.minor only, dropping patch
-and build noise.
+When a minimum is set, three things produce a `400`: a missing header, an
+unparseable version, and a version below the minimum. The python check compares
+major.minor only. nnsight unpacks FastAPI's `{"detail": ...}` body and raises
+`RemoteError` with it, so the user sees the sentence, not a bare status — the
+same for every auth failure above.
 
-A rejected client does not see a bare HTTP status — nnsight's `_post` unpacks
-FastAPI's `{"detail": ...}` body and raises `RemoteError` with it, so the user
-gets the actual sentence ("Client nnsight version 0.4.1 is below the minimum
-supported 0.5.0. Please `pip install --upgrade nnsight`."). The same is true of
-every auth failure above.
-
-> **Gotcha:** an empty string counts as unset (`or None` in `versioning.py`), so
-> `NDIF_MIN_NNSIGHT_VERSION=""` silently disables gating rather than rejecting
-> everything. And because both are read at import, changing them means
-> restarting the API.
+> **Gotcha:** an empty string counts as unset, so `NDIF_MIN_NNSIGHT_VERSION=""`
+> disables gating rather than rejecting everything. And because both are read at
+> import, changing them means restarting the API.
 
 ## Request size
 
-**There is no request size limit.** Nothing in the API, gunicorn config, or
-compose file bounds the multipart body: `POST /request` reads the whole blob
-into memory with `await blob.read()` (`app.py:150`), pickles the request, and
-`LPUSH`es it into Redis. The gap is marked in the source as a TODO
-(`app.py:147`). `RequestSizeMetric` records `payload_bytes` — it
-measures, it does not enforce.
-
-The practical consequences for a self-hosted deployment: a large request is held
-in an API worker's memory and then in Redis's memory until the dispatcher pops
-it, and a client with a large payload can consume both. If you need a cap, put
-it in a reverse proxy in front of the API; there is no `NDIF_*` knob for it.
+**There is no request size limit.** `create_request`
+(`src/ndif/services/api/app.py`) reads the whole blob into memory, pickles the
+request, and `LPUSH`es it into Redis; `RequestSizeMetric` records
+`payload_bytes` but does not enforce anything. A large request is held in an API
+worker's memory and then in Redis until the dispatcher pops it. If you need a
+cap, put it in a reverse proxy in front of the API; there is no `NDIF_*` knob.
 
 ## The per-request execution timeout
 
 `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` is **unset by default**, meaning no
-cap: a request runs until it finishes, so a legitimately long job is never cut
-off on a deployment serving only its owner. Set it on anything shared — without
-a cap a runaway block holds its replica for as long as it likes, and
-`NDIF_AUTOSCALING_MAX_REPLICAS` (3) of those take the model out entirely.
+cap. Set it on anything shared — without a cap a runaway block holds its replica
+for as long as it likes, and `NDIF_AUTOSCALING_MAX_REPLICAS` (3) of those take
+the model out entirely. A deployment can override it per model via
+`DeploymentConfig.execution_timeout_seconds`.
 
-The value is the controller's default, passed into each actor as
-`execution_timeout`; a deployment can override it per model via
-`DeploymentConfig.execution_timeout_seconds`. The
-actor enforces it by racing the execution against a timer
-(`src/ndif/services/ray/deployments/modeling/base.py:354`):
+`BaseModelDeployment.run` (`src/ndif/services/ray/deployments/modeling/base.py`)
+races the execution, on a worker thread, against the timer and a cancel event
+(`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your job
+exceeded the execution timeout of Ns."; a cancel — in practice only the HOT→WARM
+demotion — re-queues the request instead. The user's answer is bounded by the
+timeout. What `interrupt` does to the running code depends on the class:
 
-```python
-job = asyncio.create_task(asyncio.to_thread(self.execute, request))
-kill = asyncio.create_task(self.kill_switch.wait())
-with self.execution_scope(request):
-    done, pending = await asyncio.wait(
-        {job, kill},
-        timeout=self.execution_timeout,
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-```
+- **In-process (`ModelActor`, and trusted requests on the sandbox class).**
+  `BaseModelDeployment.interrupt` calls `kill_thread`
+  (`src/ndif/services/ray/deployments/modeling/util.py`), which injects
+  `SystemExit` into the execution thread with CPython's async-exception API. It
+  fires at that thread's next bytecode boundary, so a CUDA kernel or large tensor
+  op already in flight finishes first.
+- **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
+  the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
+  socket the host thread is reading, then does the same `kill_thread`.
+- **Tensor-parallel.** `TPModelDeployment.interrupt` sets an abort flag every
+  rank checks at a shared checkpoint rather than killing a thread mid-collective;
+  the sandboxed TP class then also stops the runner.
 
-On expiry the actor calls `interrupt()` and responds `ERROR` with "Your job
-exceeded the execution timeout of Ns." (`base.py:401`). The same machinery serves
-operator cancellation (`kill_switch`), which produces "Your job was cancelled or
-preempted by the server." (`base.py:393`).
-
-How hard that interrupt lands depends on the fork:
-
-- **Trusted (in-process).** `interrupt` (`base.py:541`) injects `SystemExit` into
-  the execution thread with CPython's async-exception API (`kill_thread`,
-  `modeling/util.py:69`). It only fires at a bytecode boundary, so it cannot
-  interrupt a CUDA kernel or a large tensor op already in flight — the timeout
-  bounds when the *user* gets an answer, not necessarily when the GPU stops.
-- **Untrusted (sandboxed).** `interrupt` (`sandbox/model.py:200`) also stops the
-  runner process, which closes the socket and unblocks the host — a real kill of
-  the code that was running.
+After any of these, the actor's per-request `cleanup` runs before it takes the
+next request.
 
 ## Every limit in one table
 
@@ -202,14 +205,14 @@ How hard that interrupt lands depends on the fork:
 | Requests per key / rate limit | — | — | **no** |
 | Queue depth | — | — | **no** — unbounded |
 | Replicas per model | `NDIF_AUTOSCALING_MAX_REPLICAS` | 3 | yes |
-| Per-request execution time | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | unset (no cap) | only if you set it; see the caveat above |
-| Per-actor GPU memory | controller's allocation, applied as `max_memory` + a per-process cap | per model | yes |
+| Per-request execution time | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | unset (no cap) | only if you set it; see above for what the interrupt does |
+| Per-actor GPU memory | controller's allocation, applied as `max_memory` + a per-process cap | per model | yes, for the actor process; a runner process is outside it |
 | HTTP worker timeout | `NDIF_API_TIMEOUT` | 120 | yes — gunicorn, bounds the HTTP handler, not the job |
 
 ## Related
 
-- [Sandbox Execution](sandbox-execution.md) — what the untrusted path actually
-  provides today, and what it does not.
+- [Sandbox Execution](sandbox-execution.md) — what the untrusted path provides,
+  and what it does not.
 - [Request Lifecycle](request-lifecycle.md) — where in the path each gate sits.
 - [Enable auth](../runbooks/enable-auth.md) — turning Postgres-backed keys on
   from a working dev stack.

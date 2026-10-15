@@ -1,111 +1,92 @@
 ---
 title: Contributing
-one_liner: House style and conventions this codebase actually follows — comments, docstrings, env vars, logging, where code belongs, and commit form.
+one_liner: House style and conventions this codebase follows — comments, docstrings, env vars, logging, where code belongs, commit form — and what CI does and does not do.
 tags: [internals, dev]
-related: [docs/developing/testing.md, docs/developing/repo-layout.md, docs/developing/adding-a-provider.md, docs/developing/adding-a-service.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md]
-sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, src/ndif/common/telemetry.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/sandbox/ARCHITECTURE.md, pyproject.toml]
+related: [docs/developing/testing.md, docs/developing/repo-layout.md, docs/developing/providers.md, docs/developing/adding-a-service.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md]
+sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, src/ndif/common/telemetry.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/sandbox/ARCHITECTURE.md, pyproject.toml, .github/workflows/build_images.yml, .github/workflows/publish_docker.yml, .github/workflows/publish.yml]
 ---
 
 # Contributing
 
 ## What this covers
 
-There is no `CONTRIBUTING.md`, no lint gate, and no PR template in this repo, and
-CI (`.github/workflows/`) only builds and publishes — no workflow runs the tests
-or `ruff`. What there *is* is a strong and consistent house style visible in the source
-itself. This page states it explicitly so you can hold the bar without reverse-
-engineering it. Everything below is inferred from the code; where the code and a
-comment disagree, the code wins and the comment is a bug.
+The root [CONTRIBUTING.md](../../CONTRIBUTING.md) is the entry point: branches,
+running the tests, the docs standard, bug reports. This page is the dev-facing depth
+behind it — the house style visible in the source, stated so you can hold the bar
+without reverse-engineering it — and what CI does. Where the code and a comment
+disagree, the code wins and the comment is a bug.
 
 ## Comments and docstrings
 
-**The module docstring is where the concept gets taught.** This codebase is
-unusually good at this and it is the single most valuable convention in it. A
-module docstring here doesn't say "this module contains the Redis provider" — it
-states the design constraint and then the mechanism. Compare
-`common/providers/loki.py:1`, which explains *why* Loki shipping is opt-in and
-lazy before it explains what the handler does, or `common/metrics.py:15`, which
+**The module docstring is where the concept gets taught.** A module docstring here
+states the design constraint, then the mechanism. Compare
+`src/ndif/common/providers/loki.py`, which says why Loki shipping is fail-open and
+lazy before it says what the handler does, or `src/ndif/common/metrics.py`, which
 teaches InfluxDB's tags-vs-fields split and the cardinality reasoning behind every
-choice in the file. Match that. A new module in `common/` or a new subsystem
-without a teaching docstring is incomplete.
+choice in the file. A new module in `common/` or a new subsystem without a teaching
+docstring is incomplete.
 
-Below the module level the pattern is three layers, same as the rest of the
-codebase:
+Below that, three layers:
 
 - **Module docstring** — the concept, the constraint, the shape.
-- **Class/function docstring** — the contract and the reasoning. Note the
-  *reasoning*: `RedisProvider.connect` (`common/providers/redis.py:50`) spends its
-  whole docstring on why `socket_timeout=None` is passed explicitly, because
-  someone will otherwise delete it.
+- **Class/function docstring** — the contract and the reasoning.
+  `src/ndif/common/providers/redis.py` `RedisProvider.connect` spends its docstring
+  on why `socket_timeout=None` is passed explicitly, because someone would
+  otherwise delete it.
 - **Inline comment** — why *this* implementation, never what the line does.
 
-**Comment the why, not the what.** Concretely, the comments that earn their place
-here name a failure mode: "without this they'd default to localhost:6379 — which
-inside this container is Ray's own GCS", "threads don't survive `fork()`, so a
-thread created in the master would be dead in every forked worker", "a silent
-'auth off' would be a security hole". Comments that restate the line get deleted.
+**Comment the why, and name the failure mode.** The comments that earn their place
+say what breaks without the line: "without this they'd default to localhost:6379 —
+and inside this container nothing listens there", "a thread created in the master
+would be dead in every forked worker", "a silent 'auth off' would be a security
+hole". Comments that restate the line get deleted.
 
-**The source is present tense.** No "this used to", no issue numbers, no
-`TODO`/`FIXME`, no comment about the change you are making — describe what the
-code does, not the bug you were fixing. Git holds the history; the commit message
-is where the before/after belongs.
+**Describe the code, not its history.** A comment says what the code does and why;
+the before/after of a change belongs in the commit message.
 
 **Big subsystems get a design doc.** `src/ndif/services/ray/sandbox/ARCHITECTURE.md`
-is the model: 250 lines explaining the interleaving split, with a table of files,
-a diagram, and an explicit "current simplifications" section. If you build
-something with that much internal structure, write one next to the code and keep
-the docstrings pointing at it.
+is the model: the interleaving split, a table of files, a diagram, and an explicit
+"current simplifications" section. If you build something with that much internal
+structure, write one next to the code and point the docstrings at it.
 
 ## Configuration and env vars
 
-**Every knob is an environment variable, and there is no config file.** The CLI
-layers a CWD `.env` and an explicit `--env-file` on top of the process
-environment; nothing else reads configuration from disk.
+**Every knob is an environment variable; there is no config file.** The CLI layers a
+CWD `.env` and an explicit `--env-file` over the process environment; nothing else
+reads configuration from disk. When you add one:
 
-Conventions to follow when you add one:
-
-- **Prefix `NDIF_`.** Everything. Grouped by subsystem after that:
-  `NDIF_QUEUE_*`, `NDIF_AUTOSCALING_*`, `NDIF_RAY_*`, `NDIF_OBJECT_STORE_*`,
-  `NDIF_INFLUX_*`, `NDIF_LOKI_*`, `NDIF_POSTGRES_*`, `NDIF_DASHBOARD_*`.
-- **Declare it where it's read**, in one place. For anything backed by an external
-  service, that place is the provider's `CONFIG` dict — a
-  `attr: (ENV_VAR, typed_default, cast)` tuple, which the base turns into
-  `from_env()` / `to_env()` automatically (`common/providers/base.py:36`). For a
-  subsystem, a module-level config object (`api/queue/config.py`). For a shell
-  knob, a `${VAR:-default}` in the service's `start.sh` with the default documented
-  in the header comment.
-- **Empty means off.** The established idiom for an optional subsystem is that its
-  URL defaults to `""` and an empty URL disables the whole thing:
-  `NDIF_LOKI_URL`, `NDIF_POSTGRES_URL`, `NDIF_OBJECT_STORE_PUBLIC_URL`. Don't add a
-  separate `_ENABLED` boolean unless you need to disable something that's otherwise
-  configured (`NDIF_INFLUX_ENABLED` is the one such case).
-- **Document the default in a comment next to the tuple**, and add a row to the
-  README's `NDIF_*` table and [docs/reference/env-vars.md](../reference/env-vars.md).
-
-Adding an env var that isn't in the README table is the most common drift in this
-repo. Add the row.
+- **Prefix `NDIF_`**, then group by subsystem: `NDIF_QUEUE_*`, `NDIF_AUTOSCALING_*`,
+  `NDIF_RAY_*`, `NDIF_OBJECT_STORE_*`, `NDIF_INFLUX_*`, `NDIF_LOKI_*`,
+  `NDIF_POSTGRES_*`, `NDIF_DASHBOARD_*`.
+- **Declare it where it's read**, once. For an external service, the provider's
+  `CONFIG` dict — `attr: (ENV_VAR, typed_default, cast)`, which
+  `src/ndif/common/providers/base.py` `Provider` turns into `from_env()` /
+  `to_env()`. For a subsystem, a module-level config object
+  (`src/ndif/services/api/queue/config.py`). For a shell knob, `${VAR:-default}` in
+  the service's `start.sh` with the default in the header comment.
+- **Empty means off.** An optional subsystem's URL defaults to `""` and empty
+  disables it (`NDIF_LOKI_URL`, `NDIF_POSTGRES_URL`). Add an `_ENABLED` boolean only
+  to disable something otherwise configured (`NDIF_INFLUX_ENABLED`).
+- **Document the default** next to the tuple, and add a row to
+  [Environment variables](../reference/env-vars.md) — the most common drift in this
+  repo.
 
 ## Logging and telemetry
 
-- **One logger tree: `ndif`.** Every module does
-  `logger = logging.getLogger("ndif.<component>")` — `ndif.api`, `ndif.request`,
-  `ndif.queue.dispatcher`, `ndif.queue.replica`, `ndif.controller`,
-  `ndif.modeling`. The sub-name becomes the Loki `logger` stream label, so it's a
-  query dimension, not decoration. Never log to the root logger.
-- **Use `event()`, not `logger.info(..., extra={...})`.**
-  `common/telemetry.py:44` drops `None` fields and refuses keys that collide with
-  reserved `LogRecord` attributes (which otherwise raises at runtime). It also sets
-  `stacklevel=2` so the source context points at your call site.
-- **Field names are a de-facto schema.** Grafana dashboards query them. Reuse the
-  established ones — `model_key`, `replica_id`, `request_id`, `session_id`,
-  `stage`, `status`, `duration_ms`, `queue_size`, `error_type` — rather than
-  inventing a synonym.
-- **Metrics are classes, not ad-hoc writes.** Add a `Metric` subclass in
-  `common/metrics.py` with an explicit `update(...)` signature; that's where the
-  tag/field split is decided. Tags must stay low-cardinality: no request ids, no
-  replica ids, no IPs.
-- **Telemetry never raises.** Both sinks fail open, in both senses — package
-  missing and server unreachable. Preserve that.
+- **One logger tree: `ndif`.** Every module takes
+  `logging.getLogger("ndif.<component>")`; the sub-name becomes the Loki `logger`
+  label, so it is a query dimension. Never log to the root logger.
+- **Use `event()`**, not `logger.info(..., extra={...})`: it drops `None` fields,
+  refuses keys that collide with `LogRecord` attributes, and sets `stacklevel=2`.
+- **Field names are a de-facto schema** that Grafana queries — reuse `model_key`,
+  `replica_id`, `request_id`, `session_id`, `stage`, `status`, `duration_ms`,
+  `queue_size`, `error_type` rather than inventing synonyms.
+- **Metrics are classes**, not ad-hoc writes: a `Metric` subclass in
+  `src/ndif/common/metrics.py` decides the tag/field split. Tags stay
+  low-cardinality — no request ids, replica ids or IPs.
+- **Telemetry never raises.** Both sinks fail open; preserve that.
+
+The mechanics are [Telemetry internals](telemetry-internals.md).
 
 ## Where new code belongs
 
@@ -119,33 +100,29 @@ repo. Add the row.
 | A user-facing verb | `src/ndif/cli/commands/` (flags) + `src/ndif/cli/lib/` (logic) |
 
 Two hard rules: `common/` never imports from `services/`, and CLI logic lives in
-`lib/` — `commands/` holds click decoration only, because the dashboard backend
-imports `lib/` directly and would otherwise have no door in.
+`lib/` — the dashboard backend imports `lib/` directly.
 
-Prefer subclassing an existing seam to adding a branch. The sandbox model actor is
-the worked example: it is a handful of overridden hooks on
-`BaseModelDeployment`'s `run` template (`modeling/base.py:300`), not a parallel
-implementation. Same for providers (`Provider`) and model actors
-(`BaseModelDeployment`).
+Prefer subclassing an existing seam to adding a branch. The sandbox model actor is a
+handful of overridden seams on `BaseModelDeployment.run`, not a parallel
+implementation ([Adding a model actor](adding-a-model-actor.md)); the same goes for
+providers (`Provider`).
 
 ## Typing and imports
 
-`from __future__ import annotations` where the module uses modern syntax on
-older-style annotations; `X | None` and `list[str]` in newer code, though the
-older modules still carry `Optional`/`Dict`. Match the file you're in.
+`X | None` and `list[str]` in newer code; older modules still carry
+`Optional`/`Dict`. Match the file you're in.
 
-Heavy imports are deliberately deferred. `cli/lib/models.py:1` imports Ray and
-nnsight *inside* functions so `ndif --help` stays fast, and `gunicorn_conf.py`
-imports the telemetry providers only inside `post_fork` so the master never
-connects them before forking. If you're tempted to hoist one of those to module
-level, read the docstring first — it will tell you what breaks.
+Heavy imports are deferred on purpose. `src/ndif/cli/lib/models.py` imports Ray and
+nnsight inside functions so `ndif --help` stays fast, and
+`src/ndif/services/api/gunicorn_conf.py` imports the telemetry providers only in
+`post_fork` so the master never connects them before forking. Before hoisting one to
+module level, read the docstring — it says what breaks.
 
 ## Commits
 
-Subjects are `area: lowercase imperative summary`, where `area` names the part of
-the tree touched (`sandbox`, `api`, `queue`, `modeling`, `dashboard`, `cli`,
-`docker`, `compose`, `telemetry`, `packaging`, `docs`, `tests`, `chore`). From the
-log:
+Subjects are `area: lowercase imperative summary`, where `area` names the part of the
+tree (`sandbox`, `api`, `queue`, `modeling`, `dashboard`, `cli`, `docker`, `compose`,
+`telemetry`, `packaging`, `docs`, `tests`, `chore`):
 
 ```
 sandbox: let trusted requests skip the sandbox
@@ -153,47 +130,49 @@ queue: re-queue on eviction instead of erroring; lazy self-healing processor
 api auth: a "trusted" key tag and a validate_request dependency
 compose: default the sandbox model actor
 docker: build nnsight's C extension so .save() works on the server
-tests: remote cache and gradients now pass (flip from xfail)
 ```
 
-The body explains the *why* and the constraint, at the same standard the source
-comments hold to: name the failure mode, name the counterfactual. The best ones
-here read like a small design note — see `git show f336ea6` for the shape.
-Commits made with agent assistance carry a trailer:
+The body explains the *why* and the constraint, at the standard the source comments
+hold: name the failure mode and the counterfactual.
 
-```
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-```
+## CI and releases
 
-`main` is the branch; branch from it for your change. A push to `main` builds and
-pushes the ECR image (`.github/workflows/build_images.yml`); a `v*` tag publishes
-the Docker Hub images and the PyPI wheel (`publish_docker.yml`, `publish.yml`), so
-a tag is a release, not a checkpoint.
+The workflows in `.github/workflows/` build and publish; none runs the tests or
+`ruff`.
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `build_images.yml` | push to `main` (or manual) | builds the hosted image |
+| `publish_docker.yml` | a `v*` tag (or manual) | publishes the `ndif/ndif` images to Docker Hub; `latest` moves only for a final `X.Y.Z` |
+| `publish.yml` | a published GitHub release (or manual) | builds and publishes the wheel to PyPI |
+
+Creating a GitHub release pushes its tag, so one release fires both publish
+workflows; a tag is a release, not a checkpoint. The package version is the git tag
+(setuptools-scm); the image build has no `.git`, so the version reaches it through
+the `NDIF_VERSION` build arg.
 
 ## Before you open a PR
 
-The workflows publish; they do not check. So this is on you:
+The root [CONTRIBUTING.md](../../CONTRIBUTING.md#tests) has the test commands; beyond
+those:
 
-1. Bring a stack up and run the live suite — `just up`, then `pytest tests/`. See
-   [testing.md](./testing.md). An all-skipped run means the server wasn't up.
-2. If you touched execution, run it a second time with `trusted=False` forced, so
-   the sandbox path is covered too (testing.md has the recipe). Local dev is
-   auth-off and therefore trusted-by-default; that path is otherwise never
-   exercised.
-3. `ruff check src/` if you have the `dev` extra. No workflow enforces it, but the
-   tree is clean.
-4. If you added an env var, update the README table and
-   [docs/reference/env-vars.md](../reference/env-vars.md). If you added a `start.sh`
-   or other non-`.py` file a service needs, update `[tool.setuptools.package-data]`
-   in `pyproject.toml` — otherwise it works from a checkout and breaks from a wheel.
+1. If you touched execution, also run the live suite with `trusted=False` forced
+   ([Testing](testing.md#testing-the-untrusted--sandbox-path)) — local dev is
+   trusted by default, so the sandbox path is otherwise never exercised.
+2. `ruff check src/` with the `dev` extra; nothing enforces it.
+3. A new env var gets a row in [Environment variables](../reference/env-vars.md); a
+   new `start.sh` or other non-`.py` file gets a `package-data` entry
+   ([Adding a service](adding-a-service.md#dependencies-extras-and-the-image)).
+4. After a code change run `just ta`. `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
+5. A doc your change makes false is fixed in the same PR; `pytest tests/test_docs.py`
+   checks cited paths, symbols and links.
 
-This is a young repo; the version is the git tag (setuptools-scm, `pyproject.toml` `dynamic = ["version"]`), 0.1.0 at this writing. Nothing here is a
-stable public API, and a change that deletes a concept is worth more than one that
-adds a flag.
+Nothing here is a stable public API, and a change that deletes a concept is worth
+more than one that adds a flag.
 
 ## Related
 
-- [testing.md](./testing.md) — the live suite and the untrusted-path recipe.
-- [repo-layout.md](./repo-layout.md) — where things live, and the "change X, open Y" table.
-- [adding-a-provider.md](./adding-a-provider.md) / [adding-a-service.md](./adding-a-service.md) — the two recipes that encode most of these conventions.
-- [telemetry-internals.md](./telemetry-internals.md) — the logging and metrics plumbing behind the conventions above.
+[Testing](testing.md) for the suite and the untrusted-path recipe;
+[Repo layout](repo-layout.md) for where things live; [Providers](providers.md) and
+[Adding a service](adding-a-service.md) for the two recipes that encode most of
+these conventions.

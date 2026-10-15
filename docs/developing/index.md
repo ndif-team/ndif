@@ -10,27 +10,13 @@ sources: []
 
 ## What this covers
 
-The internals tree. Pages here cite source `file:line`, describe data flow between
-subsystems, and mark the extension points. It sits one level below
-`docs/concepts/` (the mental models) and `docs/operating/` (running a cluster).
+The internals tree: one page per subsystem, citing source by path and symbol,
+with the data flow between subsystems and the extension points. The mental
+models are in [Concepts](../concepts/index.md).
 
 Audience: contributors, and agents whose user wants to change or debug the server.
 If you want to *run* NDIF rather than modify it, start at
 [Operating](../operating/index.md).
-
-## The one-paragraph model
-
-An API worker authenticates a request and `LPUSH`es it onto a Redis list — that is
-the entire synchronous path. A **dispatcher**, a separate process spawned by the
-gunicorn master and the only holder of a Ray client, pops it, routes it to a
-per-model `Processor`, and provisions a replica if none is HOT. A **controller**
-actor on the Ray head owns cluster state and decides placement and eviction.
-Replicas are **detached Ray actors** — not Ray Serve deployments — each owning one
-model's weights. The actor's `run()` is a template that races `execute()` against a
-timeout; `execute()` either runs the user's block **in-process** (trusted) or ships
-it to a **fresh runner subprocess** and drives the forward pass over a Unix socket
-(untrusted). A result small enough rides back on the `COMPLETED` response; anything
-larger goes to an object store and the client gets a presigned URL.
 
 ## Start here
 
@@ -54,9 +40,9 @@ larger goes to an object store and the client gets a presigned URL.
   Evaluator model, sizing, placement, and eviction.
 - [Model Actor](model-actor.md) — loading, the `run()` template, results, timeouts,
   metrics.
-- [Sandbox Internals](sandbox-internals.md) — the untrusted path: the wire
-  protocol, the split interleaver, and one proxy per worker. The densest page in
-  the tree; the subsystem also has its own
+- [Sandbox Internals](sandbox-internals.md) — the untrusted path, which aims to
+  reproduce the trusted path's results: the wire protocol, the split interleaver,
+  and one proxy per worker. The subsystem also has its own
   `src/ndif/services/ray/sandbox/ARCHITECTURE.md`.
 
 ### Shared foundations
@@ -64,8 +50,8 @@ larger goes to an object store and the client gets a presigned URL.
   its fail-open behavior.
 - [The Redis Layer](redis-layer.md) — the coalesced status/env caches, the event
   stream, response pub/sub.
-- [Telemetry Internals](telemetry-internals.md) — logger tree, `event()`, every
-  metric, and the fork-safe connect points.
+- [Telemetry Internals](telemetry-internals.md) — logging, metrics, and when to
+  connect the providers.
 - [nnsight Integration](nnsight-integration.md) — the client/server contract and
   which nnsight internals the server depends on.
 
@@ -78,32 +64,18 @@ larger goes to an object store and the client gets a presigned URL.
 
 ## Extending
 
-- [Adding a Model Actor](adding-a-model-actor.md) — the five hooks `run()` calls,
+- [Adding a Model Actor](adding-a-model-actor.md) — the six hooks `run()` calls,
   plus the `commit()` seam.
-- [Adding a Provider](adding-a-provider.md) — the base-class contract and
+- [Writing a new provider](providers.md#writing-a-new-provider) — the base-class contract and
   fail-open discipline.
 - [Adding a Service](adding-a-service.md) — the `NDIF_SERVICE` + `start.sh` + CLI
   registry contract.
 
 ## Working on the code
 
-- [Testing](testing.md) — the live-server suite, the four files that run without a
-  server, and how to force the untrusted path that local dev never exercises. No
-  workflow runs any of it.
+- [Testing](testing.md) — the live-server suite, the files that run without a
+  server, and how to force the untrusted path. No CI workflow runs the tests.
 - [Contributing](contributing.md) — the conventions this codebase actually follows.
-
-## Two things that catch everyone
-
-**Local dev does not exercise the sandbox.** Two independent reasons: auth-off
-stamps every request `trusted`, and the code-default actor class is the in-process
-`ModelActor` (only compose sets `SandboxModelActor`). Both paths must produce
-identical results — that invariant is why the sandbox is shaped as it is, and
-[Testing](testing.md) shows how to actually check it.
-
-**Telemetry providers connect at import and own threads.** They must be connected
-*after* forking — `post_fork` for gunicorn workers, `spawn` for the dispatcher. A
-new entry point that imports them too early gets neither console formatting nor
-telemetry, silently.
 
 ## Related
 

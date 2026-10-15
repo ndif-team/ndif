@@ -11,15 +11,10 @@ sources: [src/ndif/services/dashboard/frontend/package.json, src/ndif/services/d
 ## What this covers
 
 `src/ndif/services/dashboard/frontend/` — the Vue 3 SPA the dashboard backend
-serves as static files. How it's laid out, how it talks to the backend, how to run
-it against a live backend, and how the built output does (and doesn't) reach a
-deployed container. The backend it calls is documented in
-`docs/developing/dashboard-internals.md`.
-
-See the packaging section for the shipping model: **the built frontend is
-committed** (`frontend/dist/` is tracked despite the blanket `dist/` ignore), so a
-fresh `just up` serves a working UI with no host-side build — you only rebuild when
-you change the frontend.
+serves as static files: layout, how it talks to the backend, the dev loop, and how
+the built output reaches a deployed container. This page is the home for that last
+point: **the built frontend is committed**, so a fresh `just up` serves a working UI
+with no host-side build. The backend is [Dashboard internals](dashboard-internals.md).
 
 ## Stack and layout
 
@@ -49,14 +44,13 @@ outside a `.vue` file or every view keeps its own copy.
 
 ## api.ts and auth
 
-`api.ts` is a ~60-line fetch wrapper — `api.get/post/put/del` — that always sends
+`api.ts` is a small fetch wrapper — `api.get/post/put/del` — that always sends
 `credentials: 'include'` (the session cookie is HttpOnly, so JS never sees a
 token), sets `Content-Type: application/json`, maps `204` to `undefined`, and on a
 non-2xx throws an `ApiError` carrying `status` and the parsed `detail`. Views
 catch it to render a toast, which is why the backend takes care to put a readable
-string in `detail` rather than letting FastAPI return a bare
-`Internal Server Error` — see *Error translation* in
-`docs/developing/dashboard-internals.md`. A few call sites fall back to
+string in `detail` rather than a bare `Internal Server Error` (see
+[Error translation](dashboard-internals.md#error-translation)). A few call sites fall back to
 `e.message` when `detail` is an object, since a 422 validation error's `detail` is
 a list and would otherwise render as `[object Object]`.
 
@@ -128,36 +122,28 @@ backend's session cookie survives the origin change, and the backend's CORS
 middleware allowlists exactly `http://localhost:5173` and `http://127.0.0.1:5173`
 with `allow_credentials=True`. `@` is aliased to `src/`.
 
-In dev you do not need `dist/` at all — Vite serves the UI and the backend only
-answers `/api/*`. The committed `dist/` (see below) is what a non-dev deployment
-serves.
+In dev you don't need `dist/` — Vite serves the UI and the backend answers only
+`/api/*`.
 
 ## Build and packaging
 
 `npm run build` is `vue-tsc --noEmit && vite build` — a type error fails the build
-— emitting `frontend/dist/` with hashed assets under `dist/assets`, which is what
-the backend mounts (`backend/app.py:61`).
+— emitting `frontend/dist/` with hashed assets under `dist/assets`, which
+`create_app` (`src/ndif/services/dashboard/backend/app.py`) mounts.
 
-> **The built SPA is committed.** `frontend/dist/` is tracked despite the blanket
-> `dist/` rule (`.gitignore:9`), because `.gitignore:14-15` explicitly un-ignores
-> `src/ndif/services/dashboard/frontend/dist/`. So `git ls-files` returns the
-> hashed assets, `docker/Dockerfile`'s `COPY src/ ./src/` carries them into the
-> image, and a wheel picks them up as package-data — no host-side `npm` is needed.
-> `docker/Dockerfile` still contains no `npm` or `node`; it doesn't need to.
+**The built SPA is committed.** `.gitignore` ignores `dist/` everywhere but
+explicitly un-ignores `src/ndif/services/dashboard/frontend/dist/`, because the image
+has no `npm` or `node` and the wheel must carry a UI. So:
 
-`pyproject.toml`'s `[tool.setuptools.package-data]` ships `"frontend/dist/*"` and
-`"frontend/dist/**/*"` for the `ndif.services.dashboard` package, and
-`NDIF_DASHBOARD_FRONTEND_DIST` defaults to that same directory
-(`backend/config.py:42`). Both halves agree — the committed `dist/` is what the
-package-data entry ships. The upshot:
+- `docker/Dockerfile`'s `COPY src/ ./src/` carries the assets into the image, and a
+  fresh clone + `just up` serves the UI at `GET /`.
+- `pyproject.toml`'s `package-data` ships `"frontend/dist/*"` and
+  `"frontend/dist/**/*"`, and `Settings.frontend_dist` in
+  `src/ndif/services/dashboard/backend/config.py` (env `NDIF_DASHBOARD_FRONTEND_DIST`)
+  defaults to that directory, so an installed wheel serves it too.
 
-- **`just up` from a fresh clone serves the UI.** The backend's `dist` check
-  passes and the SPA catch-all is registered; `GET /` serves `index.html`.
-- **A wheel built from a clean checkout carries the assets**, so it serves a UI
-  wherever it's installed.
-
-You only rebuild when you change the frontend. Run the build on the host, then
-rebuild the image so the new assets are copied in:
+Rebuild only when you change the frontend — on the host, then rebuild the image so
+the new assets are copied in, and commit the new `dist/`:
 
 ```bash
 cd src/ndif/services/dashboard/frontend && npm ci && npm run build && cd -
@@ -166,8 +152,5 @@ just build dashboard && just up dashboard
 
 ## Related
 
-- `docs/developing/dashboard-internals.md` — the FastAPI backend, its routers, the
-  stores, and the cron jobs this SPA drives.
-- `docs/operating/dashboard.md` — running the dashboard, auth setup, and the same
-  build prerequisite from an operator's angle.
-- `docs/developing/contributing.md` — house conventions for changes to this repo.
+[Dashboard internals](dashboard-internals.md) for the backend, stores and cron jobs
+this SPA drives; [Dashboard](../operating/dashboard.md) for running it and auth setup.

@@ -1,8 +1,8 @@
 ---
 title: Providers
-one_liner: common/providers/* — classmethod singletons over Redis, Ray, S3, Postgres, InfluxDB and Loki, configured purely from the environment, each with its own answer to "what if the service is down".
+one_liner: common/providers/* — classmethod singletons over Redis, Ray, S3, Postgres, InfluxDB and Loki, configured purely from the environment, each with its own answer to "what if the service is down" — and how to add a new one.
 tags: [internals, dev, redis, ray, telemetry, auth]
-related: [docs/developing/redis-layer.md, docs/developing/adding-a-provider.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md, docs/reference/redis-keys.md, docs/concepts/services-and-topology.md, docs/concepts/auth-and-limits.md]
+related: [docs/developing/redis-layer.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md, docs/reference/redis-keys.md, docs/concepts/services-and-topology.md, docs/concepts/auth-and-limits.md]
 sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/ray.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/postgres.py, src/ndif/common/providers/influx.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/util.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
 ---
 
@@ -12,324 +12,292 @@ sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/redis.py,
 
 Every external service NDIF talks to — Redis, Ray, an S3-compatible object store,
 Postgres, InfluxDB, Loki — is reached through a *provider* in
-`src/ndif/common/providers/`. This page covers the shared pattern, then each
-provider: what it wraps, its env vars, its public surface, what happens when the
-service is missing or down, and who uses it.
+`src/ndif/common/providers/`. This page covers the shared pattern, what each
+provider wraps and how it fails, and how to write a new one. Every variable and
+default is in [Environment variables](../reference/env-vars.md); this page does not
+repeat them.
 
-Two facts shape the layer. **There is no config file** — a provider declares the
-env vars it reads and that is the entire configuration mechanism. And **NDIF is a
-mesh of separate processes** (gunicorn workers, a spawned dispatcher, a Ray
-controller actor, one actor per model replica), each of which must establish its
-own connections without coordinating. Hence classmethod singletons that connect at
-import.
+Two facts shape the layer. **There is no config file** — a provider declares the env
+vars it reads, and that is the whole configuration mechanism. And **NDIF is a mesh of
+separate processes** (gunicorn workers, a spawned dispatcher, a Ray controller actor,
+one actor per model replica), each of which establishes its own connections without
+coordinating. Hence classmethod singletons that connect at import.
 
 ## The pattern
 
-`Provider` (`src/ndif/common/providers/base.py:26`) is small. A subclass sets
-`CONFIG`, a dict mapping an attribute name to `(ENV_VAR, typed default, caster)`:
+`src/ndif/common/providers/base.py` `Provider` is small. A subclass sets `CONFIG`,
+a dict mapping an attribute name to `(ENV_VAR, typed default, caster)`:
 
 ```python
 class RedisProvider(Provider):
     CONFIG = {"url": ("NDIF_REDIS_URL", "redis://localhost:6379", str)}
 ```
 
-`from_env()` (`base.py:39`) walks that spec and sets class attributes —
-`RedisProvider.url` — casting the raw env string or taking the typed default.
-`to_env()` (`base.py:46`) is the inverse, rendering the current values back into an
-`{ENV_VAR: str}` dict; that is how config crosses a process boundary.
-
-Lifecycle: `connect` / `connected` / `reset` / `disconnect` (`base.py:54` onward).
-All classmethods; nothing is instantiated — call `RedisProvider.sync_client` or
-`ObjectStoreProvider.put(...)` directly. Base implementations are permissive
-(`connect`/`disconnect`/`reset` no-op, `connected()` returns `True`), so a provider
-overrides only what it needs. That is the whole base surface — there is no base
-`ensure`; `PostgresProvider` defines its own async one (`postgres.py:115`) because
-its pool is built lazily inside an event loop.
+`Provider.from_env` walks that spec and sets class attributes (`RedisProvider.url`),
+casting the raw env string or taking the typed default. `Provider.to_env` is the
+inverse — `{ENV_VAR: str}` — and is how config crosses a process boundary.
+Lifecycle is `connect` / `connected` / `reset` / `disconnect`, all classmethods;
+nothing is instantiated. The base versions are permissive (no-ops, `connected()` is
+`True`), so a provider overrides only what it needs. There is no base `ensure`;
+`PostgresProvider.ensure` is its own, because its pool is built lazily inside an
+event loop.
 
 ### Importing is connecting
 
-Four modules run `from_env(); connect()` at the bottom of the file, so **importing
-the module establishes the connection in that process**: `redis.py:165` and
-`objectstore.py:188` (cheap — the clients open no socket until the first command),
-`influx.py:224` and `loki.py:231` (both start a background shipper thread). Two
-only load config: `ray.py:139` (`ray.init()` is expensive, and only the dispatcher
-and CLI want it) and `postgres.py:159` (an asyncpg pool needs a running event loop,
-which doesn't exist at import). Hence `providers/__init__.py` exports only the base
-class — importing the package must not connect you to services nobody asked for.
-Always import the concrete module:
-`from ndif.common.providers.redis import RedisProvider`.
+Four modules end with `from_env(); connect()`, so **importing the module
+establishes the connection in that process**: `redis.py` and `objectstore.py`
+(cheap — no socket until the first command), `influx.py` and `loki.py` (each starts
+a background shipper thread). `ray.py` and `postgres.py` only call `from_env()`:
+`ray.init()` is expensive and only the dispatcher and CLI want it, and an asyncpg
+pool needs a running event loop. So `providers/__init__.py` exports nothing —
+importing the package must not connect you to services nobody asked for. Always
+import the concrete module: `from ndif.common.providers.redis import RedisProvider`.
 
-> **Gotcha:** Loki and InfluxDB each own a background thread, and threads do not
-> survive `fork()` — importing them *before* forking hands every child a dead
-> shipper. The gunicorn config imports neither at module level: `post_fork`
-> (`gunicorn_conf.py:35`) imports them inside each worker, and the dispatcher is
-> `spawn`ed, not forked, via a lazily-importing target (`gunicorn_conf.py:46`).
+The two telemetry providers' threads make *where* a process imports them
+load-bearing, because threads don't survive `fork()`. The rule and the gunicorn
+wiring that follows it live in
+[Telemetry internals](telemetry-internals.md#process-wiring).
 
 ### Config propagation
 
-A Ray worker inherits only its node's ambient environment, so config must be shipped
-explicitly — that's what `to_env()` is for. `Deployment.create` exports Redis,
-object-store, Loki and Influx config into a model actor's `runtime_env`
-(`_provider_runtime_env`, `.../cluster/deployment.py:16`), then overrides
-`NDIF_SERVICE` to `"model"` so the actor's telemetry attributes to the model, not
-the controller (`deployment.py:205`). The controller actor is launched the same way
-with just `LokiProvider.to_env()` (`controller.py:818`).
+A Ray worker inherits only its node's ambient environment, so config is shipped
+explicitly with `to_env()`. `Deployment.create` puts Redis, object-store, Loki and
+Influx config into a model actor's `runtime_env`
+(`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+`_provider_runtime_env`) and overrides `NDIF_SERVICE` to `model`. The controller
+actor is launched the same way with only `LokiProvider.to_env()`
+(`src/ndif/services/ray/deployments/controller/controller.py` `app`).
 
-## Zero configuration, and what each URL turns on
+## What runs with no configuration
 
-NDIF runs end to end with **no** provider configuration at all: Redis, the object
-store and Ray have working localhost defaults, and the three optional providers are
-off. Each optional URL turns exactly one thing on.
+NDIF runs end to end with **no** provider configuration: Redis, the object store and
+Ray have localhost defaults, and the three optional providers are off.
 
-| Provider | Set this to enable | With it set | Without it |
+| Provider | Turned on by | On | Off |
 |---|---|---|---|
-| Loki | `NDIF_LOKI_URL` | The `ndif` logger also ships structured JSON to Loki | Console logging only. Nothing else changes; the package need not be installed |
-| InfluxDB | `NDIF_INFLUX_URL` + `NDIF_INFLUX_TOKEN` (and `NDIF_INFLUX_ENABLED` left at `true`) | Metrics are batched to InfluxDB for Grafana | Every `Metric.update(...)` is a silent no-op |
-| Postgres | `NDIF_POSTGRES_URL` | API-key auth is enforced; `trusted` and `priority` come from the key's user_tags | **No auth, and every request is marked trusted** — see below |
+| Loki | `NDIF_LOKI_URL` | the `ndif` logger also ships JSON lines to Loki | console logging only |
+| InfluxDB | `NDIF_INFLUX_URL` (+ token; `NDIF_INFLUX_ENABLED` not false) | metrics are batched to InfluxDB | every `Metric.update(...)` is a no-op |
+| Postgres | `NDIF_POSTGRES_URL` | API-key auth; `trusted`/`priority` come from the key's tags | **no auth**, and requests are trusted unless the client sends `trusted: false` |
 
-The Loki and InfluxDB rows are inconsequential: best-effort telemetry, whose
-absence costs observability and nothing else. The Postgres row is not.
-
-### The Postgres default has two other consequences
-
-With `NDIF_POSTGRES_URL` unset, `validate_request` defaults
-`request.trusted` to `True` on an incoming request that doesn't set it — a
-client-supplied `trusted: false` is honored (`src/ndif/services/api/auth.py:184`).
-`trusted` is not only an auth outcome — it is read in two other places:
-
-- `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py:219`)
-  returns `super().execute(request)` for a trusted request — the caller's traced
-  Python runs **in-process inside the model actor, next to the model weights**,
-  instead of in a separate runner subprocess.
-- `Cluster.deploy` passes it as `trust_remote_code=config.trusted` when sizing and
-  loading a model (`.../controller/cluster/cluster.py:183`), so models load with
-  Hugging Face `trust_remote_code` enabled.
-
-So "no Postgres ⇒ unauthenticated" is really "⇒ unauthenticated **and** every
-caller's arbitrary Python runs unsandboxed **and** models load with
-`trust_remote_code`". Sandboxing here is process-based (a separate runner process),
-and is still in progress. If you are self-hosting an NDIF that anyone but you can
-reach, configure Postgres.
+Loki and InfluxDB are best-effort telemetry and fail open — their absence costs
+observability and nothing else; the exact fallbacks are in
+[Telemetry internals](telemetry-internals.md#fail-open-behavior). The Postgres row
+is the high-consequence one: a trusted request runs the caller's Python in the model
+actor process, and a deployment it cold-starts loads with `trust_remote_code`.
+[Auth and limits](../concepts/auth-and-limits.md) is the home for those
+consequences.
 
 The three *required* providers have no fallback: Redis raises at the call site, Ray
-raises `ConnectionError` and the dispatcher retries every second, and the object
-store raises on `put`/`presigned_get`. Postgres **fails closed** (a query failure
-is a 503, never an allowed request); InfluxDB and Loki **fail open**.
+raises `ConnectionError` (the dispatcher retries every second), and the object store
+raises on `put`/`presigned_get`. Postgres **fails closed** — a query failure is a
+503, never an allowed request.
 
 ## RedisProvider
 
-`src/ndif/common/providers/redis.py`. Wraps `redis-py` with **three** client
-singletons off one URL (`NDIF_REDIS_URL`, default `redis://localhost:6379`),
-constructed in `connect()` (`redis.py:50`):
+`src/ndif/common/providers/redis.py`. Three client singletons off one URL, built in
+`RedisProvider.connect`:
 
-- `sync_client` — sync, `decode_responses=True`. Response pub/sub from sync code
-  (the model actor); the dispatcher's `ray:connected` flag.
-- `async_client` — async, `decode_responses=True`. The status/env caches, the events
-  stream, response pub/sub from async workers.
-- `async_bytes_client` — async, raw bytes. The pickled request queue; decoding
-  would corrupt the pickle.
+- `sync_client` — sync, `decode_responses=True`: response pub/sub from sync code
+  (the model actor) and the dispatcher's `ray:connected` flag.
+- `async_client` — async, `decode_responses=True`: the status/env caches, the
+  events stream, response pub/sub from async workers.
+- `async_bytes_client` — async, raw bytes: the pickled request queue (decoding
+  would corrupt the pickle).
 
-`RedisProvider.max_publish_bytes()` is the inline-result cap: the largest
-payload safely published as one pubsub message, derived at first use from the
-server's own `client-output-buffer-limit pubsub` values (`CONFIG GET` through
-`sync_client`) as `min(soft, hard // 2)`, each bound counted only when enabled —
-8 MiB against stock redis:7. A subscriber past those limits is *disconnected*
-and the buffered response silently lost, and Redis's omem accounting carries an
-allocator-dependent 1.15–1.67× overhead over the payload, which is why the soft
-limit is the primary bound and why the cap is derived from the server rather
-than configured beside it. No limits at all → a fixed 20 MiB ceiling; a failed
-`CONFIG GET` (blocked or renamed on managed Redis) → a conservative fixed 8 MiB.
-Memoized per process; `connect()` clears the memo. The model actor reads it to
-route results (`modeling/base.py:426`); an operator raises the Redis pubsub
-limits to raise the cap.
+All three pass `socket_timeout=None` explicitly. That is load-bearing: redis-py 8+
+negotiates "maintenance notifications" with Redis 8 and silently sets a 5 s socket
+timeout, shorter than the dispatcher's `brpop(..., timeout=10)`, so every idle
+dispatch iteration would raise a spurious `TimeoutError`.
 
-`RedisProvider.connected` (`redis.py:148`) is a `ping()` with exceptions swallowed.
-`reset()` closes only the sync client; the async ones are replaced on the next
-`connect()`, since closing them needs an event loop `reset()` may not be in. All
-three pass `socket_timeout=None` explicitly, and that is load-bearing: redis-py
-8.0+ negotiates a "maintenance notifications" feature with Redis 8 and silently
-sets `socket_timeout=5`, shorter than the dispatcher's `brpop(queue, timeout=10)` —
-without it, every idle dispatch iteration raises a spurious `TimeoutError`
-(`redis.py:52`).
+`RedisProvider.max_publish_bytes` is the inline-result cap — the largest payload
+safely published as one pubsub message. It is derived on first use from the server's
+`client-output-buffer-limit pubsub` (`CONFIG GET`) as `min(soft, hard // 2)`,
+counting only enabled bounds: 8 MiB against stock Redis 7. Past those limits a
+subscriber is *disconnected* and the buffered response lost, and Redis's memory
+accounting adds an allocator-dependent overhead over the payload, which is why the
+soft limit leads. No limits at all gives a fixed 20 MiB; a failed `CONFIG GET`
+(blocked on managed Redis) a fixed 8 MiB. Memoized per process; `connect()` clears
+it. An operator raises the Redis pubsub limits to raise the cap; what the cap means
+for a user is in [Status and results](../concepts/status-and-results.md).
 
-**Used by:** the API app (`app.py:114`, `:183`, `:224`, `:393`), the dispatcher, and
-`BackendRequestModel.respond` / `arespond` (`common/schema/request.py:190`, `:222`)
-— every process that publishes a status update, model actors included. See
-[the Redis layer](redis-layer.md).
+`RedisProvider.connected` is a `ping()` with exceptions swallowed. `reset()` closes
+only the sync client; the async ones are replaced on the next `connect()`, since
+closing them needs an event loop.
+
+**Used by** the API app, the dispatcher, and `BackendRequestModel.respond` /
+`arespond` — every process that publishes a status update, model actors included.
+See [the Redis layer](redis-layer.md).
 
 ## RayProvider
 
-`src/ndif/common/providers/ray.py`. The Ray control plane plus named-actor lookups.
-One var: `NDIF_RAY_ADDRESS`, default `ray://localhost:10001`. Only the dispatcher
-and the CLI connect to Ray — API workers never do, and that constraint is what
-produces the whole Redis cache layer. (A URL with no port falls back to **6379**,
-Redis's port, with a warning: `RayProvider.get_host_port`, `ray.py:60`.)
+`src/ndif/common/providers/ray.py`. The Ray client plus named-actor lookups. Only
+the dispatcher and the CLI connect to Ray — API workers never do, which is what
+produces the whole Redis cache layer. A `NDIF_RAY_ADDRESS` with no port falls back
+to 6379 with a warning (`RayProvider.get_host_port`).
 
-`RayProvider.connected` (`ray.py:99`) is stricter than `ray.is_initialized()`: it
-requires initialization, a TCP connect to the parsed host/port (`verify_connection`,
-`providers/util.py:4`, 2s timeout), **and** that the `Controller` actor exists in
-the `NDIF` namespace — so the dispatcher's connect loop won't proceed until the
-control plane is serving. `RayProvider.is_connection_error` (`ray.py:129`)
-string-matches an exception against `CONNECTION_ERROR_PATTERNS` (`ray.py:117`); a
-match triggers purge-and-reconnect (`Dispatcher.handle_errors`, `dispatcher.py:183`).
+`RayProvider.connected` is stricter than `ray.is_initialized()`: it also requires a
+TCP connect to the address (`src/ndif/common/providers/util.py`
+`verify_connection`, 2 s) **and** that the `Controller` actor exists in the `NDIF`
+namespace, so the dispatcher's connect loop waits for a serving control plane.
+`RayProvider.is_connection_error` string-matches an exception against
+`CONNECTION_ERROR_PATTERNS`; a match makes the dispatcher purge and reconnect.
 
-The module also holds the actor lookups `get_named_actor` /
-`get_controller_actor_handle` / `get_model_actor_handle` (`ray.py:208`, `:221`,
-`:226`), which name actors `"Controller"` and
-`"{replica_id}:ModelActor:{model_key}"` in namespace `NDIF`; `CachedActorError`
-(`ray.py:25`), raised when a dispatch lands on an actor moved to CPU cache (WARM);
-and `NDIFActorHandle` (`ray.py:190`), a lean `ClientActorHandle` that skips stock
-Ray's first-access RPC for method signatures — that RPC unpickles annotations
-client-side, dragging in `BackendRequestModel` and its deps, which breaks on a slim
-`--no-deps` install. `handle.method.remote(...)` is unchanged.
+The module also holds `get_named_actor`, `get_controller_actor_handle` and
+`get_model_actor_handle` (actors `"Controller"` and
+`"{replica_id}:ModelActor:{model_key}"` in namespace `NDIF`); `CachedActorError`,
+raised when a dispatch lands on an actor moved to CPU (WARM); and `NDIFActorHandle`,
+a `ClientActorHandle` that skips stock Ray's first-access signature RPC — that RPC
+unpickles annotations client-side and drags in `BackendRequestModel`, which breaks a
+slim `--no-deps` install.
 
-**Used by:** `Dispatcher.connect` (`dispatcher.py:79`) and `ensure_ray_connected`
-(`cli/lib/_common.py:23`), which overwrites `RayProvider.ray_url` from
-`--ray-address` before connecting.
+**Used by** `Dispatcher.connect` and the CLI's `ensure_ray_connected`
+(`src/ndif/cli/lib/_common.py`), which overwrites `RayProvider.ray_url` from
+`--ray-address` first.
 
 ## ObjectStoreProvider
 
 `src/ndif/common/providers/objectstore.py`. boto3 over S3, so the same code serves
-MinIO in dev and AWS S3 in prod. Result blobs over the inline cap
-(`RedisProvider.max_publish_bytes`) are too large for the Redis response channel,
-so the model actor uploads them here and returns a presigned GET URL on the
-COMPLETED response.
-
-| Env var | Default | What it does |
-|---|---|---|
-| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | Server-side endpoint (upload, bucket ops). Empty → boto3 derives the real AWS endpoint from `region` |
-| `NDIF_OBJECT_STORE_PUBLIC_URL` | `""` | Client-facing endpoint used *only* for presigning. Empty → falls back to `url` |
-| `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `minioadmin` / `minioadmin` | Credentials for both clients. `_make_client` passes them only when both are set; both empty → boto3's own credential chain (on AWS, the host's IAM role) |
-| `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket for result blobs and non-blocking responses |
-| `NDIF_OBJECT_STORE_REGION` / `_VERIFY` | `us-east-1` / `true` | Region is explicit so presigning never round-trips to discover it; set verify false for self-signed MinIO over https |
+MinIO and AWS S3. Results over the inline cap go here and the client gets a presigned
+GET URL.
 
 Two clients, because upload and download happen from different networks
-(`ObjectStoreProvider.connect`, `objectstore.py:107`). A presigned URL is a local
-HMAC over the request *including the host*, so it must be signed with the host the
-downloader will hit — `minio:9000` from the compose network, `localhost:9000` from
-the user's machine. A custom endpoint also forces path-style addressing, since
-`bucket.minio:9000` wouldn't resolve (`_make_client`, `objectstore.py:69`). Methods:
-`put(key, data, content_type)` (creates the bucket on first use,
-`objectstore.py:142`), `get(key)` → `bytes | None` (deliberately does *not* ensure
-the bucket — a missing key or bucket just means "nothing yet",
-`objectstore.py:155`), `presigned_get(key, expires=1h)` (`objectstore.py:177`).
+(`ObjectStoreProvider.connect`). A presigned URL is an HMAC over the request
+*including the host*, so it must be signed with the host the downloader will hit —
+`minio:9000` inside compose, `localhost:9000` or a public name outside. That is
+`NDIF_OBJECT_STORE_PUBLIC_URL`; unset, it falls back to the server-side URL. A custom
+endpoint also forces path-style addressing (`_make_client`). Credentials are passed
+only when both are set; both empty uses boto3's own chain (an IAM role on AWS).
+Methods: `put(key, data, content_type)` creates the bucket on first use; `get(key)`
+returns `bytes | None` and deliberately doesn't create it (missing means "nothing
+yet"); `presigned_get(key, expires=1h)`.
 
-**Used by:** `BaseModelDeployment.upload_bytes` (`modeling/base.py:688`, key
-`{request.id}.pt`), `BackendRequestModel.respond` for non-blocking requests
-(`common/schema/request.py:195`, key `responses/{request_id}.json`), and
-`GET /response/{id}` (`app.py:316`).
+**Used by** `BaseModelDeployment.upload_bytes` (key `{request.id}.pt`),
+`BackendRequestModel.respond` for non-blocking requests (key
+`responses/{request_id}.json`), and `GET /response/{id}`.
 
 ## PostgresProvider
 
 `src/ndif/common/providers/postgres.py`. An async `asyncpg` pool over the user/keys
 database (schema in `docker/postgres/init.sql`). A generic sink — the auth *policy*
-lives in `services/api/auth.py`.
+is `src/ndif/services/api/auth.py`, its only user.
 
-| Env var | Default | What it does |
-|---|---|---|
-| `NDIF_POSTGRES_URL` | `""` | **Empty disables auth entirely.** Set e.g. `postgresql://user:pass@host:5432/ndif` to enable API-key verification |
-| `NDIF_POSTGRES_POOL_MIN` | `1` | Connections opened up front on first use |
-| `NDIF_POSTGRES_POOL_MAX` | `10` | Pool ceiling under concurrency |
-| `NDIF_POSTGRES_COMMAND_TIMEOUT_S` | `10.0` | Per-statement timeout, so a wedged DB errors instead of hanging a request |
+`PostgresProvider.enabled` is `bool(cls.url)` with no I/O; `verify_api_key`
+short-circuits on it. `connect()` is async and idempotent and builds the pool under
+an `asyncio.Lock` with a double-check, so concurrent first requests create one pool;
+`fetch` / `fetchrow` / `fetchval` each `await ensure()` first.
 
-> **This provider's default is the highest-consequence one in the system.** An
-> unset `NDIF_POSTGRES_URL` disables auth *and* marks every request `trusted` —
-> unsandboxed in-process execution of caller code, and `trust_remote_code` model
-> loading. See [The Postgres default](#the-postgres-default-has-two-other-consequences).
+Optional-dependency handling is the **opposite** of the telemetry providers.
+`asyncpg` is imported in a `try` so the module always imports, but with a URL set and
+the package missing, `connect()` raises `RuntimeError` naming the `postgres` extra —
+silently disabling auth would be a security hole. Likewise a query failure in auth
+becomes a 503, never an unverified request.
 
-`PostgresProvider.enabled` is a cheap `bool(cls.url)` with no I/O; `verify_api_key`
-(`auth.py:94`) short-circuits on it. `connect()` is async and idempotent and builds
-the pool under an `asyncio.Lock` with a double-check, so concurrent first requests
-create exactly one pool (`postgres.py:98`). `fetch` / `fetchrow` / `fetchval` each
-`await ensure()` first. Optional-dependency handling is the **opposite** of the telemetry providers:
-`asyncpg` is imported in a `try/except` at module top (`postgres.py:41`) so the
-module always imports, but with a URL set and the package missing, `connect()`
-raises `RuntimeError` pointing at `pip install '.[postgres]'` (`postgres.py:93`).
-Silently disabling auth would be a security hole; a missing metrics sink is
-harmless. Same spirit at `auth.py:126`: a query failure becomes a 503, never an
-unverified request. **Used by** `services/api/auth.py` only.
+## InfluxProvider and LokiProvider
 
-## InfluxProvider
+`src/ndif/common/providers/influx.py` and `src/ndif/common/providers/loki.py`. The
+telemetry sinks: numeric time series for Grafana, and the `ndif` logger shipped as
+JSON lines via `python-logging-loki`'s `LokiQueueHandler`. `NDIF_SERVICE` and
+`NDIF_ENVIRONMENT` become base tags/labels on everything. `InfluxProvider.write` is
+the only Influx method call sites use (through `Metric._emit`); `LokiProvider.connect`
+always configures the console first, then attaches Loki only when a URL is set.
+What they emit, how they fail open, and where each process connects them is
+[Telemetry internals](telemetry-internals.md).
 
-`src/ndif/common/providers/influx.py`. Numeric time series for Grafana; the metric
-*definitions* live in `common/metrics.py`. `NDIF_SERVICE` (`unknown`) and
-`NDIF_ENVIRONMENT` (`dev`) become base tags on every point.
+## Writing a new provider
 
-| Env var | Default | What it does |
-|---|---|---|
-| `NDIF_INFLUX_URL` | `""` (metrics off) | InfluxDB 2.x endpoint; set it to turn metrics on |
-| `NDIF_INFLUX_TOKEN` | `""` | Auth token |
-| `NDIF_INFLUX_ORG` / `NDIF_INFLUX_BUCKET` | `ndif` / `metrics` | Target org and bucket |
-| `NDIF_INFLUX_ENABLED` | `true` | `0/false/no/off` disables the provider outright |
-| `NDIF_INFLUX_BATCH_SIZE` / `_FLUSH_INTERVAL_MS` / `_TIMEOUT_MS` | `500` / `1000` / `10000` | Flush when either threshold is hit; the timeout bounds each HTTP write |
+A new backing service — another object store, a second metrics sink, a message
+bus — follows the pattern above. The part to get right is failure.
 
-`InfluxProvider.write(measurement, tags, fields)` (`influx.py:165`) is the only
-method call sites use. It returns immediately if `write_api is None` (disabled,
-package missing, or construction failed), drops `None` values, skips fieldless
-points (InfluxDB rejects them), stamps an explicit `time_ns()` timestamp, and
-enqueues — the whole body is wrapped, so a metric write never surfaces into the
-caller. The timestamp matters: without one InfluxDB assigns ingestion time at
-flush, and points sharing measurement+tag-set+timestamp overwrite each other
-(`influx.py:188`).
+**`CONFIG` entries.** The key is the attribute name; the variable is `NDIF_`-prefixed
+and grouped by subsystem (`NDIF_MYTHING_*`); the default is already typed (`10.0`,
+not `"10.0"`), since the caster applies only when the variable is set; booleans go
+through a `_boolish` caster, because `bool("false")` is `True`. Comment each entry
+with what it does and what empty means — the object store's `CONFIG` is the model.
+Empty means off for an optional subsystem; add an `_ENABLED` switch only to disable
+something that *is* configured, as `NDIF_INFLUX_ENABLED` does.
 
-Fail-open is layered: `influxdb-client` not importable → `_HAS_CLIENT` is `False`
-and every `write` no-ops (`influx.py:55`, `:112`); construction failure → debug
-log, provider disabled (`influx.py:137`); a failed batch flush → `_on_write_error`
-logs at **debug** only (`influx.py:156`), and `max_retries=0` drops the batch,
-keeping the buffer bounded and `close()` non-blocking (`influx.py:131`).
+**`connect()` cheap and idempotent; `connected()` a real probe.** Every entry point
+calls `connect()` without coordinating, so a second call must be a no-op, and it
+should open no socket until first use. `connected()` should reach the service, not
+report that an object exists. `to_env()` must round-trip everything a model actor
+needs. A provider that owns a thread says so in its `connect` docstring and follows
+the fork rule in [Telemetry internals](telemetry-internals.md#process-wiring).
 
-**Used by:** `Metric._emit` (`common/metrics.py:58`). Connected in the API's
-`post_fork`, the dispatcher's `__main__` (`dispatcher.py:411`), and each model
-actor's `__init__` (`modeling/base.py:133`).
+**Fail open — or say why not.** The test: *if this call silently did nothing, would
+the system be degraded-but-correct, or quietly wrong?* Degraded → fail open, as the
+telemetry sinks do: guard the import (the module must still import —
+`ndif.common.metrics` imports the Influx provider in every service), wrap every call
+path, log at **debug** so a flapping server doesn't write a line per flush, and bound
+every queue and retry. Quietly wrong → raise, as Postgres does; Redis and the object
+store are the request path and don't fail open at all.
 
-## LokiProvider
+A minimal fail-open sink, StatsD over UDP:
 
-`src/ndif/common/providers/loki.py`. Ships the `ndif` logger to Grafana Loki via
-`python-logging-loki`'s `LokiQueueHandler` — a `QueueHandler` whose listener thread
-owns the HTTP pushes, so `emit` never blocks an event loop. `NDIF_SERVICE` /
-`NDIF_ENVIRONMENT` become static stream labels.
+```python
+try:
+    import statsd
+    _HAS_STATSD = True
+except Exception:
+    statsd, _HAS_STATSD = None, False
 
-| Env var | Default | What it does |
-|---|---|---|
-| `NDIF_LOKI_URL` | `""` | **Empty disables Loki**; the package is never imported. E.g. `http://loki:3100/loki/api/v1/push` |
-| `NDIF_LOKI_LEVEL` | `INFO` | Minimum level shipped (the console keeps its own) |
-| `NDIF_LOKI_QUEUE_MAX` | `10000` | In-memory queue bound |
+class StatsdProvider(Provider):
+    CONFIG = {
+        # Empty (the default) disables StatsD entirely.
+        "url": ("NDIF_STATSD_URL", "", str),
+        "service": ("NDIF_SERVICE", "unknown", str),
+    }
+    client = None
 
-`LokiProvider.connect` (`loki.py:159`) always calls `configure_console("ndif")`
-first — structured console output is worth having with or without Loki, and it
-stops root-handler duplication. Only then, and only with a URL set, does it build
-the handler; console logging is never removed, only added to. Three wrappers around
-the stock handler (`_build_handler`, `loki.py:90`): `_JsonLineFormatter` renders
-each record as one structured JSON line, sharing field extraction with the console
-formatter in `common/logging_setup.py`; `_LabelFilter` promotes `model_key` — the
-only bounded-cardinality field — into `record.tags`, which becomes a Loki stream
-label, while request/session ids stay in the line (queryable with `| json`, not
-indexed); `_BoundedLokiQueueHandler` drops on `queue.Full` instead of erroring.
+    @classmethod
+    def connect(cls) -> None:
+        if not cls.url or not _HAS_STATSD or cls.client is not None:
+            return
+        try:
+            parsed = urlparse(cls.url)
+            cls.client = statsd.StatsClient(parsed.hostname, parsed.port or 8125,
+                                            prefix=f"ndif.{cls.service}")
+        except Exception:
+            logger.debug("StatsD telemetry unavailable", exc_info=True)
 
-Fail-open, precisely: `logging_loki` not installed → `ImportError` caught, one
-warning, console-only (`loki.py:185`); any other build failure → warning with
-traceback, console-only (`loki.py:192`); Loki unreachable at runtime → the inner
-handler's `handleError` becomes a no-op (`loki.py:124`), since stock behavior dumps
-a traceback to stderr *per record*.
+    @classmethod
+    def incr(cls, name: str, count: int = 1) -> None:
+        if cls.client is None:
+            return
+        try:
+            cls.client.incr(name, count)
+        except Exception:
+            logger.debug("StatsD emit failed", exc_info=True)
 
-**Used by:** the API's `post_fork` (`gunicorn_conf.py:35`), the dispatcher's
-`__main__` (`dispatcher.py:412`), the controller actor and its launcher
-(`controller.py:71`, `:804`), and each model actor (`modeling/base.py:132`).
+StatsdProvider.from_env()
+StatsdProvider.connect()
+```
+
+Checklist:
+
+- [ ] `src/ndif/common/providers/<name>.py` with a module docstring that states the
+  design constraint (opt-in? fail-open? fork-sensitive?) before the mechanism.
+- [ ] `CONFIG` as above; `connect` cheap and idempotent; `connected` a real probe.
+- [ ] Optional package guarded or lazily imported; failures at debug; queues and
+  retries bounded — or a written reason to raise.
+- [ ] `from_env(); connect()` at the bottom of the module; nothing added to
+  `providers/__init__.py`.
+- [ ] An extra and its image wiring — see
+  [Adding a service](adding-a-service.md#dependencies-extras-and-the-image).
+- [ ] Each new variable in [Environment variables](../reference/env-vars.md).
 
 ## Gotchas
 
-> **Defaults are localhost.** Correct for `ndif start` on one host, wrong inside
-> compose, where each container needs `NDIF_REDIS_URL=redis://redis:6379`,
-> `NDIF_OBJECT_STORE_URL=http://minio:9000` and so on (set per service in
-> `docker/docker-compose.yml`). A container that forgets them tries to reach itself.
-
-> **The object store's two URLs.** With `NDIF_OBJECT_STORE_PUBLIC_URL` unset,
-> presigned URLs are signed with the server-side host and a client outside that
-> network can't resolve them. Symptom: jobs COMPLETE but the download fails.
+- **Defaults are localhost.** Correct for `ndif start` on one host, wrong inside
+  compose, where each container needs `NDIF_REDIS_URL=redis://redis:6379`,
+  `NDIF_OBJECT_STORE_URL=http://minio:9000` and so on (set per service in
+  `docker/docker-compose.yml`). A container that forgets them reaches for itself.
+- **The object store's two URLs.** With `NDIF_OBJECT_STORE_PUBLIC_URL` unset,
+  presigned URLs carry the server-side host and a client outside that network can't
+  resolve them. Symptom: jobs COMPLETE but the download fails.
 
 ## Related
 
-- `docs/developing/redis-layer.md` — what the Redis clients actually carry, and
-  `docs/reference/redis-keys.md` for every key, channel and stream.
-- `docs/developing/adding-a-provider.md` — recipe for writing a new one.
-- `docs/concepts/auth-and-limits.md` — how the Postgres provider becomes API-key auth.
+[The Redis layer](redis-layer.md) for what the Redis clients carry, and
+[Redis keys](../reference/redis-keys.md) for every key, channel and stream.
+[Auth and limits](../concepts/auth-and-limits.md) for how the Postgres provider
+becomes API-key auth.
