@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Line-number citations still in the docs. Lower this as pages are converted to
 # path + symbol; at 0 the test enforces the rule outright. Never raise it.
-LINE_CITATION_BASELINE = 1595
+LINE_CITATION_BASELINE = 0
 
 LINE_CITATION = re.compile(r"\.(?:py|sh|yml|yaml|toml|json|sql|md):\d")
 
