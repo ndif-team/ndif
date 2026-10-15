@@ -266,7 +266,7 @@ itself, not as a timeout. Last it sends a fire-and-forget `reconcile_model`
 event per touched model key so a live Processor refreshes its replica pool; a
 Redis failure there never fails the deploy.
 
-Per-model status ends up `READY`, `PARTIAL` (some replicas failed) or `ERROR`;
+Each model line ends `ready` (or an error); the command exits non-zero only when a model failed outright;
 evictions the controller performed to make room are listed at the end.
 
 ```console
@@ -401,9 +401,10 @@ its dispatcher died) — not that Redis is down.
 `ndif queue [--json-output] [--watch] [--redis-url URL]` — snapshots every live
 Processor: lifecycle status (`uninitialized`, `provisioning`, `deploying`,
 `ready`, `cancelled`), the replicas in its pool and whether each is busy, queue
-depth, and the queued request ids (first three shown). A model with no in-flight
-work has no Processor, so an idle cluster prints `No active processors.` even
-with HOT deployments.
+depth, and the queued request ids (first three shown). Processors persist after
+their work drains, so an idle cluster still lists one per model that has ever
+taken a request, and a processor's `Replicas: N` can be stale for a while after
+an eviction — the pool drops evicted replicas lazily, on the next dispatch.
 
 ```console
 $ ndif queue

@@ -131,7 +131,10 @@ The first `just up` builds one image (`docker/Dockerfile`) and runs it three
 times — as `api`, `ray` and `dashboard` — selected per container by
 `NDIF_SERVICE`. The build installs torch (from the `TORCH_CUDA` build arg,
 `cu126` by default) and then `requirements.txt`, so expect ten minutes or more
-the first time. If you have an editable nnsight installed, `just up` also
+the first time. The build also pulls a pinned MinIO image that is not currently
+pullable anonymously; if the build fails resolving it, point the Dockerfile's
+`MINIO_IMAGE` build arg (and the compose `minio` service's `image:`) at a MinIO
+image you can pull or already have locally. If you have an editable nnsight installed, `just up` also
 bind-mounts it over the image's copy; see
 [The Compose Stack](compose-stack.md#just-is-the-interface).
 
