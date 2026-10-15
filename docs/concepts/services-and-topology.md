@@ -14,20 +14,18 @@ Everything `just up` starts, and the wiring between it. Two facts explain the
 shape:
 
 1. **One image, one service per container.** `docker/Dockerfile` builds a single
-   image whose `ENTRYPOINT` is the `ndif` CLI and whose default command is
-   `start --foreground` (`docker/Dockerfile:141`-`139`); `NDIF_SERVICE` picks
-   which service that container becomes — `api`, `ray`, `dashboard`, `redis`,
-   `minio`, or a space/comma list of those (`env_services`,
-   `src/ndif/cli/service.py:83`). The image's default is `all`, which expands to
-   the core stack — redis, minio, ray, api, but not dashboard
-   (`resolve_targets`, `service.py:88`) — in one container; compose sets one name
-   per container instead. There is no per-service image and no config file —
-   every knob is an `NDIF_*` env var read at process start.
+   image whose entrypoint is the `ndif` CLI, running `start --foreground`;
+   `NDIF_SERVICE` picks which service that container becomes — `api`, `ray`,
+   `dashboard`, `redis`, `minio`, or a list of those
+   (`src/ndif/cli/service.py` `env_services`). The image's default is `all`,
+   which expands to the core stack — redis, minio, ray, api, but not dashboard —
+   in one container; compose sets one name per container instead. Every knob is
+   an `NDIF_*` env var read at process start.
 2. **The API and the Ray cluster never speak directly.** The API talks to Redis;
    a separate dispatcher process (spawned by the API's gunicorn master) holds
    the one Ray client connection. Redis is therefore the load-bearing hop for
    both request handoff and status delivery, and `ray:connected` — a flag the
-   dispatcher maintains — is how the API knows whether the cluster is alive.
+   dispatcher maintains — is how the API knows whether the cluster is reachable.
 
 ## Topology
 
@@ -56,7 +54,7 @@ flowchart TB
     end
 
     NN -- "POST /request, WS /subscribe" --> API
-    NN -- "GET presigned url" --> MIN
+    NN -- "GET presigned url (large results)" --> MIN
     API -- "LPUSH queue, pub/sub" --> RED
     API -- "verify api key" --> PG
     API -- "responses/{id}.json" --> MIN
@@ -66,9 +64,9 @@ flowchart TB
     RAY --- ACT
     ACT -- "PUBLISH session_id" --> RED
     ACT -- "PUT {id}.pt" --> MIN
-    DASH -- "/api/status proxy" --> API
-    DASH -- "deploy / evict" --> RAY
-    DASH -- "events" --> RED
+    DASH -- "status, deploy / evict (ray:// client)" --> RAY
+    DASH -- "monitor / report jobs (HTTP)" --> API
+    DASH -- "reconcile events" --> RED
     API & RAY & ACT & DASH -. "logs" .-> LOKI
     API & RAY & ACT -. "metrics" .-> INF
     PROM -. "scrape :8080/metrics" .-> RAY
@@ -81,57 +79,38 @@ flowchart TB
 `ndif.services.api.app:app` (`src/ndif/services/api/start.sh`). It accepts
 requests, authenticates them, pushes them onto Redis, and forwards status
 updates over `/subscribe` websockets. Its gunicorn master also *spawns* the
-queue dispatcher as a separate process (`on_starting` in
-`src/ndif/services/api/gunicorn_conf.py`) — that process is where the Redis
-queue is drained and where the Ray connection lives. Stateless: everything it
-knows is in Redis.
+queue dispatcher as a separate process (`src/ndif/services/api/gunicorn_conf.py`
+`on_starting`) — that process drains the Redis queue and holds the Ray
+connection. Popped requests live in the dispatcher's memory; nothing else in the
+API holds state.
 
 **`ray`** — a Ray node plus, on the head, the NDIF controller
 (`src/ndif/services/ray/start.sh`). `NDIF_RAY_HEAD_ADDRESS` decides head vs
-worker: unset starts a head and launches
-`python -m ndif.services.ray.deployments.controller.controller`; set joins that
-address as a worker. Model replicas are detached Ray actors the controller
-creates on GPU nodes — this is plain Ray actor placement, not Ray Serve. The
-container needs a GPU, the NVIDIA container toolkit, and a raised `shm_size`
-(compose sets `4gb`; Ray's plasma store lives in `/dev/shm` and docker's 64 MB
-default is far too small).
+worker: unset starts a head and launches the controller; set joins that address
+as a worker. Model replicas are detached Ray actors the controller creates on
+GPU nodes — plain Ray actor placement, not Ray Serve. The container needs a GPU,
+the NVIDIA container toolkit, and a raised `shm_size` (Ray's plasma store lives
+in `/dev/shm`).
 
 **`dashboard`** — an admin UI (Vue) over a FastAPI backend: deploy/evict,
-status, schedules, and a request monitor
-(`src/ndif/services/dashboard/start.sh`). Inside the container it also runs a
-cron daemon for the monitor and reconcile jobs. It is the only service excluded
-from a bare `ndif start` (`OPTIONAL_SERVICES` in `src/ndif/cli/service.py:75`),
-and the only one with a named compose volume.
+status, schedules, and a request monitor (`src/ndif/services/dashboard/start.sh`).
+It reads controller status and deploys or evicts over its own Ray client
+connection, not through the API; its cron jobs (monitor, report) call the API
+over HTTP. It is the only service excluded from a bare `ndif start`
+(`OPTIONAL_SERVICES` in `src/ndif/cli/service.py`), and the only one with a named
+compose volume.
 
-## Service table
-
-| Service | Image / source | Ports (host) | Depends on | Optional? |
-|---|---|---|---|---|
-| `api` | this repo, `NDIF_SERVICE=api` | 8001 | redis, minio, influxdb, postgres | no |
-| `ray` | this repo, `NDIF_SERVICE=ray` | 8265 (Ray dashboard), 10001 (Ray client) | redis, minio, influxdb; a host GPU | no |
-| `dashboard` | this repo, `NDIF_SERVICE=dashboard` | 8081 | redis, api | yes — nothing else reads it |
-| `redis` | `redis:7-alpine` | 6379 | — | no |
-| `minio` | `quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z` | 9000 (S3), 9001 (console) | — | no in practice — results have nowhere to go |
-| `postgres` | `postgres:16-alpine` | 5432 | — | yes — unset `NDIF_POSTGRES_URL` runs the API unauthenticated |
-| `loki` | `grafana/loki:3.0.0` | 3100 | — | yes — services log to console only |
-| `influxdb` | `influxdb:2.7` | 8086 | — | yes — no metrics are recorded |
-| `prometheus` | `prom/prometheus:v2.53.0` | 9090 | — (scrapes `ray:8080`) | yes — Ray's own metrics go unscraped |
-| `grafana` | `grafana/grafana:11.1.0` | 3000 | loki, influxdb, prometheus | yes — a viewer, nothing writes to it |
-
-Internal ports worth knowing that compose does not publish: the Ray head's GCS
-port (`NDIF_RAY_HEAD_PORT` — `6385` when started through the `ndif` CLI, which
-is the container entrypoint; `start.sh`'s own fallback is `6379`), the
-object-manager port `8076`, the dashboard-agent gRPC port `52366`, and Ray's
-metrics-export port `8080` (which Prometheus scrapes). Full list:
+Image tags, published ports, dependencies and volumes for every container are in
+[Compose stack](../operating/compose-stack.md#the-services); every port,
+including the internal Ray ones compose does not publish, is in
 [Ports](../reference/ports.md).
 
 ## What holds state
 
 - **Redis** — the request list (`NDIF_QUEUE_KEY`, default `queue`), the
-  `ray:connected` flag, the TTL'd `/status` and `/env` caches, the
-  CLI event stream, and every response pub/sub channel. Losing Redis loses
-  in-flight requests; nothing here is meant to survive a restart, but the
-  compose file declares no volume for it, so it is purely ephemeral.
+  `ray:connected` flag, the TTL'd `/status` and `/env` caches, the CLI event
+  stream, and every response pub/sub channel. The compose file declares no
+  volume for it, so it is purely ephemeral; losing it loses in-flight requests.
 - **MinIO** — result blobs (`{request_id}.pt`) and non-blocking status responses
   (`responses/{id}.json`) in the `ndif-results` bucket. Also no compose volume:
   results do not survive `just down`.
@@ -143,34 +122,35 @@ metrics-export port `8080` (which Prometheus scrapes). Full list:
   `schedule.json`, and cache.
 
 Everything on the NDIF side (api, ray, controller state) is in-memory and
-rebuilt on restart. The controller's cluster model in particular is *not*
-persisted; it re-reads nodes from Ray and re-pins `NDIF_DEPLOYMENTS` on boot.
+rebuilt on restart. The controller's cluster model is *not* persisted; it
+re-reads nodes from Ray and re-pins `NDIF_DEPLOYMENTS` on boot.
 
 ## What degrades without what
 
 | Missing | Effect |
 |---|---|
-| `postgres` / `NDIF_POSTGRES_URL` unset | Auth is off. Every request is accepted, and a client-supplied `trusted` is honored while an unspecified one defaults to `True` (`validate_request`, `src/ndif/services/api/auth.py:180`), so by default a block runs inside the model actor process and the model deploys with `trust_remote_code`. Send `trusted: false` to force the sandbox path. See [Auth and Limits](auth-and-limits.md). |
+| `postgres` / `NDIF_POSTGRES_URL` unset | Auth is off: every request is accepted, and one that does not say otherwise is trusted. See [Auth and Limits](auth-and-limits.md#the-trusted-flag). |
 | `loki` / `NDIF_LOKI_URL` unset | Fail-open: services keep running, logs go to console only. |
 | `influxdb` / `NDIF_INFLUX_ENABLED=false` | Fail-open: no metric points recorded. |
 | `prometheus`, `grafana` | No dashboards; nothing else notices. |
-| `minio` unreachable | Requests run to completion and then error at upload; non-blocking polling has nowhere to read from. |
-| `ray` down or reconnecting | `ray:connected` is cleared, and `/request`, `/status`, `/env`, `/connected` all 503 (`src/ndif/services/api/app.py:106`). |
+| `minio` unreachable | Results over the inline cap error at upload after the run; non-blocking requests have nowhere to write or read status. |
+| `ray` down, dispatcher reconnecting | The dispatcher clears `ray:connected`, and `/request`, `/status`, `/env`, `/connected` all 503 (`require_ray_connection` in `src/ndif/services/api/app.py`). |
+| dispatcher process dead, or its Ray connection dead without an error reaching it | `ray:connected` has no TTL and stays set. Health endpoints pass and `POST /request` returns `RECEIVED`, while requests never progress. |
 | `redis` down | The API cannot enqueue and the dispatcher cannot pop; nothing works. |
 
 > **Gotcha:** every provider defaults to `localhost`. Inside the `ray` container
-> `redis://localhost:6379` resolves to Ray's *own* GCS port, not Redis — which
-> is why compose sets `NDIF_REDIS_URL: redis://redis:6379` explicitly on the ray
-> service. A model actor that can't reach Redis runs the job and then silently
-> fails to publish its result.
+> `localhost` is the ray container itself, and Redis is a different container —
+> which is why compose sets `NDIF_REDIS_URL: redis://redis:6379` explicitly on
+> the ray service. A model actor that can't reach Redis runs the job and then
+> fails to publish its result. See
+> [Compose stack](../operating/compose-stack.md#service-names-not-localhost).
 
 ## Related
 
 - [Request Lifecycle](request-lifecycle.md) — the same boxes, traced by a single
   request.
 - [Compose stack](../operating/compose-stack.md) — the compose file service by
-  service, with volumes and GPU requirements.
+  service: volumes, GPU requirements, service-name addressing.
 - [Production](../operating/production.md) — what changes when the Ray cluster is
   multi-node and the object store is real S3.
-- [Compose stack](../operating/compose-stack.md#service-names-not-localhost) —
-  host vs service-name addressing, presigned urls, `shm_size`.
+- [Ports](../reference/ports.md) — every port, published or internal.

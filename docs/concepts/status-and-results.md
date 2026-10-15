@@ -1,9 +1,9 @@
 ---
 title: Status and Results
-one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and the two routes saved values take back to the client.
+one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and the two routes saved values take back to the client — inline under the cap, or behind a presigned URL.
 tags: [concepts, api, redis, queue]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/reference/error-messages.md, docs/developing/model-actor.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/reference/error-messages.md, docs/developing/model-actor.md, docs/developing/redis-layer.md]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/redis.py]
 ---
 
 # Status and Results
@@ -16,25 +16,25 @@ get home. Two facts frame it:
 1. **The status enum is the client's enum.** `BackendResponseModel` subclasses
    nnsight's `ResponseModel` and `Status` comes from nnsight
    (`src/ndif/common/schema/response.py`), so the wire format is by construction
-   exactly what the client parses. Server and client are coupled through that
-   shared type — see [nnsight integration](../developing/nnsight-integration.md#what-ndif-re-exports).
-2. **Status updates and results travel by different routes.** A status update is
-   a small JSON message on a Redis pub/sub channel. A result is an arbitrarily
-   large tensor dict, so it goes to the object store and the `COMPLETED` message
-   carries only a URL.
+   exactly what the client parses — see
+   [nnsight integration](../developing/nnsight-integration.md#what-ndif-re-exports).
+2. **A status update is small; a result may not be.** Every update is a message
+   on a Redis pub/sub channel. A result under the inline cap rides on the
+   `COMPLETED` message itself, as a binary frame; a larger one goes to the object
+   store and `COMPLETED` carries a presigned URL to it.
 
 ## The lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> RECEIVED: POST /request accepted
-    RECEIVED --> QUEUED: dispatcher hands it to a Processor
-    QUEUED --> PROVISIONING: no replica yet
+    RECEIVED --> QUEUED: a replica is serving
+    RECEIVED --> PROVISIONING: cold start, no replica yet
     PROVISIONING --> DEPLOYING: controller placed a replica
     DEPLOYING --> QUEUED: pool is READY
     QUEUED --> DISPATCHED: a replica took it off the queue
     DISPATCHED --> RUNNING: actor started executing
-    RUNNING --> COMPLETED: result uploaded, url attached
+    RUNNING --> COMPLETED: result inline (binary frame) or presigned URL
     RUNNING --> ERROR: raised, timed out, or cancelled
     QUEUED --> ERROR: purge / operator kill
     DISPATCHED --> QUEUED: replica evicted (silent requeue)
@@ -48,71 +48,56 @@ stateDiagram-v2
 
 | Status | Published by | When |
 |---|---|---|
-| `RECEIVED` | API, returned over HTTP | the request was accepted and pushed to Redis (`app.py:177`) |
-| `QUEUED` | `Processor.enqueue` | joined a model's queue; description carries the position |
+| `RECEIVED` | API, returned over HTTP | the request was accepted and pushed to Redis |
+| `QUEUED` | `Processor.enqueue` / `Processor.reply` | joined a model's queue; description carries the position |
 | `PROVISIONING` | `Processor.reply` | no replica exists; the controller is being asked for one |
 | `DEPLOYING` | `Processor.reply` | a replica exists and is coming up |
-| `DISPATCHED` | `Replica.dispatch` | handed to a specific actor (`queue/replica.py:224`) |
-| `RUNNING` | model actor | execution started (`modeling/base.py:317`) |
-| `LOG` | model actor | one line the block printed (`LogStream` in `modeling/util.py`) |
+| `DISPATCHED` | `Replica.dispatch` | handed to a specific actor |
+| `RUNNING` | model actor (`BaseModelDeployment.run`) | execution started |
+| `LOG` | model actor | one line the block printed (`LogStream` in `src/ndif/services/ray/deployments/modeling/util.py`) |
 | `COMPLETED` | model actor | `data` is the result itself, or a presigned URL to download it — see below |
 | `ERROR` | any of the above | terminal failure; `description` is the message |
 
 `RECEIVED` is the only status the client gets over HTTP — it's the body of the
 `POST /request` response. Everything after it arrives asynchronously.
 
-Statuses are not strictly monotonic. `DEPLOYING` drops back to `QUEUED` once the
-pool is serving, and an evicted replica silently pushes a request from
-`DISPATCHED` back to `QUEUED` — with no error, so a user can legitimately see
-`QUEUED` twice.
+Statuses are not strictly monotonic. A cold start goes straight from `RECEIVED`
+to `PROVISIONING` and reaches `QUEUED` only once the pool is serving, and an
+evicted replica silently pushes a request from `DISPATCHED` back to `QUEUED` —
+with no error, so a user can legitimately see `QUEUED` twice.
 
 ## Advance vs. publish
 
-Two methods on `BackendRequestModel` do related but different jobs:
+Two methods on `BackendRequestModel` (`src/ndif/common/schema/request.py`) do
+related but different jobs:
 
-- `response(status, description, data)` (`schema/request.py:100`) *advances* the
-  request's lifecycle state and builds the response object. Advancing is what
-  emits telemetry: `_advance_status` records how long the previous phase lasted
-  as a `RequestStatusTimeMetric` point and logs one structured lifecycle event.
-- `respond` / `arespond` (`schema/request.py:161`, `:203`) call `response` and
-  then *deliver* it.
-
-`_advance_status` ignores `LOG` and ignores a repeat of the current status
-(`request.py:124`), so a chatty block's prints don't reset the phase clock and a
-re-`QUEUED` request doesn't produce a spurious zero-length phase. `arespond` is
-the async form used by the queue's workers; the model actor uses the sync one.
+- `BackendRequestModel.response` *advances* the request's lifecycle state and
+  builds the response object. Advancing is what emits telemetry:
+  `_advance_status` records how long the previous phase lasted as a
+  `RequestStatusTimeMetric` point and logs one structured lifecycle event. It
+  ignores `LOG` and a repeat of the current status, so a chatty block's prints
+  don't reset the phase clock.
+- `BackendRequestModel.respond` / `arespond` call `response` and then *deliver*
+  it. `arespond` is the async form the queue's workers use; the model actor uses
+  the sync one.
 
 ## Two delivery routes
 
 **Blocking (`session_id` set).** The client opened `/subscribe` first and got a
-server-minted `session_id`; the response JSON is `PUBLISH`ed to the Redis
-channel of that name and the API's websocket handler forwards the raw string
-down the socket (`app.py:407`). Nothing is stored — an update published while
-no one is listening is simply lost, which is why the API subscribes *before*
-handing the client its session id.
+server-minted `session_id`; each response is `PUBLISH`ed to the Redis channel of
+that name — JSON for a status update, `torch.save` bytes for a `COMPLETED`
+carrying the result — and the API's websocket handler forwards it as a text
+frame or a binary frame accordingly (`src/ndif/services/api/app.py`
+`subscribe`). Nothing is stored: an update published while no one is listening
+is lost, which is why the API subscribes *before* handing out the session id.
 
 **Non-blocking (no `session_id`).** There is no live channel, so each response
-(except `LOG`) is written to `responses/{id}.json` in the object store,
+(except `LOG`) is written as JSON to `responses/{id}.json` in the object store,
 overwriting the previous one. The client polls `GET /response/{id}`, which
-returns the stored JSON or 404 if nothing has landed yet
-(`app.py:307`). Only the *latest* status is available — intermediate
-transitions are not replayed.
+returns the stored JSON or 404 if nothing has landed yet. Only the *latest*
+status is available — intermediate transitions are not replayed.
 
-```python
-if self.session_id:
-    RedisProvider.sync_client.publish(
-        self.session_id,
-        response.pickle() if pickled else response.model_dump_json(),
-    )
-elif status != Status.LOG:
-    ObjectStoreProvider.put(
-        _response_key(self.id),
-        response.model_dump_json().encode(),
-        content_type="application/json",
-    )
-```
-
-(`src/ndif/common/schema/request.py:189`)
+Publishing mechanics are in [The Redis layer](../developing/redis-layer.md#response-publishing).
 
 ## How the result gets back
 
@@ -121,72 +106,72 @@ few kilobytes to many gigabytes of tensors. Both routes start the same way:
 
 1. `execute` returns `torch.save`d bytes, with CUDA tensors relocated to CPU by
    a custom pickle module.
-2. `prepare_result` zstd-compresses them if the request asked for compression
-   (matching what the client will try to decompress) and records a
-   `RequestResponseSizeMetric`.
+2. `BaseModelDeployment.prepare_result` zstd-compresses them if the request
+   asked for compression and records a `RequestResponseSizeMetric`, so the blob
+   is byte-identical whichever route it takes.
 
-Then the actor picks a route by size, against the inline cap
-(`RedisProvider.max_publish_bytes`, derived from the Redis server's own pubsub
-output-buffer limits — 8 MiB against stock redis:7):
+Then `BaseModelDeployment.run` picks a route against the **inline cap**,
+`RedisProvider.max_publish_bytes` (`src/ndif/common/providers/redis.py`):
 
-**On the response.** Under the cap — which covers most
-traces — the bytes ride on the `COMPLETED` response as `data`. That response is
-published as `torch.save` output rather than a JSON dump, and `/subscribe`
-forwards it as a binary frame. The client loads it directly, with no second
-round trip.
+**On the response.** A blocking request whose blob is at or under the cap gets
+it as `data` on the `COMPLETED` response, published as `torch.save` bytes and
+forwarded as a binary frame. The client loads it directly, with no second round
+trip. Most traces take this route.
 
-**Through the object store.** Over the cap, or for a non-blocking request —
-which has no live socket to hand anything to — `upload_bytes` PUTs the blob at
-key `{request.id}.pt` and `presigned_get` signs a GET URL valid for one hour,
-using the *public* endpoint (`NDIF_OBJECT_STORE_PUBLIC_URL`) rather than the
-server-side one. That URL rides on `data` instead, and the client downloads it.
+**Through the object store.** Over the cap, or for a non-blocking request,
+`upload_bytes` PUTs the blob at `{request.id}.pt` and `presigned_get` signs a GET
+URL valid for one hour, using the *public* endpoint
+(`NDIF_OBJECT_STORE_PUBLIC_URL`) rather than the server-side one. That URL rides
+on `data` instead, in a JSON frame, and the client downloads it.
 
 Either way the client decompresses, `torch.load(..., map_location="cpu")`, and —
 on the blocking path — pushes the values back into the caller's frame so
 `h = ....save()` populates.
 
-Redis is what bounds the first route: pub/sub is a fan-out bus, and a subscriber
-whose output buffer exceeds `client-output-buffer-limit pubsub` is disconnected,
-taking the response with it — the job reads `COMPLETED` while the result is
-unrecoverable, because an inline result is never written to the object store.
-Worse, Redis's omem accounting carries an allocator-dependent overhead over the
-payload (measured 1.15× on one box, 1.67× on another, where a 20.04 MB message
-produced omem 33,554,456 — past the stock 32 MiB hard kill). That is why the cap
-is *derived from the server's own limits* rather than configured beside them:
-`RedisProvider.max_publish_bytes` reads them over `CONFIG GET` once per process
-and takes `min(soft, hard // 2)`, each bound counted only when enabled. The soft
-limit as the primary bound means the stock cap is 8 MiB, whose ~1.67× omem can
-never reach either limit. No limits configured → a fixed 20 MiB ceiling; a
-failed `CONFIG GET` (managed Redis) → a conservative fixed 8 MiB. To raise the
-cap, raise the Redis pubsub limits — the cap follows. One residual: the cap
-bounds a single message, not a *queue* of them — several near-cap results
-published to a subscriber that has stopped draining can still accumulate past
-the limits.
+**Why the cap exists, and where it comes from.** A pub/sub subscriber whose
+output buffer exceeds Redis's `client-output-buffer-limit pubsub` is
+disconnected, and the message goes with it: the job reads `COMPLETED` on the
+server while the client never receives the result, which was never written to
+the object store. So the cap is derived from the server's own limits rather than
+configured beside them: `max_publish_bytes` reads them with `CONFIG GET` once per
+process and takes `min(soft, hard // 2)`, counting each bound only when enabled.
+
+| Redis configuration | Inline cap |
+|---|---|
+| stock redis:7 (32 MiB hard, 8 MiB soft) | 8 MiB |
+| no pubsub limits configured | 20 MiB |
+| `CONFIG GET` fails (managed Redis) | 8 MiB |
+
+To raise the cap, raise the Redis pubsub limits — the cap follows. The soft limit
+is the primary bound because Redis's buffer accounting carries an
+allocator-dependent overhead over the payload (the reasoning is in the
+`max_publish_bytes` docstring). The cap bounds one message, not a queue of them:
+several near-cap results published to a subscriber that has stopped draining can
+still accumulate past the limits.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually
 > reach, jobs complete and then fail at download. In compose it is
 > `http://localhost:9000` while the server uploads to `http://minio:9000`.
 
-Nothing deletes result blobs or `responses/*.json`. There is no TTL, no
-lifecycle rule in the code, and no cleanup job — a long-lived deployment
-accumulates every result it ever produced. Expiring them is a bucket-policy
-concern; see [Production](../operating/production.md).
+Nothing deletes result blobs or `responses/*.json`: no TTL, no lifecycle rule,
+no cleanup job. Expiring them is a bucket-policy concern; see
+[Production](../operating/production.md).
 
 ## What the client does with each status
 
-The client renders every update as one in-place status line (a spinner in a
-terminal, an updating element in Jupyter). Beyond display:
+The client renders every update as one in-place status line. Beyond display:
 
 - `LOG` — printed as output from the remote block, not a lifecycle change.
 - `ERROR` — raises `RemoteError` with the server's `description`. For a failure
-  inside the user's block that description is the user's own traceback: the
-  actor strips nnsight internals and its own wrapper frames before formatting
-  (`format_error`, `modeling/base.py:545`).
-- `COMPLETED` — triggers the download above and ends the wait.
+  inside the user's block that is the user's own traceback: the actor strips
+  nnsight internals and its own wrapper frames
+  (`BaseModelDeployment.format_error`).
+- `COMPLETED` — takes the result off the frame or downloads the URL, and ends
+  the wait.
 
-Everything else is informational. A non-blocking client sees the same statuses
-through `poll()` instead, one snapshot at a time.
+A non-blocking client sees the same statuses through `poll()`, one snapshot at a
+time.
 
 ## Related
 

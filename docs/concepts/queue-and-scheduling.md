@@ -1,9 +1,9 @@
 ---
 title: Queue and Scheduling
-one_liner: One Redis list feeding per-model in-memory queues inside a single dispatcher process — how a request finds its model, when a second replica appears, and what "fair" does and doesn't mean here.
+one_liner: One Redis list feeding per-model in-memory priority queues inside a single dispatcher process — how a request finds its model, when a second replica appears, and what "fair" does and doesn't mean here.
 tags: [concepts, queue, redis, api]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/deployments-and-eviction.md, docs/concepts/status-and-results.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py]
+sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py]
 ---
 
 # Queue and Scheduling
@@ -11,20 +11,22 @@ sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dis
 ## What this covers
 
 The queueing model: where requests actually wait, how one is routed to a model,
-what causes a new replica to appear, and what the scheduler does not do.
+what causes a new replica to appear, and what the scheduler does not do. The
+loops themselves are walked through in
+[Queue internals](../developing/queue-internals.md).
 
 Two facts frame it:
 
 1. **There are two queues, not one.** A single Redis list is the boundary
    between the API's *N* gunicorn workers and the *one* dispatcher process. Past
-   that boundary, every request lives in an in-memory `asyncio.Queue` owned by a
-   `Processor` — one per `model_key`. The Redis list is the multi-producer /
-   single-consumer handoff; the per-model queues are where waiting actually
-   happens.
+   that boundary, every request lives in an in-memory `RequestQueue` (an
+   `asyncio.PriorityQueue`) owned by a `Processor` — one per `model_key`. The
+   Redis list is the multi-producer / single-consumer handoff; the per-model
+   queues are where waiting actually happens.
 2. **Scheduling is FIFO with one escape hatch.** There is no weighting, no
    round-robin between users, no aging, and no fairness across models beyond
-   "each model drains its own line". A `priority` API key jumps to the front;
-   everything else is arrival order.
+   "each model drains its own line". A `priority` API key sorts ahead of normal
+   traffic; everything else is arrival order.
 
 ## The shape
 
@@ -35,7 +37,7 @@ api worker N ─┘                                            │
                                           routes by model_key
                                             ┌──────────────┴──────────────┐
                                      Processor(gpt2)            Processor(llama-70b)
-                                     asyncio.Queue              asyncio.Queue
+                                     RequestQueue               RequestQueue
                                      Replica ×1..3              Replica ×1..3
                                         │                          │
                                    run.remote()               run.remote()
@@ -43,31 +45,19 @@ api worker N ─┘                                            │
 ```
 
 The dispatcher is not a container — it is a process the API's gunicorn master
-spawns at startup (`src/ndif/services/api/gunicorn_conf.py`, `on_starting`).
-It is deliberately *spawned*, not forked, so the telemetry providers' background
-threads are created fresh in it.
+spawns at startup (`src/ndif/services/api/gunicorn_conf.py` `on_starting`). It
+is *spawned*, not forked, so the telemetry providers' background threads are
+created fresh in it.
 
 ## Enqueue and drain
 
 The API pickles the whole `BackendRequestModel` — payload included — and
-`LPUSH`es it onto the list named by `NDIF_QUEUE_KEY`
-(`src/ndif/services/api/app.py:183`). The dispatcher `BRPOP`s the other end,
-which makes it FIFO, and then drains up to `NDIF_QUEUE_FETCH_BATCH_MAX - 1` more
-with non-blocking `RPOP` to amortize round-trips
-(`src/ndif/services/api/queue/dispatcher.py:141`):
-
-```python
-result = await client.brpop(CONFIG.queue_key, timeout=CONFIG.fetch_timeout_s)
-if result is None:
-    return []
-requests = [pickle.loads(result[1])]
-while len(requests) < CONFIG.fetch_batch_max:
-    item = await client.rpop(CONFIG.queue_key)
-    ...
-```
-
-The `fetch_timeout_s` bound exists so an idle loop still wakes periodically to
-drain the error queue and notice a broken Ray connection.
+`LPUSH`es it onto the list named by `NDIF_QUEUE_KEY`. The dispatcher `BRPOP`s
+the other end, which makes it FIFO, then drains up to
+`NDIF_QUEUE_FETCH_BATCH_MAX - 1` more with non-blocking `RPOP` to amortize
+round-trips (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.get`). The
+blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle loop still
+wakes to drain the error queue and notice a broken Ray connection.
 
 > **Gotcha:** once a request is popped it lives only in the dispatcher's memory.
 > Restart the API container and every queued-but-not-yet-running request is gone
@@ -78,65 +68,56 @@ drain the error queue and notice a broken Ray connection.
 
 The target is `request.model_key`, chosen entirely by the client: nnsight's
 `to_model_key()` produces `"<import.path.ClassName>:<model id>"` (e.g.
-`nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`). The
-API never validates it — it is just a dict key:
-
-```python
-if request.model_key not in self.processors:
-    self.processors[request.model_key] = Processor(request.model_key, self.error_queue)
-await self.processors[request.model_key].enqueue(request)
-```
-
-(`src/ndif/services/api/queue/dispatcher.py:162`)
+`nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`).
+The API never validates it — `Dispatcher.dispatch` uses it as a dict key and
+creates a `Processor` for any key it has not seen.
 
 So a typo'd or unavailable model key creates a real `Processor`, which asks the
 controller to deploy it, which fails in the evaluator — and the user gets an
 `ERROR` after a provisioning attempt, not a fast rejection. There is no
 allow-list of deployable models on the request path.
 
-A `Processor` is never torn down. An idle one sits with an empty pool at
-`UNINITIALIZED` and is reused when the next request for that model arrives.
+A `Processor` is never torn down. An idle one sits with an empty pool and is
+reused when the next request for that model arrives.
 
 ## Provisioning: the first replica
 
 `enqueue` calls `ensure_started`, which no-ops if a replica already exists or
-setup is already underway (`src/ndif/services/api/queue/processor.py:151`).
-Otherwise `start()` asks the controller for the model's current replicas; it
-adopts whatever is listed, or asks for one new one via `Replica.provision`. The
-client sees this as `PROVISIONING` then `DEPLOYING`, and `QUEUED` with a
-position once the pool is serving.
+setup is already underway (`src/ndif/services/api/queue/processor.py`
+`Processor.ensure_started`). Otherwise `start()` asks the controller for the
+model's current replicas; it adopts whatever is listed, or asks for one new one
+via `Replica.provision`. The client sees `PROVISIONING`, then `DEPLOYING`, then
+`QUEUED` with a position once the pool is serving.
 
 Each `Replica` runs a worker task that pulls from the *shared* per-model queue,
-so replicas of the same model compete for the same line — first free replica
-takes the head. Nothing partitions requests across replicas in advance.
+so replicas of the same model compete for the same line — the first free replica
+takes the next request in service order. Nothing partitions requests across
+replicas in advance.
 
 > **Gotcha:** the `Processor` records `trusted` from the request that first
-> provisions it (`Processor.ensure_started`,
-> `src/ndif/services/api/queue/processor.py:151`) and passes it into the
-> `DeploymentConfig` it sends the controller — which becomes the deployment's
-> `trust_remote_code`. A re-provision passes `None` and keeps the original
-> value, so the *first* requester of a model decides how it loads for everyone
-> who follows, until it is evicted. See [Auth and Limits](auth-and-limits.md).
+> provisions it and passes it into the `DeploymentConfig` it sends the
+> controller — which becomes the deployment's `trust_remote_code`. A
+> re-provision keeps the original value, so the *first* requester of a model
+> decides how it loads for everyone who follows, until it is evicted. See
+> [Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
 ## Autoscaling: the second and third replica
 
-Each `Processor` owns one long-lived `autoscaling_loop` created in its
-constructor (`processor.py:92`; the loop itself is `processor.py:259`). Every
-`NDIF_AUTOSCALING_INTERVAL_S` seconds, *only while `READY`*, it calls
+Each `Processor` owns one long-lived `Processor.autoscaling_loop`. Every
+`NDIF_AUTOSCALING_INTERVAL_S` seconds, *only while serving*, it takes
 `RequestQueue.oldest()` — the longest-waiting request across *both* priority
-groups, deliberately not the queue head (`request_queue.py:88`) — and compares
-its `enqueued_at`:
+groups (`src/ndif/services/api/queue/request_queue.py`) — and:
 
-- If it has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` **and**
-  the pool is smaller than `NDIF_AUTOSCALING_MAX_REPLICAS`, it deploys one more
-  replica and then sleeps `NDIF_AUTOSCALING_BACKOFF_S` before re-checking.
-- Otherwise it sleeps one interval.
+- if it has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` **and** the
+  pool is smaller than `NDIF_AUTOSCALING_MAX_REPLICAS`, deploys one more replica,
+  then sleeps `NDIF_AUTOSCALING_BACKOFF_S` before re-checking;
+- otherwise sleeps one interval.
 
 The signal is *longest wait*, not queue depth: a hundred fast requests that never
 leave anything waiting 30 seconds will not trigger a scale-up, while one
-long-blocked request will. Reading the head instead would miss exactly the case
-that needs the capacity — the head is the oldest *priority* request, and a
-starved normal one can be far older (`request_queue.py:91`).
+long-blocked request will. It is the oldest request rather than the next one to
+be served, because the next one is the oldest *priority* request, and a starved
+normal one can be far older.
 
 The backoff exists because `scale_up` returns as soon as the new replica is
 *ready*, not once it has drained anything — without it, a slow-draining queue
@@ -146,19 +127,10 @@ Scale-*down* does not exist here. Replicas leave the pool only by eviction,
 cancellation, or a purge; the controller is what reclaims their GPU memory
 (see [Deployments and Eviction](deployments-and-eviction.md)).
 
-| Setting | Default | Effect |
-|---|---|---|
-| `NDIF_QUEUE_KEY` | `queue` | Redis list the API pushes to and the dispatcher pops from |
-| `NDIF_QUEUE_FETCH_TIMEOUT_S` | `10` | Blocking-pop timeout; also the idle-loop tick |
-| `NDIF_QUEUE_FETCH_BATCH_MAX` | `32` | Max requests drained per iteration |
-| `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often a Processor checks its queue head |
-| `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Head wait that triggers a scale-up |
-| `NDIF_AUTOSCALING_BACKOFF_S` | `120` | Pause after a scale-up |
-| `NDIF_AUTOSCALING_MAX_REPLICAS` | `3` | Replica ceiling per model, via autoscaling |
-
-All are read once at import into a frozen `QueueConfig`
-(`src/ndif/services/api/queue/config.py:26`, instantiated at `:72`) — changing one means restarting the
-API.
+All queue and autoscaling settings, with defaults, are in
+[Environment variables](../reference/env-vars.md#queue-and-autoscaling). They
+are read once at import into a frozen `QueueConfig`, so changing one means
+restarting the API.
 
 ## Requeue, cancel, purge
 
@@ -167,16 +139,18 @@ Three things can pull a request back out of flight:
 - **Eviction.** If a dispatch fails with a lookup error, a dead actor, or
   `CachedActorError` (the actor's weights were moved to CPU), the replica drops
   itself and re-enqueues the in-flight request with `prepend=True`
-  (`src/ndif/services/api/queue/replica.py:280`), which puts it at the front of
-  *its own* priority group rather than the whole queue — `prepend` is a sub-rank
-  inside the group (`request_queue.py:58`). It keeps its original `enqueued_at`,
-  so the autoscaler still sees its true wait. The user sees no error.
+  (`src/ndif/services/api/queue/replica.py` `Replica.dispatch`), which puts it
+  at the front of *its own* priority group, not the whole queue. It keeps its
+  original `enqueued_at`, so the autoscaler still sees its true wait. The user
+  sees no error.
 - **Operator cancel.** `ndif kill <request_id>` goes through the dispatcher's
-  event stream: if the request is queued it is removed and errored; if it is
-  executing, the replica's worker is cancelled and the request errored.
+  event stream. A queued request is removed and errored. For an executing one,
+  the replica's worker task is cancelled and the request errored to the user;
+  the Ray call the worker was awaiting is not cancelled, so the actor runs the
+  block to completion.
 - **Purge.** A Ray connection error makes the dispatcher error every queued
   request for every model, clear the queues, cancel all replicas, and reconnect
-  (`Dispatcher.purge`, `dispatcher.py:169`).
+  (`Dispatcher.purge`).
 
 ## What "fair" means here
 
@@ -186,24 +160,23 @@ Not much, and it is worth being explicit about it:
   per-model lines. A burst for one model does not delay another model's requests
   beyond the shared drain loop.
 - **Within a model:** two FIFO groups — every `priority`-tagged request is
-  served before every normal one, and each group is FIFO by arrival
-  (`request_queue.py:58`, `:68`). One user submitting a hundred requests occupies the line
-  ahead of a user who submits one, within their group. There is no aging, so
-  sustained priority traffic starves normal traffic indefinitely; the autoscaler
-  is the only relief, and it caps at `NDIF_AUTOSCALING_MAX_REPLICAS`.
+  served before every normal one, and each group is FIFO by arrival. One user
+  submitting a hundred requests occupies the line ahead of a user who submits
+  one, within their group. There is no aging, so sustained priority traffic
+  starves normal traffic indefinitely; the autoscaler is the only relief, and it
+  caps at `NDIF_AUTOSCALING_MAX_REPLICAS`.
 - **Per user:** nothing. There is no per-key concurrency cap, no quota, and no
   rate limit anywhere on the request path.
-- **Head-of-line blocking is real.** A replica handles one request at a time and
-  a long-running block holds it for up to
-  `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, which is **unset by default** — so a
+- **Head-of-line blocking is real.** A replica handles one request at a time,
+  and `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` is **unset by default** — so a
   block holds its replica until it finishes. The only relief is autoscaling up to
-  the ceiling. Set the variable on a shared deployment.
+  the ceiling. Set the timeout on a shared deployment.
 
 ## Related
 
 - [Queue internals](../developing/queue-internals.md) — the dispatcher /
-  processor / replica loops line by line, including the worker task lifecycle.
+  processor / replica loops, including the worker task lifecycle.
 - [Deployments and Eviction](deployments-and-eviction.md) — what happens on the
-  other side of `controller.deploy`, and why a replica can vanish mid-queue.
+  other side of `controller.scale`, and why a replica can vanish mid-queue.
 - [Debug a stuck request](../runbooks/debug-a-stuck-request.md) — using
   `ndif queue` to see the live per-model queues and replica state.

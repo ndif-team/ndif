@@ -25,13 +25,12 @@ Three facts frame the whole design:
    the client's status updates come back on a Redis pub/sub channel that the API
    merely forwards.
 3. **Where the user's block executes depends on one boolean.** `request.trusted`
-   is stamped at ingress from the API key. Trusted blocks run *in the model
-   actor process*, next to the weights; untrusted blocks run in a separate
-   runner process driven over a Unix socket. **With auth off — no
-   `NDIF_POSTGRES_URL` — a client-supplied `trusted` is honored and an
-   unspecified one defaults to `True`**, so a default `just up` runs all user
-   code in-process, but a request sent with `trusted: false` still takes the
-   runner path. See [Auth and Limits](auth-and-limits.md).
+   is stamped at ingress from the API key. On the sandbox actor classes, trusted
+   blocks run *in the model actor process*, next to the weights, and untrusted
+   blocks run in a separate runner process driven over a Unix socket; the
+   default `ModelActor` class runs every block in-process. **With auth off — no
+   `NDIF_POSTGRES_URL` — an unspecified `trusted` defaults to `True`.** The full
+   story is in [Auth and Limits](auth-and-limits.md).
 
 ## The path
 
@@ -53,17 +52,19 @@ sequenceDiagram
     A->>A: verify key, gate client version, read blob
     A->>R: LPUSH queue <pickled BackendRequestModel>
     A-->>C: 200 RECEIVED
-    D->>R: BRPOP queue (+ drain up to 32)
+    D->>R: BRPOP queue (+ up to 31 more RPOPs: a batch of 32)
     D->>D: Processor(model_key).enqueue(...)
-    D->>R: PUBLISH <session_id> QUEUED
-    R-->>C: QUEUED (via A's websocket)
-    D->>K: get_deployment(model_key)
-    alt no HOT replica
-        D->>K: scale(model_key, 1, DeploymentConfig(trusted=...))
-        D->>R: PUBLISH PROVISIONING / DEPLOYING
+    alt no replica yet (cold start)
+        D->>R: PUBLISH <session_id> PROVISIONING
+        D->>K: get_deployment(model_key), else scale(model_key, 1, DeploymentConfig(trusted=...))
         K->>M: create actor, load weights onto assigned GPUs
+        D->>R: PUBLISH DEPLOYING
+        D->>M: __ray_ready__ (poll until up)
+        D->>R: PUBLISH QUEUED (position)
+    else replica serving
+        D->>R: PUBLISH <session_id> QUEUED (position)
     end
-    D->>M: __ray_ready__ (poll until up)
+    R-->>C: each update (via A's websocket)
     D->>R: PUBLISH DISPATCHED
     D->>M: run(request)  [Ray call]
     M->>R: PUBLISH RUNNING
@@ -97,60 +98,69 @@ and a per-request `env` dict (e.g. a PEFT adapter to swap in).
 **2. Subscribe, then POST.** The client opens `ws://…/subscribe` *first* and
 takes the server-minted `session_id` from the first frame; the API subscribes to
 the Redis channel of that name before handing the id over
-(`src/ndif/services/api/app.py:394`), so no update can be published before
+(`src/ndif/services/api/app.py` `subscribe`), so no update can be published before
 anyone is listening. Only then does the client POST — multipart, with the JSON
 envelope as the `data` form field and the block as the `blob` file.
 
-**3. API ingress.** `POST /request` (`src/ndif/services/api/app.py:122`) runs
-three gates before it does any work: `require_ray_connection` (503 if the
-`ray:connected` Redis flag is absent), `validate_request` (parse the envelope,
-verify the API key, stamp `email` / `trusted` / `priority` onto the request),
-and `validate_client_versions` (`app.py:140`). Then it reads the blob into
-`request.payload` (`app.py:150`), advances the request to `RECEIVED`, and
-`LPUSH`es the *pickled* request onto the Redis list named by `NDIF_QUEUE_KEY`
-(default `queue`, `app.py:183`). The `RECEIVED` response is what the HTTP call
+**3. API ingress.** `POST /request` (`src/ndif/services/api/app.py`
+`create_request`) runs three gates before it does any work:
+`require_ray_connection` (503 if the `ray:connected` Redis flag is absent),
+`validate_request` (parse the envelope, verify the API key, stamp `email` /
+`trusted` / `priority` onto the request), and `validate_client_versions`. Then
+it reads the blob into `request.payload`, advances the request to `RECEIVED`,
+and `LPUSH`es the *pickled* request onto the Redis list named by
+`NDIF_QUEUE_KEY` (default `queue`). The `RECEIVED` response is what the HTTP call
 returns; everything after this is asynchronous.
 
 **4. Dispatcher pops.** The dispatcher is a separate spawned process started by
 gunicorn's `on_starting` hook. Its loop `BRPOP`s the queue with a 10s timeout
-and then drains up to 31 more with non-blocking `RPOP`
-(`src/ndif/services/api/queue/dispatcher.py:141`) — so the shared list is FIFO
-and one pop amortizes into a batch. Each request is routed by `model_key` to a
-lazily created `Processor` (`dispatcher.py:162`).
+and then drains up to 31 more with non-blocking `RPOP`, a batch of at most
+`NDIF_QUEUE_FETCH_BATCH_MAX` (32) (`src/ndif/services/api/queue/dispatcher.py`
+`Dispatcher.get`) — so the shared list is FIFO and one pop amortizes into a
+batch. Each request is routed by `model_key` to a lazily created `Processor`
+(`Dispatcher.dispatch`).
 
 **5. Processor queues and provisions.** `Processor.enqueue`
-(`src/ndif/services/api/queue/processor.py:100`) hands the request to
+(`src/ndif/services/api/queue/processor.py`) hands the request to
 `RequestQueue.put`, which stamps `enqueued_at` and orders by
 `(group, prepend, enqueued_at)` — so a `priority` request sorts ahead of normal
 traffic and stays FIFO against its peers. `enqueue` then calls `ensure_started`
-and publishes `QUEUED` with the position the queue reports. If no
-replica exists, `start()` asks the controller for existing replicas and adopts
-them, or asks `controller.scale` for one more — the client sees `PROVISIONING`, then `DEPLOYING`.
+and replies. With a replica serving, the reply is `QUEUED` with the position
+the queue reports. On a cold start `ensure_started` has already set the
+processor to provisioning, so the first reply is `PROVISIONING`, not `QUEUED`;
+`start()` then asks the controller for existing replicas and adopts them, or
+asks `controller.scale` for one more, and broadcasts `DEPLOYING`, then `QUEUED`
+with positions once the pool is ready.
 
-**6. Controller places a replica.** `deploy` sizes the model on the meta device,
-picks the best node/GPUs, evicts if it must, and creates a detached Ray actor
+**6. Controller places a replica.** `scale` sizes the model from its
+checkpoint's metadata, picks the best node/GPUs, evicts if it must, and creates a detached Ray actor
 named `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. See
 [Deployments and Eviction](deployments-and-eviction.md).
 
 **7. Replica dispatches.** `Replica.wait` polls `__ray_ready__` until the actor
 answers, then a worker task pulls from the shared per-model queue. For each
 request it publishes `DISPATCHED` and makes the Ray call
-`handle.run.remote(request)` (`src/ndif/services/api/queue/replica.py:228`).
+`handle.run.remote(request)` (`src/ndif/services/api/queue/replica.py`
+`Replica.dispatch`).
 The pickled `BackendRequestModel` — payload and all — crosses the Ray boundary
 here.
 
 **8. The actor runs the block.** `BaseModelDeployment.run`
-(`src/ndif/services/ray/deployments/modeling/base.py:300`) refuses immediately
+(`src/ndif/services/ray/deployments/modeling/base.py`) refuses immediately
 if its weights are on CPU (WARM), publishes `RUNNING`, applies `request.env` to
 the model, and runs `execute` on a worker thread raced against
-`execution_timeout` and a cancel event. `print()` inside the block becomes `LOG`
-responses, one per line. `run` is a template — where `execute` actually runs the
-block is the fork below.
+`execution_timeout` and a cancel event. `print()` (and stderr) inside the block
+becomes `LOG` responses, one per line. `run` is a template — where `execute`
+actually runs the block is the fork below.
 
 **8a. The trusted fork.** The deployed actor class is
-`NDIF_DEFAULT_MODEL_ACTOR_CLASS`; compose sets it to `SandboxModelActor`
-(`src/ndif/services/ray/sandbox/model.py`). Its `execute`
-(`SandboxModelDeployment.execute`, `sandbox/model.py:207`) is the whole fork:
+`NDIF_MODEL_IMPORT_PATH` (or `NDIF_DEFAULT_MODEL_ACTOR_CLASS`), default
+`ModelActor`, which has no fork; compose sets it to `SandboxModelActor`. A
+tensor-parallel placement swaps the class for `NDIF_TP_MODEL_ACTOR_CLASS`: the
+`TPModelActor` runs every block in-process, trusted or not, and only
+`SandboxedTPModelActor` forks the same way as below. On `SandboxModelActor`,
+`execute` (`src/ndif/services/ray/sandbox/model.py`
+`SandboxModelDeployment.execute`) is the whole fork:
 
 ```python
 if request.trusted:
@@ -158,7 +168,8 @@ if request.trusted:
 return self.run_in_runner(request, None)
 ```
 
-`run_in_runner` (`SandboxHost.run_in_runner`, `sandbox/model.py:97`) takes a
+`run_in_runner` (`src/ndif/services/ray/sandbox/model.py`
+`SandboxHost.run_in_runner`) takes a
 runner from the pool, opens its socket, and sends the block plus everything the
 runner needs to reproduce this actor's conditions:
 
@@ -173,26 +184,27 @@ connection.send(
   pass, collect the `nnsight.save()`-marked values by identity, `torch.save`
   them. All of that happens inside the model actor process.
 - **Untrusted** — the actor takes a pre-warmed runner process from its pool
-  (one fresh process per request, stopped afterwards, so nothing leaks between
-  requests), ships it the blob, and services `INTERLEAVE` events: the block runs
-  in the runner while the forward pass runs here, taking strict turns over the
-  socket. The runner returns the `torch.save`d bytes directly.
+  (one fresh process per request, stopped afterwards, so no Python state
+  carries between requests; what it writes to the shared filesystem, such as
+  `/tmp` or the HF cache, does persist), ships it the blob, and services
+  `INTERLEAVE` events: the block runs in the runner while the forward pass runs
+  here, taking strict turns over the socket. The runner returns the `torch.save`d bytes directly.
 
-Both paths produce the same bytes and both feed the same upload step. See
+Both paths hand `torch.save` bytes to the same result step. They agree on
+activations; they differ where a block touches weights or gradients — see
 [Sandbox Execution](sandbox-execution.md).
 
-**9. Result back, by one of two routes.** `prepare_result` (`base.py:665`)
-compresses the `torch.save` output to match `request.compress` and meters it, so
-the blob is byte-identical whichever route it takes. Then `run` picks
-(`base.py:426`): if the request has a `session_id` and the blob is at or under
-the inline cap — `RedisProvider.max_publish_bytes`, derived from the Redis
-server's own pubsub output-buffer limits (8 MiB against stock redis:7; see
-[Status and Results](status-and-results.md)) — it rides back *on the
-response*; otherwise `upload_bytes` (`base.py:691`) PUTs it at `{request.id}.pt`
+**9. Result back, by one of two routes.** `prepare_result`
+(`src/ndif/services/ray/deployments/modeling/base.py`
+`BaseModelDeployment.prepare_result`) compresses the `torch.save` output to
+match `request.compress` and meters it, so the blob is byte-identical whichever route it takes. Then `run` picks: if the
+request has a `session_id` and the blob is at or under the inline cap
+(`RedisProvider.max_publish_bytes`; see
+[Status and Results](status-and-results.md#how-the-result-gets-back)) it rides
+back *on the response*; otherwise `upload_bytes` PUTs it at `{request.id}.pt`
 and presigns a GET valid for an hour. The `COMPLETED` response carries either
-the bytes or the url in `data`, with `pickled` set when it is the bytes
-(`base.py:466`) — that flag is what tells `/subscribe` to forward a binary
-frame.
+the bytes or the url in `data`, published as `torch.save` bytes when it is the
+result itself, which `/subscribe` forwards as a binary frame.
 
 **10. Client collects.** Each published response goes to the Redis channel
 named `session_id`; the API's `/subscribe` handler forwards it down the
@@ -215,7 +227,7 @@ the object store and polled via `GET /response/{id}` instead — see
 | 3 | Client too old | `400` naming the minimum version | [Configuration](../operating/configuration.md#the-client-version-gate) |
 | 4 | Dispatcher process dead | request sits in Redis, no `QUEUED` ever arrives | [Queue internals](../developing/queue-internals.md) |
 | 5 | Model never deploys | stuck on `PROVISIONING`/`DEPLOYING`, then `ERROR` | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
-| 6 | Won't fit on any node | `ERROR` mentioning `CANT_ACCOMMODATE` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
+| 6 | Won't fit on any node | `ERROR` "Could not deploy this model." with a node's stated reason, else `CANT_ACCOMMODATE` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | 7 | Replica evicted mid-flight | silently re-queued at the front (no error) | [Deployments and Eviction](deployments-and-eviction.md) |
 | 8 | Block raises | `ERROR` with the user's own traceback | [Error messages](../reference/error-messages.md) |
 | 8 | Block exceeds the timeout | `ERROR` "exceeded the execution timeout of Ns" | [Auth and Limits](auth-and-limits.md) |
@@ -223,14 +235,7 @@ the object store and polled via `GET /response/{id}` instead — see
 | 8a | Runner process dies mid-run | `ERROR` carrying the runner's formatted traceback | [Sandbox internals](../developing/sandbox-internals.md) |
 | 9 | Object store unreachable | `ERROR` from the upload, after a successful run (only on the object-store route) | [Providers](../developing/providers.md) |
 | 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Production](../operating/production.md#3-real-object-storage-reachable-from-two-networks) |
-| 10 | several near-cap inline results published while the subscriber stalls | the accumulated output buffer exceeds Redis's pubsub limits, the subscriber is dropped, and `COMPLETED` never arrives — the cap bounds one message, not a queue of them | [Status and Results](status-and-results.md) |
-
-> **Gotcha:** the presigned url is an HMAC over the request *including the host*,
-> so it must be signed with the address the client will actually hit.
-> `NDIF_OBJECT_STORE_URL` is the server-side endpoint (`http://minio:9000`) and
-> `NDIF_OBJECT_STORE_PUBLIC_URL` is the one used for signing
-> (`http://localhost:9000` in compose). Getting these backwards produces jobs
-> that complete and then fail to download.
+| 10 | Several near-cap inline results published while the subscriber stalls | the subscriber is dropped and `COMPLETED` never arrives | [Status and Results](status-and-results.md#how-the-result-gets-back) |
 
 ## Related
 
@@ -239,7 +244,7 @@ the object store and polled via `GET /response/{id}` instead — see
 - [Deployments and Eviction](deployments-and-eviction.md) — hop 6: what a
   deployment is, and what the controller is allowed to throw away to make room.
 - [Status and Results](status-and-results.md) — hop 10: the full status lifecycle
-  and why results go to a blob store.
+  and the two result routes, inline under the cap or behind a presigned URL.
 - [Sandbox Execution](sandbox-execution.md) — hop 8 when the sandbox actor is in
   use, which it is by default in compose.
 - [Queue internals](../developing/queue-internals.md) and

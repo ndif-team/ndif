@@ -32,8 +32,9 @@ of its hops.
 6. **[Status and Results](status-and-results.md)** — the status lifecycle as the
    client sees it, and how results come back: inline on the response, or behind a
    presigned URL.
-7. **[Auth and Limits](auth-and-limits.md)** — API keys, the `trusted` flag and
-   its auth-off default, and what is and isn't enforced.
+7. **[Auth and Limits](auth-and-limits.md)** — API keys, the `trusted` flag end
+   to end (its auth-off default, which actor classes honor it, what the untrusted
+   path cannot do), and what is and isn't enforced.
 
 ## Related
 

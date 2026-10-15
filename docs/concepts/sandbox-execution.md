@@ -10,11 +10,11 @@ sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/
 
 ## What this covers
 
-The mental model you need to reason about where a remote trace actually runs on
-an NDIF server: which process executes the user's block, which process holds the
-weights, what travels between them, and what that costs. No message catalog here
-— `docs/developing/sandbox-internals.md` has the wire protocol, the per-message
-table, and the code walk.
+**The sandbox is process separation, not a security boundary.** This page is the
+mental model for where a remote trace actually runs: which process executes the
+user's block, which process holds the weights, what travels between them, and
+what that costs. The wire protocol and code walk are in
+[Sandbox internals](../developing/sandbox-internals.md).
 
 ## The constraint
 
@@ -34,29 +34,20 @@ the user's code sees.
 
 ## First: is the request trusted?
 
-Before any of this applies, one flag decides whether a sandbox is involved at all.
+Only an untrusted request on a sandbox actor class reaches a runner. A trusted
+request runs in the model actor process, the plain in-process path. The fork is
+`SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py`).
+How the flag is set — including the auth-off default of trusted, which means a
+bare `just up` never exercises the sandbox unless a request sends
+`trusted: false` — and which actor classes fork at all are in
+[Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
-| `request.trusted` | What happens |
-|---|---|
-| `False` | the block is shipped to a **runner process** and interleaved with the model over a Unix socket |
-| `True` | the block runs **in the model actor process**, next to the weights — the plain in-process path, no runner, no socket |
-
-The fork is in `SandboxModelDeployment.execute`
-(`src/ndif/services/ray/sandbox/model.py:207`). With auth on the flag is stamped
-at ingress from the API key's `trusted` user_tag. With auth off (no
-`NDIF_POSTGRES_URL`, so there is no key database) a client-supplied `trusted` is
-honored and an unspecified one **defaults to trusted**
-(`src/ndif/services/api/auth.py:180`).
-
-> **Gotcha:** a default local stack has no Postgres, so a `just up` dev server
-> runs every request in-process and never exercises the sandbox *by default*.
-> Reaching the sandbox path needs no Postgres though: auth-off honors an explicit
-> flag, so sending `trusted: false` in the request forces the runner path on a
-> plain dev stack. See [testing](../developing/testing.md).
-
-Both paths are meant to produce the same result for the same request. That
-invariant is why the sandbox reuses nnsight's own mediator, batching, and cache
-machinery rather than reimplementing any of it.
+The sandbox reuses nnsight's own mediator, batching, and cache machinery rather
+than reimplementing it, so activations behave as they do in-process. Weights and
+gradients do not: on the untrusted path weight reads fail, weight edits and
+training loops are no-ops, and gradients are unsupported, because the runner
+holds a weightless meta model and the backward runs on the host (see
+[what the untrusted path cannot do](auth-and-limits.md#the-trusted-flag)).
 
 ## The picture
 
@@ -126,29 +117,27 @@ the sandbox socket is cloudpickled. A closure over an unpicklable object fails
 here even if it would have worked in-process.
 
 **Your code is ordinary Python otherwise.** It runs in a real Python process: it
-can import, allocate, and print. It does *not* get the actor's environment — the
-runner starts with an allowlist (`RUNNER_ENV`,
-`src/ndif/services/ray/sandbox/host.py:53`) covering the loader and locale
-basics, `CUDA_VISIBLE_DEVICES`, the cache locations, and the thread-count knobs,
-and nothing else. What it cannot do is reach into the actor's memory.
+can import, allocate, and print. It does *not* inherit the actor's environment —
+the runner starts with an allowlist (`RUNNER_ENV` in
+`src/ndif/services/ray/sandbox/host.py`) covering the loader and locale basics,
+`CUDA_VISIBLE_DEVICES`, the cache locations, and the thread-count knobs, and
+nothing else.
 
-## What the isolation boundary is — and is not
+## What the separation is — and is not
 
-Isolation on NDIF is **process-based and still in progress**.
-
-- **It is** a separate OS process, reachable only through a narrow message
-  protocol, that cannot touch the actor's Python objects or the model directly.
+- **It is** a separate OS process that reaches the actor only through a narrow
+  message protocol, with no handle on the actor's Python objects or the model.
 - **It is** fresh per request: the pool hands out a runner that has never run user
   code and stops it when the request ends, so compiled blocks, globals, and module
-  state do not leak from one request to the next.
-- **It is** started with an allowlisted environment rather than a copy of the
-  actor's (`RUNNER_ENV`, `src/ndif/services/ray/sandbox/host.py:53`), so a block
-  cannot read the operator's `HF_TOKEN`, `NDIF_INFLUX_TOKEN`,
-  `NDIF_POSTGRES_URL` or object-store credentials out of `os.environ`. That is
-  one hole closed, not a boundary.
+  state do not carry from one request to the next. What a block writes to the
+  shared filesystem does persist.
+- **It is** started with an allowlisted environment, so `HF_TOKEN`,
+  `NDIF_INFLUX_TOKEN`, `NDIF_POSTGRES_URL` and object-store credentials are not
+  inherited.
 - **It is not** hardened. The runner is a plain child process — same user,
   filesystem, network, and visible GPUs. There are no namespaces, seccomp
-  filters, rlimits, or filesystem jail today.
+  filters, rlimits, or filesystem jail, and secrets reachable by those means are
+  not shown to be out of reach.
 
 Treat it as a seam that hardening can be added behind, not as a boundary you can
 lean on for adversarial code.
@@ -167,24 +156,22 @@ lean on for adversarial code.
 - **Pickle-ability of what you close over**, as above — including things that
   travel *back*, like a swap replacement.
 - **`tracer.barrier()` counts on the host.** Every arrival crosses the socket and
-  the host releases the round, so cross-invoke barriers behave as they do
-  trusted — including a barrier reached mid-forward, which used to release
-  invisibly inside the runner and silently drop the released block's saves. A
-  count no set of blocks can satisfy fails the run with the same
-  `ValueError` ("A barrier was never reached by every block it waits for…") the
-  trusted path raises; see the gotchas in
-  `docs/developing/sandbox-internals.md`.
-- **The two paths can drift.** Because dev servers run trusted (in-process), a bug
-  that only appears in the sandbox path can hide locally. When a remote failure
+  the host releases the round, so barriers behave as they do trusted, and a count
+  no set of blocks can satisfy fails with the same `ValueError` the trusted path
+  raises.
+- **The two paths can drift.** Because dev servers run trusted (in-process) by
+  default, a bug that only appears in the sandbox path can hide locally. When a remote failure
   makes no sense against a local reproduction, check which path the server used.
 
 ## Related
 
-`docs/developing/sandbox-internals.md` is the full mechanism — protocol, message
-catalog, and the split interleaver. `docs/concepts/request-lifecycle.md` covers how
-a request reaches the model actor in the first place, and
-`docs/concepts/auth-and-limits.md` how the `trusted` flag is granted.
-`docs/developing/model-actor.md` describes the actor that hosts the model and runs
-the timeout/cancel race around your block, and
-`docs/reference/error-messages.md` maps what a user sees back to these
-mechanisms.
+- [Sandbox internals](../developing/sandbox-internals.md) — protocol, message
+  catalog, and the split interleaver.
+- [Auth and Limits](auth-and-limits.md) — how `trusted` is granted, which actor
+  classes fork, and what the untrusted path cannot do.
+- [Request Lifecycle](request-lifecycle.md) — how a request reaches the model
+  actor in the first place.
+- [Model actor](../developing/model-actor.md) — the actor that hosts the model
+  and runs the timeout/cancel race around your block.
+- [Error messages](../reference/error-messages.md) — what a user sees, mapped
+  back to these mechanisms.
