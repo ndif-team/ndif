@@ -66,7 +66,7 @@ yourself. Before anyone else can reach it, work through
 ### 1. `docker run` — the published image, whole stack in one container
 
 ```bash
-docker run -d --name ndif --gpus all --shm-size 4g \
+docker run -d --name ndif --gpus all --shm-size 16g \
   -p 127.0.0.1:8001:8001 -p 127.0.0.1:9000:9000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   ndif/ndif:0.1.0

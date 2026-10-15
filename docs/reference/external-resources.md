@@ -68,7 +68,7 @@ every Serve page you find.
 | `ray start` flags and the cluster port map | You are adding a node. `services/ray/start.sh` passes five port flags and lets Ray default the rest — the raylet, node-manager, and worker port range are Ray's business, and Ray's port documentation is the only place they're enumerated. |
 | Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes` and, on the head, `head=10`; the controller reads them back off the node list. |
 | `runtime_env` / `env_vars` | You are wondering how a model actor got its Redis address. The controller copies its provider config into each actor's `runtime_env`. |
-| The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [Compose stack](../operating/compose-stack.md#shm_size-4gb) for the `shm_size` requirement. |
+| The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [Compose stack](../operating/compose-stack.md#shm_size-16gb) for the `shm_size` requirement. |
 | Ray metrics / Prometheus export | You are wiring monitoring. `--metrics-export-port` is what Prometheus scrapes; the NDIF variable that sets it is `NDIF_RAY_METRICS_PORT`. |
 
 Ray's version is pinned in `requirements.txt` (`ray[default]==2.55.1`); read the
