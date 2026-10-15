@@ -78,9 +78,8 @@ if [ -z "$HEAD_ADDRESS" ]; then
         --temp-dir="$NDIF_RAY_TEMP_DIR"
 
     echo "Starting NDIF controller..."
-    # Name the head just started. Unset, ray.init(address="auto") reads
-    # /tmp/ray/ray_current_cluster (not --temp-dir's), then picks an arbitrary
-    # one of the running GCS processes on this host, which can be another
+    # Name the head just started: given no address, ray.init(address="auto")
+    # picks an arbitrary running GCS on this host, which can be another
     # cluster's.
     RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
         python -m ndif.services.ray.deployments.controller.controller

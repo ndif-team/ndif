@@ -68,14 +68,12 @@ reuses a live one), then exits. `start.sh` ends in `tail -f /dev/null` because
 `ray.init(address="auto")`, its state API (`list_nodes`, `list_actors`) and its
 bootstrap lookup guess: `RAY_ADDRESS`, then `ray_current_cluster` under the
 *default* temp dir (not `--temp-dir`'s), then any running GCS process visible on
-the host. With another Ray cluster's processes visible, the state API raised
-`Found multiple active Ray instances` and the controller died in `__init__`, and
-`ray.init(address="auto")` could pick the other cluster. So the launcher gets
-`RAY_ADDRESS`, and the controller passes `gcs_address()`
-(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`), its runtime
-context's own GCS, to `list_nodes`, `list_actors` and `Cluster.state`. A
-compose `ray` container has its own process namespace and only ever saw one
-GCS; a from-source `ndif start` on a shared host did not.
+the host, and the state API raises if it sees more than one. A compose `ray`
+container has its own process namespace and only ever sees one GCS; a
+from-source `ndif start` on a host shared with another Ray cluster does not. So
+the launcher gets `RAY_ADDRESS`, and the controller passes
+`ray.get_runtime_context().gcs_address`, its own cluster, to `list_nodes`,
+`list_actors` and `Cluster.state`.
 
 ## Ports
 

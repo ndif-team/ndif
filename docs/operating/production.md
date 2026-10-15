@@ -129,7 +129,10 @@ volume; its schedule and monitor state live there. See
 `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` default to `rustfsadmin` on both
 the server and the `rustfs` container. Replace them, and put the bucket somewhere
 durable — the dev RustFS writes to the named volume `rustfs_data`, which lives
-only as long as the docker host keeps it.
+only as long as the docker host keeps it. Results over 8 MiB upload as parallel
+multipart uploads; one that dies halfway leaves parts that are stored and billed
+until removed, so give the bucket a lifecycle rule that aborts incomplete
+multipart uploads after a day.
 
 On a cloud host, prefer holding no key at all. Set **both** variables empty and
 boto3 falls back to its own credential chain, which on AWS finds the instance or
@@ -293,7 +296,7 @@ durable volumes and retention policy for anything it needs to keep. See
 | 3 | Users told that untagged keys can no longer read weights, take gradients or train | — | — |
 | 4 | Postgres password is not `admin`, and the DB is not published | postgres | — |
 | 5 | `NDIF_DASHBOARD_DEV_MODE` removed; username, bcrypt hash, random session secret set | dashboard | The dashboard prompts for a login |
-| 6 | Object-store credentials replaced; bucket durable | api, ray | — |
+| 6 | Object-store credentials replaced; bucket durable; lifecycle rule aborts incomplete multipart uploads | api, ray | — |
 | 7 | `NDIF_OBJECT_STORE_PUBLIC_URL` resolves and fetches **from a client machine** | api, ray | A remote trace's result downloads from off-host |
 | 8 | `NDIF_REDIS_URL` explicitly set on **every** service — never left at localhost | all | `ndif info` in each container shows the right host |
 | 9 | Head/worker split correct: `NDIF_RAY_HEAD_ADDRESS` set on workers only | ray | `ndif status` lists every GPU node |

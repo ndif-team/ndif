@@ -167,9 +167,9 @@ Two clients, because upload and download happen from different networks
 `NDIF_OBJECT_STORE_PUBLIC_URL`; unset, it falls back to the server-side URL. A custom
 endpoint also forces path-style addressing (`_make_client`). Credentials are passed
 only when both are set; both empty uses boto3's own chain (an IAM role on AWS).
-Methods: `put(key, data, content_type)` creates the bucket on first use, sends
-anything up to 8 MiB as one `put_object`, and anything larger as a multipart upload
-of 8 MiB parts, 8 in parallel (`_TRANSFER`); `get(key)`
+Methods: `put(key, data, content_type)` creates the bucket on first use and uploads
+through `upload_fileobj` with `_TRANSFER` (boto3's defaults, 8 parts in flight):
+one `put_object` up to 8 MiB, a parallel multipart upload above; `get(key)`
 returns `bytes | None` and deliberately doesn't create it (missing means "nothing
 yet"); `presigned_get(key, expires=1h)`.
 

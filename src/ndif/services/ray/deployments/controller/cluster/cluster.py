@@ -22,20 +22,6 @@ from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 logger = logging.getLogger("ndif.controller")
 
 
-def gcs_address() -> str:
-    """The GCS address of the Ray cluster this process runs in.
-
-    Pass it to Ray's state API (``list_nodes``, ``list_actors``), which does not
-    use the calling process's connection. Given no address it falls back to
-    ``RAY_ADDRESS`` (which ``ray/start.sh`` unsets), then to
-    ``/tmp/ray/ray_current_cluster`` (absent when Ray runs with ``--temp-dir``),
-    then to scanning for running ``gcs_server`` processes, and raises "Found
-    multiple active Ray instances" when it sees more than one: on a host shared
-    with another Ray cluster, the controller died in ``__init__``.
-    """
-    return ray.get_runtime_context().gcs_address
-
-
 class Cluster:
     """In-memory model of the GPU cluster: its nodes, their resources, and the
     placement/eviction decisions over them."""
@@ -70,7 +56,7 @@ class Cluster:
     @property
     def state(self):
         if self._state is None:
-            address = gcs_address()
+            address = ray.get_runtime_context().gcs_address
 
             state = GlobalState()
             options = GcsClientOptions.create(
@@ -113,8 +99,13 @@ class Cluster:
         # fired. Filtering server-side also keeps the result well inside
         # ``list_nodes``' default limit of 100, which accumulated dead
         # records would otherwise creep towards on a long-lived head.
+        # The state API does not reuse this process's connection; given no
+        # address it guesses from RAY_ADDRESS, the default temp dir or the
+        # host's process list, and raises if it sees more than one cluster.
         nodes = list_nodes(
-            address=gcs_address(), detail=True, filters=[("state", "=", "ALIVE")]
+            address=ray.get_runtime_context().gcs_address,
+            detail=True,
+            filters=[("state", "=", "ALIVE")],
         )
         current_nodes = set()
 

@@ -1,13 +1,8 @@
-"""The controller names its own Ray cluster instead of letting Ray guess.
+"""The controller passes its own cluster's GCS address to Ray's state API and
+bootstrap lookup, which do not reuse the calling process's connection.
 
-Ray's state API (``list_nodes``, ``list_actors``) and its bootstrap lookup do
-not use the calling process's connection. Given no address they guess: on a host
-where another Ray cluster's processes are visible, they raised "Found multiple
-active Ray instances" and the controller died in ``__init__``. Each call site now
-passes ``gcs_address()``, the cluster the controller runs in.
-
-No Ray: ``gcs_address`` is swapped for a fixed address and each Ray entry point
-for a fake that records what it was given.
+No Ray: the runtime context is a fake with a fixed address and each Ray entry
+point a fake that records what it was given.
 """
 
 from __future__ import annotations
@@ -15,6 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import ray
 
 from ndif.services.ray.deployments.controller import controller as controller_mod
 from ndif.services.ray.deployments.controller.cluster import cluster as cluster_mod
@@ -25,8 +21,9 @@ OWN = "10.77.3.21:41999"
 
 @pytest.fixture(autouse=True)
 def own_cluster(monkeypatch):
-    monkeypatch.setattr(cluster_mod, "gcs_address", lambda: OWN)
-    monkeypatch.setattr(controller_mod, "gcs_address", lambda: OWN)
+    monkeypatch.setattr(
+        ray, "get_runtime_context", lambda: SimpleNamespace(gcs_address=OWN)
+    )
 
 
 def test_update_nodes_lists_nodes_of_own_cluster(monkeypatch):
