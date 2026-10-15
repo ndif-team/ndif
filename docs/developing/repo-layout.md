@@ -41,7 +41,7 @@ of the layout:
 | `pyproject.toml` | Package metadata, extras, and the `ndif` console script. |
 | `requirements.txt` | The pinned dependency set (nnsight, ray, fastapi, redis, boto3, ...) installed as its own Docker layer so a source change doesn't redownload multiple GB. torch is *not* here — `docker/Dockerfile` installs it from a build arg, since the right wheel depends on the host's CUDA driver. `transformers>=5.15.0` is a floor, not a pin. |
 | `.github/workflows/` | Three GitHub Actions workflows, all publishing: `build_images.yml` (ECR, on push to `main`), `publish_docker.yml` (Docker Hub, on a `v*` tag), `publish.yml` (PyPI, on a release). None of them runs the test suite. |
-| `README.md` | Quickstart plus the full `NDIF_*` env table. |
+| `README.md` | Install and quickstart; links into `docs/`. |
 
 ## `src/ndif/cli/` — the `ndif` command
 
@@ -67,7 +67,7 @@ group that adds one command per module under `commands/`.
 
 | Path | Role |
 |---|---|
-| `providers/` | One module per external service (Redis, Ray, object store, Postgres, Loki, InfluxDB) behind the `Provider` base at `providers/base.py:26`. Classmethod singletons, env-driven, connect at import. See [providers.md](./providers.md#adding-a-provider). |
+| `providers/` | One module per external service (Redis, Ray, object store, Postgres, Loki, InfluxDB) behind the `Provider` base at `providers/base.py:26`. Classmethod singletons, env-driven, connect at import. See [providers.md](./providers.md#writing-a-new-provider). |
 | `redis/` | Redis **key** constants only (the connection lives in `providers/redis.py`): the coalesced `/status` and `/env` caches and the dispatcher's operational event stream. |
 | `schema/` | `BackendRequestModel` / `BackendResponseModel` (subclasses of nnsight's own request/response models, so the wire format is the client's) and the controller RPC contracts. |
 | `metrics.py` | One class per InfluxDB measurement, deciding the tag/field split. |
@@ -186,7 +186,7 @@ degrades cleanly without it: `api` (fastapi/gunicorn), `ray` (ray, transformers,
 peft, zstandard), `metrics` (influxdb-client, python-logging-loki), `postgres`
 (asyncpg), `dashboard` (pydantic-settings, bcrypt, ...), `dev` (ruff, pytest,
 pytest-asyncio, httpx). Adding a provider means adding an extra — see
-[providers.md](./providers.md#adding-a-provider).
+[providers.md](./providers.md#writing-a-new-provider).
 
 **`package-data` ships the non-Python files** (`pyproject.toml:144`). Services
 launch via `start.sh`, which setuptools would otherwise leave out of the wheel, so
@@ -260,6 +260,6 @@ client-side.
 
 - [architecture-overview.md](./architecture-overview.md) — the same system top-down rather than by directory.
 - [adding-a-service.md](./adding-a-service.md) — what wiring a fourth service touches.
-- [providers.md](./providers.md#adding-a-provider) — the `common/providers/` contract.
+- [providers.md](./providers.md#writing-a-new-provider) — the `common/providers/` contract.
 - [testing.md](./testing.md) and [contributing.md](./contributing.md) — how to run and land a change.
 - [docs/operating/compose-stack.md](../operating/compose-stack.md) — the same `docker/` tree from an operator's angle.

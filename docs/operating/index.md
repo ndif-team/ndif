@@ -10,10 +10,9 @@ sources: []
 
 ## What this covers
 
-Everything about running NDIF rather than changing it: bringing the stack up,
-configuring it, deploying models, watching it, and hardening it before it faces
-users. Procedures that are long enough to need their own page live in
-[Runbooks](../runbooks/index.md); this tree is the reference behind them.
+Running NDIF rather than changing it: bringing the stack up, configuring it,
+deploying models, watching it, and hardening it before it faces users.
+Step-by-step procedures live in [Runbooks](../runbooks/index.md).
 
 ## The shortest path
 
@@ -36,34 +35,7 @@ users. Procedures that are long enough to need their own page live in
 | [Admin Dashboard](dashboard.md) | Running the web UI, its auth, and its crons. |
 | [Observability](observability.md) | Finding the logs, metrics, and dashboards. |
 | [Going to Production](production.md) | Before anyone but you can reach it. |
-| [Troubleshooting](troubleshooting.md) | Something is broken and you want triage, not theory. |
-
-## Four things to know before you start
-
-**It runs with zero configuration — and that default is not safe on a network.**
-Every optional backing service is off until you set its URL, and the stack works
-end to end without any of them. But an NDIF with no `NDIF_POSTGRES_URL` is
-unauthenticated, which stamps **every unspecified request `trusted`**:
-user-submitted Python runs in-process next to the model weights, and models load
-with `trust_remote_code`. That is the intended default for one you run for
-yourself, and unacceptable on a shared machine. See
-[Auth and Limits](../concepts/auth-and-limits.md) and
-[Enable API-Key Auth](../runbooks/enable-auth.md).
-
-**Almost nothing persists.** Only the dashboard's state is a named volume. Result
-blobs, metrics, logs, Postgres data, and downloaded model weights all vanish on
-`just down`.
-
-**The dashboard ships its UI.** `src/ndif/services/dashboard/frontend/dist/` is
-committed — `.gitignore` re-includes it explicitly past the blanket `dist/` rule —
-and it is packaged into the wheel (`pyproject.toml:147-152`), so a clean clone or
-a plain `pip install` serves the SPA with no host-side npm build. Rebuild it only
-when you change the frontend. See [Admin Dashboard](dashboard.md).
-
-**Two GPU-adjacent numbers are easy to confuse.** GPU memory funds the resident
-(HOT) model; `NDIF_MODEL_CACHE_PERCENTAGE` scales **host RAM** for the WARM cache.
-Reaching for the latter during a GPU OOM is the wrong lever — see
-[Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
+| [Troubleshooting](troubleshooting.md) | Something is broken. The single entry point; it routes to the runbooks and error lookup. |
 
 ## Related
 

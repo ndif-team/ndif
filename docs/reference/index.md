@@ -10,10 +10,10 @@ sources: []
 
 ## What this covers
 
-The lookup tree. These pages are exhaustive rather than narrative: each row is
-derived from a line of code, with the file and line cited so you can verify it.
-When a reference page and prose elsewhere disagree, the reference page is the one
-built to be checked — but the **code** is always the authority.
+The lookup tree. These pages are exhaustive rather than narrative, and each row
+cites the file and symbol it comes from. When a reference page and prose elsewhere
+disagree, the reference page is the one built to be checked — but the **code** is
+always the authority.
 
 ## The pages
 
@@ -27,28 +27,6 @@ built to be checked — but the **code** is always the authority.
 | [Error Messages](error-messages.md) | What an exact error text means, whose fault it is, and whether to retry. |
 | [Glossary](glossary.md) | What a term means, and which page covers it. |
 | [External Resources](external-resources.md) | Where to go when the answer isn't in this repo. |
-
-## Known discrepancies with the README
-
-The reference pages were built from the code and then diffed against
-`README.md`. Where they disagree, these pages document the code's actual behavior
-and flag the difference. Two rows of the README's `NDIF_*` table still mislead:
-
-- **`NDIF_API_KEY` is not read by the CLI.** `README.md:160` calls it "Client API
-  key used by the `ndif` CLI"; nothing under `src/ndif/cli/` reads it. Its only
-  reader is the dashboard's monitor cron, whose synthetic traces need a key to
-  authenticate (`dashboard/jobs/monitor.py:404`, `dashboard/start.sh:65`).
-- **`NDIF_CONTROLLER_SYNC_INTERVAL_S` does not reconcile deployments.**
-  `README.md:200` calls it the "reconcile cadence for the deployment
-  controller"; the loop it paces calls `Cluster.update_nodes()` and nothing else
-  (`controller.py:161-165`), so it re-syncs the **node set**. Deployment changes
-  are event-driven.
-
-Two things the README gets right, listed because search results and older notes
-still get them wrong: `NDIF_MODEL_CACHE_PERCENTAGE` scales **host RAM** and is
-not a GPU knob (`README.md:202`), and `NDIF_RAY_METRICS_PORT` is Ray's
-`--metrics-export-port` and has nothing to do with Ray Serve, which NDIF does not
-use at all (`README.md:112, 188`).
 
 ## Related
 

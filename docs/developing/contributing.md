@@ -10,9 +10,10 @@ sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, 
 
 ## What this covers
 
-There is no `CONTRIBUTING.md`, no lint gate, and no PR template in this repo, and
-CI (`.github/workflows/`) only builds and publishes — no workflow runs the tests
-or `ruff`. What there *is* is a strong and consistent house style visible in the source
+The root [CONTRIBUTING.md](../../CONTRIBUTING.md) covers branches, tests, the docs
+standard and bug reports. There is no lint gate and no PR template, and CI
+(`.github/workflows/`) only builds and publishes — no workflow runs the tests or
+`ruff`. What there *is* is a strong and consistent house style visible in the source
 itself. This page states it explicitly so you can hold the bar without reverse-
 engineering it. Everything below is inferred from the code; where the code and a
 comment disagree, the code wins and the comment is a bug.
@@ -79,11 +80,11 @@ Conventions to follow when you add one:
   `NDIF_LOKI_URL`, `NDIF_POSTGRES_URL`, `NDIF_OBJECT_STORE_PUBLIC_URL`. Don't add a
   separate `_ENABLED` boolean unless you need to disable something that's otherwise
   configured (`NDIF_INFLUX_ENABLED` is the one such case).
-- **Document the default in a comment next to the tuple**, and add a row to the
-  README's `NDIF_*` table and [docs/reference/env-vars.md](../reference/env-vars.md).
+- **Document the default in a comment next to the tuple**, and add a row to
+  [docs/reference/env-vars.md](../reference/env-vars.md).
 
-Adding an env var that isn't in the README table is the most common drift in this
-repo. Add the row.
+Adding an env var that isn't in the reference table is the most common drift in
+this repo. Add the row.
 
 ## Logging and telemetry
 
@@ -158,17 +159,12 @@ tests: remote cache and gradients now pass (flip from xfail)
 
 The body explains the *why* and the constraint, at the same standard the source
 comments hold to: name the failure mode, name the counterfactual. The best ones
-here read like a small design note — see `git show f336ea6` for the shape.
-Commits made with agent assistance carry a trailer:
+here read like a small design note.
 
-```
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-```
-
-`main` is the branch; branch from it for your change. A push to `main` builds and
-pushes the ECR image (`.github/workflows/build_images.yml`); a `v*` tag publishes
-the Docker Hub images and the PyPI wheel (`publish_docker.yml`, `publish.yml`), so
-a tag is a release, not a checkpoint.
+Branch from `dev` and open the PR into `dev`. A push to `main` builds the hosted
+image (`.github/workflows/build_images.yml`); a `v*` tag publishes the Docker Hub
+images (`publish_docker.yml`) and a GitHub release the PyPI wheel (`publish.yml`),
+so a tag is a release, not a checkpoint.
 
 ## Before you open a PR
 
@@ -182,8 +178,10 @@ The workflows publish; they do not check. So this is on you:
    exercised.
 3. `ruff check src/` if you have the `dev` extra. No workflow enforces it, but the
    tree is clean.
-4. If you added an env var, update the README table and
-   [docs/reference/env-vars.md](../reference/env-vars.md). If you added a `start.sh`
+4. If you added an env var, update
+   [docs/reference/env-vars.md](../reference/env-vars.md). If your change makes
+   any doc false, fix it in the same PR — `pytest tests/test_docs.py` checks
+   cited paths, symbols and links. If you added a `start.sh`
    or other non-`.py` file a service needs, update `[tool.setuptools.package-data]`
    in `pyproject.toml` — otherwise it works from a checkout and breaks from a wheel.
 
@@ -195,5 +193,5 @@ adds a flag.
 
 - [testing.md](./testing.md) — the live suite and the untrusted-path recipe.
 - [repo-layout.md](./repo-layout.md) — where things live, and the "change X, open Y" table.
-- [providers.md](./providers.md#adding-a-provider) / [adding-a-service.md](./adding-a-service.md) — the two recipes that encode most of these conventions.
+- [providers.md](./providers.md#writing-a-new-provider) / [adding-a-service.md](./adding-a-service.md) — the two recipes that encode most of these conventions.
 - [telemetry-internals.md](./telemetry-internals.md) — the logging and metrics plumbing behind the conventions above.

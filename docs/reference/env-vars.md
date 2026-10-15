@@ -11,8 +11,8 @@ sources: [src/ndif/cli/config.py, src/ndif/common/providers/redis.py, src/ndif/c
 ## What this covers
 
 Every environment variable any NDIF process reads, grouped by subsystem, with the
-file and line that reads it. Every row comes from a line of code, not from the
-README's table, which has drifted in a few places.
+file and line that reads it. This is the one home for the variable list; other
+pages link here rather than repeating it.
 
 ## The config model
 

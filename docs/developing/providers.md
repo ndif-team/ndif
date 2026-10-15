@@ -316,7 +316,7 @@ a traceback to stderr *per record*.
 `__main__` (`dispatcher.py:412`), the controller actor and its launcher
 (`controller.py:71`, `:804`), and each model actor (`modeling/base.py:132`).
 
-## Adding a provider
+## Writing a new provider
 
 A new backing service — another object store, a second metrics sink, a message
 bus — follows the pattern above. The part to get right is failure.

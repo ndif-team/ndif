@@ -221,7 +221,7 @@ Claim a host port nobody else uses and add it to
 ## Step 5 — providers, logging, and telemetry
 
 **Reuse, don't reinvent.** Pick from `src/ndif/common/providers/` (see
-[providers.md](./providers.md#adding-a-provider) if you need a new one):
+[providers.md](./providers.md#writing-a-new-provider) if you need a new one):
 
 | Need | Import |
 |---|---|
@@ -267,13 +267,13 @@ from its children, silently.
 - [ ] `[tool.setuptools.package-data]` entry for `start.sh` (and any other asset).
 - [ ] New deps as a `[project.optional-dependencies]` extra, added to the Dockerfile's install list and pinned in `requirements.txt`.
 - [ ] A compose service with `NDIF_SERVICE: myservice` and explicit service-name URLs.
-- [ ] Port claimed and documented in [ports.md](../reference/ports.md); env vars documented in the README table and [env-vars.md](../reference/env-vars.md).
+- [ ] Port claimed and documented in [ports.md](../reference/ports.md); env vars documented in [env-vars.md](../reference/env-vars.md).
 - [ ] `ndif start myservice`, `ndif logs myservice`, `ndif stop myservice` all work from a checkout **and** from a wheel.
 
 ## Related
 
 - [cli-internals.md](./cli-internals.md) — the CLI machinery behind `Service`, `resolve_targets`, and PID-file state.
-- [providers.md](./providers.md#adding-a-provider) — if your service needs a backing store nothing else talks to.
+- [providers.md](./providers.md#writing-a-new-provider) — if your service needs a backing store nothing else talks to.
 - [repo-layout.md](./repo-layout.md) — where the pieces you're copying live.
 - [docs/operating/compose-stack.md](../operating/compose-stack.md) — the compose file service by service.
 - [telemetry-internals.md](./telemetry-internals.md) — how the `service` label flows into Loki and Influx.

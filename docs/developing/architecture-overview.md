@@ -200,7 +200,7 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 | Placement, eviction, GPU accounting | `services/ray/deployments/controller/`, then [Controller Internals](controller-internals.md) |
 | How a request executes against a model | `services/ray/deployments/modeling/base.py`, then [Model Actor](model-actor.md) |
 | The untrusted execution path | `services/ray/sandbox/`, then [Sandbox Internals](sandbox-internals.md) |
-| A new backing service | `common/providers/`, then [Adding a provider](providers.md#adding-a-provider) |
+| A new backing service | `common/providers/`, then [Writing a new provider](providers.md#writing-a-new-provider) |
 | A new service container | [Adding a Service](adding-a-service.md) |
 | A new admin command | `cli/commands/` + `cli/lib/`, then [CLI Internals](cli-internals.md) |
 
