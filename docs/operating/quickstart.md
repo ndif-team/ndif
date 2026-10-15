@@ -107,7 +107,7 @@ Image tags (one per CUDA line) and how to pick one are in
 line newer than your driver does not fail loudly — `torch.cuda.is_available()`
 just returns `False`, which `ndif doctor` reports.
 
-The image's `ENTRYPOINT` is `ndif` and its `CMD` is `start --foreground`, so
+The image's `ENTRYPOINT` runs `ndif` (under `tini`) and its `CMD` is `start --foreground`, so
 replacing the command runs any other CLI command:
 
 ```bash

@@ -170,6 +170,8 @@ services:
       # NDIF_POSTGRES_URL: postgresql://ndifapi:admin@postgres:5432/ndif
     ports:
       - "8001:8001"
+    # gunicorn drains in-flight requests on SIGTERM; give it longer than 10 s.
+    stop_grace_period: 60s
     # /ping only proves the web process is up; /connected is the real readiness
     # signal but depends on ray, which is slow to boot, so the healthcheck stays
     # on /ping. The image has no curl; python does the request.
@@ -287,6 +289,8 @@ services:
     # Ray's plasma object store lives in /dev/shm; the docker default (64MB) is
     # far too small. Bump for real workloads.
     shm_size: "4gb"
+    # start.sh runs `ray stop` on SIGTERM, which can take longer than 10 s.
+    stop_grace_period: 60s
     deploy:
       resources:
         reservations:
