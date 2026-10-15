@@ -1,9 +1,9 @@
 ---
 title: Debug a Stuck Request
-one_liner: A user's remote trace is hung — walk the path from request id to root cause across the queue, the controller, the actor, and the logs.
+one_liner: A user's remote trace is hung — walk the path from request id to root cause across the API, the dispatcher, the controller, the model actor and the logs, then unstick it.
 tags: [runbook, operating, queue, redis, ray, telemetry, errors]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/concepts/status-and-results.md, docs/developing/queue-internals.md, docs/developing/model-actor.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/reference/redis-keys.md, docs/runbooks/trace-a-users-failed-job.md, docs/runbooks/model-oom-on-deploy.md]
-sources: [src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/config.py, src/ndif/common/schema/request.py, src/ndif/common/redis/events.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/cli/commands/queue.py, src/ndif/cli/commands/kill.py, docker/grafana/provisioning/datasources/loki.yml]
+sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/queue/config.py, src/ndif/common/schema/request.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/cli/commands/queue.py, src/ndif/cli/lib/events.py, src/ndif/cli/lib/restart.py, docker/grafana/provisioning/datasources/loki.yml]
 ---
 
 # Debug a Stuck Request
@@ -11,90 +11,99 @@ sources: [src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.p
 ## What this covers
 
 "My job has been sitting there for twenty minutes." This page walks the request
-from the id on the user's screen to the component that is actually blocked.
+from the id on the user's screen to the component that is blocked, and ends with
+how to unstick it.
 
-Three facts about where evidence lives, before you start looking in the wrong
-place.
+Where the evidence lives:
 
-1. **Request status is not stored in Redis.** Every status update is either
-   published to a Redis **pub/sub channel named after the client's `session_id`**
-   (blocking requests — nothing is persisted; if nobody is listening the message
-   is gone) or written to the object store at `responses/{request_id}.json`
-   (non-blocking requests — only the *latest* response is kept)
-   (`common/schema/request.py:134-159`). There is no `request:<id>` key to `GET`.
-2. **The live truth is in the dispatcher's memory**, and `ndif queue` is how you
-   read it. The CLI writes a request event to the `dispatcher:events` Redis
-   stream and blocks 5 s for the dispatcher's JSON reply
-   (`cli/lib/events.py:33-51`, `common/redis/events.py:18-23`).
-3. **Redis holds the ingress list only.** `queue` (the `NDIF_QUEUE_KEY` list) is
-   the hop between the API worker and the dispatcher — usually empty, because the
-   dispatcher `brpop`s it continuously (`api/app.py:180`,
-   `queue/dispatcher.py:121`). Once dispatched, a request lives in a per-model
-   `asyncio.Queue` inside the dispatcher process.
+1. **Request status is not stored in Redis.** A blocking request's statuses are
+   published on a pub/sub channel named after the client's `session_id` and are
+   gone if nobody listens; a non-blocking request's latest status is written to
+   the object store at `responses/{request_id}.json`
+   (`src/ndif/common/schema/request.py` `BackendRequestModel.respond`). There is no
+   per-request key to `GET`.
+2. **The live state is in the dispatcher's memory**, and `ndif queue` reads it:
+   the CLI posts an event on the `dispatcher:events` Redis stream and waits 5 s for
+   the reply (`src/ndif/cli/lib/events.py` `fetch_queue_state`).
+3. **Redis holds only the ingress list**, `queue` (`NDIF_QUEUE_KEY`), between the
+   API workers and the dispatcher. It is usually empty because the dispatcher
+   pops it continuously. Once popped, a request lives in a per-model priority
+   queue inside the dispatcher.
+4. **The dispatcher is one process**, spawned by the gunicorn master in the `api`
+   container (`src/ndif/services/api/gunicorn_conf.py` `on_starting`). Nothing
+   restarts it if it dies, and the `ray:connected` flag it sets has no TTL — so
+   `/ping` and `/connected` can pass while nothing is dispatching. Its logs are in
+   `just logs api`.
+
+`ndif` commands run wherever the CLI reaches Redis and `NDIF_RAY_ADDRESS`. On the
+compose stack:
+
+```bash
+alias ndif='docker compose -f docker/docker-compose.yml exec -T ray ndif'
+alias rcli='docker compose -f docker/docker-compose.yml exec -T redis redis-cli'
+```
 
 ## Step 0 — get the request id
 
-The client's status line prints it dimmed in brackets before the status:
-`[3f9c...] QUEUED  Added to Queue at position 2.` Ask the user for that line, or
-for the whole console output. Without an id you can still work — `ndif queue`
-lists every in-flight and queued id — but every later step gets vaguer.
+The client prints it in brackets before each status:
+`[3f9c1e2b...] QUEUED  Added to Queue at position 2.` Ask for that line or the
+whole console output. Without it, `ndif queue` still lists every queued and
+executing id.
 
 ## The decision tree
 
 ```mermaid
 flowchart TB
-    A[user reports a hung job] --> B{"GET /ping and /connected<br/>200 + connected?"}
-    B -- no --> B1[Ray is down or reconnecting<br/>see 'the backend is gone']
-    B -- yes --> C{"redis-cli llen queue<br/>&gt; 0 and growing?"}
-    C -- yes --> C1[dispatcher not draining ingress]
-    C -- no --> D{"ndif queue:<br/>a processor for the model?"}
+    A[user reports a hung job] --> B{"/ping and /connected<br/>200?"}
+    B -- no --> B1[Ray down or reconnecting<br/>step 1]
+    B -- yes --> Q{"ndif queue answers<br/>within 5 s?"}
+    Q -- no --> Q1[dispatcher dead or wedged<br/>restart the API]
+    Q -- yes --> C{"rcli llen queue<br/>&gt; 0 and growing?"}
+    C -- yes --> C1[dispatcher not draining ingress<br/>restart the API]
+    C -- no --> D{"a processor for<br/>the model?"}
     D -- no --> D1[request never reached the dispatcher]
-    D -- yes --> E{status of that processor}
-    E -- provisioning / deploying --> E1[waiting on a replica<br/>check ndif status + actor state]
-    E -- ready, request in Queued --> E2[queued behind other work<br/>check queue depth + autoscaling]
-    E -- ready, request executing --> F{how long has it been executing?}
-    F -- "&lt; execution timeout" --> F1[running: forward pass or runner<br/>check the model actor logs]
-    F -- "&gt; execution timeout" --> F2[timeout should have fired<br/>the actor is wedged]
+    D -- yes --> E{processor status}
+    E -- provisioning / deploying --> E1[waiting on a replica<br/>step 4]
+    E -- ready, id in Queued --> E2[behind other work<br/>queue depth + autoscaling]
+    E -- ready, id executing --> F[inside the actor<br/>steps 5-6]
 ```
 
-## Step 1 — is the backend up at all?
+## Step 1 — is the backend up?
 
 ```bash
-curl -s localhost:8001/ping                 # "pong" — the API process is alive
+curl -s localhost:8001/ping                                   # "pong": the web process is alive
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8001/connected
+rcli get ray:connected                                        # "1" while the dispatcher holds Ray
 ```
 
-`/connected` (and `/request`, `/status`, `/env`) hang off the
-`require_ray_connection` dependency, which 503s unless the Redis flag
-`ray:connected` is set (`api/app.py:106-119`). The dispatcher deletes that flag
-whenever it starts reconnecting and re-sets it once the Controller actor answers
-(`queue/dispatcher.py:85`, `:109`).
+`/connected`, `/request`, `/status` and `/env` 503 unless `ray:connected` is set
+(`src/ndif/services/api/app.py` `require_ray_connection`). The dispatcher deletes
+the flag when it starts reconnecting and sets it once Ray answers
+(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.connect`).
+
+**If the flag is missing**, the dispatcher is retrying Ray once a second, and it
+has already **purged every Processor**: every queued and executing request was
+answered `ERROR` "Critical server error occurred…" (`Dispatcher.handle_errors`,
+`Processor.purge`). A user still waiting at this point has a client that isn't
+receiving — a websocket problem, not a queue problem.
+
+## Step 2 — is the dispatcher alive and draining?
 
 ```bash
-redis-cli get ray:connected     # "1" when the dispatcher holds a Ray connection
+ndif queue          # must answer within 5 s
+rcli llen queue     # 0, or a small transient number
 ```
 
-**If `ray:connected` is missing:** the dispatcher is looping in `connect()`,
-retrying once a second, and it has already **purged every Processor** — every
-queued request was answered with `Status.ERROR` ("Critical server error
-occurred…") and every replica cancelled (`dispatcher.py:184-198`,
-`processor.py:366-389`). A user who is *still* waiting at this point has a client
-that isn't receiving; that's a websocket problem, not a queue problem.
+| Symptom | Meaning | Fix |
+|---|---|---|
+| `ndif queue` prints `No response from the dispatcher for queue_state_request. Is the API running?` | the dispatcher process is dead or its event loop is wedged; the flag and `/ping` still look healthy | `just restart api` |
+| `llen queue` stays above zero and grows | the dispatcher isn't popping | `just restart api` |
+| `/connected` 200 and `ndif queue` answers, but requests never get past `QUEUED`/`DISPATCHED` while `ndif status` (a separate Ray client) works | the dispatcher's Ray connection is dead without having raised | `just restart api` |
 
-## Step 2 — is it stuck at ingress?
-
-```bash
-redis-cli llen queue
-```
-
-This should be 0 or a small transient number. A persistently non-zero, growing
-depth means the dispatcher process isn't popping — it is not running, it is
-blocked in `connect()`, or it crashed. The dispatcher runs inside the API's
-gunicorn master (`api/gunicorn_conf.py`), so `just logs api` shows it.
-
-Nothing else in Redis tracks an individual request. `redis-cli keys 'ndif:cli:*'`
-only shows CLI reply keys, which are ephemeral (30 s TTL,
-`common/redis/events.py:27`).
+Restarting the API kills the dispatcher, and with it every request it had popped:
+those users get no further status and must resubmit. `just restart api` is right
+here because nothing in the environment changed. Check `just logs api` for the
+dispatcher's last lines first.
 
 ## Step 3 — ask the dispatcher
 
@@ -111,213 +120,201 @@ Overview:
   Queued requests: 3
   Executing: 1
 
-  openai-community/gpt2
-    Status: READY (for 0:14:22)
+  openai-community/gpt2 (text-generation)
+    Status: READY
     Replicas: 1
     Queue depth: 3
-    ⚙ [a1b2c] executing 3f9c1e2b… (for 0:18:07)
-    Queued: 7d21…, 9ff0…, 41ab…
+    ⚙ [a1b2c] executing 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978 (for 0:18:07)
+    Queued: 7d21c9e04b6f4e2a8c3d5f1a9b0e7c64, 9ff0a3b2c1d84e5f9a6b7c8d0e1f2a3b, 41ab6c7d8e9f4a0b1c2d3e4f5a6b7c8d
+
+------------------------------------------------------------
+Use 'ndif queue --json-output' for raw data
 ```
 
-Everything on that page comes from `Processor.snapshot()`
-(`queue/processor.py:391-412`). Read it as follows.
+Everything here comes from `Processor.snapshot`
+(`src/ndif/services/api/queue/processor.py` `Processor.snapshot`). The status line
+carries no duration; the executing line does. `Queued:` lists the first three ids
+in service order, then `... (+N more)`.
 
-**No processor for the model.** The dispatcher creates one lazily on the first
-dispatched request (`dispatcher.py:142-146`). No processor means the request
-never got there: it's still on the ingress list (step 2), or it was rejected at
-the API (401/403/422/503 — see
-[docs/runbooks/trace-a-users-failed-job.md](trace-a-users-failed-job.md)), or the
-user is talking to a different NDIF than you're inspecting.
+**No processor for the model.** The dispatcher creates one on the first request
+it pops for that model. None means the request never got there: it is still on
+the ingress list (step 2), it was rejected at the API (401/403/422/503 — see
+[Trace a user's failed job](trace-a-users-failed-job.md)), or the user is on a
+different NDIF — or under a different task: the processor line shows the task in
+the model key, and a client that loaded the model with another task asks for a
+different deployment.
 
-**Status `uninitialized`.** The pool is empty and nothing is provisioning. A
-freshly idle processor sits here (`mark_idle`, `processor.py:158`). If requests
-are queued *and* status is `uninitialized`, provisioning failed and `purge` reset
-it — check the API logs for `Error provisioning model` / `Error starting model`.
+**`UNINITIALIZED`.** The pool is empty and nothing is provisioning. A processor
+goes idle here when its last replica exits with an empty queue. Queued requests
+with this status mean provisioning failed and `purge` errored them — look for
+`Error provisioning model` / `Error starting model` under `ndif.queue.processor`.
 
-**Status `provisioning` / `deploying`, for a long time.** `provisioning` means
-the controller is placing a replica; `deploying` means the replica exists and the
-Processor is waiting on `__ray_ready__`. Note the elapsed time in the `Status:`
-line — `Processor.start` has **no timeout**: `Replica.wait` polls forever,
-treating a lookup `ValueError` as "the actor isn't registered yet" and sleeping
-one second (`queue/replica.py:130-145`). An actor that never registers wedges the
-Processor here indefinitely. Go to step 4.
+**`PROVISIONING` / `DEPLOYING` for a long time.** `PROVISIONING` is the controller
+placing a replica; `DEPLOYING` is waiting for the replica's actor to be ready.
+`Processor.start` has **no timeout**: `Replica.wait` polls every second for as long
+as the actor lookup fails or the actor is restarting
+(`src/ndif/services/api/queue/replica.py` `Replica.wait`). A big model loading
+legitimately takes minutes; a replica whose actor is gone for good waits forever.
+Go to step 4.
 
-**Status `ready`, the id is in `Queued:`.** The request is behind other work. The
-queue is strictly FIFO per model, except that a `priority`-tagged key's request
-is prepended (`processor.py:108-112`) and an evicted replica's in-flight request
-is pushed back to the *front* (`replica.py:236-237`). Autoscaling should be
-kicking in: every `NDIF_AUTOSCALING_INTERVAL_S` (5 s) the loop checks the queue
-head, and if it has waited more than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` (30 s) it
-adds a replica, up to `NDIF_AUTOSCALING_MAX_REPLICAS` (3), then backs off
-`NDIF_AUTOSCALING_BACKOFF_S` (120 s) (`queue/config.py:55-69`,
-`processor.py:229-262`). If depth is high and `Replicas:` is stuck at 1, look for
-`autoscale_trigger` and `Autoscaling … failed to add replica` in the API logs —
-usually the cluster has no room, which is
-[docs/runbooks/model-oom-on-deploy.md](model-oom-on-deploy.md).
+**`READY`, the id is in `Queued:`.** The request is behind other work. Each model's
+queue is FIFO within two groups: requests from `priority`-tagged keys are served
+before everyone else, FIFO among themselves, and a request handed back by an
+evicted replica goes to the front of its own group
+(`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`).
+Autoscaling: every `NDIF_AUTOSCALING_INTERVAL_S` (5 s) the processor checks the
+longest-waiting queued request; past `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` (30 s) it
+adds a replica, up to `NDIF_AUTOSCALING_MAX_REPLICAS` (3), then waits
+`NDIF_AUTOSCALING_BACKOFF_S` (120 s) (`Processor.autoscaling_loop`). Depth high and
+`Replicas:` stuck at 1 → look for `Autoscaling … failed to add replica` in the API
+logs; usually the cluster has no room —
+[Model OOM on deploy](model-oom-on-deploy.md).
 
-**Status `ready`, the id is on an `⚙ … executing` line.** Note the duration and
-go to step 5.
+**`READY`, the id is on the `⚙ … executing` line.** Note the duration and the
+replica id in brackets, and go to step 5.
 
-## Step 4 — is there a live replica, and is it HOT?
+## Step 4 — is there a live replica?
 
 ```bash
 ndif status --json-output | jq '.deployments[] |
   select(.repo_id=="openai-community/gpt2") |
-  {level: .deployment_level, state: .application_state, replica: .replica_id, pinned}'
+  {level: .deployment_level, state: .application_state, replica: .replica_id, task, pinned}'
 ```
 
-- `deployment_level` is the controller's bookkeeping: `HOT` = holds GPU memory,
-  `WARM` = weights offloaded to CPU RAM, `COLD` = only present in the local
-  HuggingFace cache (`controller.py:443-496`).
-- `application_state` is the **Ray actor's** state, mapped from `list_actors()`:
-  `ALIVE`→`RUNNING`, `PENDING_CREATION`/`RESTARTING`/`DEPENDENCIES_UNREADY`→`DEPLOYING`,
-  `DEAD`→`UNHEALTHY` (`controller.py:401-412`). Only actors the controller still
-  tracks are listed, so `UNHEALTHY` always names a deployment it believes is
-  live — a genuine divergence worth chasing, never a leftover from a past
-  eviction.
+- `deployment_level` is the controller's bookkeeping: `HOT` holds GPU memory,
+  `WARM` holds weights in CPU RAM, `COLD` is only in the local HuggingFace cache.
+- `application_state` is the Ray actor's state from `list_actors()`: `ALIVE` →
+  `RUNNING`; `PENDING_CREATION` / `RESTARTING` / `DEPENDENCIES_UNREADY` →
+  `DEPLOYING`; `DEAD` → `UNHEALTHY`. Ray keeps a dead record beside a restarted
+  actor; the healthiest state wins, so `UNHEALTHY` means no live actor at all
+  (`src/ndif/services/ray/deployments/controller/controller.py`
+  `_ControllerActor.status`).
 
-Combinations and what they mean:
-
-| level | state | Meaning |
+| level | state | Meaning and action |
 |---|---|---|
-| HOT | RUNNING | Healthy. If a request is stuck here, it's stuck *inside* the actor — step 5. |
-| HOT | DEPLOYING | Weights still loading. Big models legitimately take minutes; the Processor is waiting on `__ray_ready__`. |
-| HOT | UNHEALTHY | The actor died. Ray restarts it (`max_restarts=-1`) and it reloads the weights. Repeatedly UNHEALTHY → [model-oom-on-deploy](model-oom-on-deploy.md). |
-| WARM | — | The weights are on CPU. `run()` raises `CachedActorError` before doing anything (`modeling/base.py:258-259`), the queue treats that as an eviction and re-queues the request (`queue/replica.py:52`), and the Processor re-provisions. A model flapping HOT↔WARM makes requests loop without ever finishing. |
-| absent | — | `get_deployment` returns **HOT replicas only** (`controller.py:346-362`). A model with nothing but WARM replicas looks undeployed to the queue. |
+| HOT | RUNNING | Healthy. A request stuck here is stuck inside the actor — step 5. |
+| HOT | DEPLOYING | Weights loading, or Ray restarting the actor after a fatal CUDA error. Large models take minutes. |
+| HOT | UNHEALTHY | The actor is dead and Ray will not restart it, but the controller still holds the deployment and its GPU reservation, and keeps handing that replica to the queue, which waits on it forever. Redeploying doesn't help. Run `ndif evict <checkpoint> --replica <id>`. If `ndif queue` still shows the model `DEPLOYING` afterwards, the processor is already waiting on the dead id: `just restart api`. The next request provisions a fresh replica. |
+| WARM | — | Weights on CPU. `run()` raises `CachedActorError`, the queue re-queues the request as an eviction, and the processor provisions a HOT replica. A model flapping HOT↔WARM makes requests loop without finishing. |
+| absent | — | The queue only sees HOT replicas (`_ControllerActor.get_deployment`); a model with only WARM replicas looks undeployed to it. |
 
-**Look at the actor directly.** Deployments are plain detached Ray actors, not
-Ray Serve applications. Open the Ray dashboard at `http://<head>:8265` → Actors,
-and filter for the name `{replica_id}:ModelActor:{model_key}` in the `NDIF`
-namespace (`cluster/deployment.py:122-128`). The Actors view gives you the actor's
-state, its node, its pid, and its logs. There is no `serve status` here and no
-Serve deployment to inspect.
-
-Programmatically: `ray.init(address="ray://localhost:10001", namespace="NDIF")`
-then `ray.get_actor("<replica_id>:ModelActor:<model_key>")`. A `ValueError` means
-the actor doesn't exist — exactly the condition `Replica.wait` spins on forever.
+**Look at the actor.** Deployments are detached Ray actors (no Ray Serve). In the
+Ray dashboard (`http://<head>:8265` → Actors), filter for
+`{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace for its state, node,
+pid and logs. Programmatically:
+`ray.init(address="ray://<head>:10001", namespace="NDIF")`, then
+`ray.get_actor("<replica_id>:ModelActor:<model_key>")` — a `ValueError` means the
+actor doesn't exist, which is exactly what `Replica.wait` keeps retrying.
 
 ## Step 5 — it is executing. Where?
 
 `run()` starts the block on a worker thread and races it against the execution
-timeout and the kill switch (`modeling/base.py:298-328`). Whether the thread is
-in the forward pass or waiting on the runner depends on `request.trusted`:
+timeout (`src/ndif/services/ray/deployments/modeling/base.py`
+`BaseModelDeployment.run`). Where the thread is depends on `request.trusted`:
 
-- **trusted** → `execute` runs the traced block in-process, in the model actor
-  (`sandbox/model.py:218-219` falls through to `modeling/base.py:473`). One
-  thread, no socket. A hang here is user code (an infinite loop, a huge
-  generation) or the forward pass itself.
-- **untrusted** → a fresh runner subprocess deserializes and runs the block; the
-  actor drives the forward pass and the two interleave over a Unix socket
-  (`sandbox/model.py:97-148`). A hang can be on either side: the runner waiting
-  for a model location the forward pass never reaches, or the actor blocked in
-  `connection.recv()` waiting for a park that never comes.
+- **trusted** — the block runs in-process in the model actor. One thread, no
+  socket. A hang is user code (a loop, a huge generation) or the forward pass.
+- **untrusted** — a runner subprocess runs the block and the actor drives the
+  forward pass; they interleave over a Unix socket
+  (`src/ndif/services/ray/sandbox/model.py` `SandboxHost.run_in_runner`). Either
+  side can be waiting: the runner for a module the forward pass never reaches, or
+  the actor for a reply that never comes.
 
-With auth off (`NDIF_POSTGRES_URL` unset) **every** request is trusted
-(`api/auth.py:172-174`), so on a default local stack you are always in the
-in-process case. See [docs/runbooks/enable-auth.md](enable-auth.md).
+With auth off every request is trusted unless the client sent `trusted: false`
+([Enable auth](enable-auth.md)).
 
-Two signals: user `print()` output arrives as `Status.LOG` responses — a
-`LogStream` stdout redirect on the trusted path (`modeling/util.py:16-41`),
-`PRINT` events on the sandboxed one (`sandbox/model.py:222-227`) — so a console
-still printing means the block is running, not blocked. And the actor's own logs
-(`ndif.modeling`, service label `model`) show whether `run` ever got past
+Two signals. The block's `print()` output and stderr arrive as `LOG` responses, so
+a console still printing means the block is running. And the actor's own log
+(`ndif.modeling`, Loki `service="model"`) shows whether `run` got past
 `Your job has started running.`
 
-## Step 6 — where the timeout should have fired
+## Step 6 — where a timeout should have fired
 
-| Boundary | Limit | Default | Behavior when it trips |
+| Boundary | Limit | Default | When it trips |
 |---|---|---|---|
-| Ingress HTTP POST | `NDIF_API_TIMEOUT` (gunicorn worker) | 120 s | the worker is killed; the client sees a broken upload |
-| Ingress queue wait | none | — | a request can sit in `queue` indefinitely if the dispatcher is down |
+| HTTP upload | `NDIF_API_TIMEOUT` (gunicorn worker) | 120 s | the worker is killed; the client sees a broken upload |
+| Ingress list wait | none | — | a request sits in `queue` while the dispatcher is down |
 | Per-model queue wait | none | — | unbounded; autoscaling is the only relief |
-| Waiting for a replica to be ready | none (`Replica.wait` polls forever) | — | the Processor stays `deploying` |
-| **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **unset — no cap** (`controller.py:773-778`) | `interrupt()`, then `Status.ERROR` "Your job exceeded the execution timeout of Ns." (`modeling/base.py:321-328`) |
-| CLI deploy readiness | `wait_for_replica_ready` | none | blocks until the actor serves, or raises why it never will (a constructor that failed reaches the CLI as its own error) |
-| `ndif queue` / `ndif kill` | event round-trip | 5 s | `No response from the dispatcher` |
+| Replica readiness | none | — | the processor stays `DEPLOYING` |
+| **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **unset — no cap** | `ERROR` "Your job exceeded the execution timeout of Ns." |
+| `ndif queue` / `ndif kill` | event round trip | 5 s | `No response from the dispatcher` |
 
-> **Gotcha:** the execution timeout is enforced by injecting an exception into the
-> execution thread (`kill_thread`, `modeling/util.py:69-88`). CPython only
-> delivers that at a bytecode boundary, so it **cannot interrupt a native call
-> already in flight** — a single enormous CUDA kernel or a giant tensor op runs to
-> completion first. A request past its timeout with no ERROR response is usually
-> this, not a broken timer. On the sandboxed path `interrupt()` also stops the
-> runner process, which unblocks the host thread if it was parked on the socket
-> (`sandbox/model.py:201-206`).
+> **Gotcha:** the execution timeout stops the in-process thread by injecting an
+> exception (`src/ndif/services/ray/deployments/modeling/util.py` `kill_thread`),
+> which CPython delivers only between bytecodes — a long native call (one huge
+> CUDA kernel or tensor op) finishes first. The user gets the timeout `ERROR` on
+> time either way. On the untrusted path the runner process is also stopped
+> (`SandboxModelDeployment.interrupt`).
 
 ## Step 7 — read the logs
 
-Loki stream labels are `service`, `environment` (static per process,
-`providers/loki.py:136-148`), `logger`, `severity` (added by `logging_loki`), and
-`model_key` (promoted per record, `providers/loki.py:50`). Everything else —
-`request_id`, `replica_id`, `email`, `api_key`, `stage`, `exec_ms`, `host`, `pid`
-— lives in the JSON line and needs `| json`. `service` is `api` (API +
-dispatcher), `ray` (raylet + controller), or **`model`** — the controller
-overrides `NDIF_SERVICE` in each actor's `runtime_env`
-(`cluster/deployment.py:200-205`), so actor logs are *not* under `service="ray"`.
+Loki stream labels are `service`, `environment`, `logger`, `severity` and
+`model_key`. Everything else — `request_id`, `replica_id`, `email`, `stage`,
+`exec_ms` — is in the JSON line and needs `| json`. `service` is `api` (API and
+dispatcher), `ray` (controller) or **`model`** (model actors — not `ray`).
 
-The one query that matters, in Grafana Explore — it crosses every service, which
-is the point, and it's exactly the derived-field link the Loki datasource
-provisions on `request_id`
-(`docker/grafana/provisioning/datasources/loki.yml`):
+One query crosses every service; it is the "All logs for this request" link the
+provisioned Loki datasource puts on every `request_id`:
 
 ```logql
-{environment=~".+"} | json | request_id=`3f9c1e2b...`
-
-{service="api", logger=~"ndif.queue.*"} | json | model_key=`...`      # narrowing
-{service="model"} | json | request_id=`3f9c...`
-{environment=~".+", severity=~"error|warning"} | json
+{environment=~".+"} | json | request_id=`3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978`
 ```
 
 | Logger | Where | What it tells you |
 |---|---|---|
+| `ndif.request` | everywhere the request goes | one record per status transition: `stage`, `prev_stage`, `prev_stage_ms`. The last `stage` is how far it got |
 | `ndif.api` | API workers | rejections (`api request rejected: 403`), unhandled 500s |
-| `ndif.request` | everywhere the request travels | one record per status transition, with `stage`, `prev_stage`, `prev_stage_ms` (`common/schema/request.py:121-132`) |
-| `ndif.queue.dispatcher` | API master | Ray connect/reconnect, dispatch failures |
-| `ndif.queue.processor` | API master | `request enqueued` (with `queue_size`), autoscaling, provisioning errors |
-| `ndif.queue.replica` | API master | `DISPATCHED`, eviction/re-queue, `request errored during execution` |
-| `ndif.controller` | Ray head | node updates, placement decisions, `CANT_ACCOMMODATE` |
-| `ndif.modeling` | model actor | model load, `model execution timed out` / `cancelled` / `errored` |
+| `ndif.queue.dispatcher` | dispatcher | Ray connect/reconnect |
+| `ndif.queue.processor` | dispatcher | `request enqueued`, autoscaling, provisioning errors |
+| `ndif.queue.replica` | dispatcher | eviction re-queues, `request errored during execution`, `request errored: cancelled mid-dispatch` |
+| `ndif.controller` | Ray head | placement, node updates, `CANT_ACCOMMODATE` |
+| `ndif.modeling` | model actor | model load, `model execution timed out` / `errored` |
 
-Without Loki (`NDIF_LOKI_URL` unset) all of the same records go to the console in
-one-line form, so `just logs api` and the Ray dashboard's per-actor logs carry
-identical information — the fields are appended as `key=value`
-(`common/logging_setup.py:90-108`).
-
-Follow the `ndif.request` records for one id and the last `stage` you see is
-exactly how far the request got.
+Without Loki (`NDIF_LOKI_URL` unset) the same records go to each process's console
+with fields appended as `key=value`: `just logs api` for the API and dispatcher,
+the Ray dashboard's per-actor log for the model actor.
 
 ## Step 8 — unstick it
 
-```bash
-ndif kill 3f9c1e2b...
-```
-
-The dispatcher removes the request from its Processor's queue if it's still
-waiting (answering the user `Status.ERROR` "Request cancelled by operator."), or
-cancels the replica's worker task if it's executing
-(`queue/dispatcher.py:341-357`). A cancelled in-flight request gets "Replica was
-evicted while processing your request." (`queue/replica.py:205-215`).
-
-If the actor itself is wedged, restart the replica — Ray brings it back and it
-reloads the weights:
+**Queued request:**
 
 ```bash
-ndif restart openai-community/gpt2 --replica a1b2c
+ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
+# ✓ Request 3f9c… removed from the queue.
 ```
 
-That kills the actor, which the replica worker sees as an eviction, so the
-in-flight request is re-queued rather than dropped (`queue/replica.py:231-251`).
+The user gets `ERROR` "Request cancelled by operator."
+
+**Executing request:** kill it, then restart its replica.
+
+```bash
+ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
+# ✓ Request 3f9c… cancelled while executing.
+ndif restart openai-community/gpt2 --replica a1b2c     # the id from the ⚙ line
+```
+
+`ndif kill` errors the request to the user and cancels the dispatcher's wait on
+it, which drops that replica from the processor's pool
+(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
+`src/ndif/services/api/queue/replica.py` `Replica.cancel`). It does not reach into
+the actor: the block keeps running there until it finishes or hits the execution
+timeout, holding its memory, and the processor can pick the same replica up again
+and send it new work while it does. `ndif restart` kills the actor; Ray brings it
+back, it reloads the weights, and the command returns once it is ready
+(`src/ndif/cli/lib/restart.py` `restart`). Add `--task` if the deployment's task
+isn't the checkpoint's default. Requests sent to that replica during the restart
+are re-queued or errored.
+
+**Wedged actor, no single culprit:** the same `ndif restart <checkpoint> --replica <id>`.
+If `ndif restart` reports it can't get the actor handle, the actor is dead for
+good — the `HOT | UNHEALTHY` row in step 4.
 
 ## Related
 
-- [docs/concepts/request-lifecycle.md](../concepts/request-lifecycle.md) — the
-  full path a request takes and what each status means.
-- [docs/concepts/status-and-results.md](../concepts/status-and-results.md) — where
-  responses go for blocking vs non-blocking requests.
-- [docs/developing/queue-internals.md](../developing/queue-internals.md) — the
-  Dispatcher/Processor/Replica objects behind `ndif queue`.
-- [docs/runbooks/trace-a-users-failed-job.md](trace-a-users-failed-job.md) — when
-  the job errored instead of hanging.
-- [docs/operating/observability.md](../operating/observability.md) — the Grafana
-  dashboards and the Influx measurements.
+- [Request lifecycle](../concepts/request-lifecycle.md) — the full path and what
+  each status means.
+- [Queue internals](../developing/queue-internals.md) — the Dispatcher, Processor
+  and Replica objects behind `ndif queue`.
+- [Trace a user's failed job](trace-a-users-failed-job.md) — when the job errored
+  instead of hanging.
+- [Observability](../operating/observability.md) — dashboards and measurements.

@@ -1,145 +1,136 @@
 ---
 title: Model OOM on Deploy
-one_liner: A deploy is refused or the actor dies loading weights — how NDIF's GPU accounting decides, how to read the error, what to evict, and how to right-size the estimate.
+one_liner: A deploy is refused or the actor dies loading weights — how NDIF's GPU ledger sizes and places a model, how to read the refusal, what to evict, and how to right-size the padding.
 tags: [runbook, operating, controller, gpu, errors, gotchas]
 related: [docs/concepts/deployments-and-eviction.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/operating/models-and-deployment.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/resources.py, src/ndif/common/metrics.py]
+sources: [src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/resources.py, src/ndif/common/metrics.py, src/ndif/cli/lib/models.py]
 ---
 
 # Model OOM on Deploy
 
 ## What this covers
 
-A deploy that reports `CANT_ACCOMMODATE`, or one that succeeds on paper and then
-dies with a CUDA OOM while loading. Both come from the same root cause, which is
-worth stating before any commands:
+A deploy that comes back `CANT_ACCOMMODATE` (or another refusal), or one that is
+placed and then dies with a CUDA OOM while loading or serving. Both come from one
+fact:
 
-**NDIF's GPU accounting is a model, not a measurement.** The controller keeps its
-own per-GPU ledger of reserved bytes, sized from a meta-device estimate made
-*before* anything loads, and it never reads the actual free memory on the card.
-The actor separately enforces its slice of that ledger with accelerate's
-`max_memory` and a hard per-process allocator cap. A deploy is refused when the
-*ledger* says no. A deploy OOMs when the ledger said yes and reality disagreed.
+**NDIF's GPU accounting is a ledger, not a measurement.** The controller keeps
+its own per-GPU count of reserved bytes, sized from an estimate made before
+anything loads, and never reads the free memory on the card. The actor then holds
+itself to its slice of that ledger with accelerate's `max_memory` and a per-process
+allocator cap. A deploy is refused when the ledger says no; it OOMs when the
+ledger said yes and the card disagreed.
 
-## How the estimate is made
+`ndif` commands below run wherever the CLI can reach `NDIF_RAY_ADDRESS`. On the
+compose stack, run them in the `ray` container:
 
-`ModelEvaluator.__call__` (`cluster/evaluator.py:67-145`) does this, memoized per
-`model_key`:
-
-1. Build the architecture on the **meta device** through nnsight
-   (`Remotable.from_model_key(..., dispatch=False)`) — no weights, no download of
-   the weights, just the config and module tree.
-2. Sum `nelement() * element_size()` over every parameter **and every buffer** at
-   the target dtype → `base_size_in_bytes`.
-3. Pad:
-
-```python
-padded_size = math.ceil(
-    entry.base_size_in_bytes
-    + entry.base_size_in_bytes * effective_padding
-    + self.padding_bias
-)
+```bash
+alias ndif='docker compose -f docker/docker-compose.yml exec -T ray ndif'
 ```
 
-| Knob | Env var | Default | Meaning |
+## How the size is estimated
+
+`ModelEvaluator` asks nnsight to describe the checkpoint without loading it
+(`src/ndif/services/ray/deployments/controller/cluster/evaluator.py`
+`ModelEvaluator._entry`). For a HuggingFace repo that is the Hub's published
+parameter count times the dtype's bytes per element; a repo with no published
+count is built on the meta device and counted instead. Buffers are not in the Hub
+count. The result is memoized per `model_key`, and recomputed when the dtype or
+`trust_remote_code` changes.
+
+Then it pads (`ModelEvaluator.__call__`):
+
+```
+padded = ceil(base + base * padding_factor + padding_bias)
+```
+
+| Knob | Env var (controller) | Default | Per-deploy override |
 |---|---|---|---|
-| `padding_factor` | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | proportional headroom (15% of weights) |
-| `padding_bias` | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | flat headroom added once |
-| dtype | `NDIF_DEFAULT_DTYPE` | `bfloat16` | drives `element_size()` |
+| `padding_factor` | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | `--padding-factor`, `padding_factor:` |
+| `padding_bias` | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | `--padding-bias`, `padding_bias:` |
+| dtype | `NDIF_DEFAULT_DTYPE` | `bfloat16` | `--dtype`, `dtype:` |
+| base size | — | the estimate | `--size-bytes`, `size_bytes:` (measured weights; padding still applies) |
 
-That padding is all the room activations, KV cache, CUDA workspaces, and the CUDA
-context get. For a 7B model in bf16 the base is ~14 GB, so padded ≈ 14 GB × 1.15 +
-0.5 GB ≈ 16.6 GB. That is the number the ledger reserves.
+The padding is all the room activations, KV cache, CUDA workspaces and the CUDA
+context get. A 7B model in bf16 is ~14 GB of weights, so the ledger reserves
+about 14 × 1.15 + 0.5 ≈ 16.6 GB.
 
-The cache entry records the dtype and the `trust_remote_code` flag it was computed
-under, and re-evaluates if either changes (`evaluator.py:87-92`) — element sizes
-differ, and repo code can build a different architecture. The controller pins a
-concrete dtype onto every `DeploymentConfig` *before* evaluating so the estimate
-and the actor's load can't diverge (`controller.py:124-129`).
-
-> **Note:** `dtype` is settable per deploy — `ndif deploy --dtype` and a `dtype:`
-> key in `models.yaml` both set `DeploymentConfig.dtype`. Leave it unset and the
-> deploy uses the controller's cluster-wide `NDIF_DEFAULT_DTYPE`, a
-> controller-process variable: changing the default means restarting the `ray`
-> service, overriding it for one model does not. The dtype also sets the autocast
-> region every request runs in, on both the trusted and the sandboxed path
-> (`src/ndif/services/ray/deployments/modeling/nns.py` `request_dtype`).
+The controller pins a concrete dtype onto every deploy before sizing it, so the
+estimate and the actor's load use the same one
+(`src/ndif/services/ray/deployments/controller/controller.py`
+`_ControllerActor._deploy`). The deployed dtype is reported per replica:
+`ndif status --json-output | jq '.deployments[] | {repo_id, dtype}'`. The
+`dtype` under `ndif status --verbose`'s `.cluster.evaluator` is torch's process
+default (`torch.get_default_dtype()`, set to bfloat16 by the evaluator), not
+`NDIF_DEFAULT_DTYPE`; don't read it as the configured default. The dtype also sets
+the autocast region every request runs in
+(`src/ndif/services/ray/deployments/modeling/nns.py` `request_dtype`).
 
 ## How placement decides
 
-Per node, `Node.evaluate` (`cluster/node.py:387-430`):
+Per node, `Node.evaluate`
+(`src/ndif/services/ray/deployments/controller/cluster/node.py` `Node.evaluate`):
 
-```python
-gpus_needed = self.gpu_resources.required(model_size_in_bytes)   # ceil(size / per_gpu_memory)
-if gpus_needed > self.gpu_resources.total:
-    return Candidate(CANT_ACCOMMODATE)
-per_gpu_bytes = model_size_in_bytes if gpus_needed == 1 else self.gpu_resources.memory_bytes
-```
+1. **GPU count.** A deploy that set `gpus` gets exactly that many. Otherwise
+   `ceil(padded / per_gpu_memory)`. When tensor parallelism is on
+   (`NDIF_TP_MODEL_ACTOR_CLASS` set) and the model shards, a multi-GPU count is
+   rounded **up** to the smallest degree the model divides into — a model needing
+   3 cards that shards 8 ways takes 4
+   (`src/ndif/services/ray/deployments/controller/cluster/evaluator.py` `tp_degree`). `--max-tp 0`
+   turns that off for one model.
+2. **Too many cards** for the node → `CANT_ACCOMMODATE`.
+3. **Per-card charge** is an even share, `ceil(padded / count)`. A model 1.01× a
+   card takes two cards at about half each; the rest of each card stays usable.
+4. **Room now?** If enough cards have that share free (best fit: fullest card
+   first), the node is `FREE`, or `CACHED_AND_FREE` if it holds a WARM copy.
+5. **Room after evicting?** `Node.find_evictions` evicts, per card, the smallest
+   evictable occupants until the share fits, and takes the cards needing the
+   fewest evictions → `FULL` / `CACHED_AND_FULL`. If it can't → `CANT_ACCOMMODATE`.
 
-Two consequences worth internalizing:
+The cluster takes the best level across nodes, breaking ties at random
+(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
+`Cluster.deploy`). Several models in one call are placed biggest first, and the
+first replica that can't be placed stops that model.
 
-- **A multi-GPU model is charged its share of each card**, `ceil(size / count)`,
-  not all of it — so a model 1.01× a card takes two cards at ~half each and the
-  rest stays usable by other models. Notes elsewhere describing a "multi-GPU
-  cliff" — a replica reserving 100% of every card it spans — do not describe this
-  code.
-- **`per_gpu_memory` is `cuda_memory_bytes // total_gpus`** (`cluster.py:114-117`),
-  computed once when the node first appears, from `torch.cuda.mem_get_info`'s
-  *total* (`resources.py:27-34`). Nodes with mixed card sizes are mis-accounted.
+`per_gpu_memory` is the node's total `cuda_memory_bytes` divided by its GPU count,
+read once when the node first appears (`Cluster.update_nodes`;
+`src/ndif/services/ray/resources.py` `get_total_cuda_memory_bytes`). Nodes with
+mixed card sizes are mis-accounted.
 
-If enough GPUs already have room, the node is `FREE` (or `CACHED_AND_FREE` if it
-holds a WARM copy). Otherwise `find_evictions` looks for the cheapest set of
-evictable deployments that frees the shortfall, giving `FULL` /
-`CACHED_AND_FULL`; if it can't, `CANT_ACCOMMODATE` (`node.py:340-400`). The
-cluster picks the best level across nodes and breaks ties randomly
-(`cluster.py:204-223`).
+**What can be evicted.** A deployment is evictable unless it is pinned, and —
+when the incoming deploy is unpinned — unless it is younger than
+`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600) (`Node.evictable`). The age
+rule causes the most confusing refusal: on a full cluster a deploy, or an
+autoscaled request, is refused only because the occupant landed 40 minutes ago,
+and the same command succeeds an hour later. Nothing retries it. In order of
+preference: deploy with `--pinned` (a pinned deploy ignores the age rule), evict
+the occupant yourself, or lower `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (a
+controller restart — see [Right-sizing](#right-sizing)), which trades stability for
+churn.
 
-A deployment is evictable only if it is **not pinned**, and — when the incoming
-deploy is itself unpinned — only if it is older than
-`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600)
-(`src/ndif/services/ray/deployments/controller/cluster/node.py` `Node.evictable`).
-`ndif evict` still removes a pinned deployment; `pinned` blocks only automatic
-eviction.
+> **`NDIF_MODEL_CACHE_PERCENTAGE` is not a GPU knob.** It scales the node's total
+> RAM into its WARM-cache budget. Lowering it frees nothing on a GPU.
 
-The age rule is behind the most surprising refusal: on a full cluster a deploy, or
-an autoscaled request, comes back `CANT_ACCOMMODATE` purely because the current
-occupant landed 40 minutes ago, and an hour later the same command succeeds with
-no change. Nothing retries it. In order of preference: deploy with `--pinned`
-(a pinned deploy ignores the age rule), evict the occupant explicitly, or lower
-`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` and restart the controller — which trades
-stability for churn, since the rule is what stops a burst of one-off requests
-thrashing a model that is serving.
-
-Set `gpus` on the deployment for a specific card count rather than whatever the
-padded size implies.
-
-> **`NDIF_MODEL_CACHE_PERCENTAGE` is not a GPU knob.** It scales
-> `cpu_memory_bytes` — total host RAM — into the node's **WARM cache budget**
-> (`cluster.py:118-122`, `resources.py:5-7`). Lowering it frees nothing on the
-> GPU; it only makes the node hold fewer offloaded models.
-
-## Reading the error
-
-### Refused before anything loaded
+## Reading the refusal
 
 ```
 Deploying 1 model(s)...
   ✗ nnsight.modeling.transformers.TransformersModel:{...}: CANT_ACCOMMODATE: placed 0 of 1 new replicas before the cluster ran out of room.
 ```
 
-Every message here is emitted verbatim by the controller and echoed by the CLI
-(`cli/lib/deploy.py:138-144`):
+The CLI echoes the controller's per-model error verbatim
+(`src/ndif/cli/lib/deploy.py` `deploy`). The same text reaches a user whose request
+triggered the deploy, as `Could not deploy this model. <reason>`.
 
-| Message | Raised at | Means |
-|---|---|---|
-| `CANT_ACCOMMODATE: placed N of M new replicas…` | `cluster.py:232-236` | no node could fit it, even after evicting everything evictable. Placement stops for that model at the first failure. The message carries no arithmetic — get the sized bytes from the actor log below, and check the effective knobs with `docker compose exec ray env \| grep NDIF_DEFAULT`, since an override there is invisible to every page that quotes the defaults. |
-| `No GPU nodes available.` | `cluster.py:220` | the controller has zero nodes with a `GPU` resource — see [add-a-gpu-node](add-a-gpu-node.md). |
-| `Could not accommodate any replicas at this time.` | `cluster.py:264` | fallback when no replicas were placed and nothing else set an error. |
-| a Python traceback | `cluster.py:171-183` | the **evaluator** failed — the model was never sized. Gated repo (401), unknown architecture, a repo needing `trust_remote_code`, or no network. This is not a memory problem. |
+| Message | Means |
+|---|---|
+| `CANT_ACCOMMODATE: placed N of M new replicas…` | no node could fit it, even after evicting everything evictable. The message carries no arithmetic — get the sized bytes from the controller log below |
+| `asked for N GPUs, but this model shards at most M ways…` | a node refused for a stated reason: the `gpus` count isn't a degree the model splits into. Pick a divisor of M, or `--max-tp 0` |
+| `No GPU nodes available.` | the controller has no node with a `GPU` resource — see [Add a GPU node](add-a-gpu-node.md) |
+| a Python traceback | the evaluator failed, so the model was never sized: gated repo (401), unknown architecture, a repo needing `trust_remote_code`, no network. Not a memory problem |
 
-Check the controller's own view of why. The controller is a **Ray actor**, so its
-output never reaches `docker compose logs` / `just logs ray` — it goes to Ray's own
-log directory inside the `ray` container:
+The controller is a Ray actor, so its log is not in `just logs ray`; it is in
+Ray's log directory inside the `ray` container:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec ray \
@@ -148,64 +139,81 @@ docker compose -f docker/docker-compose.yml exec ray \
 ```
 
 ```
-=> Analyzing deployment of ...TransformersModel:{"repo_id": "meta-llama/Llama-3.1-70B"...} (replica 1/1) with size 162129586995...
+=> Analyzing deployment of ...TransformersModel:{"repo_id": "meta-llama/Llama-3.1-70B", ...} (replica 1/1) with size 162129586995...
 => ...(replica 1/1) cannot be deployed on any node — stopping further attempts for this model
 ```
 
-That `size` is the padded byte count. Compare it against what the cluster
-actually has free:
+That `size` is the padded byte count. Compare it with the ledger's free bytes per
+card:
 
 ```bash
 ndif status --verbose | jq '.cluster.nodes[] |
   {name, gpus: [.resources.gpu_details[] | {index, free_gb: (.available_memory_bytes/1073741824)}]}'
 ```
 
-### The actor died while loading
+and with the knobs the controller actually runs with — an override in the `ray`
+service's environment is invisible to any page quoting defaults:
 
-The deploy call returns successfully — placement is bookkeeping — and the failure
-shows up later. Three distinct shapes:
-
-**1. `torch.cuda.OutOfMemoryError` in `load_from_disk`.** The controller awaits
-the actor's readiness off the main path and, on failure, deletes the actor and
-returns its reserved resources to the ledger:
-
-```
-Deployment nnsight...TransformersModel:{...} failed during create: <traceback>
+```bash
+docker compose -f docker/docker-compose.yml exec ray env | grep -E 'NDIF_(DEFAULT|MINIMUM|TP)'
 ```
 
-(`controller.py:298-323`.) Meanwhile the CLI is polling `__ray_ready__` and,
-because `max_restarts=-1`, Ray restarts the actor — which reloads and OOMs again.
-The CLI surfaces the actor's own death rather than a deadline — an OOM in the
-constructor comes back as that error (`cli/lib/models.py`). A model actor that keeps cycling
-`RUNNING`→`UNHEALTHY` in `ndif status` is this loop.
+## The actor died loading or serving
 
-**2. `RuntimeError` from `verify_device_placement`.** More common than a raw OOM,
-and much more informative:
+Placement is bookkeeping, so the deploy call returns before anything loads and
+the failure shows up afterwards. Three shapes:
+
+**1. An exception in the constructor — `torch.cuda.OutOfMemoryError`, or the
+placement check below.** The controller awaits the actor's readiness off the main
+path; on failure it logs `Deployment <model_key> failed during create: <error>`,
+kills the actor and returns its bytes to the ledger
+(`src/ndif/services/ray/deployments/controller/controller.py`
+`_ControllerActor._monitor_deployment`). `ndif deploy` waits on the same actor
+with no deadline (`src/ndif/cli/lib/models.py` `wait_for_replica_ready`): it
+normally prints `initialization failed - <error>`. If it is still waiting minutes
+after the controller log shows `failed during create`, the actor is already gone —
+interrupt it and work from the log.
+
+**2. `RuntimeError` from `verify_device_placement`** — more informative than a
+raw OOM:
 
 ```
 RuntimeError: 'model.layers.31.mlp.down_proj.weight' is on 'cpu', expected one of CUDA devices [0, 1]
 ```
 
-The actor loads with `device_map="balanced"` inside a `max_memory` map capped at
-its assigned budget (`modeling/base.py:157-166`). When the budget is too small,
-accelerate doesn't error — it *offloads the overflow to CPU*. The post-load check
-catches that and refuses to serve a half-CPU model
-(`modeling/util.py:166-207`). Read it as "the estimate was too low", not as a
-placement bug.
+A multi-GPU actor loads with `device_map="balanced"` inside a `max_memory` map
+capped at its ledger share
+(`src/ndif/services/ray/deployments/modeling/base.py`
+`BaseModelDeployment.load_from_disk`). When the share is too small, accelerate
+does not error — it offloads the overflow to CPU — and the post-load check
+refuses to serve a half-CPU model
+(`src/ndif/services/ray/deployments/modeling/util.py` `verify_device_placement`).
+Read it as "the estimate was too low". A single-GPU actor is placed on its card
+directly and fails as a plain `OutOfMemoryError` instead.
 
-**3. OOM during a request, not at load.** The weights fit; the activations
-didn't. `set_process_limits` sets a per-process allocator fraction of
-`budget / card_total` on each assigned GPU (`modeling/util.py:119-136`), so the
-allocator refuses to grow past the padded budget — a runaway request hits
-`OutOfMemoryError` inside its own limit instead of trampling a co-tenant model.
-The user gets the traceback as a `Status.ERROR` response
-(`modeling/base.py:344-354`); the replica stays up and `cleanup()` empties the
-cache (`base.py:521-534`). Fix by raising padding, not by restarting anything.
+**3. OOM during a request.** The weights fit; the activations didn't.
+`set_process_limits` caps the allocator at `share / card_total` on each assigned
+card (`src/ndif/services/ray/deployments/modeling/util.py` `set_process_limits`),
+so a runaway request hits `OutOfMemoryError` inside its own budget instead of
+trampling a co-tenant. The user gets the traceback as an `ERROR`; the replica
+stays up and `cleanup()` empties the cache. Fix with padding, not a restart.
+
+The failed request's terminal response carries a `meta` dict
+(`src/ndif/services/ray/deployments/modeling/util.py` `request_meta`) — on a
+non-blocking job it is in `curl -s localhost:8001/response/<request_id> | jq .meta`;
+on a blocking one, ask the user for it:
+
+| Key | Meaning |
+|---|---|
+| `max_mem_by_gpu` | bytes the request drove on top of the resident weights, per GPU |
+| `max_mem_pct_by_gpu` | that, as a percentage of the headroom the request had (share minus weights); 100 means it filled it |
+| `alloc_shortfall_by_gpu` | present only on an OOM: how many bytes the refused allocation lacked, per GPU — the amount of padding missing |
+| `runtime` | wall-clock seconds |
 
 > **Not an OOM, but it looks like one:** `device-side assert triggered` and
-> `an illegal memory access was encountered` poison the process's CUDA context
-> permanently. `format_error` flags them as fatal and `run()` kills the actor so
-> Ray restarts it with a fresh context (`base.py:70-78`, `:511-519`).
+> `an illegal memory access was encountered` poison the process's CUDA context.
+> `format_error` marks them fatal and `run()` kills the actor so Ray restarts it
+> with a fresh context (`BaseModelDeployment.restart`).
 
 ## Making room
 
@@ -213,89 +221,91 @@ cache (`base.py:521-534`). Fix by raising padding, not by restarting anything.
 # What is holding GPU memory, and can it be moved?
 ndif status --json-output | jq '.deployments[] |
   select(.deployment_level=="HOT") |
-  {repo_id, replica_id, pinned, gb: (.size_bytes/1073741824)}'
+  {repo_id, task, replica_id, pinned, gb: (.size_bytes/1073741824)}'
 ```
 
-In eviction order of preference:
+In order of preference:
 
 1. **Extra replicas of a hot model.** Autoscaling adds up to
    `NDIF_AUTOSCALING_MAX_REPLICAS` (3) per model under queue pressure and never
-   removes them, and `replicas` on a deploy is additive — `replicas=1` on a model
-   with two gives three. `ndif evict <checkpoint> --replica <id>` trims one.
-2. **Unpinned models nobody is using.** `ndif queue` shows which models have live
-   Processors; anything HOT and absent from that list is idle.
-3. **WARM replicas.** They hold no GPU memory, but they consume the node's CPU
-   cache budget, and a HOT→WARM demotion needs CPU headroom to succeed —
-   without it, an evicted replica is dropped outright rather than cached
-   (`node.py:257-325`).
-4. **Pinned models.** `pinned` stops the *controller's* automatic eviction, not
-   yours: `ndif evict` removes a pinned replica like any other
-   (see [deploy-and-pin-a-model](deploy-and-pin-a-model.md)).
+   removes them, and `--replicas` on a deploy is additive.
+   `ndif evict <checkpoint> --replica <id>` trims one.
+2. **Unpinned models nobody is using.** `ndif queue` shows queue depth and the
+   executing request per model; a HOT model absent from it, or with an empty
+   queue and nothing executing, is idle right now.
+3. **WARM replicas.** They hold no GPU memory, but they fill the node's CPU cache
+   budget, and a HOT→WARM demotion needs CPU room — without it an evicted replica
+   is dropped outright (`Node.evict`).
+4. **Pinned models.** `pinned` stops only automatic eviction; `ndif evict` removes
+   a pinned replica like any other.
 
-The controller ledger releases memory as soon as `evict` returns; you do not have
-to wait for a sync tick.
+The ledger releases the bytes as soon as `evict` returns.
 
 ## Right-sizing
 
-**Measure first.** The actor records each request's *extra* GPU footprint —
-`peak - baseline` per device, on top of the resident weights — as the `gpu_mem`
-Influx measurement with fields `baseline_bytes`, `peak_bytes`, `extra_bytes`
-(`common/metrics.py:85-123`, `modeling/base.py:330-339`). Chart `extra_bytes` for
-the model, take a high percentile, and compare it against
-`padding_factor × base + padding_bias`. If the p99 exceeds your padding, the model
-is under-provisioned and will OOM under load, not at deploy.
-
-**Then adjust:**
+**Measure first.** Each request's extra GPU footprint — peak minus baseline per
+device — is the `gpu_mem` Influx measurement, fields `baseline_bytes`,
+`peak_bytes`, `extra_bytes` (`src/ndif/common/metrics.py` `GPUMemMetric`). Chart
+`extra_bytes` for the model, take a high percentile, and compare it with
+`padding_factor × base + padding_bias`. A p99 above the padding means the model
+will OOM under load.
 
 | Situation | Lever |
 |---|---|
-| Big models starved of activation room | raise `NDIF_DEFAULT_PADDING_FACTOR` (proportional — scales with the model) |
+| Big models starved of activation room | raise `NDIF_DEFAULT_PADDING_FACTOR` (scales with the model) |
 | Small models OOMing on fixed overhead (CUDA context, workspaces) | raise `NDIF_DEFAULT_PADDING_BIAS` |
-| Model sits just over a one-GPU boundary and grabs two whole cards | lower padding so it fits one, or accept the second card |
-| Nothing fits at all | add capacity — [add-a-gpu-node](add-a-gpu-node.md) |
+| One model needs more than the rest | `ndif deploy --padding-factor 0.3 <checkpoint>` (also `--padding-bias`, `--size-bytes`, `--gpus`, `--max-tp`), or the same keys in `models.yaml`. The dashboard's deploy form takes `padding_factor` |
+| Model sits just over a one-card boundary | lower padding so it fits one card, or accept the second |
+| Nothing fits | add capacity — [Add a GPU node](add-a-gpu-node.md) |
 
-Both defaults live on the controller and are read at actor construction
-(`controller.py:549-554`), so changing them means restarting the `ray` service
-(`just restart ray`, or `just ta ray`). Verify with:
+The `NDIF_DEFAULT_*` and `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` values are read
+once, when the controller process imports its module
+(`src/ndif/services/ray/deployments/controller/controller.py`
+`ControllerDeploymentArgs`), so changing one means restarting the controller.
+On the compose stack, set it in the `ray` service's `environment:` and
+**recreate** the container:
 
 ```bash
-ndif status --verbose | jq '.cluster.evaluator | {padding_factor, padding_bias, dtype}'
+just up ray
 ```
 
-> **Note:** `DeploymentConfig.padding_factor` supports a per-model override:
-> `ndif deploy --padding-factor 0.3 <checkpoint>` (`cli/commands/deploy.py:33`,
-> alongside `--padding-bias`, `--size-bytes`, `--gpus`, `--max-tp`), and
-> `load_model_config` reads a `padding_factor:` key from `models.yaml`
-> (`cli/lib/model_config.py`), so a YAML
-> deploy can raise padding for just the models that need it. The dashboard's deploy
-> form (`dashboard/backend/routers/deploy.py:30`) and calling
-> `ndif.cli.lib.deploy.deploy` directly also set it.
+`docker compose restart` (`just restart ray`) keeps the old environment, and
+`just ta ray` runs `just down` first and so tears down the whole stack. Recreating
+`ray` takes down the controller **and every model actor**: in-flight and queued
+requests are errored once the API notices the lost connection, and only
+`NDIF_DEPLOYMENTS` models (and dashboard-scheduled ones, on the next reconcile)
+come back on their own. Plan it as an outage. On a from-source install, change the
+variable in the environment `ndif start` runs under, then `ndif stop ray` and
+`ndif start ray`.
+
+Verify the controller picked it up:
+
+```bash
+ndif status --verbose | jq '{default_padding_factor, default_padding_bias, minimum_deployment_time_seconds}'
+```
 
 ## What the ledger does not know
 
-Every item here is real memory on the card that the controller never subtracted:
+Real memory on the card that the controller never subtracted:
 
-- **The CUDA context**, roughly 400 MiB per process per device
-  (`modeling/util.py:91-97`). Three actors sharing a GPU means three contexts.
-  `NDIF_DEFAULT_PADDING_BIAS`'s 500 MiB is what covers this — one actor's worth.
-- **Anything not deployed by NDIF.** `available_memory_bytes` starts at the
-  card's full capacity (`node.py:44-52`) and is only ever decremented by NDIF's
-  own placements. Another process on the GPU — a stray training job, a leftover
-  actor from a killed controller — is invisible to the ledger, and it is the
-  single most common cause of "the numbers said it fit".
+- **The CUDA context**, roughly 400 MiB per process per device. Three actors on
+  one card are three contexts; the default 500 MiB `padding_bias` covers one.
+- **Anything NDIF didn't deploy.** A card's free bytes start at its full capacity
+  and only NDIF's own placements reduce them. A stray process on the GPU — another
+  job, an orphaned actor from a replaced controller — is invisible, and is the
+  most common cause of "the numbers said it fit".
 - **Fragmentation.** Actors run with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-  (`cluster/deployment.py:197`) to blunt it, not eliminate it.
-- **User code on cards the replica wasn't granted.** Deployment sets
+  to blunt it.
+- **User code on cards the replica wasn't granted.** Actors start with
   `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1`
   (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
-  `Deployment.create`), so the actor sees every GPU on the node and device indices
-  in the logs are node-global. Targeting is done by `max_memory` and the
-  per-process caps alone; nothing stops a block from allocating elsewhere.
-- **Controller state after a restart.** The ledger is in-memory. A replaced
-  controller actor rebuilds `Cluster.nodes` from scratch with every GPU marked
-  fully free, while the surviving detached model actors still hold their weights.
-  Until you evict and redeploy, the ledger is over-optimistic by exactly the
-  amount those actors hold.
+  `Deployment.create`), so they see every GPU on the node and device indices in
+  logs are node-global. Only `max_memory` and the per-process caps target the
+  assigned cards.
+- **Controller state after a restart.** The ledger is in memory. A replaced
+  controller rebuilds its nodes with every GPU free, while detached model actors
+  from before still hold their weights and are not re-adopted. Until those actors
+  are killed, the ledger over-counts free memory by exactly what they hold.
 
 Cross-check with the truth whenever a number looks impossible:
 
@@ -305,11 +315,9 @@ nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 
 ## Related
 
-- [docs/concepts/deployments-and-eviction.md](../concepts/deployments-and-eviction.md)
-  — the levels, the candidate scoring, the eviction policy.
-- [docs/developing/model-actor.md](../developing/model-actor.md) — what the actor
-  does at load and per request.
-- [docs/runbooks/deploy-and-pin-a-model.md](deploy-and-pin-a-model.md) — the
-  normal path, and what pinning protects.
-- [docs/runbooks/debug-a-stuck-request.md](debug-a-stuck-request.md) — when the
-  symptom is a hang rather than a failure.
+- [Deployments and eviction](../concepts/deployments-and-eviction.md) — the
+  levels, candidate scoring and eviction policy as a mental model.
+- [Model actor](../developing/model-actor.md) — what the actor does at load and
+  per request.
+- [Deploy and pin a model](deploy-and-pin-a-model.md) — the normal path.
+- [Debug a stuck request](debug-a-stuck-request.md) — when the symptom is a hang.

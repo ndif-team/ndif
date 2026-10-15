@@ -1,9 +1,9 @@
 ---
 title: Enable API-Key Auth
-one_liner: Turn on Postgres-backed API-key verification — and understand that until you do, every caller's Python runs in-process next to the weights.
+one_liner: Turn on Postgres-backed API-key verification on the compose stack, keep the keys across `just down`, and lock the dashboard — until you do, every caller's Python runs in-process next to the weights.
 tags: [runbook, operating, auth, api, sandbox, dashboard]
-related: [docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/operating/production.md, docs/operating/dashboard.md, docs/developing/api-service.md, docs/developing/providers.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/runbooks/trace-a-users-failed-job.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/config.py, docker/postgres/init.sql, docker/docker-compose.yml]
+related: [docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/operating/production.md, docs/operating/dashboard.md, docs/operating/compose-stack.md, docs/developing/api-service.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/runbooks/trace-a-users-failed-job.md]
+sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, src/ndif/services/api/app.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/api/queue/processor.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/routers/deployments.py, docker/postgres/init.sql, docker/docker-compose.yml, justfile]
 ---
 
 # Enable API-Key Auth
@@ -11,163 +11,123 @@ sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, 
 ## What this covers
 
 Switching an NDIF from "anyone who can reach port 8001" to "a key in a database",
-plus the dashboard's entirely separate login. Read the first section before
-deciding this is optional.
+keeping those keys across a stack teardown, and the dashboard's separate login.
+Commands are for the compose stack from a checkout; `just` wraps
+`docker compose -f docker/docker-compose.yml`.
 
-## Why this matters more than it looks
+## Why this is not optional
 
-`NDIF_POSTGRES_URL` does not only gate *who* may submit. It decides *how their
-code runs* and *how models are loaded*, through one boolean.
-
-```python
-    client_set_trusted = "trusted" in request.model_fields_set
-    ...
-    identity = await verify_api_key(request.api_key)
-    if identity is not None:
-        request.email = identity.email
-        request.trusted = identity.trusted
-        request.priority = identity.priority
-    elif not client_set_trusted:
-        # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev mode.
-        # Default to trusted when the client didn't ask.
-        request.trusted = True
-```
-
-— `src/ndif/services/api/auth.py:170-184`. With no Postgres configured,
-`verify_api_key` returns `None` (`auth.py:93-95`), so **a request the client
-didn't tag defaults to `trusted=True`** (an explicit `trusted` in the envelope,
-True or False, is honored). A default request on an unauthenticated server is
-therefore trusted. Follow that flag:
-
-1. **User code runs in-process, in the model actor.** `SandboxModelDeployment.execute`
-   short-circuits on `request.trusted` and calls the base implementation, which
-   deserializes and runs the traced block on a worker thread inside the actor —
-   the same process that holds the weights (`sandbox/model.py:207-220` →
-   `modeling/base.py:473`). No runner subprocess, no socket. The isolation the
-   sandbox path provides is skipped entirely.
-2. **The model loads with `trust_remote_code=True`.** The flag rides from the
-   request into the Processor (`queue/processor.py:114`, `:153-154`), into the
-   `DeploymentConfig` the Processor's Replica sends the controller
-   (`queue/replica.py:103`), into the evaluator and the actor's load
-   (`cluster/cluster.py:183`, `:225`, `:296`; `controller.py:276-284`). A model auto-deployed by
-   the first request on an unauthenticated server executes whatever Python its
-   HuggingFace repo ships.
-
-So: **no Postgres ⇒ no auth ⇒ a default request's Python runs next to the
-weights, and models load their own repo code.** That is a reasonable default for a
-laptop and an unreasonable one for anything reachable by another person.
-Sandboxing is process-based and still in progress — see
-[docs/concepts/sandbox-execution.md](../concepts/sandbox-execution.md) for what it
-does and does not isolate — but a default request with auth off doesn't get even
-that.
-
-The escape hatch for dev: because an explicit `trusted` is honored with auth off,
-a client can send `trusted: false` to force the sandbox path with **no Postgres at
-all** — the only way to exercise untrusted execution on an auth-off stack. A plain
-request without the flag still runs trusted.
+`NDIF_POSTGRES_URL` decides how user code runs, not only who may submit. With it
+unset, `verify_api_key` returns `None` and `validate_request` stamps
+`trusted=True` on every request whose envelope doesn't set `trusted` itself
+(`src/ndif/services/api/auth.py` `validate_request`). A trusted request runs its
+Python **inside the model actor process**, next to the weights, and a model it
+auto-deploys loads with `trust_remote_code=True`. The full fork is in
+[Auth and limits](../concepts/auth-and-limits.md).
 
 ## 1. Bring up Postgres
 
-The compose stack already defines the service (`docker-compose.yml:104-120`):
+The compose file already defines the service:
 
 ```bash
 just up postgres
 docker compose -f docker/docker-compose.yml exec postgres pg_isready -U admin -d ndif
+docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif -c '\dt'
 ```
 
-`docker/postgres/init.sql` is bind-mounted into `/docker-entrypoint-initdb.d/`,
-so it runs **once, on an empty data directory**, as the superuser inside the
-`ndif` database. Confirm the schema landed:
+`docker/postgres/init.sql` is mounted into `/docker-entrypoint-initdb.d/`, so it
+runs **once, on an empty data directory**. Expect nine tables: `users`,
+`profiles`, `user_tags`, `keys`, `key_user_tag_assignments`, `models`,
+`model_tags`, `model_tag_assignments`, `audit_logs`.
 
-```bash
-docker compose -f docker/docker-compose.yml exec postgres \
-  psql -U admin -d ndif -c '\dt'
-```
+### Where the keys live, and what destroys them
 
-Nine tables: `users`, `profiles`, `user_tags`, `keys`,
-`key_user_tag_assignments`, `models`, `model_tags`, `model_tag_assignments`,
-`audit_logs`.
+The `postgres` service mounts no volume at `/var/lib/postgresql/data`, so the
+data sits in an **anonymous** Docker volume tied to the container:
 
-> **Gotcha:** the compose `postgres` service declares no named volume for
-> `/var/lib/postgresql/data`, so its data lives in an anonymous Docker volume. A
-> plain `just down` keeps it (and `init.sql` will **not** re-run on the next
-> `up`); `just down -v` destroys it. If you edit `init.sql`, you must drop the
-> volume for the change to take.
-
-## 2. Understand the schema
-
-`init.sql` seeds **no users and no keys** — that is deliberate. Four tables carry
-everything the API reads:
-
-| Table | Role in auth |
+| Command | Keys |
 |---|---|
-| `users` | `user_id` (UUID PK), `email` |
-| `keys` | `key_id` (UUID PK — **this is the API key**), `user_id` |
-| `user_tags` | `name` (unique), `description` |
-| `key_user_tag_assignments` | many-to-many between `keys` and `user_tags` |
+| `just restart`, `just up` (including a recreate after a config change) | kept — compose carries an anonymous volume across a recreate |
+| `just down` | **lost** — the container goes, and the next `up` creates a fresh empty volume, so `init.sql` runs again |
+| `just ta` | **lost** — it runs `just down` first |
 
-The API runs exactly one query (`auth.py:55-62`):
+Pick one of these before you issue keys you care about:
 
-```sql
-SELECT k.user_id, u.email, ut.name AS user_tag
-FROM keys k
-LEFT JOIN users u ON u.user_id = k.user_id
-LEFT JOIN key_user_tag_assignments kuta ON kuta.key_id = k.key_id
-LEFT JOIN user_tags ut ON ut.user_tag_id = kuta.user_tag_id
-WHERE k.key_id = $1
-```
+- **Give Postgres a named volume.** In `docker/docker-compose.yml`, add
+  `- pgdata:/var/lib/postgresql/data` to the `postgres` service's `volumes:` and
+  `pgdata:` under the top-level `volumes:` (next to `dashboard_data`). Data then
+  survives `just down` and `just ta`; only `just down -v` removes it.
+- **Dump and restore around every teardown:**
 
-**Validity is "a row exists in `keys`".** Key issuance is the account portal's
-job — a separate repo — so the API only asks whether the key is known
-(`auth.py` module docstring). The `LEFT JOIN`s mean a key with no tags still
-returns one row (with `user_tag` NULL), which is how "known key, no tags" is
-distinguished from "unknown key".
+  ```bash
+  # before `just down` / `just ta`
+  docker compose -f docker/docker-compose.yml exec -T postgres \
+    pg_dump -U admin -d ndif --data-only > ndif-auth.sql
+  # after the next `just up`, once pg_isready passes (init.sql has rebuilt the schema)
+  docker compose -f docker/docker-compose.yml exec -T postgres \
+    psql -U admin -d ndif < ndif-auth.sql
+  ```
 
-### The two user_tags the server acts on
+- **Rebuild without tearing down.** After a code change, `just build` then
+  `just up` replaces the changed service containers and leaves `postgres` alone.
+
+## 2. Create the two tags the server acts on
+
+`init.sql` seeds no users, keys or tags. The API runs one query per key
+(`src/ndif/services/api/auth.py` `_KEY_QUERY`): a key is valid if its row exists in
+`keys`, and its `user_tags` come back through `key_user_tag_assignments`. Key
+issuance is normally the account portal's job; here you do it by hand.
 
 | Tag | Constant | Effect |
 |---|---|---|
-| `trusted` | `TRUSTED_TAG` (`auth.py:44`) | the request runs in-process instead of in a runner, and any model it triggers a deploy for loads with `trust_remote_code` |
-| `priority` | `PRIORITY_TAG` (`auth.py:48`) | the request is served ahead of all normal traffic for that model, FIFO against other priority requests (`queue/request_queue.py`) |
+| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and any model it triggers a deploy for loads with `trust_remote_code` |
+| `priority` | `PRIORITY_TAG` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
 
-Every other tag name is inert — only `trusted` and `priority` change server
-behavior. With auth off, `priority` is left at the request's value (`False` unless
-the client sets it); with no keys there is nothing to jump ahead of. Create the
-two tags:
+Every other tag name is inert.
 
-```sql
+```bash
+docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif -c "
 INSERT INTO user_tags (name, description)
 VALUES ('trusted',  'may run without sandbox isolation'),
-       ('priority', 'jumps the model queue');
+       ('priority', 'served ahead of untagged traffic');"
 ```
 
 ## 3. Point the API at it
 
-Uncomment the line in `docker-compose.yml`'s `api` service
-(`docker-compose.yml:165`):
+Uncomment `NDIF_POSTGRES_URL` in the `api` service's `environment:` in
+`docker/docker-compose.yml`:
 
 ```yaml
       NDIF_POSTGRES_URL: postgresql://ndifapi:admin@postgres:5432/ndif
 ```
 
-`ndifapi` is a **read-only** role (`init.sql:161-166`), which is why the API can
-only `SELECT`. `login_page` is the account-portal role: readonly plus
-`INSERT/UPDATE/DELETE` on `keys` and `INSERT` on `users` (`init.sql:168-171`).
-Both passwords in `init.sql` are `admin` — change them for anything real.
+`ndifapi` is a read-only role; `login_page` is the account-portal role with
+writes on `keys` and `users`. Both passwords in `init.sql` are `admin` — change
+them for anything real.
+
+Then **recreate** the container — an environment edit only takes effect on a new
+container:
 
 ```bash
-just up -d api        # or: just restart api
-just logs api | grep -i postgres
+just up api
+docker compose -f docker/docker-compose.yml exec api env | grep NDIF_POSTGRES_URL
 ```
 
-The pool is created lazily on first use, so you'll see `Postgres connected` on
-the first authenticated request, not at boot (`providers/postgres.py:82-111`).
+`just up api` runs `docker compose up -d api`, which sees the changed config and
+replaces the container. **`just restart api` does not**: `docker compose restart`
+restarts the existing container with its old environment, so auth stays off with
+no error. The second command must print the URL; if it prints nothing, auth is
+off.
 
-> **Gotcha:** if `NDIF_POSTGRES_URL` is set but `asyncpg` isn't installed,
-> `connect()` **raises** rather than silently disabling auth
-> (`providers/postgres.py:91-95`) — the opposite of the fail-open telemetry
-> providers. The compose image installs the `postgres` extra
-> (`docker/Dockerfile:45`), so this only bites a hand-rolled install:
+The connection pool is created on the first keyed request, not at boot, so
+`Postgres connected` appears in `docker compose -f docker/docker-compose.yml logs api`
+only after step 5 (`src/ndif/common/providers/postgres.py` `PostgresProvider.connect`).
+
+> **Gotcha:** with `NDIF_POSTGRES_URL` set but `asyncpg` missing, `connect()`
+> raises, `verify_api_key` treats that like a database outage, and every keyed
+> request gets **503** `Auth backend unavailable.` with
+> `API-key verification failed: Postgres unavailable` in the API log. The image
+> installs the `postgres` extra; a hand-rolled install needs
 > `pip install '.[postgres]'`.
 
 ## 4. Create a key
@@ -188,24 +148,39 @@ INSERT INTO key_user_tag_assignments (key_id, user_tag_id)
 SELECT '<key_id>', user_tag_id FROM user_tags WHERE name = 'trusted';
 ```
 
-Grant `trusted` sparingly, and only to keys you would hand a shell on the model
-node.
+Grant `trusted` only to keys you would hand a shell on the model node.
+
+### What an untagged key can do
+
+An untagged key's request runs in a separate runner process that holds a
+**weightless (meta) copy** of the model and drives the real one over a socket
+(`src/ndif/services/ray/sandbox/model.py` `SandboxModelDeployment.execute`). Reading
+and editing activations, `.save()`, `.source`, and generation all work. These do
+not:
+
+- reading or editing parameters directly (`module.weight`) — the runner's
+  parameters are on the meta device, so reads fail and edits change nothing;
+- gradients and `backward()`;
+- training loops in a session — optimizer steps update nothing.
+
+Users who need those need a `trusted` key. What the runner isolates, and what it
+does not, is in [Sandbox execution](../concepts/sandbox-execution.md).
 
 ## 5. Verify
 
-Every failure mode is a distinct status code (`auth.py:12-18`):
+Every failure is a distinct status (`src/ndif/services/api/auth.py` module
+docstring):
 
 | Condition | Status |
 |---|---|
 | no `ndif-api-key` header | 401 |
 | header present but not a UUID | 400 |
 | well-formed UUID, no row in `keys` | 403 |
-| Postgres unreachable or erroring | 503 (fail **closed**) |
+| Postgres unreachable or erroring | 503 (fail closed) |
 
-Reproduce each against the running API. `/request` is multipart: a `data` form
-field holding the JSON envelope (`model_key` is required — a malformed envelope
-422s *before* the key is checked) plus a `blob` file. An empty blob is fine, since
-auth short-circuits long before deserialization:
+`/request` is multipart: a `data` form field holding the JSON envelope
+(`model_key` is required — a malformed envelope 422s before the key is checked)
+plus a `blob` file. An empty blob is fine:
 
 ```bash
 probe() {  # $1 = key, or empty for none
@@ -218,24 +193,21 @@ probe not-a-uuid                               # 400
 probe 00000000-0000-0000-0000-000000000000     # 403
 ```
 
-A `503` from all three means the route's `require_ray_connection` dependency
-tripped first — Ray isn't connected, so auth was never reached
-(`api/app.py:106-122`).
+`503` from all three means `require_ray_connection` rejected the request before
+auth ran: Ray isn't connected (`src/ndif/services/api/app.py`
+`require_ray_connection`). `200` from all three means auth is off — go back to
+step 3.
 
-`/whoami` is the friendly check — it resolves a key to its email and tags, and
-returns `{"email": null, "tags": []}` for a missing/unknown key rather than
-erroring (`api/app.py:341-365`):
+`/whoami` resolves a key to its email and tags. A missing or unknown key returns
+`{"email": null, "tags": []}`; a malformed one returns 400
+(`src/ndif/services/api/app.py` `whoami`):
 
 ```bash
-curl -s -H "ndif-api-key: $NDIF_API_KEY" localhost:8001/whoami
-# {"email": "researcher@example.edu", "tags": ["priority"]}
+curl -s -H "ndif-api-key: <key_id>" localhost:8001/whoami
+# {"email":"researcher@example.edu","tags":["trusted"]}
 ```
 
-An empty `tags` array with a real email means the key exists but carries no tags —
-which is what you want for a normal user: not trusted, not priority.
-
-End to end from the client, which sends the key in the `ndif-api-key` header
-(nnsight's `RemoteBackend`; `NDIF_API_KEY` in the environment also works):
+End to end from the client, which sends the key in the `ndif-api-key` header:
 
 ```python
 import nnsight
@@ -248,78 +220,69 @@ with model.trace("hello", remote=True):
     h = model.transformer.h[-1].output.save()
 ```
 
-Without the key the same script raises on the HTTP 401 before any job is created.
+Without the key the same script fails on the HTTP 401 before any job exists.
 
-Confirm the fork actually flipped: a request from an untagged key now runs in a
-short-lived runner subprocess on the model actor's node, one per request, and the
-actor stops capturing stdout through `LogStream` — the sandboxed path forwards
-prints as `PRINT` events instead (`sandbox/model.py:180-186`).
+## 6. Lock the dashboard
 
-## 6. The dashboard's auth is separate
+The dashboard has its own single-admin login and ignores `NDIF_POSTGRES_URL`.
+The compose file ships it with `NDIF_DASHBOARD_DEV_MODE: "true"`, which makes
+`require_auth` return the configured username unconditionally
+(`src/ndif/services/dashboard/backend/auth.py` `require_auth`). The dashboard can
+deploy, evict and restart models, and its deploy endpoint defaults to
+`trusted: true` (`src/ndif/services/dashboard/backend/routers/deployments.py`
+`DeployRequest`), so an open dashboard is remote code execution.
 
-The dashboard has its own single-admin login (`dashboard/backend/auth.py`) and
-knows nothing about `NDIF_POSTGRES_URL`. The compose file ships it with
-auth **disabled** (`NDIF_DASHBOARD_DEV_MODE: "true"`, `docker-compose.yml:216`),
-which makes `require_auth` return the configured username unconditionally
-(`auth.py:70-75`). Since the dashboard can deploy, evict, and restart models —
-and every dashboard deploy is `trusted: True` — leaving dev mode on is equivalent
-to leaving remote code execution open.
-
-Generate a hash — it prints a `$2b$12$…` string:
+Generate a bcrypt hash:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec dashboard \
   python -m ndif.services.dashboard.backend.auth hash 'your-password'
 ```
 
-Then, in the `dashboard` service's `environment:` — **remove**
-`NDIF_DASHBOARD_DEV_MODE` and set:
+In the `dashboard` service's `environment:`, **remove** `NDIF_DASHBOARD_DEV_MODE`
+and set:
 
 | Variable | Value |
 |---|---|
 | `NDIF_DASHBOARD_USERNAME` | the admin username (default `admin`) |
-| `NDIF_DASHBOARD_PASSWORD_HASH` | the bcrypt hash printed above |
+| `NDIF_DASHBOARD_PASSWORD_HASH` | the hash printed above. In the YAML, write each `$` as `$$` — compose interpolates `$` |
 | `NDIF_DASHBOARD_SESSION_SECRET` | 32+ random bytes, e.g. `openssl rand -hex 32` |
 | `NDIF_DASHBOARD_SESSION_TTL_DAYS` | cookie lifetime, default 7 |
 
-Login issues an HttpOnly cookie signed with `itsdangerous`
-(`dashboard/backend/auth.py:52-67`). Two defaults to notice: `password_hash`
-defaults to the **empty string** and `verify_password` returns `False` for an
-empty hash (`auth.py:39-45`), so with dev mode off and no hash set nobody can log
-in at all; and `session_secret` defaults to the literal
-`"change-me-please-this-is-not-secure"` (`backend/config.py:42`), which anyone
-who knows it can use to forge a session cookie.
+Both defaults are unsafe in different directions
+(`src/ndif/services/dashboard/backend/config.py` `Settings`): an empty
+`password_hash` means nobody can log in, and the default `session_secret` is a
+public string anyone can sign a cookie with.
+
+Recreate and check, as in step 3:
 
 ```bash
-just restart dashboard
-curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/schedule   # expect 401
+just up dashboard
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/schedule   # 401
 ```
 
 ## Gotchas
 
-- **Auth is checked at ingress only.** Nothing downstream re-verifies. Anyone who
-  can reach Redis, the Ray client port (10001), or the Ray dashboard (8265)
-  bypasses it completely. Turning on API keys does not make those ports safe to
-  expose — see [docs/reference/ports.md](../reference/ports.md).
-- **`api_key` and `email` travel with the request** all the way through the queue
-  and across the Ray boundary, and are attached to logs and metrics
-  (`common/schema/request.py:44-51`). Enabling auth is also what makes per-user
-  attribution work in Grafana.
-- **A DB outage rejects everything with 503.** That is the intended behavior
-  (`auth.py:120-126`): a Postgres blip must never quietly re-enable the trusted
-  path.
-- **Models deployed while auth was off keep their `trusted` deployment.** The flag
-  is fixed on the `Deployment` at creation (`cluster/deployment.py:65`, `:77-79`). Evict
-  and redeploy after turning auth on if you care that a model no longer loads with
+- **Auth is checked at ingress only.** Anyone who can reach Redis, the Ray client
+  port (10001) or the Ray dashboard (8265) bypasses it. See
+  [Ports](../reference/ports.md).
+- **A database outage rejects every keyed request with 503**, by design: a
+  Postgres blip must never re-open the trusted path.
+- **Models deployed while auth was off keep their trusted deployment.** The flag
+  is fixed on the `Deployment` when it is created
+  (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+  `Deployment`), and the queue reuses it for re-provisions
+  (`src/ndif/services/api/queue/processor.py` `Processor.ensure_started`). Evict
+  and redeploy after turning auth on if a model should stop loading with
   `trust_remote_code`.
+- **Enabling auth is what makes per-user attribution work.** `email` is resolved
+  at ingress and rides on every log record and metric.
 
 ## Related
 
-- [docs/concepts/auth-and-limits.md](../concepts/auth-and-limits.md) — the
-  trusted/untrusted fork and client version gating in full.
-- [docs/concepts/sandbox-execution.md](../concepts/sandbox-execution.md) — what
-  the untrusted path actually isolates.
-- [docs/operating/production.md](../operating/production.md) — the rest of
-  hardening a real deployment.
-- [docs/reference/http-api.md](../reference/http-api.md) — every endpoint and its
-  auth requirements.
+- [Auth and limits](../concepts/auth-and-limits.md) — the trusted/untrusted fork
+  and client version gating.
+- [Sandbox execution](../concepts/sandbox-execution.md) — what the untrusted path
+  isolates.
+- [Production](../operating/production.md) — the rest of hardening a deployment.
+- [HTTP API](../reference/http-api.md) — every endpoint and its auth behavior.
