@@ -2,7 +2,7 @@
 title: Runbooks
 one_liner: Step-by-step operational procedures — one task per page, with real commands and verification at each step.
 tags: [runbook, operating]
-related: [docs/operating/index.md, docs/operating/troubleshooting.md, docs/errors/index.md]
+related: [docs/operating/index.md, docs/operating/troubleshooting.md, docs/reference/error-messages.md]
 sources: []
 ---
 
@@ -54,6 +54,6 @@ this shapes several of these runbooks:
 ## Related
 
 - [Troubleshooting](../operating/troubleshooting.md) — symptom-first triage.
-- [Client-side failures](../errors/client-side-failures.md) — when a user pastes an
+- [Error messages](../reference/error-messages.md) — when a user pastes an
   error at you.
 - [The ndif CLI](../operating/cli.md) — the commands these runbooks use.

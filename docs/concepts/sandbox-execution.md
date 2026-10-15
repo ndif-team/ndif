@@ -2,7 +2,7 @@
 title: Sandbox Execution
 one_liner: Why a request's traced block runs in a separate process from the model, how the two stay in lockstep over a socket, and what that means for your code.
 tags: [concepts, sandbox, ray]
-related: [docs/developing/sandbox-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/auth-and-limits.md, docs/developing/model-actor.md, docs/errors/client-side-failures.md]
+related: [docs/developing/sandbox-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/auth-and-limits.md, docs/developing/model-actor.md, docs/reference/error-messages.md]
 sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/api/auth.py, src/ndif/common/schema/request.py]
 ---
 
@@ -186,5 +186,5 @@ a request reaches the model actor in the first place, and
 `docs/concepts/auth-and-limits.md` how the `trusted` flag is granted.
 `docs/developing/model-actor.md` describes the actor that hosts the model and runs
 the timeout/cancel race around your block, and
-`docs/errors/client-side-failures.md` maps what a user sees back to these
+`docs/reference/error-messages.md` maps what a user sees back to these
 mechanisms.

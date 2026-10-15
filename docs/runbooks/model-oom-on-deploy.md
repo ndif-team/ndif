@@ -2,7 +2,7 @@
 title: Model OOM on Deploy
 one_liner: A deploy is refused or the actor dies loading weights — how NDIF's GPU accounting decides, how to read the error, what to evict, and how to right-size the estimate.
 tags: [runbook, operating, controller, gpu, errors, gotchas]
-related: [docs/concepts/deployments-and-eviction.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/gotchas/gpu-and-memory.md, docs/operating/models-and-deployment.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/debug-a-stuck-request.md]
+related: [docs/concepts/deployments-and-eviction.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/operating/models-and-deployment.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/debug-a-stuck-request.md]
 sources: [src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/resources.py, src/ndif/common/metrics.py]
 ---
 
@@ -59,7 +59,11 @@ and the actor's load can't diverge (`controller.py:124-129`).
 
 > **Note:** `dtype` is settable per deploy — `ndif deploy --dtype` and a `dtype:`
 > key in `models.yaml` both set `DeploymentConfig.dtype`. Leave it unset and the
-> deploy uses the controller's cluster-wide `NDIF_DEFAULT_DTYPE`.
+> deploy uses the controller's cluster-wide `NDIF_DEFAULT_DTYPE`, a
+> controller-process variable: changing the default means restarting the `ray`
+> service, overriding it for one model does not. The dtype also sets the autocast
+> region every request runs in, on both the trusted and the sandboxed path
+> (`src/ndif/services/ray/deployments/modeling/nns.py` `request_dtype`).
 
 ## How placement decides
 
@@ -93,7 +97,21 @@ cluster picks the best level across nodes and breaks ties randomly
 A deployment is evictable only if it is **not pinned**, and — when the incoming
 deploy is itself unpinned — only if it is older than
 `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` (default 3600)
-(`node.py:327-338`).
+(`src/ndif/services/ray/deployments/controller/cluster/node.py` `Node.evictable`).
+`ndif evict` still removes a pinned deployment; `pinned` blocks only automatic
+eviction.
+
+The age rule is behind the most surprising refusal: on a full cluster a deploy, or
+an autoscaled request, comes back `CANT_ACCOMMODATE` purely because the current
+occupant landed 40 minutes ago, and an hour later the same command succeeds with
+no change. Nothing retries it. In order of preference: deploy with `--pinned`
+(a pinned deploy ignores the age rule), evict the occupant explicitly, or lower
+`NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` and restart the controller — which trades
+stability for churn, since the rule is what stops a burst of one-off requests
+thrashing a model that is serving.
+
+Set `gpus` on the deployment for a specific card count rather than whatever the
+padded size implies.
 
 > **`NDIF_MODEL_CACHE_PERCENTAGE` is not a GPU knob.** It scales
 > `cpu_memory_bytes` — total host RAM — into the node's **WARM cache budget**
@@ -202,7 +220,8 @@ In eviction order of preference:
 
 1. **Extra replicas of a hot model.** Autoscaling adds up to
    `NDIF_AUTOSCALING_MAX_REPLICAS` (3) per model under queue pressure and never
-   removes them. `ndif evict <checkpoint> --replica <id>` trims one.
+   removes them, and `replicas` on a deploy is additive — `replicas=1` on a model
+   with two gives three. `ndif evict <checkpoint> --replica <id>` trims one.
 2. **Unpinned models nobody is using.** `ndif queue` shows which models have live
    Processors; anything HOT and absent from that list is idle.
 3. **WARM replicas.** They hold no GPU memory, but they consume the node's CPU
@@ -266,6 +285,12 @@ Every item here is real memory on the card that the controller never subtracted:
   single most common cause of "the numbers said it fit".
 - **Fragmentation.** Actors run with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
   (`cluster/deployment.py:197`) to blunt it, not eliminate it.
+- **User code on cards the replica wasn't granted.** Deployment sets
+  `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1`
+  (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+  `Deployment.create`), so the actor sees every GPU on the node and device indices
+  in the logs are node-global. Targeting is done by `max_memory` and the
+  per-process caps alone; nothing stops a block from allocating elsewhere.
 - **Controller state after a restart.** The ledger is in-memory. A replaced
   controller actor rebuilds `Cluster.nodes` from scratch with every GPU marked
   fully free, while the surviving detached model actors still hold their weights.
@@ -282,8 +307,6 @@ nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv
 
 - [docs/concepts/deployments-and-eviction.md](../concepts/deployments-and-eviction.md)
   — the levels, the candidate scoring, the eviction policy.
-- [docs/gotchas/gpu-and-memory.md](../gotchas/gpu-and-memory.md) — the sharp
-  edges in one place.
 - [docs/developing/model-actor.md](../developing/model-actor.md) — what the actor
   does at load and per request.
 - [docs/runbooks/deploy-and-pin-a-model.md](deploy-and-pin-a-model.md) — the

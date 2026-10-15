@@ -2,7 +2,7 @@
 title: The Compose Stack
 one_liner: Every container in docker/docker-compose.yml — image, purpose, ports, volumes, health, and what breaks without it.
 tags: [operating, api, ray, dashboard, redis, telemetry]
-related: [docs/operating/quickstart.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/observability.md, docs/operating/cli.md, docs/concepts/services-and-topology.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/gotchas/networking-and-compose.md, docs/developing/ray-service.md]
+related: [docs/operating/quickstart.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/observability.md, docs/operating/cli.md, docs/concepts/services-and-topology.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/developing/ray-service.md]
 sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, docker/prometheus/prometheus.yml, docker/postgres/init.sql, src/ndif/cli/service.py, src/ndif/services/ray/start.sh]
 ---
 
@@ -52,11 +52,9 @@ dispatcher pops them, model actors publish status/response JSON onto per-session
 pub/sub channels, cached `/status` and `/env` blobs live here, and the
 `ray:connected` flag gates the API's routes. Health check: `redis-cli ping`.
 
-> **Gotcha:** `NDIF_REDIS_URL` must be set explicitly on the `ray` service
-> (`docker-compose.yml:237`). Its default is `redis://localhost:6379` — and
-> inside the `ray` container, port 6379 is Ray's *own* GCS default, not Redis.
-> Model actors would connect to the wrong server and the response handshake
-> would fail. See `docs/gotchas/networking-and-compose.md`.
+> **Gotcha:** `NDIF_REDIS_URL` must be set explicitly on the `ray` service. Its
+> default is `redis://localhost:6379`, and nothing listens there inside the `ray`
+> container. See [Service names, not localhost](#service-names-not-localhost).
 
 ### minio (`docker-compose.yml:126`)
 
@@ -216,8 +214,54 @@ container fails to create. Only `ray` gets GPUs; nothing else needs one.
 
 Ray's plasma object store lives in `/dev/shm`, and Docker's default shared-memory
 size is **64 MB** — far too small (`docker-compose.yml:278-280`). Ray will either
-spill to disk and crawl or fail outright. 4 GB is a development floor; size it to
-your real object traffic in production.
+spill to disk and crawl or fail outright, and neither failure mentions
+`shm_size`. 4 GB is a development floor; size it to your real object traffic in
+production. Running the `ray` service anywhere else needs the same setting —
+`docker run --shm-size=4gb`, a Kubernetes `emptyDir` with `medium: Memory`, or
+your orchestrator's equivalent.
+
+## Service names, not localhost
+
+Every provider defaults to `localhost` — `redis://localhost:6379`,
+`ray://localhost:10001`, `http://localhost:9000` — which is right for a
+single-host `ndif start` and wrong on the compose network. Compose overrides them
+**per service**; a service that misses one silently talks to itself.
+
+| Variable | Provider default | Compose sets | On |
+|---|---|---|---|
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | `redis://redis:6379` | `api`, `ray`, `dashboard` |
+| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://ray:10001` | `api`, `dashboard` — not `ray`, which starts the cluster rather than dialing it |
+| `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `http://minio:9000` | `api`, `ray` |
+| `NDIF_OBJECT_STORE_PUBLIC_URL` | falls back to the above | `http://localhost:9000` | `api`, `ray` |
+| `NDIF_LOKI_URL` | unset (shipping off) | `http://loki:3100/loki/api/v1/push` | `api`, `ray` |
+| `NDIF_INFLUX_URL` | unset (metrics off) | `http://influxdb:8086` | `api`, `ray`; `dashboard` only reads it, for its report cron |
+| `NDIF_API_URL` | `http://localhost:8001` | `http://api:8001` | `dashboard` |
+| `NDIF_POSTGRES_URL` | empty (auth off) | commented out | — |
+
+`NDIF_OBJECT_STORE_PUBLIC_URL` is the one URL here about someone else's network:
+it signs result URLs for the *client*, so `localhost:9000` works only for a client
+on this host. A colleague on your LAN needs an address they can resolve.
+
+The costly omission is `NDIF_REDIS_URL` on `ray`. It is not a startup crash: the
+controller and model actors come up, a request runs to completion on the GPU, and
+then the response cannot be published — the client sits at `DISPATCHED` or
+`RUNNING` while the job is already done. Model actors inherit the controller's
+provider config through their Ray `runtime_env`
+(`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+`_provider_runtime_env`), so setting it on `ray` fixes every actor, and missing it
+breaks every actor at once.
+
+Reproducing compose behavior outside compose means reproducing this table, plus
+`NDIF_DEFAULT_MODEL_ACTOR_CLASS` (see the `ray` service above).
+
+```bash
+# What did each service actually resolve its providers to?
+docker compose -f docker/docker-compose.yml exec ray env | grep '^NDIF_' | sort
+
+# Is Redis reachable from the ray container by service name?
+docker compose -f docker/docker-compose.yml exec ray \
+  python -c "import redis,os; print(redis.from_url(os.environ['NDIF_REDIS_URL']).ping())"
+```
 
 ## `just` is the interface
 

@@ -63,7 +63,7 @@ when you change the frontend. See [Admin Dashboard](dashboard.md).
 **Two GPU-adjacent numbers are easy to confuse.** GPU memory funds the resident
 (HOT) model; `NDIF_MODEL_CACHE_PERCENTAGE` scales **host RAM** for the WARM cache.
 Reaching for the latter during a GPU OOM is the wrong lever — see
-[GPU and Memory](../gotchas/gpu-and-memory.md).
+[Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
 
 ## Related
 

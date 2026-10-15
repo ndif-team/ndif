@@ -2,7 +2,7 @@
 title: Status and Results
 one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and the two routes saved values take back to the client.
 tags: [concepts, api, redis, queue]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/errors/client-side-failures.md, docs/developing/model-actor.md]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/reference/error-messages.md, docs/developing/model-actor.md]
 sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py]
 ---
 
@@ -17,7 +17,7 @@ get home. Two facts frame it:
    nnsight's `ResponseModel` and `Status` comes from nnsight
    (`src/ndif/common/schema/response.py`), so the wire format is by construction
    exactly what the client parses. Server and client are coupled through that
-   shared type — see [Client/server versions](../gotchas/client-server-versions.md).
+   shared type — see [nnsight integration](../developing/nnsight-integration.md#what-ndif-re-exports).
 2. **Status updates and results travel by different routes.** A status update is
    a small JSON message on a Redis pub/sub channel. A result is an arbitrarily
    large tensor dict, so it goes to the object store and the `COMPLETED` message
@@ -196,5 +196,5 @@ through `poll()` instead, one snapshot at a time.
   `BackendResponseModel`, and the `Status` enum field by field.
 - [Redis keys](../reference/redis-keys.md) — the response channels and every
   other key involved.
-- [Client-side failures](../errors/client-side-failures.md) — mapping what the
-  user sees in nnsight back to a server-side cause.
+- [Error messages](../reference/error-messages.md) — mapping what the user sees
+  in nnsight back to a server-side cause.

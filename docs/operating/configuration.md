@@ -2,7 +2,7 @@
 title: Configuration
 one_liner: How NDIF is configured — environment variables only, no config file, layered per process, with a working single-host default for everything.
 tags: [operating, cli, dev, telemetry, auth]
-related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/production.md, docs/operating/cli.md, docs/developing/providers.md, docs/reference/ports.md, docs/runbooks/enable-auth.md, docs/gotchas/networking-and-compose.md]
+related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/production.md, docs/operating/cli.md, docs/developing/providers.md, docs/reference/ports.md, docs/runbooks/enable-auth.md]
 sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/docker-compose.yml, docker/Dockerfile, pyproject.toml, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/config.py]
 ---
 
@@ -149,6 +149,36 @@ becomes `trust_remote_code=` when the model loads
 arbitrary Python in-process and loads models with remote code execution enabled.
 That is the trade the zero-config default makes. `docs/concepts/auth-and-limits.md`
 and `docs/runbooks/enable-auth.md` cover flipping it.
+
+## The client version gate
+
+The nnsight client stamps `nnsight-version` and `python-version` headers on every
+`POST /request`, and `src/ndif/services/api/versioning.py`
+`validate_client_versions` checks them before any other work.
+
+| Variable | Example | Unset or empty |
+|---|---|---|
+| `NDIF_MIN_NNSIGHT_VERSION` | `0.8.0` | no nnsight gating |
+| `NDIF_MIN_PYTHON_VERSION` | `3.10` | no python gating |
+
+Both default to unset, so **an out-of-the-box NDIF gates nothing**: an old client
+gets through and fails later, at deserialize, with a message about pickles rather
+than versions. Setting `NDIF_MIN_NNSIGHT_VERSION` is the cheapest operational
+improvement available to a self-hoster.
+
+Once a minimum is set, three things produce a 400: a missing header (read as an
+outdated nnsight), an unparseable version, and a version below the floor. Python
+compares major.minor only. The exact messages are in
+[Error messages](../reference/error-messages.md#the-client-version-gate).
+
+- Both variables are read **once at import**, so a change needs a fresh API
+  process. After editing the compose `environment:` block, `just up api` recreates
+  the container; `just restart api` restarts the process with the old environment.
+- An **empty string counts as unset**: `NDIF_MIN_NNSIGHT_VERSION=""` disables the
+  gate rather than rejecting everyone.
+- An nnsight run from a source tree with no installed distribution reports an
+  empty version, which a configured gate rejects as "not provided".
+  `pip install -e` the checkout so the distribution metadata exists.
 
 ## Pip extras
 

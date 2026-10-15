@@ -2,7 +2,7 @@
 title: Quickstart
 one_liner: Three routes to your own NDIF — `docker run` from the published image, compose from the checkout, or from source with the `ndif` CLI — each to a working `remote=True` nnsight trace.
 tags: [operating, cli, ray, api, auth]
-related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/models-and-deployment.md, docs/operating/troubleshooting.md, docs/concepts/request-lifecycle.md, docs/runbooks/enable-auth.md, docs/reference/ports.md, docs/gotchas/networking-and-compose.md]
+related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/production.md, docs/operating/models-and-deployment.md, docs/operating/troubleshooting.md, docs/concepts/request-lifecycle.md, docs/runbooks/enable-auth.md, docs/reference/ports.md]
 sources: [justfile, docker/docker-compose.yml, docker/Dockerfile, requirements.txt, pyproject.toml, src/ndif/cli/service.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/doctor.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/start.sh, tests/conftest.py, tests/test_nnsight_remote.py, .github/workflows/publish_docker.yml]
 ---
 

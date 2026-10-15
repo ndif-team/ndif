@@ -69,17 +69,9 @@ Pick the route first — they are three different pages:
 
 ### "Something is broken"
 - [docs/operating/troubleshooting.md](docs/operating/troubleshooting.md) — stack-level triage, start here
-- [docs/errors/index.md](docs/errors/index.md) — the error tree; `ndif version` first if a version mismatch is plausible
-- [docs/errors/client-side-failures.md](docs/errors/client-side-failures.md) — a user pasted an nnsight error
-- [docs/errors/server-exceptions.md](docs/errors/server-exceptions.md) — you're reading server logs
+- [docs/reference/error-messages.md](docs/reference/error-messages.md) — exact error text, user side and server side
 - [docs/runbooks/debug-a-stuck-request.md](docs/runbooks/debug-a-stuck-request.md) — a hung job, end to end
 - [docs/runbooks/trace-a-users-failed-job.md](docs/runbooks/trace-a-users-failed-job.md) — reconstruct a past failure
-
-### "It runs, but it's doing something inexplicable"
-- [docs/gotchas/index.md](docs/gotchas/index.md) — the traps that produce confusing behavior instead of an error
-- [docs/gotchas/networking-and-compose.md](docs/gotchas/networking-and-compose.md) — service names vs localhost, the Redis/Ray GCS collision, presigned-URL hosts
-- [docs/gotchas/gpu-and-memory.md](docs/gotchas/gpu-and-memory.md) — `shm_size`, the two memory budgets, sizing and eviction
-- [docs/gotchas/client-server-versions.md](docs/gotchas/client-server-versions.md) — the nnsight coupling
 
 ### "Secure it / turn on auth"
 - [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md) — the procedure, and what you're exposed to until you run it

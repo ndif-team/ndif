@@ -2,7 +2,7 @@
 title: Add a GPU Node
 one_liner: Join a second GPU machine to a running NDIF cluster as a Ray worker, confirm the controller can see its GPUs, and drain it again.
 tags: [runbook, operating, ray, controller]
-related: [docs/operating/production.md, docs/developing/ray-service.md, docs/developing/controller-internals.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/concepts/deployments-and-eviction.md, docs/gotchas/networking-and-compose.md, docs/runbooks/deploy-and-pin-a-model.md]
+related: [docs/operating/production.md, docs/developing/ray-service.md, docs/developing/controller-internals.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/concepts/deployments-and-eviction.md, docs/operating/compose-stack.md, docs/runbooks/deploy-and-pin-a-model.md]
 sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/cli/commands/start.py, src/ndif/cli/service.py, src/ndif/cli/config.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, docker/docker-compose.yml]
 ---
 

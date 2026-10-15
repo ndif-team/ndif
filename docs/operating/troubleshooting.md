@@ -2,19 +2,24 @@
 title: Troubleshooting
 one_liner: Operator triage — the four commands to run first, then a symptom → diagnosis → fix table for the whole stack rather than one request.
 tags: [operating, runbook, gotchas, api, ray, redis, dashboard, telemetry]
-related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/observability.md, docs/operating/production.md, docs/concepts/services-and-topology.md, docs/errors/client-side-failures.md, docs/errors/server-exceptions.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/add-a-gpu-node.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/gotchas/networking-and-compose.md, docs/gotchas/gpu-and-memory.md]
+related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/observability.md, docs/operating/production.md, docs/concepts/services-and-topology.md, docs/reference/error-messages.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/add-a-gpu-node.md, docs/reference/ports.md, docs/reference/env-vars.md]
 sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
 ---
 
 # Troubleshooting
 
-## What this covers
+## Where to go
 
-Triage, not procedure. Something is wrong with the *stack* — a service won't
-start, requests hang, the dashboard is blank — and you need to know which
-component to blame in under a minute. Anything that needs a full walk-through
-links to a runbook; anything about one user's request links to
-[Client-side failures](../errors/client-side-failures.md).
+The single entry point for "something broke". Find the row, follow it.
+
+| What you have | Go to |
+|---|---|
+| Exact error text from a user, or a log line | [Error messages](../reference/error-messages.md) |
+| One request hung, or stuck in a status | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
+| A past failure to reconstruct from a request id and a time | [Trace a user's failed job](../runbooks/trace-a-users-failed-job.md) |
+| A deploy refused, or an actor dying while loading weights | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
+| A new GPU node that doesn't show up | [Add a GPU node](../runbooks/add-a-gpu-node.md) |
+| The stack itself: a service down, everything hanging, no UI, no telemetry | the rest of this page |
 
 ## The first four commands
 
@@ -142,15 +147,20 @@ nothing else in the stack needs one.
 
 ## `/ping` works but requests hang
 
-`GET /ping` has no dependencies — it answers as long as a gunicorn worker is
-alive. That makes it useless for telling you whether work is being *done*.
+The API can report healthy with no dispatcher running, which defeats naive
+monitoring. The dispatcher sets the `ray:connected` Redis flag on connect and
+deletes it while reconnecting, and the flag has **no TTL**. If the dispatcher
+process dies outright the flag survives, and every health signal keeps passing:
 
-The trap is `ray:connected`: the dispatcher sets that Redis flag on connect and
-deletes it while reconnecting (`queue/dispatcher.py:85`, `:109`), and it has
-**no TTL**. If the dispatcher process dies outright the flag survives forever, so
-`/connected`, `/request`, `/status` and `/env` all keep reporting healthy while
-nothing is dispatched. Requests pile up in the Redis list unserved and clients
-sit on `RECEIVED`.
+| Endpoint | Why it still passes |
+|---|---|
+| `GET /ping` | No dependencies at all — a live gunicorn worker is enough |
+| `GET /connected` | Reads `ray:connected` |
+| `POST /request` | Same flag; the request is accepted and `LPUSH`ed, then never popped |
+| `GET /status`, `GET /env` | Serve the last cached blob until its TTL (60 s / 300 s) expires; only then do they 503/504 |
+
+Requests pile up in the Redis list unserved and clients sit on `RECEIVED`. A
+check that actually detects a dead dispatcher observes the *queue*:
 
 ```bash
 redis-cli get ray:connected      # "1" — but that proves nothing on its own
@@ -160,8 +170,9 @@ ndif queue                       # asks the dispatcher directly; 5s timeout
 
 A growing `llen queue` plus `No response from the dispatcher` from `ndif queue`
 is the signature: the flag says connected, the process is gone. The dispatcher
-runs as a child of the API's gunicorn master (`gunicorn_conf.py:61`), so
-restarting the API brings it back:
+runs as a child of the API's gunicorn master
+(`src/ndif/services/api/gunicorn_conf.py` `on_starting`), so restarting the API
+brings it back:
 
 ```bash
 just restart api
@@ -169,10 +180,9 @@ just restart api
 
 > **Gotcha:** that restart **drops every queued and in-flight request.** Redis's
 > `queue` list is the only durable point in the path; the moment the dispatcher
-> `BRPOP`s a request it exists only as a Python object in that process — in a
-> per-model `asyncio.Queue` or in `Replica.current_request`. Clients on a blocking
-> websocket get no further status at all, not even an `ERROR`. Only requests still
-> sitting in the Redis list survive. See
+> pops a request it exists only as a Python object in that process. Clients on a
+> blocking websocket get no further status at all, not even an `ERROR`. Only
+> requests still sitting in the Redis list survive. See
 > [Queue internals](../developing/queue-internals.md).
 
 If the dispatcher is alive but the queue still isn't draining, the request is
@@ -240,17 +250,11 @@ constraint for non-blocking jobs polled much later.
 
 ## No Redis on localhost inside the ray container
 
-`RedisProvider`'s default is `redis://localhost:6379`, but inside the `ray`
-container there is no Redis on localhost. Leave `NDIF_REDIS_URL` unset there and
-every model actor tries to reach a Redis that isn't there — the response
-handshake fails and nothing a user submits ever gets a status. Compose sets it
-explicitly (`docker-compose.yml:237`).
-
-Ray's own GCS is deliberately kept off 6379: `services/ray/start.sh:60` passes
-`--port="${NDIF_RAY_HEAD_PORT:-6385}"` and the CLI `DEFAULTS`
-(`cli/config.py`) set the same `6385`, so both paths agree and the GCS never
-collides with Redis's conventional 6379. If you override `NDIF_RAY_HEAD_PORT`,
-override it the same way everywhere the head and its workers read it.
+`RedisProvider` defaults to `redis://localhost:6379`, and nothing listens there
+inside the `ray` container. Leave `NDIF_REDIS_URL` unset on that service and
+requests run to completion on the GPU and then never report a status. Compose sets
+it explicitly; see
+[Service names, not localhost](compose-stack.md#service-names-not-localhost).
 
 ## Telemetry is missing
 
@@ -288,24 +292,6 @@ Model-actor logs are the ones people can't find: the controller overrides
 > check for the incoming model), or tune `NDIF_DEFAULT_PADDING_FACTOR` /
 > `NDIF_DEFAULT_PADDING_BIAS`.
 
-## The API reports healthy after the dispatcher died
-
-Worth stating on its own because it defeats naive monitoring. All four of these
-can report success with no dispatcher running:
-
-| Endpoint | Why it still passes |
-|---|---|
-| `GET /ping` | No dependencies at all — a live gunicorn worker is enough |
-| `GET /connected` | Reads `ray:connected`, which has no TTL |
-| `POST /request` | Same flag; the request is accepted and `LPUSH`ed, then never popped |
-| `GET /status`, `GET /env` | Serve the last cached blob until its TTL (60s / 300s) expires; only then do they 503/504 |
-
-A health check that actually detects a dead dispatcher has to observe the
-*queue*, not the API: `redis-cli llen queue` staying non-zero, or a round-trip
-`ndif queue` (which is a Redis-stream request/response to the dispatcher process
-itself, with a 5s timeout). `GET /status` returning 504 after its cache expires is
-the slowest but most automatic signal.
-
 ## Related
 
 - [The Compose Stack](compose-stack.md) — every container, port, volume, and the
@@ -316,7 +302,6 @@ the slowest but most automatic signal.
   is fine and one request isn't.
 - [Model OOM on deploy](../runbooks/model-oom-on-deploy.md),
   [Add a GPU node](../runbooks/add-a-gpu-node.md) — the full procedures.
-- [Client-side failures](../errors/client-side-failures.md) and
-  [Server exceptions](../errors/server-exceptions.md) — error text, both sides.
+- [Error messages](../reference/error-messages.md) — every error text, both sides.
 - [Observability](observability.md) — the log labels and metric measurements the
   checks above assume.

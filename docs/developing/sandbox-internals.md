@@ -2,7 +2,7 @@
 title: Sandbox Internals
 one_liner: How a request's traced block runs in a separate runner process while the model stays on the host, with nnsight's interleaver split across a Unix socket.
 tags: [internals, dev, sandbox, ray]
-related: [docs/concepts/sandbox-execution.md, docs/developing/model-actor.md, docs/developing/nnsight-integration.md, docs/concepts/request-lifecycle.md, docs/errors/server-exceptions.md]
+related: [docs/concepts/sandbox-execution.md, docs/developing/model-actor.md, docs/developing/nnsight-integration.md, docs/concepts/request-lifecycle.md, docs/reference/error-messages.md]
 sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/modeling/base.py]
 ---
 
@@ -468,4 +468,4 @@ boundary to rely on today.
 `docs/developing/model-actor.md` covers `BaseModelDeployment` and its `run`
 template; `docs/developing/nnsight-integration.md` serialization and the client
 contract; `docs/concepts/request-lifecycle.md` how a request reaches `execute`; and
-`docs/errors/server-exceptions.md` what `RunnerError` / `OutOfOrderError` mean.
+`docs/reference/error-messages.md` what `RunnerError` / `OutOfOrderError` mean.

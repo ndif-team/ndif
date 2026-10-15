@@ -2,7 +2,7 @@
 title: Auth and Limits
 one_liner: API keys, the Postgres-backed check, and the one fact that matters most — with auth off a request is trusted by default (a client-supplied trusted is honored), which decides where user code runs and how models load.
 tags: [concepts, auth, api, gotchas]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/gotchas/client-server-versions.md]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
 sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, docker/postgres/init.sql]
 ---
 

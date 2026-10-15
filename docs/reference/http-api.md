@@ -2,7 +2,7 @@
 title: HTTP API Reference
 one_liner: Every route the NDIF API registers — method, path, auth, request and response shape, status codes, and who calls it.
 tags: [reference, api]
-related: [docs/developing/api-service.md, docs/reference/schemas.md, docs/concepts/status-and-results.md, docs/concepts/auth-and-limits.md, docs/errors/client-side-failures.md, docs/developing/nnsight-integration.md]
+related: [docs/developing/api-service.md, docs/reference/schemas.md, docs/concepts/status-and-results.md, docs/concepts/auth-and-limits.md, docs/reference/error-messages.md, docs/developing/nnsight-integration.md]
 sources: [src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/common/schema/request.py, src/ndif/common/schema/response.py]
 ---
 
@@ -354,5 +354,5 @@ curl -H "ndif-api-key: 00000000-0000-0000-0000-000000000000" \
 - `docs/concepts/status-and-results.md` — the status lifecycle and the presigned
   result blob.
 - `docs/concepts/auth-and-limits.md` — API keys, tags, version gating.
-- `docs/errors/client-side-failures.md` — what each of these status codes looks
+- `docs/reference/error-messages.md` — what each of these status codes looks
   like from inside nnsight.

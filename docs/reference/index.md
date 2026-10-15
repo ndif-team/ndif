@@ -2,7 +2,7 @@
 title: Reference
 one_liner: Lookup tables — every endpoint, schema field, Redis key, environment variable, and port, sourced from the code.
 tags: [reference]
-related: [docs/reference/env-vars.md, docs/reference/http-api.md, docs/reference/schemas.md, docs/reference/glossary.md]
+related: [docs/reference/error-messages.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/reference/schemas.md, docs/reference/glossary.md]
 sources: []
 ---
 
@@ -24,6 +24,7 @@ built to be checked — but the **code** is always the authority.
 | [Redis Keys Reference](redis-keys.md) | Every key, channel and stream — type, writer, reader, TTL. |
 | [Environment Variables](env-vars.md) | Every `NDIF_*` variable — default, reader, effect. |
 | [Ports](ports.md) | What binds where, what compose publishes, what belongs public. |
+| [Error Messages](error-messages.md) | What an exact error text means, whose fault it is, and whether to retry. |
 | [Glossary](glossary.md) | What a term means, and which page covers it. |
 | [External Resources](external-resources.md) | Where to go when the answer isn't in this repo. |
 

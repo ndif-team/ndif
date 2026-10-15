@@ -2,7 +2,7 @@
 title: nnsight Integration
 one_liner: The client/server contract as a subsystem — what nnsight puts on the wire, how the server rebuilds and runs it, which nnsight internals NDIF depends on, and the extension points nnsight deliberately provides for NDIF.
 tags: [internals, dev, api, sandbox]
-related: [docs/gotchas/client-server-versions.md, docs/developing/sandbox-internals.md, docs/developing/model-actor.md, docs/reference/schemas.md, docs/reference/http-api.md, docs/concepts/request-lifecycle.md, docs/concepts/status-and-results.md, docs/developing/testing.md, docs/reference/external-resources.md]
+related: [docs/operating/configuration.md, docs/reference/error-messages.md, docs/developing/sandbox-internals.md, docs/developing/model-actor.md, docs/reference/schemas.md, docs/reference/http-api.md, docs/concepts/request-lifecycle.md, docs/concepts/status-and-results.md, docs/developing/testing.md, docs/reference/external-resources.md]
 sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/versioning.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, pyproject.toml]
 ---
 
@@ -231,8 +231,15 @@ client expects to parse"), `Status` is re-exported verbatim, and
 plus `response` / `respond` / `arespond` for building and delivering updates.
 
 The implication for anyone extending the protocol: **a new status or a new
-response field is an nnsight change, not an NDIF change.** See
-[client/server versions](../gotchas/client-server-versions.md#the-status-enum-is-the-clients-enum).
+response field is an nnsight change, not an NDIF change.** `Status` lives in the
+client's package, so a new member has to ship in an nnsight release and be
+installed by the user before the server may emit it; a client whose enum lacks a
+published member fails pydantic validation, which surfaces as a broken remote run
+rather than an unknown-status warning. To convey something new without a client
+release, put it in `description` on an existing status, or emit it as a `LOG` —
+a transient server message that `_advance_status` skips
+(`src/ndif/common/schema/request.py` `BackendRequestModel._advance_status`) and
+clients already print.
 
 ## The seams nnsight provides for NDIF
 
@@ -294,6 +301,59 @@ path would (local modules hidden) and runs it in-process. A pass there is strong
 evidence the serialization half of the contract is intact; it says nothing about
 the queue, the actor, or the sandbox.
 
+## When client and server versions differ
+
+The block's *source* is version-independent; the objects it closes over are not.
+Tensors, tokenizers, config objects and every nnsight internal in the payload
+cross as ordinary (cloud)pickles.
+
+| Drift | Effect |
+|---|---|
+| Client Python 3.11, server 3.12 | fine — the source reparses; the explicit design goal |
+| Client syntax the server's Python can't parse | `SyntaxError` at deserialize, an `ERROR` response |
+| Client and server nnsight differ | unsafe — see below |
+| A referenced third-party object whose pickle format changed | an unpickling error at deserialize |
+| A locally-defined helper the server has never heard of | `ModuleNotFoundError`, unless registered |
+
+When the two nnsight versions disagree, roughly in order of how often it bites:
+
+- **A changed class layout.** The tracer itself is pickled; if the client's
+  `Tracer`/`Interleaver`/`Envoy` gained or lost attributes, the payload unpickles
+  into an object the server's code misuses — often an `AttributeError` deep in
+  nnsight, reported as the user's own job failing.
+- **A changed persistent-id scheme.** A client that tags ids the server's map
+  lacks fails at deserialize.
+- **A different module tree for the same checkpoint.** The block names modules by
+  path; a client `transformers` that builds a different tree fails at deserialize
+  with the architecture-mismatch sentence, or parks on a location the forward pass
+  never reaches.
+- **Semantic drift with no error at all.** A default that changed between
+  transformers releases produces different numbers, not an exception.
+
+`nnsight.compare()` fetches the server's `GET /env`, diffs it against the local
+environment and highlights nnsight, transformers and torch. Server-side, `/env` is
+a TTL'd cache of the controller's environment (`NDIF_ENV_TTL_S`, default 300), so
+it can lag a redeploy by up to five minutes. The text of each resulting error is in
+[Error messages](../reference/error-messages.md).
+
+## Client-side packages a user needs
+
+The client builds the model wrapper locally, on the meta device, to resolve module
+paths and mint the model key — so it needs enough of the ecosystem to build the
+*same architecture* the server loaded.
+
+- **PEFT.** Adapters are per request: `TransformersModel(repo, peft="<adapter
+  repo id>")` puts `{"peft": ...}` in the request's `env`, and the actor applies
+  it before every run. The server has `peft` (the `ray` extra, pinned in
+  `requirements.txt`) and fetches the adapter from the Hub by id, so a local
+  adapter directory is invisible to it. The client needs `peft` too, or its meta
+  model has no adapter modules and the paths the user writes don't match.
+  Any optional package that changes a module tree is the same.
+- **Local helper modules.** `pull_env()` runs before the first remote request and
+  registers modules importable from the working tree but not pip-installed, so
+  their source ships by value; `nnsight.register(module)` does it explicitly.
+  Installed packages are not registered — the server is expected to have them.
+
 ## Bumping the client
 
 When you move the server to a newer nnsight, check these in order:
@@ -305,7 +365,9 @@ When you move the server to a newer nnsight, check these in order:
    `Status.` under `src/ndif/`; every member must exist in the new enum.
 3. **Do `_saves()`, `inc()`, `dec()` still exist with these semantics?** They are
    underscore-private in nnsight and carry no stability promise.
-4. **Does the sandbox still interleave?** Force `trusted=False` and run a trace
+4. **Does the sandbox still interleave?** A bare `just up` has no Postgres, and an
+   unspecified `trusted` then defaults to trusted, so the sandbox never runs unless
+   you ask. Force `trusted=False` and run a trace
    with a read, a swap, a multi-invoke batch, and a `tracer.iter` loop. Trusted
    and untrusted must produce identical results for the same request — that
    invariant is the reason the sandbox reuses `Mediator`, `Batcher` and `Cache`
@@ -313,7 +375,9 @@ When you move the server to a newer nnsight, check these in order:
 5. **Do model keys still round-trip?** `ndif deploy gpt2` mints its key through
    nnsight; a change to `to_model_key`'s format orphans every existing
    `models.yaml` and every pinned `NDIF_DEPLOYMENTS` entry.
-6. **Set `NDIF_MIN_NNSIGHT_VERSION`** to the oldest client that still works.
+6. **Set `NDIF_MIN_NNSIGHT_VERSION`** to the oldest client that still works —
+   have a client on the *old* nnsight submit a request to find it, then restart
+   the API ([the version gate](../operating/configuration.md#the-client-version-gate)).
 
 To run against an unreleased nnsight fix, replace the `nnsight` line in
 `requirements.txt` with a git ref (`git+https://github.com/ndif-team/nnsight.git@<ref>`)
@@ -337,9 +401,10 @@ the user's frames is deliberate (`format_error`, `base.py:545`).
 
 ## Related
 
-[Client and server version coupling](../gotchas/client-server-versions.md) is the
-operator-facing version of this page — the version gate, what a rejected client
-sees, and which client-side packages a user needs.
+[Configuration](../operating/configuration.md#the-client-version-gate) covers the
+operator's side of the version gate, and
+[Error messages](../reference/error-messages.md) what a rejected or mismatched
+client sees.
 [Sandbox internals](sandbox-internals.md) covers the split interleaver in full,
 and [Model actor](model-actor.md) the `run` template these pieces plug into.
 [Schemas](../reference/schemas.md) lists every field on `BackendRequestModel` and

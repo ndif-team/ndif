@@ -2,7 +2,7 @@
 title: Ports
 one_liner: Every port the NDIF stack binds or connects to — what listens, which env var moves it, what the dev compose publishes and the image EXPOSEs, and what belongs on a public interface.
 tags: [reference, operating, ray, telemetry]
-related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/gotchas/networking-and-compose.md, docs/runbooks/add-a-gpu-node.md, docs/concepts/services-and-topology.md, docs/operating/observability.md]
+related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/runbooks/add-a-gpu-node.md, docs/concepts/services-and-topology.md, docs/operating/observability.md]
 sources: [docker/Dockerfile, docker/docker-compose.yml, docker/prometheus/prometheus.yml, src/ndif/services/ray/start.sh, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/dashboard/start.sh, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/common/providers/ray.py]
 ---
 
@@ -57,12 +57,13 @@ to be open between nodes; consult Ray's own port documentation rather than
 guessing, since this repo doesn't pin them.
 
 > **Gotcha:** Ray's own GCS port default is **6379 — the same port as Redis**.
-> NDIF moves it to 6385 precisely so a single-host `ndif start` can run both:
-> both the CLI's `DEFAULTS` (`src/ndif/cli/config.py:22-31`) and `ray/start.sh:60`'s
-> `${NDIF_RAY_HEAD_PORT:-6385}` fallback use 6385, so the two agree however Ray
-> is launched. The related trap bites in compose: inside the ray container
-> `localhost:6379` is Ray's GCS, not Redis, which is why the ray service must be
-> given `NDIF_REDIS_URL: redis://redis:6379` explicitly (`docker-compose.yml:237`).
+> NDIF moves it to 6385 so a single-host `ndif start` can run both: the CLI's
+> `DEFAULTS` (`src/ndif/cli/config.py`) and `ray/start.sh`'s
+> `${NDIF_RAY_HEAD_PORT:-6385}` fallback agree however Ray is launched. A worker's
+> `NDIF_RAY_HEAD_ADDRESS` must name the port the head actually bound. If you
+> override `NDIF_RAY_HEAD_PORT`, set the same value everywhere the head and its
+> workers read it — and setting it to 6379 on a host that also runs Redis puts the
+> collision back.
 
 ## Backing services
 
@@ -174,5 +175,5 @@ access from anywhere else; `start.sh:38` only ever dials *out* to the head.
   real auth, a real object store.
 - `docs/runbooks/add-a-gpu-node.md` — the worker-join procedure that depends on
   6385 being reachable.
-- `docs/gotchas/networking-and-compose.md` — the localhost-vs-service-name traps
-  behind the Redis/GCS collision.
+- [Compose stack](../operating/compose-stack.md#service-names-not-localhost) —
+  which service needs which address, and the localhost defaults that break it.

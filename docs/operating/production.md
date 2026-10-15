@@ -2,7 +2,7 @@
 title: Going to Production
 one_liner: What has to change before an NDIF faces users — auth, dashboard credentials, object store, multi-node Ray, sizing, timeouts, retention — and what the code honestly does not provide.
 tags: [operating, auth, ray, telemetry, gotchas]
-related: [docs/operating/quickstart.md, docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/runbooks/enable-auth.md, docs/runbooks/add-a-gpu-node.md, docs/runbooks/model-oom-on-deploy.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/gotchas/gpu-and-memory.md]
+related: [docs/operating/quickstart.md, docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/runbooks/enable-auth.md, docs/runbooks/add-a-gpu-node.md, docs/runbooks/model-oom-on-deploy.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/reference/env-vars.md, docs/reference/ports.md]
 sources: [docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/api/queue/config.py, src/ndif/common/providers/objectstore.py, src/ndif/services/dashboard/backend/config.py, docker/postgres/init.sql]
 ---
 
@@ -180,8 +180,7 @@ node, not the dev defaults; the detail lives in the runbooks and
   Long-context or heavily-batched workloads can pass placement and then OOM.
   `NDIF_DEFAULT_PADDING_FACTOR` / `NDIF_DEFAULT_PADDING_BIAS` set the global
   headroom, and a per-model `padding_factor` raises it for just the models that
-  need it. See `docs/runbooks/model-oom-on-deploy.md` and
-  `docs/gotchas/gpu-and-memory.md`.
+  need it. See `docs/runbooks/model-oom-on-deploy.md`.
 - **The WARM cache is CPU RAM.** `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`) is
   the fraction of the node's **total system RAM** the controller may use to hold
   evicted models off-GPU (`services/ray/resources.py:18-22`, scaled by the
@@ -230,6 +229,15 @@ State this plainly to yourself before you deploy:
   fork, and no accounting.
 - **No secret management.** Credentials are environment variables. Bring your own
   secret store.
+- **No authentication on the backing services.** The dev compose publishes Redis,
+  Postgres, MinIO (`minioadmin`), InfluxDB, Loki, Prometheus, Grafana (anonymous
+  admin), the Ray dashboard and the Ray client port on every interface. Anyone who
+  can reach these ports can run code on the cluster. Bind them to `127.0.0.1` or
+  drop the `ports:` entries before the machine is reachable;
+  `docs/reference/ports.md` marks which ports belong public.
+- **No namespacing in Redis.** Keys such as `queue`, `status` and `ray:connected`
+  carry no prefix, so two deployments sharing one Redis take each other's
+  requests. Give each deployment its own Redis, or its own logical database.
 - **No test CI and no compatibility guarantees.** `.github/workflows/` builds and
   publishes images (`build_images.yml`, `publish_docker.yml`) and the PyPI package
   (`publish.yml`); none of them run tests. The only test suite is the live-server

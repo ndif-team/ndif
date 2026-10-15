@@ -2,7 +2,7 @@
 title: Deployments and Eviction
 one_liner: What "a model is deployed" means (detached Ray actors holding weights on reserved GPU memory), the HOT/WARM/COLD levels, how the controller accounts for memory, and what it is allowed to throw away.
 tags: [concepts, controller, ray]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/operating/models-and-deployment.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/model-oom-on-deploy.md, docs/gotchas/gpu-and-memory.md]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/operating/models-and-deployment.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/model-oom-on-deploy.md]
 sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/common/schema/controller.py]
 ---
 
@@ -44,11 +44,17 @@ released the per-process GPU caps, and emptied the CUDA cache
 (`.../modeling/base.py:237`). It costs CPU RAM and process slots, but bringing it
 back (`from_cache`) skips the disk load entirely — that is the point of the tier.
 
+The three levels are governed by three unrelated budgets — the GPU ledger, the
+node's CPU cache budget, and disk — and moving between them is an actor method,
+not a restart: the replica keeps its `replica_id` across a demotion, so the Ray
+actor name is stable.
+
 > **Gotcha:** `get_deployment` only returns `HOT` replicas
 > (`controller.py:516`). A model with nothing but `WARM` replicas looks
 > undeployed to the queue, which then asks for a *new* replica — and the
 > placement logic prefers a node that already has it cached, promoting the
-> `WARM` one rather than loading from disk.
+> `WARM` one rather than loading from disk. The user still watches a
+> `PROVISIONING` → `DEPLOYING` cycle for a model that never left the node.
 
 ## Sizing a model
 
@@ -210,7 +216,7 @@ re-queues whatever they were running.
 
 `NDIF_DEPLOYMENTS` is a `|`-separated list of model keys the controller deploys
 **pinned** at startup (`controller.py:107`). Pinning is also available per deploy
-call (`DeploymentConfig(pinned=True)`, what `ndif deploy --pin` sends). A pinned
+call (`DeploymentConfig(pinned=True)`, what `ndif deploy --pinned` sends). A pinned
 deployment is exempt from eviction and is reported without the `schedule.end_time`
 that non-pinned deployments carry in `status()`.
 
@@ -227,5 +233,5 @@ Replicas the *queue* provisions are never pinned — `Replica.provision` calls
   deploying, pinning, revisions, dtype, PEFT.
 - [Model actor](../developing/model-actor.md) — what happens inside the actor on
   load, `to_cache`, and `from_cache`.
-- [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) — when the estimate
-  and reality disagree.
+- [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) — sizing in
+  practice: the padding knobs, what the ledger can't see, and making room.

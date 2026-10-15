@@ -209,20 +209,20 @@ the object store and polled via `GET /response/{id}` instead — see
 
 | Hop | Failure | What the user sees | Where to look |
 |---|---|---|---|
-| 2 | Websocket never connects | client hangs / connection error before any status | [Compose networking](../gotchas/networking-and-compose.md) |
+| 2 | Websocket never connects | client hangs / connection error before any status | [Compose stack](../operating/compose-stack.md#service-names-not-localhost) |
 | 3 | Ray unreachable | `503` "compute backend is reconnecting" | [Services and Topology](services-and-topology.md) |
 | 3 | Bad/missing API key | `401` / `400` / `403` from `POST /request` | [Auth and Limits](auth-and-limits.md) |
-| 3 | Client too old | `400` naming the minimum version | [Client/server versions](../gotchas/client-server-versions.md) |
+| 3 | Client too old | `400` naming the minimum version | [Configuration](../operating/configuration.md#the-client-version-gate) |
 | 4 | Dispatcher process dead | request sits in Redis, no `QUEUED` ever arrives | [Queue internals](../developing/queue-internals.md) |
 | 5 | Model never deploys | stuck on `PROVISIONING`/`DEPLOYING`, then `ERROR` | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
 | 6 | Won't fit on any node | `ERROR` mentioning `CANT_ACCOMMODATE` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | 7 | Replica evicted mid-flight | silently re-queued at the front (no error) | [Deployments and Eviction](deployments-and-eviction.md) |
-| 8 | Block raises | `ERROR` with the user's own traceback | [Server exceptions](../errors/server-exceptions.md) |
+| 8 | Block raises | `ERROR` with the user's own traceback | [Error messages](../reference/error-messages.md) |
 | 8 | Block exceeds the timeout | `ERROR` "exceeded the execution timeout of Ns" | [Auth and Limits](auth-and-limits.md) |
-| 8 | Missing module in the block | `ModuleNotFoundError` at deserialize | [Client-side failures](../errors/client-side-failures.md) |
+| 8 | Missing module in the block | `ModuleNotFoundError` at deserialize | [Error messages](../reference/error-messages.md) |
 | 8a | Runner process dies mid-run | `ERROR` carrying the runner's formatted traceback | [Sandbox internals](../developing/sandbox-internals.md) |
 | 9 | Object store unreachable | `ERROR` from the upload, after a successful run (only on the object-store route) | [Providers](../developing/providers.md) |
-| 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Compose networking](../gotchas/networking-and-compose.md) |
+| 10 | Presigned url signed for the wrong host | `COMPLETED`, then a download failure client-side | [Production](../operating/production.md#3-real-object-storage-reachable-from-two-networks) |
 | 10 | several near-cap inline results published while the subscriber stalls | the accumulated output buffer exceeds Redis's pubsub limits, the subscriber is dropped, and `COMPLETED` never arrives — the cap bounds one message, not a queue of them | [Status and Results](status-and-results.md) |
 
 > **Gotcha:** the presigned url is an HMAC over the request *including the host*,

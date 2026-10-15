@@ -2,7 +2,7 @@
 title: Environment Variables
 one_liner: Every NDIF_* variable the server reads — default, the exact line that reads it, and what it changes.
 tags: [reference, operating, config]
-related: [docs/operating/configuration.md, docs/reference/ports.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/developing/providers.md, docs/concepts/auth-and-limits.md, docs/operating/observability.md, docs/gotchas/networking-and-compose.md]
+related: [docs/operating/configuration.md, docs/reference/ports.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/developing/providers.md, docs/concepts/auth-and-limits.md, docs/operating/observability.md]
 sources: [src/ndif/cli/config.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/ray.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/postgres.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/versioning.py, src/ndif/services/api/queue/config.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/common/redis/env.py, src/ndif/common/redis/status.py, src/ndif/common/logging_setup.py, src/ndif/cli/commands/version.py, src/ndif/cli/commands/doctor.py, docker/Dockerfile, docker/docker-compose.yml]
 ---
 

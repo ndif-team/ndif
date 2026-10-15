@@ -2,7 +2,7 @@
 title: Controller Internals
 one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, how the trusted flag reaches the model load, and how eviction is chosen and executed.
 tags: [internals, dev, controller, ray, gotchas]
-related: [docs/developing/ray-service.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/queue-internals.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/operating/models-and-deployment.md, docs/runbooks/model-oom-on-deploy.md, docs/gotchas/gpu-and-memory.md]
+related: [docs/developing/ray-service.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/queue-internals.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/operating/models-and-deployment.md, docs/runbooks/model-oom-on-deploy.md]
 sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/common/schema/controller.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/auth.py]
 ---
 

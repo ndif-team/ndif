@@ -2,7 +2,7 @@
 title: External Resources
 one_liner: Where to go when the answer isn't in this repo — where NDIF is published (Docker Hub, PyPI), nnsight's docs and source, the NDIF site and Discord, the paper, the specific Ray topics NDIF leans on, and the in-repo documents that are authoritative.
 tags: [reference]
-related: [docs/developing/nnsight-integration.md, docs/gotchas/client-server-versions.md, docs/developing/sandbox-internals.md, docs/developing/ray-service.md, docs/reference/ports.md, docs/developing/controller-internals.md]
+related: [docs/developing/nnsight-integration.md, docs/developing/sandbox-internals.md, docs/developing/ray-service.md, docs/reference/ports.md, docs/developing/controller-internals.md]
 sources: [README.md, docker/Dockerfile, .github/workflows/publish_docker.yml, .github/workflows/publish.yml, pyproject.toml, requirements.txt, src/ndif/services/ray/sandbox/ARCHITECTURE.md, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
 ---
 
@@ -68,7 +68,7 @@ every Serve page you find.
 | `ray start` flags and the cluster port map | You are adding a node. `services/ray/start.sh` passes five port flags and lets Ray default the rest — the raylet, node-manager, and worker port range are Ray's business, and Ray's port documentation is the only place they're enumerated. |
 | Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes`, `head=10` and an optional node label, and the controller reads them back off the node list. |
 | `runtime_env` / `env_vars` | You are wondering how a model actor got its Redis address. The controller copies its provider config into each actor's `runtime_env`. |
-| The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [GPU and memory gotchas](../gotchas/gpu-and-memory.md) for the `shm_size` requirement. |
+| The plasma object store and `/dev/shm` | You hit a shared-memory error or unexplained spilling. See [Compose stack](../operating/compose-stack.md#shm_size-4gb) for the `shm_size` requirement. |
 | Ray metrics / Prometheus export | You are wiring monitoring. `--metrics-export-port` is what Prometheus scrapes; the NDIF variable that sets it is `NDIF_RAY_METRICS_PORT` (`start.sh:66`). |
 
 Ray's version is pinned in `requirements.txt` (`ray[default]==2.55.1`); read the
@@ -87,7 +87,7 @@ moved between releases.
 - **boto3 / S3 presigned URLs** — a presigned URL is an HMAC over the request
   including the host. That single fact explains
   `NDIF_OBJECT_STORE_PUBLIC_URL`; see
-  [Networking and compose gotchas](../gotchas/networking-and-compose.md).
+  [Production](../operating/production.md#3-real-object-storage-reachable-from-two-networks).
 - **PEFT** — adapters are applied per request through nnsight's
   `_remoteable_set_env`, and the client needs the package too.
 
@@ -133,7 +133,7 @@ an afternoon:
 
 - [nnsight integration](../developing/nnsight-integration.md) — the client/server
   contract, and the checklist for bumping nnsight.
-- [Client and server version coupling](../gotchas/client-server-versions.md) —
+- [Client and server versions](../developing/nnsight-integration.md#when-client-and-server-versions-differ) —
   what drift between the two actually breaks.
 - [Ray service](../developing/ray-service.md) — `start.sh`, head versus worker,
   and the resources NDIF advertises.

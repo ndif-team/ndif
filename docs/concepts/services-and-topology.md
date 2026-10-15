@@ -2,7 +2,7 @@
 title: Services and Topology
 one_liner: The three NDIF services and the seven supporting containers — what each is for, what talks to what, what holds state, and what degrades when a piece is missing.
 tags: [concepts, api, ray, dashboard, redis, telemetry]
-related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/operating/observability.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/gotchas/networking-and-compose.md]
+related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/operating/observability.md, docs/reference/ports.md, docs/reference/env-vars.md]
 sources: [docker/docker-compose.yml, docker/Dockerfile, src/ndif/cli/service.py, src/ndif/services/ray/start.sh, src/ndif/services/api/start.sh, src/ndif/services/dashboard/start.sh, src/ndif/common/providers/redis.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/ray.py]
 ---
 
@@ -172,5 +172,5 @@ persisted; it re-reads nodes from Ray and re-pins `NDIF_DEPLOYMENTS` on boot.
   service, with volumes and GPU requirements.
 - [Production](../operating/production.md) — what changes when the Ray cluster is
   multi-node and the object store is real S3.
-- [Networking and compose gotchas](../gotchas/networking-and-compose.md) — host
-  vs service-name addressing, presigned urls, `shm_size`.
+- [Compose stack](../operating/compose-stack.md#service-names-not-localhost) —
+  host vs service-name addressing, presigned urls, `shm_size`.
