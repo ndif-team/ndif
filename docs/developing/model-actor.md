@@ -99,14 +99,10 @@ model = HuggingFaceModel.from_model_key(
   still on `meta`/`cpu`, sits on an unassigned card, or if an assigned card holds
   nothing. Grads are disabled and `ModelLoadTimeMetric` is emitted with
   `load_type="initial"`.
-- The constructor then calls `freeze_loaded_objects`
-  (`src/ndif/services/ray/deployments/modeling/base.py`): one `gc.collect`
-  followed by `gc.freeze()`, which moves the loaded model's objects (about 374k
-  for an 8B model) into the permanent generation. The full `gc.collect` in
-  `cleanup()` skips them, so it costs well under a millisecond instead of 70-140
-  ms per request. `from_cache` does not refreeze, because a preempted request's
-  thread can still be running then; the hooks it creates stay young and add
-  about 0.2 ms per request.
+- The constructor then runs `gc.collect()` and `gc.freeze()`, moving the loaded
+  model's objects into the permanent generation so the full `gc.collect` in
+  `cleanup()` skips them on every request. `from_cache` does not refreeze: a
+  request preempted by `to_cache` can still have a thread running then.
 
 > **Gotcha:** `dtype` and `trust_remote_code` must match what the controller's
 > evaluator sized this model with, or the GPU accounting that placed the replica is

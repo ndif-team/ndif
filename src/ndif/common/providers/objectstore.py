@@ -31,9 +31,9 @@ from botocore.exceptions import ClientError
 from .base import Provider
 
 
-# 8 MiB parts, 8 in flight. A single put_object of a large result ran at about
-# 225 MB/s against MinIO; this config took a 128 MiB upload from 650 to 210 ms.
-# Anything at or under one part (status JSON, small results) is a plain put_object.
+# boto3's defaults (8 MiB threshold and parts) with 8 parts in flight, not
+# tuned: a large result uploads about twice as fast as a single put_object.
+# Under the threshold boto3 sends one put_object.
 _TRANSFER = TransferConfig(
     multipart_threshold=8 << 20, multipart_chunksize=8 << 20, max_concurrency=8
 )
@@ -154,17 +154,10 @@ class ObjectStoreProvider(Provider):
     ) -> None:
         """Upload ``data`` under ``key`` (creating the bucket on first use).
 
-        Past ``_TRANSFER.multipart_threshold`` the upload is split into parts
-        sent in parallel. Below it, a plain ``put_object``: the transfer
-        manager adds about 0.6 ms per call, paid by every status update of a
-        non-blocking request.
+        Over ``_TRANSFER.multipart_threshold`` boto3 splits the upload into
+        parts sent in parallel; under it, one ``put_object``.
         """
         cls._ensure_bucket()
-        if len(data) <= _TRANSFER.multipart_threshold:
-            cls.client.put_object(
-                Bucket=cls.bucket, Key=key, Body=data, ContentType=content_type
-            )
-            return
         cls.client.upload_fileobj(
             io.BytesIO(data),
             cls.bucket,
