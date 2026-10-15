@@ -85,9 +85,10 @@ related but different jobs:
 
 **Blocking (`session_id` set).** The client opened `/subscribe` first and got a
 server-minted `session_id`; each response is `PUBLISH`ed to the Redis channel of
-that name — JSON for a status update, `torch.save` bytes for a `COMPLETED`
-carrying the result — and the API's websocket handler forwards it as a text
-frame or a binary frame accordingly (`src/ndif/services/api/app.py`
+that name. A status update is JSON. A `COMPLETED` carrying the result is a
+short notice naming a Redis key that holds its `torch.save` bytes. The API's
+websocket handler forwards JSON as a text frame and, after `GETDEL`ing a
+notice's key, the bytes as a binary frame (`src/ndif/services/api/app.py`
 `subscribe`). Nothing is stored: an update published while no one is listening
 is lost, which is why the API subscribes *before* handing out the session id.
 
@@ -114,8 +115,11 @@ Then `BaseModelDeployment.run` picks a route against the **inline cap**,
 `RedisProvider.max_publish_bytes` (`src/ndif/common/providers/redis.py`):
 
 **On the response.** A blocking request whose blob is at or under the cap gets
-it as `data` on the `COMPLETED` response, published as `torch.save` bytes and
-forwarded as a binary frame. The client loads it directly, with no second round
+it as `data` on the `COMPLETED` response. The response's `torch.save` bytes are
+stored under the Redis key `result:{id}` (10 minute TTL) and only `RESULT_NOTICE`
+plus that key is published, because Redis delivers an 8 MiB pub/sub message about
+15x slower than a `GET` of the same bytes. `/subscribe` `GETDEL`s the key and
+forwards the bytes as a binary frame. The client loads it directly, with no second round
 trip. Most traces take this route.
 
 **Through the object store.** Over the cap, or for a non-blocking request,
@@ -147,11 +151,9 @@ is the primary bound because Redis's buffer accounting carries an
 allocator-dependent overhead over the payload (the reasoning is in the
 `max_publish_bytes` docstring).
 
-The cap bounds the blob, not the frame. What is published is the pickled
-`COMPLETED` response, and `torch.save`'s byte encoding of the blob makes that
-frame up to ~1.5x the compressed blob. A near-cap result therefore already
-exceeds the soft limit on its own, and about three undrained near-cap results
-reach the hard limit.
+The inline result itself no longer crosses pub/sub (only its notice does), so
+the pubsub output-buffer limits the cap is derived from do not bound it any more;
+the cap is kept as the size limit for the inline route.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually

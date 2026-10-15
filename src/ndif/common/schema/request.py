@@ -12,6 +12,20 @@ from ..errors import ArchitectureMismatchError, PayloadError
 from ..telemetry import event
 from .response import BackendResponseModel, Status
 
+# A pickled response (one carrying the result blob) is stored under its own
+# Redis key and only this marker byte plus the key goes over pub/sub: Redis
+# delivers an 8 MiB pub/sub message in about 125 ms, the same bytes by GET in
+# about 8 ms. The API's /subscribe GETDELs the key on the notice. A notice that
+# reached no subscriber deletes the key at once; the TTL bounds the rest (an
+# API that dies between receiving the notice and the GETDEL).
+RESULT_NOTICE = b"\x00"
+RESULT_TTL_S = 600
+
+
+def _result_key(request_id: str) -> str:
+    return f"result:{request_id}"
+
+
 # Object-store key holding a non-blocking request's latest status response.
 def _response_key(request_id: str) -> str:
     return f"responses/{request_id}.json"
@@ -188,17 +202,25 @@ class BackendRequestModel(RequestModel):
         from. Only meaningful for a blocking request: the object store path
         keeps serving JSON, which is what ``GET /response/{id}`` returns.
         ``/subscribe`` tells the two apart by their first byte and forwards a
-        pickled response as a binary frame.
+        pickled response as a binary frame. The pickled bytes travel under a
+        Redis key, with only a ``RESULT_NOTICE`` on the channel.
         """
         from ..providers.objectstore import ObjectStoreProvider
         from ..providers.redis import RedisProvider
 
         response = self.response(status, description, data, meta)
 
-        if self.session_id:
+        if self.session_id and pickled:
+            key = _result_key(self.id)
+            pipe = RedisProvider.sync_client.pipeline()
+            pipe.set(key, response.pickle(), ex=RESULT_TTL_S)
+            pipe.publish(self.session_id, RESULT_NOTICE + key.encode())
+            if pipe.execute()[1] == 0:
+                # Nobody is subscribed (the client left), so nobody will GETDEL.
+                RedisProvider.sync_client.delete(key)
+        elif self.session_id:
             RedisProvider.sync_client.publish(
-                self.session_id,
-                response.pickle() if pickled else response.model_dump_json(),
+                self.session_id, response.model_dump_json()
             )
         elif status != Status.LOG:
             ObjectStoreProvider.put(
@@ -228,10 +250,16 @@ class BackendRequestModel(RequestModel):
 
         response = self.response(status, description, data, meta)
 
-        if self.session_id:
+        if self.session_id and pickled:
+            key = _result_key(self.id)
+            pipe = RedisProvider.async_client.pipeline()
+            pipe.set(key, response.pickle(), ex=RESULT_TTL_S)
+            pipe.publish(self.session_id, RESULT_NOTICE + key.encode())
+            if (await pipe.execute())[1] == 0:
+                await RedisProvider.async_client.delete(key)
+        elif self.session_id:
             await RedisProvider.async_client.publish(
-                self.session_id,
-                response.pickle() if pickled else response.model_dump_json(),
+                self.session_id, response.model_dump_json()
             )
         elif status != Status.LOG:
             # Non-blocking: persist the latest response for GET /response/{id}.

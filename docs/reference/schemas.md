@@ -96,8 +96,11 @@ All on the request, because it knows the id, the channel and the status clock
 - `respond(...)` also publishes, over sync Redis, from the model actor's threads;
   `arespond(...)` is the async twin the queue's workers use.
 - Publishing branches on `session_id`. **Blocking** → `publish(session_id,
-  response.pickle() if pickled else response.model_dump_json())`; `/subscribe`
-  tells them apart by the first byte and forwards a text or a binary frame.
+  response.model_dump_json())`, or for `pickled=True` a pipeline that `SET`s
+  `response.pickle()` under `result:{id}` and publishes `RESULT_NOTICE` (`\x00`)
+  plus that key; when the publish reached no subscriber the key is deleted at
+  once. `/subscribe` tells them apart by the first byte, forwards JSON as a text
+  frame, and `GETDEL`s a notice's key to send its bytes as a binary frame.
   **Non-blocking** → the latest non-`LOG` response is written as JSON to
   `responses/{id}.json` for `GET /response/{id}`; `pickled` is ignored there.
 

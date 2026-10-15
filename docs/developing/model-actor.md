@@ -295,8 +295,8 @@ re-validated, so a later request reusing the same trace-site would otherwise run
 back, decided against the inline cap — `RedisProvider.max_publish_bytes`, derived
 from the Redis server's own pubsub output-buffer limits: under the cap, and with a
 `session_id` to publish to, it rides on the `COMPLETED` response's `data` field
-itself, published as `torch.save` output and forwarded by `/subscribe` as a binary
-frame. Over it — and for a non-blocking request, which has no socket —
+itself, stored as `torch.save` output under the Redis key `result:{id}` with a
+short notice on pub/sub, and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking request, which has no socket —
 `BaseModelDeployment.upload_bytes` `put`s it under `{request.id}.pt` and returns a
 presigned GET url to ride on `data` instead. The url is signed with
 `NDIF_OBJECT_STORE_PUBLIC_URL` when set: a presigned url is an HMAC over the request
