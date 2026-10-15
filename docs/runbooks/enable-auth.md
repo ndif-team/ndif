@@ -88,7 +88,7 @@ Every other tag name is inert.
 ```bash
 docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif -c "
 INSERT INTO user_tags (name, description)
-VALUES ('trusted',  'may run without sandbox isolation'),
+VALUES ('trusted',  'code runs in the model process'),
        ('priority', 'served ahead of untagged traffic');"
 ```
 
@@ -163,8 +163,8 @@ not:
 - gradients and `backward()`;
 - training loops in a session — optimizer steps update nothing.
 
-Users who need those need a `trusted` key. What the runner isolates, and what it
-does not, is in [Sandbox execution](../concepts/sandbox-execution.md).
+Users who need those need a `trusted` key. What the runner's process separation
+covers, and what it does not, is in [Sandbox execution](../concepts/sandbox-execution.md).
 
 ## 5. Verify
 
@@ -282,7 +282,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/api/schedule   # 401
 
 - [Auth and limits](../concepts/auth-and-limits.md) — the trusted/untrusted fork
   and client version gating.
-- [Sandbox execution](../concepts/sandbox-execution.md) — what the untrusted path
-  isolates.
+- [Sandbox execution](../concepts/sandbox-execution.md) — what the untrusted path's
+  process separation covers.
 - [Production](../operating/production.md) — the rest of hardening a deployment.
 - [HTTP API](../reference/http-api.md) — every endpoint and its auth behavior.

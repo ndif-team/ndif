@@ -27,7 +27,7 @@ flag; other pages link here.
    model passes its flag into the deployment, which loads with
    `trust_remote_code=trusted` — so the model repo's own Python executes at load
    time. The value is sticky for the life of the deployment
-   ([Deployments and Eviction](deployments-and-eviction.md#trusted-follows-the-deployment)).
+   ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
 
 **How it is set.**
 
@@ -168,8 +168,8 @@ the model out entirely. A deployment can override it per model via
 `BaseModelDeployment.run` (`src/ndif/services/ray/deployments/modeling/base.py`)
 races the execution, on a worker thread, against the timer and a cancel event
 (`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your job
-exceeded the execution timeout of Ns."; a cancel responds "Your job was
-cancelled or preempted by the server." The user's answer is bounded by the
+exceeded the execution timeout of Ns."; a cancel — in practice only the HOT→WARM
+demotion — re-queues the request instead. The user's answer is bounded by the
 timeout. What `interrupt` does to the running code depends on the class:
 
 - **In-process (`ModelActor`, and trusted requests on the sandbox class).**

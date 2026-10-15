@@ -174,8 +174,7 @@ the task:
 ndif status --json-output | jq -r '.deployments[] | select(.deployment_level=="HOT") | .model_key'
 ```
 
-> **Warning:** a key without `"task"` — hand-written, or kept from an older
-> configuration — still deploys, but under a key no client request matches: the
+> **Warning:** a key without `"task"` still deploys, but under a key no client request matches: the
 > model shows HOT and the first request provisions a second deployment beside it.
 > `ndif evict <checkpoint>` computes the key with the inferred task, so it
 > reports `nothing to evict` for such a deployment; evict it by key (below).
@@ -198,8 +197,9 @@ models:
     replicas: 2
 ```
 
-An entry without `task:` gets the inferred task, which matches clients that don't
-pass one. A `model_key:` entry is used verbatim — it needs the task in it.
+An entry without `task:` takes `--task` when given, else the inferred task, which
+matches clients that don't pass one. A `model_key:` entry is used verbatim — it
+needs the task in it.
 `ndif export -f models.yaml` writes the current HOT set, task and key included, so
 "snapshot now, restore later" is two commands.
 

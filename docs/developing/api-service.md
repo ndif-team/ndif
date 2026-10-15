@@ -297,7 +297,8 @@ channel.
 > `src/ndif/services/api/app.py`). A request id is a uuid4 hex, but knowing one
 > lets anyone read that job's latest response — including, on COMPLETED, the
 > presigned result URL. `/whoami` also takes no required key: a missing or
-> unknown key resolves to `{"email": null, "tags": []}`.
+> unknown key resolves to `{"email": null, "tags": []}`; with auth on, a malformed
+> one returns 400.
 
 > **`ray:connected` has no TTL.** If the dispatcher process dies outright, the
 > flag stays set and `require_ray_connection` keeps passing — see

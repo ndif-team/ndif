@@ -111,12 +111,9 @@ model loads. [Auth and Limits](../concepts/auth-and-limits.md) and
 
 ## The fail-open switches
 
-Telemetry is off until you give it a URL, and an empty value is never an error.
-
-| Empty value | Effect |
-|---|---|
-| `NDIF_LOKI_URL` | No log shipping; the console handler still writes to stdout (`LokiProvider.connect`). `logging_loki` is never imported. |
-| `NDIF_INFLUX_URL` | No metrics. `NDIF_INFLUX_ENABLED=false` short-circuits `InfluxProvider.connect` outright; with no reachable server, points are buffered and dropped by the background writer. Nothing blocks or raises. |
+Telemetry is off until you give it a URL, and an empty value is never an error:
+an empty `NDIF_LOKI_URL` or `NDIF_INFLUX_URL` turns that sink off and nothing
+blocks or raises ([Telemetry Internals](../developing/telemetry-internals.md#fail-open-behavior)).
 
 Postgres is the opposite: with the URL set but `asyncpg` not installed,
 `PostgresProvider.connect` raises rather than running without auth — silent

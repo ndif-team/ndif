@@ -123,31 +123,15 @@ it serializes as its own name (`"COMPLETED"`).
 | `ERROR` | many (below) | Failed, cancelled, timed out, or killed; `description` carries the message. | **terminal** |
 | `LOG` | `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`); in the sandbox, `SandboxDriver.next_event` through the `on_log` callback | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many per run** |
 
-`ERROR` comes from the actor (an exception via `format_error`, the execution
-timeout, a deliberate cancel — all in `BaseModelDeployment.run`); from the
+`ERROR` comes from the actor (an exception via `format_error`, or the execution
+timeout — both in `BaseModelDeployment.run`); from the
 dispatch side (`Replica.dispatch` when a dispatch fails or its worker is
-cancelled, `Replica.cancel`); from `Processor.purge`; or from `ndif kill` on a
-queued request (`Dispatcher._kill`).
+cancelled, `Replica.cancel`); from `Processor.purge`; or from `ndif kill`
+(`Dispatcher._kill`).
 
-```mermaid
-stateDiagram-v2
-    [*] --> RECEIVED: POST /request accepted
-    RECEIVED --> QUEUED: pushed to the model's queue
-    QUEUED --> PROVISIONING: no replica exists
-    PROVISIONING --> DEPLOYING: replica placed, weights loading
-    QUEUED --> DEPLOYING: replica exists, not ready
-    QUEUED --> DISPATCHED: replica free
-    DEPLOYING --> DISPATCHED: actor ready
-    DISPATCHED --> RUNNING: actor started the block
-    RUNNING --> COMPLETED: result inline, or url in data
-    RUNNING --> QUEUED: replica evicted or demoted mid-flight (re-queued at front)
-    PROVISIONING --> ERROR: provision failed / purge
-    DEPLOYING --> ERROR: start failed / purge
-    DISPATCHED --> ERROR: dispatch failed / cancelled
-    RUNNING --> ERROR: exception, timeout, cancel
-    COMPLETED --> [*]
-    ERROR --> [*]
-```
+The transitions between these values, including the cold-start path
+(`RECEIVED` → `PROVISIONING` → `DEPLOYING` → `QUEUED`), are drawn in
+[Status and Results](../concepts/status-and-results.md#the-lifecycle).
 
 The queue's `ProcessorStatus` (`UNINITIALIZED` / `PROVISIONING` / `DEPLOYING` /
 `READY` / `CANCELLED`, in `src/ndif/services/api/queue/processor.py`) is a

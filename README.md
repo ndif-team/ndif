@@ -23,7 +23,7 @@ With no authentication configured — the default — a request that doesn't spe
 process, one fresh process per request, when the deployment uses the sandboxed
 model actor, which the compose stack sets and the published image and a
 from-source install do not (`NDIF_DEFAULT_MODEL_ACTOR_CLASS`; see
-[docs/operating/compose-stack.md](docs/operating/compose-stack.md)). That isolation is
+[docs/operating/compose-stack.md](docs/operating/compose-stack.md)). That is
 process separation, not a security boundary — see
 [docs/concepts/sandbox-execution.md](docs/concepts/sandbox-execution.md).
 
@@ -110,11 +110,8 @@ ndif stop          # ...and back down, Ray daemons included
 
 From a checkout, `pip install -r requirements.txt` first gives you the pinned
 dependency set the image is built from, then `pip install ".[api,ray]"`.
-`redis-server` and `minio` come from conda-forge because MinIO no longer
-publishes standalone binaries (`--override-channels` sidesteps the anaconda
-terms-of-service prompt a stock miniconda raises); the other option is copying
-the binary out of the `quay.io/minio/minio` image — see
-[docs/operating/quickstart.md](docs/operating/quickstart.md).
+Other ways to get a `minio` binary are in
+[docs/operating/cli.md](docs/operating/cli.md#ndif-doctor).
 
 ### Then run a remote trace
 

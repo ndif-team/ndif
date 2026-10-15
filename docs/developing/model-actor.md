@@ -195,7 +195,7 @@ with self.execution_scope(request):
 |---|---|---|
 | `job` | continue to upload → `COMPLETED` | `completed` |
 | `kill`, reason `preempted` (`to_cache` parking the replica) | none to the user: raises `CachedActorError`, so the queue re-queues the request at the front of its group | `preempted` |
-| `kill`, any other reason (a deliberate `cancel()`) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
+| `kill`, any other reason (a deliberate `cancel()`; no current caller — `ndif kill` stops the dispatch, not the actor) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
 | neither (timeout) | `ERROR` "Your job exceeded the execution timeout of `{n}`s." | `timeout` |
 
 The reason travels on `kill_reason`, set by `cancel(reason)`; only

@@ -36,18 +36,9 @@ flowchart LR
 
 ## Bringing it up
 
-**The built frontend is committed.** `frontend/dist/` is tracked, so a clean
-clone plus `just up` serves the UI with no host-side build step, and a wheel
-carries the assets as package-data. You rebuild only when you change the
-frontend, and you commit the result:
-
-```bash
-cd src/ndif/services/dashboard/frontend
-npm ci && npm run build      # emits frontend/dist/; commit it
-```
-
-For iterating on the SPA, the Vite dev server serves the UI with hot reload; see
-[Dashboard Frontend](../developing/dashboard-frontend.md).
+The built frontend ships with the repo and the wheel, so `just up` serves the UI
+with no build step; rebuilding it after a frontend change is covered in
+[Dashboard Frontend](../developing/dashboard-frontend.md#build-and-packaging).
 
 **With compose**, the `dashboard` service runs the same image with
 `NDIF_SERVICE=dashboard`, whose default command runs `ndif start dashboard` →
@@ -109,25 +100,11 @@ anyone but you**, and set a real username/hash/secret in the same change.
 `NDIF_DASHBOARD_`-prefixed fields; `start.sh` reads the port, the cron schedules
 and the monitor URL when it writes the crontab.
 
-| Name | Default | Read by | What it does |
-|---|---|---|---|
-| `NDIF_DASHBOARD_USERNAME` | `admin` | `Settings` | The single admin username |
-| `NDIF_DASHBOARD_PASSWORD_HASH` | `""` | `Settings` | Bcrypt hash; empty means no login can ever succeed |
-| `NDIF_DASHBOARD_SESSION_SECRET` | `change-me-please-this-is-not-secure` | `Settings` | Signs the session cookie; rotating it invalidates all sessions |
-| `NDIF_DASHBOARD_SESSION_TTL_DAYS` | `7` | `Settings` | Cookie and signature max-age |
-| `NDIF_DASHBOARD_DEV_MODE` | `false` | `Settings` | `true` bypasses auth on every route |
-| `NDIF_DASHBOARD_DATA_DIR` | `~/ndif_dashboard` | `Settings`, `start.sh` | Logs, `schedule.json`, reconcile state, cache, `config.json` |
-| `NDIF_DASHBOARD_FRONTEND_DIST` | `<pkg>/frontend/dist` | `Settings` | Built SPA to serve |
-| `NDIF_DASHBOARD_PORT` | `8081` | `start.sh` | uvicorn bind port |
-| `NDIF_DASHBOARD_MONITOR_URL` | `http://localhost:8001` | `start.sh` → monitor | What the monitor cron probes *and* points nnsight at |
-| `NDIF_DASHBOARD_MONITOR_CRON` / `_RECONCILE_CRON` / `_REPORT_CRON` | `*/10 * * * *` / `*/2 * * * *` / `0 0 * * *` | `start.sh` | Cron schedules |
-| `NDIF_DASHBOARD_REPORT_WINDOW_HOURS` | `24` | `start.sh` → report | Report window |
-| `NDIF_API_URL` | `http://localhost:8001` | `start.sh` → report (`--api-url`) | Where the daily report counts HOT models. The backend itself never reads it |
-| `NDIF_RAY_ADDRESS` | — | `cli/lib` | Where deploy/evict/restart/status connect |
-| `NDIF_REDIS_URL` | — | `cli/lib` | The reconcile events after deploy/evict |
-| `NDIF_API_KEY` | — | monitor | Needed for the monitor's remote traces; without it they're skipped |
-| `NDIF_INFLUX_URL` / `_TOKEN` / `_ORG` / `_BUCKET` | — | report | Usage numbers for the daily report |
-| `HF_TOKEN`, `HF_HOME` | — | `start.sh` | Forwarded into the cron env so gated repos resolve |
+Every variable, with defaults, is in
+[Env vars — Dashboard](../reference/env-vars.md#dashboard). Three matter on
+first setup: `NDIF_DASHBOARD_PASSWORD_HASH` (empty means no login can succeed),
+`NDIF_DASHBOARD_SESSION_SECRET`, and `NDIF_DASHBOARD_DEV_MODE` (`true` bypasses
+auth on every route). The cron jobs see only the variables `start.sh` forwards.
 
 ## The views
 

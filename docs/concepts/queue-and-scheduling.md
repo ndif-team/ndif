@@ -147,7 +147,8 @@ Three things can pull a request back out of flight:
   event stream. A queued request is removed and errored. For an executing one,
   the replica's worker task is cancelled and the request errored to the user;
   the Ray call the worker was awaiting is not cancelled, so the actor runs the
-  block to completion.
+  block to completion and its final response can still land
+  ([Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs)).
 - **Purge.** A Ray connection error makes the dispatcher error every queued
   request for every model, clear the queues, cancel all replicas, and reconnect
   (`Dispatcher.purge`).

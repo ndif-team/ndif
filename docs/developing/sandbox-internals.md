@@ -55,7 +55,7 @@ auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 > same results for the same request, which is why the sandbox reuses nnsight's own
 > `Mediator.handle`, `Batcher` and `Cache` rather than reimplementing them;
 > [What the untrusted path cannot do](#what-the-untrusted-path-cannot-do) lists
-> where it currently does not.
+> where it does not.
 
 ## Which actor runs it
 

@@ -302,8 +302,10 @@ Every field the deploy path understands passes through: `checkpoint`,
 `revision`, `task`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
 `padding_factor`, `padding_bias`, `size_bytes`, `gpus`, `max_tp`,
 `execution_timeout_seconds`, `envoy_class`, and a precomputed `model_key`. Any
-other key is silently dropped. A per-model value overrides the matching CLI flag
-for entries that omit it. A missing `models:` key or a non-list value is an
+other key is silently dropped. A per-model value overrides the matching CLI flag;
+the flag supplies the value for entries that omit it. An entry without `task:`
+(and no `--task`) gets the inferred task, as a client would; only a verbatim
+`model_key:` must carry the task itself. A missing `models:` key or a non-list value is an
 error. The fully annotated example is in
 [Models and Deployment](models-and-deployment.md#modelsyaml).
 
@@ -426,7 +428,10 @@ the client `ERROR` / "Request cancelled by operator." Otherwise it finds the
 replica executing it and cancels the **dispatch**: the client gets the same
 `ERROR`, and the dispatcher stops waiting on that replica
 (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`). The model
-actor is not interrupted — the block runs to completion. To get the GPU back from a runaway block, follow with
+actor is not interrupted — the block runs to completion, and the client then
+also receives the eviction sentence; what a blocking versus a non-blocking user
+ends up seeing is in
+[Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs). To get the GPU back from a runaway block, follow with
 `ndif restart <checkpoint> --replica <id>` (the replica id is in `ndif queue`).
 An unknown id exits non-zero with a pointer to `ndif queue`.
 

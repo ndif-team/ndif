@@ -22,7 +22,7 @@ repo's code, the code wins.
 | NDIF website | [ndif.us](https://ndif.us) | You want the hosted service — model list, API keys, status — rather than a server you run yourself. |
 | nnsight documentation | [nnsight.net](https://nnsight.net) | You need the *client* semantics: tracing, `.save()`, `.source`, sessions, `remote=True`. Everything a user writes inside a block is documented there, not here. |
 | nnsight source | [github.com/ndif-team/nnsight](https://github.com/ndif-team/nnsight) | You are changing NDIF's serialization, the sandbox's interleaver split, or bumping the client and need to read `intervention/serialization.py`, `intervention/interleaver.py`, `schema/request.py` or `schema/response.py` for real. |
-| nnsight agent docs | the `docs/` tree inside that repo | You are an agent debugging a user's `remote=True` failure. Its [remote](https://github.com/ndif-team/nnsight/blob/main/docs/gotchas/remote.md) and [save](https://github.com/ndif-team/nnsight/blob/main/docs/gotchas/save.md) gotcha pages cover the client-side half of most "my values came back empty" reports; `docs/remote/` covers env comparison and registering local modules. |
+| nnsight agent docs | the `docs/` tree inside that repo | You are an agent debugging a user's `remote=True` failure. Its [remote section](https://github.com/ndif-team/nnsight/blob/main/docs/remote/index.md) covers env comparison and registering local modules, and [save](https://github.com/ndif-team/nnsight/blob/main/docs/usage/save.md) covers the client-side half of most "my values came back empty" reports. |
 | NDIF Discord | [discord.gg/6uFJmCSwW7](https://discord.gg/6uFJmCSwW7) | The question is about the hosted deployment's state, a model you'd like deployed, or something no code in either repo answers. |
 | The paper | [arXiv:2407.14561](https://arxiv.org/abs/2407.14561) | You want the motivation and the research framing — why remote model internals at all — rather than an implementation detail. It describes the project, not this server's current architecture. |
 
@@ -111,18 +111,15 @@ alongside the code.
 Search results will hand you three kinds of stale answer. Recognizing them saves
 an afternoon:
 
-- **Ray Serve tutorials and `serve.deployment` examples.** NDIF's model
-  deployments are detached Ray actors created and killed by the controller.
-  Nothing in this repo imports `ray.serve`, and the dependency is `ray[default]`
-  in both `pyproject.toml` and `requirements.txt` — `ray[serve]` is not installed
-  at all.
+- **Ray Serve tutorials and `serve.deployment` examples.** NDIF does not use
+  Serve ([Architecture Overview](../developing/architecture-overview.md#what-this-covers)).
 - **Writeups of NDIF's previous server.** An older design used Ray Serve
   applications and sandboxed user code *in-process* behind an import/attribute
-  whitelist. Both are gone: execution is a detached actor, and isolation is
-  process-based — a separate runner process per request, driven over a Unix
+  whitelist. Both are gone: execution is a detached actor, and the untrusted path
+  uses process separation — a separate runner process per request, driven over a Unix
   socket. Mine old material for motivation only, and verify every structural
   claim against the code here.
-- **Anything describing VM or microVM isolation.** NDIF's isolation is a
+- **Anything describing VM or microVM isolation.** NDIF's untrusted path is a
   separate OS process per request, driven over a Unix socket — no VM, no
   hardening beyond the process boundary and an environment allowlist
   (`src/ndif/services/ray/sandbox/host.py` `RUNNER_ENV`). Read

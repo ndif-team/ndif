@@ -205,37 +205,15 @@ have an email, the Users & Usage dashboard narrows it down first. See
 
 ## Configuration and fail-open
 
-| Variable | Default | Effect |
-|---|---|---|
-| `NDIF_LOKI_URL` | *(empty)* | **Empty disables Loki entirely** — the package is never imported |
-| `NDIF_LOKI_LEVEL` | `INFO` | Minimum level shipped (console keeps its own) |
-| `NDIF_LOKI_QUEUE_MAX` | `10000` | In-memory queue bound; records drop when full |
-| `NDIF_LOG_LEVEL` | `INFO` | Console handler level |
-| `NDIF_INFLUX_URL` | *(empty)* | **Empty disables metrics**; set it to an InfluxDB 2.x endpoint |
-| `NDIF_INFLUX_TOKEN` / `_ORG` / `_BUCKET` | *(empty)* / `ndif` / `metrics` | Auth and destination |
-| `NDIF_INFLUX_ENABLED` | `true` | Hard off switch |
-| `NDIF_INFLUX_BATCH_SIZE` / `_FLUSH_INTERVAL_MS` / `_TIMEOUT_MS` | `500` / `1000` / `10000` | Flush at N points or after this long; per-write HTTP timeout |
-| `NDIF_SERVICE` | `unknown` for the providers; `all` in the image | Label on everything this process emits, **and** which service(s) `ndif start` runs |
-| `NDIF_ENVIRONMENT` | `dev` | Label distinguishing prod / staging / dev |
+The variables are in [Env vars — Metrics](../reference/env-vars.md#metrics-influxdb)
+and [Logs](../reference/env-vars.md#logs-loki). An empty `NDIF_LOKI_URL` or
+`NDIF_INFLUX_URL` turns that sink off.
 
-Both providers are optional in three independent ways, and in every case the
-console handler is still installed, so `docker compose logs api` never goes
-quiet:
-
-1. **Not installed.** `influxdb-client` and `python-logging-loki` are the
-   `metrics` extra. Without it `InfluxProvider` never constructs a client, and
-   `LokiProvider` catches the `ImportError` and warns once.
-2. **Not configured.** An empty `NDIF_LOKI_URL` or `NDIF_INFLUX_URL` (or
-   `NDIF_INFLUX_ENABLED=false`) short-circuits `connect`.
-3. **Down.** The Loki handler drops on a full queue rather than raising, with its
-   per-record error output silenced. Influx writes with no retries and logs a
-   failed batch at DEBUG.
-
-Both providers own a background thread, and threads don't survive `fork()`. The
-gunicorn master avoids importing them until after it forks; each worker connects
-in `post_fork` (`src/ndif/services/api/gunicorn_conf.py` `post_fork`). Ray actors
-are separate processes, so the controller and every model actor connect in their
-own `__init__`. A new entry point must connect *after* forking.
+Neither sink can take a service down: missing, unconfigured or unreachable, it
+degrades to a no-op and the console handler keeps writing, so `docker compose
+logs api` never goes quiet. Each case, and why a new entry point must connect
+after forking, is in
+[Telemetry Internals](../developing/telemetry-internals.md#fail-open-behavior).
 
 Loki and InfluxDB run their images' default retention, and with no volumes their
 real retention is the container's lifetime.

@@ -273,24 +273,12 @@ gone.
 
 ## Environment
 
-Every var below is read in `ControllerDeploymentArgs` (`src/ndif/services/ray/deployments/controller/controller.py`) at module import in the
+The controller's variables are read in `ControllerDeploymentArgs` (`src/ndif/services/ray/deployments/controller/controller.py`) at module import in the
 launching driver — the ray container's environment — and passed to the actor as constructor
 arguments. `NDIF_CONTROLLER_SYNC_INTERVAL_S` is the exception: read inside the actor each loop.
 
-| Name | Default | What it does |
-|---|---|---|
-| `NDIF_DEPLOYMENTS` | *(empty)* | `\|`-separated model keys deployed **pinned** at controller start |
-| `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | Seconds between node-set syncs |
-| `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | *(unset — no cap)* | Per-request execution cap handed to a new actor when the config doesn't set one |
-| `NDIF_MODEL_IMPORT_PATH` | falls back to `NDIF_DEFAULT_MODEL_ACTOR_CLASS`, then the base `ModelActor` | Dotted path the controller builds each deployment's actor from when `DeploymentConfig.actor_class` is `None`. Stored on the actor as `default_model_actor_class` |
-| `NDIF_DEFAULT_MODEL_ACTOR_CLASS` | `ndif.services.ray.deployments.modeling.base.ModelActor` | Fallback for `NDIF_MODEL_IMPORT_PATH`. Compose sets it to `ndif.services.ray.sandbox.model.SandboxModelActor`, which — absent `NDIF_MODEL_IMPORT_PATH` — is what wins |
-| `NDIF_CONTROLLER_IMPORT_PATH` | `ndif.services.ray.deployments.controller.controller.ControllerActor` | Dotted path of the controller actor class `app()` launches |
-| `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | Age below which a deployment is exempt from automatic eviction |
-| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | Fraction of a node's **CPU** RAM (`cpu_memory_bytes`) usable as WARM cache |
-| `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative size padding |
-| `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | Flat size padding |
-| `NDIF_DEFAULT_DTYPE` | `bfloat16` | Dtype used for both the size estimate and the actor's load |
-| `NDIF_TP_MODEL_ACTOR_CLASS` | *(unset)* | Dotted path of the actor class a tensor-parallel replica gets. **Unset turns tensor parallelism off entirely** — no degree is worked out, no GPU count is rounded up to a shardable one, and per-model `max_tp` is inert |
+The variables, defaults and fallbacks are in
+[Env vars — Controller and model defaults](../reference/env-vars.md#controller-and-model-defaults).
 
 ## Failure modes
 

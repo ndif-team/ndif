@@ -87,8 +87,8 @@ With nothing running there is nothing to copy and it behaves as a plain deploy.
 `NDIF_DEPLOYMENTS` is a `|`-separated list of **model keys**, not checkpoints,
 read raw on the `ray` service and deployed pinned. Each entry must be the exact
 current key — including the task — as `ndif status --json-output` prints it. A
-bare checkpoint fails to evaluate, and a key in an older format without the
-task deploys a model no client's key will ever match.
+bare checkpoint fails to evaluate, and a key without the task deploys a model no
+client's key will ever match.
 
 ### models.yaml
 
@@ -118,7 +118,10 @@ models:
 ```
 
 `load_model_config` passes every field above through; any other key is silently
-dropped. A per-entry value overrides the matching CLI flag. `--sync` reconciles
+dropped. A per-entry value overrides the matching CLI flag. An entry without
+`task:` takes `--task` when given, else the task inferred from the checkpoint as
+a client infers it, so most entries need no `task:`. Only a verbatim
+`model_key:` must spell the task out. `--sync` reconciles
 instead of adding: `_sync_reconcile` (`src/ndif/cli/lib/deploy.py`) evicts every
 HOT model key not in the file, trims replicas above the requested count, and
 reduces each remaining spec to the shortfall so the additive deploy that follows

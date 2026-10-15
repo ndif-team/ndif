@@ -26,7 +26,8 @@ it:
    id carries the repo, revision and resolved task. So a key written out by hand
    — an `NDIF_DEPLOYMENTS` entry, or a verbatim `model_key` in `models.yaml` —
    must carry the task clients resolve; one that differs deploys a model no
-   request routes to. `ndif deploy <checkpoint>` infers the task as the client
+   request routes to. `ndif deploy <checkpoint>`, a `models.yaml` entry without
+   `task:`, and the dashboard's deploy form all infer the task as the client
    does.
 3. **Memory accounting is a model, not a measurement.** The controller keeps its
    own per-GPU ledger of reserved bytes, sized from an estimate *before* anything
@@ -108,13 +109,10 @@ two replicas with `replicas=1` gives you three. Shrinking is `evict`'s job.
 
 ### `trusted` follows the deployment
 
-`DeploymentConfig.trusted` becomes the actor's `trust_remote_code` *and* is
-passed to the evaluator, so the estimate and the real load agree. The queue sets
-it from the request that first provisions the model, and it is sticky for the
-life of the deployment: the first requester decides whether repo code runs at
-load for everyone who follows. Each request still forks on its own
-`request.trusted` for where its block runs. See
-[Auth and Limits](auth-and-limits.md#the-trusted-flag).
+The request that first provisions a model fixes its `trust_remote_code` for the
+life of the deployment; each request still forks on its own `request.trusted` for
+where its block runs. The mechanism is in
+[API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load).
 
 ## Eviction
 
