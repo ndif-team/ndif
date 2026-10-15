@@ -7,6 +7,9 @@ metadata:
     {{- include "ndif.labels" (dict "ctx" . "component" "ray-worker") | nindent 4 }}
 spec:
   replicas: {{ .Values.ray.workers.replicas }}
+  # Recreate: a surged pod would need a free GPU node the old pod still holds.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-worker") | nindent 6 }}
@@ -21,6 +24,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -83,8 +87,12 @@ spec:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             - topologyKey: kubernetes.io/hostname
+              # Away from the head too: each Ray pod advertises its node's RAM.
               labelSelector:
                 matchLabels:
-                  {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-worker") | nindent 18 }}
+                  app.kubernetes.io/name: {{ include "ndif.name" . }}
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+                matchExpressions:
+                  - {key: app.kubernetes.io/component, operator: In, values: [ray-head, ray-worker]}
         {{- end }}
 {{- end }}

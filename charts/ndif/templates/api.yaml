@@ -24,6 +24,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -32,7 +33,6 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       containers:
         - name: api
           image: {{ include "ndif.image" . }}
@@ -50,20 +50,21 @@ spec:
               value: {{ .Values.api.workers | quote }}
             {{- if .Values.api.postgres.existingSecret }}
             - name: NDIF_POSTGRES_URL
-              {{- include "ndif.secretRef" (dict "name" .Values.api.postgres.existingSecret "key" .Values.api.postgres.existingSecretKey) | nindent 14 }}
+              {{- include "ndif.secretRef" (dict "name" .Values.api.postgres.existingSecret "key" "NDIF_POSTGRES_URL") | nindent 14 }}
             {{- else if .Values.api.postgres.url }}
             - name: NDIF_POSTGRES_URL
               {{- include "ndif.secretRef" (dict "name" (include "ndif.fullname" .) "key" "NDIF_POSTGRES_URL") | nindent 14 }}
             {{- end }}
             {{- include "ndif.commonEnv" . | nindent 12 }}
+            {{- include "ndif.objectStoreEnv" . | nindent 12 }}
             {{- with .Values.api.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: http
               containerPort: 8001
-          # /ping: the web process is up. /connected: it reaches Ray (503
-          # until then), so the Service only routes to a working API.
+          # All on /ping: while Ray is down the API stays routable and answers
+          # 503 with a message rather than vanishing from the Service.
           startupProbe:
             httpGet: {path: /ping, port: http}
             periodSeconds: 5
@@ -74,7 +75,7 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 6
           readinessProbe:
-            httpGet: {path: /connected, port: http}
+            httpGet: {path: /ping, port: http}
             periodSeconds: 10
             timeoutSeconds: 5
           resources:

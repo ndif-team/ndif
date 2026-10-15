@@ -17,6 +17,11 @@ WARNING: the in-cluster RustFS has no public address. Large results are
 presigned against {{ include "ndif.objectStoreUrl" . }}, which clients outside
 the cluster cannot reach. Set rustfs.ingress or objectStore.publicUrl.
 {{- end }}
+{{- if and .Values.rustfs.enabled (not .Values.rustfs.existingSecret) (eq .Values.rustfs.accessKey "rustfsadmin") }}
+
+WARNING: RustFS uses the default rustfsadmin credentials. Set rustfs.accessKey
+and rustfs.secretKey before anything outside the cluster can reach it.
+{{- end }}
 {{- if and (eq (int .Values.ray.head.gpus) 0) (eq (int .Values.ray.workers.replicas) 0) }}
 
 NOTE: no Ray pod requests a GPU, so the controller has nowhere to place models.

@@ -1,4 +1,4 @@
-{{- if not .Values.redis.external.url }}
+{{- if not .Values.redis.url }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

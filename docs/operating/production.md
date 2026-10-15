@@ -281,8 +281,7 @@ durable volumes and retention policy for anything it needs to keep. See
   requests. Give each deployment its own Redis, or its own logical database.
 - **No test CI and no compatibility guarantees.** `.github/workflows/` builds and
   publishes images and the PyPI package and lints the Helm chart; none of them
-  run the test suite. The test suite
-  under `tests/` needs a live stack. There is no stable public API.
+  runs `tests/`, which needs a live stack. There is no stable public API.
 - **No horizontal API tier.** `NDIF_API_WORKERS` scales gunicorn workers in one
   process group, and the queue dispatcher is started exactly once by the gunicorn
   master (`gunicorn_conf.py` `on_starting`). Running two API *containers*

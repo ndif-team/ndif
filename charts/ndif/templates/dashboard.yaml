@@ -6,6 +6,8 @@ metadata:
   name: {{ include "ndif.fullname" . }}-dashboard
   labels:
     {{- include "ndif.labels" (dict "ctx" . "component" "dashboard") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   accessModes: [ReadWriteOnce]
   {{- with .Values.dashboard.persistence.storageClass }}
@@ -39,6 +41,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

@@ -1,16 +1,32 @@
 {{- if .Values.rustfs.enabled }}
 {{- $secret := .Values.rustfs.existingSecret | default (include "ndif.fullname" .) }}
-# StatefulSet for the volumeClaimTemplate: the blobs live on the pod's own
-# claim, which survives restarts and upgrades.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ndif.fullname" . }}-rustfs
+  labels:
+    {{- include "ndif.labels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.rustfs.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.rustfs.persistence.size }}
+---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
   name: {{ include "ndif.fullname" . }}-rustfs
   labels:
     {{- include "ndif.labels" (dict "ctx" . "component" "rustfs") | nindent 4 }}
 spec:
   replicas: 1
-  serviceName: {{ include "ndif.fullname" . }}-rustfs
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "ndif.selectorLabels" (dict "ctx" . "component" "rustfs") | nindent 6 }}
@@ -49,6 +65,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "ndif.fullname" . }}-rustfs
       {{- with .Values.rustfs.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -57,17 +77,6 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  volumeClaimTemplates:
-    - metadata:
-        name: data
-      spec:
-        accessModes: [ReadWriteOnce]
-        {{- with .Values.rustfs.persistence.storageClass }}
-        storageClassName: {{ . }}
-        {{- end }}
-        resources:
-          requests:
-            storage: {{ .Values.rustfs.persistence.size }}
 ---
 apiVersion: v1
 kind: Service

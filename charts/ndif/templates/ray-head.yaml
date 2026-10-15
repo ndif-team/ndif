@@ -25,6 +25,7 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "ndif.serviceAccountName" . }}
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,14 +50,6 @@ spec:
             {{- include "ndif.rayEnv" . | nindent 12 }}
             - name: NDIF_RAY_HEAD_PORT
               value: {{ $gcs | quote }}
-            - name: NDIF_RAY_OBJECT_MANAGER_PORT
-              value: {{ .Values.ray.objectManagerPort | quote }}
-            - name: NDIF_RAY_DASHBOARD_PORT
-              value: {{ .Values.ray.dashboardPort | quote }}
-            - name: NDIF_RAY_DASHBOARD_GRPC_PORT
-              value: {{ .Values.ray.dashboardAgentGrpcPort | quote }}
-            - name: NDIF_RAY_METRICS_PORT
-              value: {{ .Values.ray.metricsPort | quote }}
             {{- with .Values.ray.modelActorClass }}
             - name: NDIF_MODEL_IMPORT_PATH
               value: {{ . | quote }}
@@ -67,29 +60,17 @@ spec:
             {{- end }}
           ports:
             - {name: gcs, containerPort: {{ $gcs }}}
-            - {name: client, containerPort: {{ .Values.ray.clientPort }}}
-            - {name: dashboard, containerPort: {{ .Values.ray.dashboardPort }}}
-            - {name: object-manager, containerPort: {{ .Values.ray.objectManagerPort }}}
-            - {name: agent-grpc, containerPort: {{ .Values.ray.dashboardAgentGrpcPort }}}
-            - {name: metrics, containerPort: {{ .Values.ray.metricsPort }}}
-          # Healthy while the GCS answers.
+            - {name: client, containerPort: 10001}
+            - {name: dashboard, containerPort: 8265}
+          # Ready once the GCS first answers. No liveness or readiness after
+          # that: a GCS slowed by a model load must neither restart the head
+          # (and every model) nor drop it from the Service the API dials.
           startupProbe:
             exec:
               command: [ray, health-check, --address, "127.0.0.1:{{ $gcs }}"]
             periodSeconds: 5
             timeoutSeconds: 10
             failureThreshold: 60
-          livenessProbe:
-            exec:
-              command: [ray, health-check, --address, "127.0.0.1:{{ $gcs }}"]
-            periodSeconds: 15
-            timeoutSeconds: 10
-            failureThreshold: 4
-          readinessProbe:
-            exec:
-              command: [ray, health-check, --address, "127.0.0.1:{{ $gcs }}"]
-            periodSeconds: 10
-            timeoutSeconds: 10
           lifecycle:
             preStop:
               exec:
@@ -114,7 +95,8 @@ spec:
       {{- end }}
 ---
 # Stable name for the head: workers join on gcs, the API and dashboard dial
-# client (ray://). Cluster-internal only; anyone reaching 10001 runs code.
+# client (ray://); the other Ray ports are reached by pod IP. Cluster-internal
+# only: anyone reaching 10001 runs code.
 apiVersion: v1
 kind: Service
 metadata:
@@ -127,8 +109,5 @@ spec:
     {{- include "ndif.selectorLabels" (dict "ctx" . "component" "ray-head") | nindent 4 }}
   ports:
     - {name: gcs, port: {{ $gcs }}, targetPort: gcs}
-    - {name: client, port: {{ .Values.ray.clientPort }}, targetPort: client}
-    - {name: dashboard, port: {{ .Values.ray.dashboardPort }}, targetPort: dashboard}
-    - {name: object-manager, port: {{ .Values.ray.objectManagerPort }}, targetPort: object-manager}
-    - {name: agent-grpc, port: {{ .Values.ray.dashboardAgentGrpcPort }}, targetPort: agent-grpc}
-    - {name: metrics, port: {{ .Values.ray.metricsPort }}, targetPort: metrics}
+    - {name: client, port: 10001, targetPort: client}
+    - {name: dashboard, port: 8265, targetPort: dashboard}

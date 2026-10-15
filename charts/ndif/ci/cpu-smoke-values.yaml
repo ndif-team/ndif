@@ -3,7 +3,9 @@
 image:
   tag: latest
 ray:
-  shmSize: 1Gi
+  # Ray puts its object store on /tmp below about 11Gi; a memory emptyDir
+  # only uses what is written.
+  shmSize: 12Gi
   head:
     gpus: 0
     resources:

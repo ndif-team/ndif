@@ -23,9 +23,9 @@ app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
 {{- define "ndif.labels" -}}
-helm.sh/chart: {{ printf "%s-%s" .ctx.Chart.Name .ctx.Chart.Version }}
+helm.sh/chart: {{ printf "%s-%s" .ctx.Chart.Name .ctx.Chart.Version | replace "+" "_" }}
 app.kubernetes.io/managed-by: {{ .ctx.Release.Service }}
-app.kubernetes.io/version: {{ .ctx.Chart.AppVersion | quote }}
+app.kubernetes.io/version: {{ .ctx.Values.image.tag | default .ctx.Chart.AppVersion | quote }}
 {{ include "ndif.selectorLabels" . }}
 {{- end }}
 
@@ -47,7 +47,7 @@ app.kubernetes.io/version: {{ .ctx.Chart.AppVersion | quote }}
 {{- define "ndif.apiHost" -}}{{ include "ndif.fullname" . }}-api{{- end }}
 
 {{- define "ndif.redisUrl" -}}
-{{- .Values.redis.external.url | default (printf "redis://%s-redis:6379" (include "ndif.fullname" .)) }}
+{{- .Values.redis.url | default (printf "redis://%s-redis:6379" (include "ndif.fullname" .)) }}
 {{- end }}
 
 {{- define "ndif.objectStoreUrl" -}}
@@ -84,12 +84,23 @@ valueFrom:
     key: {{ .key }}
 {{- end }}
 
-{{/* Env every ndif pod gets: service wiring, object store, telemetry label. */}}
+{{/* Env every ndif pod gets: service wiring and the telemetry label. */}}
 {{- define "ndif.commonEnv" -}}
 - name: NDIF_REDIS_URL
   value: {{ include "ndif.redisUrl" . | quote }}
 - name: NDIF_RAY_ADDRESS
-  value: {{ printf "ray://%s:%v" (include "ndif.rayHead" .) .Values.ray.clientPort | quote }}
+  value: {{ printf "ray://%s:10001" (include "ndif.rayHead" .) | quote }}
+{{- with .Values.environment }}
+- name: NDIF_ENVIRONMENT
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.extraEnv }}
+{{ toYaml . }}
+{{- end }}
+{{- end }}
+
+{{/* Object-store env, for the pods that upload and sign (api, ray). */}}
+{{- define "ndif.objectStoreEnv" -}}
 - name: NDIF_OBJECT_STORE_URL
   value: {{ include "ndif.objectStoreUrl" . | quote }}
 - name: NDIF_OBJECT_STORE_PUBLIC_URL
@@ -109,19 +120,12 @@ valueFrom:
   value: ""
 {{- end }}
 {{- end }}
-{{- with .Values.environment }}
-- name: NDIF_ENVIRONMENT
-  value: {{ . | quote }}
-{{- end }}
-{{- with .Values.extraEnv }}
-{{ toYaml . }}
-{{- end }}
 {{- end }}
 
 {{- define "ndif.hfTokenEnv" -}}
 {{- if .Values.hfToken.existingSecret }}
 - name: HF_TOKEN
-  {{- include "ndif.secretRef" (dict "name" .Values.hfToken.existingSecret "key" .Values.hfToken.existingSecretKey) | nindent 2 }}
+  {{- include "ndif.secretRef" (dict "name" .Values.hfToken.existingSecret "key" "HF_TOKEN") | nindent 2 }}
 {{- else if .Values.hfToken.value }}
 - name: HF_TOKEN
   {{- include "ndif.secretRef" (dict "name" (include "ndif.fullname" .) "key" "HF_TOKEN") | nindent 2 }}
@@ -137,7 +141,7 @@ to one (say the dashboard password) does not restart the others. Call with
 {{- $parts := dict
   "api" (list $store $v.api.postgres)
   "ray" (list $store $v.hfToken)
-  "dashboard" (list $store $v.dashboard.username $v.dashboard.passwordHash $v.dashboard.sessionSecret)
+  "dashboard" (list $v.dashboard.username $v.dashboard.passwordHash $v.dashboard.sessionSecret)
   "rustfs" $store -}}
 checksum/secret: {{ get $parts .component | toJson | sha256sum }}
 {{- end }}
@@ -154,6 +158,7 @@ checksum/secret: {{ get $parts .component | toJson | sha256sum }}
 {{ . }}
 {{- end }}
 {{ include "ndif.commonEnv" . }}
+{{ include "ndif.objectStoreEnv" . }}
 {{- with .Values.ray.extraEnv }}
 {{ toYaml . }}
 {{- end }}
