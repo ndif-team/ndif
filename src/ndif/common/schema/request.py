@@ -13,11 +13,10 @@ from ..telemetry import event
 from .response import BackendResponseModel, Status
 
 # A pickled response (one carrying the result blob) is stored under its own
-# Redis key and only this marker byte plus the key goes over pub/sub: Redis
-# delivers an 8 MiB pub/sub message in about 125 ms, the same bytes by GET in
-# about 8 ms. The API's /subscribe GETDELs the key on the notice. A notice that
-# reached no subscriber deletes the key at once; the TTL bounds the rest (an
-# API that dies between receiving the notice and the GETDEL).
+# Redis key and only this marker byte plus the key goes over pub/sub, because
+# Redis delivers a large pub/sub message an order of magnitude slower than a
+# GET of the same bytes. The API's /subscribe GETDELs the key on the notice.
+# The TTL covers an API that dies between the notice and the GETDEL.
 RESULT_NOTICE = b"\x00"
 RESULT_TTL_S = 600
 
@@ -217,6 +216,8 @@ class BackendRequestModel(RequestModel):
             pipe.publish(self.session_id, RESULT_NOTICE + key.encode())
             if pipe.execute()[1] == 0:
                 # Nobody is subscribed (the client left), so nobody will GETDEL.
+                # PUBLISH counts subscribers on this Redis server only, so this
+                # assumes a single Redis, not a cluster.
                 RedisProvider.sync_client.delete(key)
         elif self.session_id:
             RedisProvider.sync_client.publish(
