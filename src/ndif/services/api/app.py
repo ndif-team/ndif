@@ -25,6 +25,7 @@ from ndif.common.metrics import RequestSizeMetric, RequestStatusTimeMetric
 from ndif.common.providers.objectstore import ObjectStoreProvider
 from ndif.common.providers.redis import RedisProvider
 from ndif.common.schema import BackendRequestModel, BackendResponseModel, Status
+from ndif.common.schema.request import RESULT_NOTICE
 from ndif.common.telemetry import event
 from ndif.common.redis import (
     ENV_KEY,
@@ -405,6 +406,18 @@ async def subscribe(websocket: WebSocket):
                 # what it saw before this existed.
                 if payload[:1] == b"{":
                     await websocket.send_text(payload.decode())
+                elif payload[:1] == RESULT_NOTICE:
+                    # The pickled response itself sits under a key; see
+                    # BackendRequestModel.respond.
+                    key = payload[1:]
+                    blob = await RedisProvider.async_bytes_client.getdel(key)
+                    if blob is None:
+                        logger.error(
+                            f"Result {key.decode()} expired before delivery; "
+                            f"closing session {session_id}"
+                        )
+                        return
+                    await websocket.send_bytes(blob)
                 else:
                     await websocket.send_bytes(payload)
 

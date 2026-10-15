@@ -53,6 +53,7 @@ rows are identical with `env` in the name and `NDIF_ENV_TTL_S` (default **300s**
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
 | `status` | String | The worker — `set ... ex=STATUS_TTL_S`; deleted by `Dispatcher.connect` on (re)connect | `_coalesced_fetch` | `NDIF_STATUS_TTL_S`, default **60s** | The controller's `status()` dict, JSON |
+| `result:{request_id}` | String | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` with `pickled=True`, in one pipeline with the publish of its notice | The API's `/subscribe` (`src/ndif/services/api/app.py` `subscribe`): `getdel` on the notice | `RESULT_TTL_S`, **600s**; normally consumed within milliseconds, and deleted at once when the notice reached no subscriber | The COMPLETED response's `.pickle()` bytes (`torch.save`), result blob included |
 | `status:requested` | String | `_coalesced_fetch` — `SET NX EX timeout_s`; deleted by the worker on success and failure, and on reconnect | Nobody reads the value — only the `NX` result matters | `NDIF_STATUS_TIMEOUT_S`, default **60s** | `"1"`. Coalescing lock; the TTL is a dead-man's switch |
 | `status:trigger` | Stream | `_coalesced_fetch` — `xadd(..., maxlen=16, approximate=True)`, lock winner only | The worker — `xread(block=0, count=1)` from `$` | ~16 entries, no time TTL | `{"t": "1"}` — a doorbell; content unused |
 | `status:ready` | Pub/sub channel | The worker — `"ok"` or `"error"` | Waiting `/status` requests | n/a | `"ok"` / `"error"` |
@@ -79,12 +80,10 @@ never reused. Event types on `dispatcher:events`:
 
 | Channel | Type | Published by | Subscribed by | TTL | Carries |
 |---|---|---|---|---|---|
-| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message verbatim | n/a | A JSON `BackendResponseModel` (text frame), or — for a COMPLETED response carrying the result itself, whose blob is at most `RedisProvider.max_publish_bytes` — the response's `torch.save` bytes (binary frame) |
+| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message | n/a | A JSON `BackendResponseModel` (text frame), or for a COMPLETED response carrying the result itself (blob at most `RedisProvider.max_publish_bytes`) the notice `\x00result:{request_id}`; `/subscribe` `GETDEL`s that key and sends the response's `torch.save` bytes as a binary frame |
 
-The cap bounds the blob, not the frame: the published frame is the pickled response,
-up to ~1.5x the compressed blob (`torch.save`'s byte encoding). A near-cap result
-already exceeds the soft pubsub limit, and about three undrained near-cap results
-reach the hard limit.
+The inline result does not cross pub/sub: it is stored under `result:{request_id}`
+and the channel carries only its notice.
 
 `session_id` is a bare `uuid4().hex` minted per websocket and used as the channel
 name with no prefix. The handler subscribes *before* sending the id to the client,
