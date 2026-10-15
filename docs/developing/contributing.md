@@ -2,7 +2,7 @@
 title: Contributing
 one_liner: House style and conventions this codebase actually follows — comments, docstrings, env vars, logging, where code belongs, and commit form.
 tags: [internals, dev]
-related: [docs/developing/testing.md, docs/developing/repo-layout.md, docs/developing/adding-a-provider.md, docs/developing/adding-a-service.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md]
+related: [docs/developing/testing.md, docs/developing/repo-layout.md, docs/developing/providers.md, docs/developing/adding-a-service.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md]
 sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/loki.py, src/ndif/common/telemetry.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/sandbox/ARCHITECTURE.md, pyproject.toml]
 ---
 
@@ -195,5 +195,5 @@ adds a flag.
 
 - [testing.md](./testing.md) — the live suite and the untrusted-path recipe.
 - [repo-layout.md](./repo-layout.md) — where things live, and the "change X, open Y" table.
-- [adding-a-provider.md](./adding-a-provider.md) / [adding-a-service.md](./adding-a-service.md) — the two recipes that encode most of these conventions.
+- [providers.md](./providers.md#adding-a-provider) / [adding-a-service.md](./adding-a-service.md) — the two recipes that encode most of these conventions.
 - [telemetry-internals.md](./telemetry-internals.md) — the logging and metrics plumbing behind the conventions above.

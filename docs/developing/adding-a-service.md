@@ -2,7 +2,7 @@
 title: Adding a Service
 one_liner: Recipe for adding a fourth NDIF service alongside api / ray / dashboard — the NDIF_SERVICE + start.sh + CLI-registry contract, and everything it has to be wired into.
 tags: [internals, dev, cli]
-related: [docs/developing/repo-layout.md, docs/developing/cli-internals.md, docs/developing/adding-a-provider.md, docs/developing/api-service.md, docs/developing/ray-service.md, docs/developing/dashboard-internals.md, docs/developing/telemetry-internals.md, docs/operating/compose-stack.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/developing/contributing.md]
+related: [docs/developing/repo-layout.md, docs/developing/cli-internals.md, docs/developing/providers.md, docs/developing/api-service.md, docs/developing/ray-service.md, docs/developing/dashboard-internals.md, docs/developing/telemetry-internals.md, docs/operating/compose-stack.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/developing/contributing.md]
 sources: [src/ndif/cli/service.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/services/api/start.sh, src/ndif/services/ray/start.sh, src/ndif/services/dashboard/start.sh, docker/Dockerfile, docker/docker-compose.yml, pyproject.toml, src/ndif/services/api/gunicorn_conf.py]
 ---
 
@@ -221,7 +221,7 @@ Claim a host port nobody else uses and add it to
 ## Step 5 — providers, logging, and telemetry
 
 **Reuse, don't reinvent.** Pick from `src/ndif/common/providers/` (see
-[adding-a-provider.md](./adding-a-provider.md) if you need a new one):
+[providers.md](./providers.md#adding-a-provider) if you need a new one):
 
 | Need | Import |
 |---|---|
@@ -273,7 +273,7 @@ from its children, silently.
 ## Related
 
 - [cli-internals.md](./cli-internals.md) — the CLI machinery behind `Service`, `resolve_targets`, and PID-file state.
-- [adding-a-provider.md](./adding-a-provider.md) — if your service needs a backing store nothing else talks to.
+- [providers.md](./providers.md#adding-a-provider) — if your service needs a backing store nothing else talks to.
 - [repo-layout.md](./repo-layout.md) — where the pieces you're copying live.
 - [docs/operating/compose-stack.md](../operating/compose-stack.md) — the compose file service by service.
 - [telemetry-internals.md](./telemetry-internals.md) — how the `service` label flows into Loki and Influx.

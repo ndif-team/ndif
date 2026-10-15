@@ -1,8 +1,8 @@
 ---
 title: Providers
-one_liner: common/providers/* — classmethod singletons over Redis, Ray, S3, Postgres, InfluxDB and Loki, configured purely from the environment, each with its own answer to "what if the service is down".
+one_liner: common/providers/* — classmethod singletons over Redis, Ray, S3, Postgres, InfluxDB and Loki, configured purely from the environment, each with its own answer to "what if the service is down" — and how to add a new one.
 tags: [internals, dev, redis, ray, telemetry, auth]
-related: [docs/developing/redis-layer.md, docs/developing/adding-a-provider.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md, docs/reference/redis-keys.md, docs/concepts/services-and-topology.md, docs/concepts/auth-and-limits.md]
+related: [docs/developing/redis-layer.md, docs/developing/telemetry-internals.md, docs/reference/env-vars.md, docs/reference/redis-keys.md, docs/concepts/services-and-topology.md, docs/concepts/auth-and-limits.md]
 sources: [src/ndif/common/providers/base.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/ray.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/postgres.py, src/ndif/common/providers/influx.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/util.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py]
 ---
 
@@ -316,6 +316,105 @@ a traceback to stderr *per record*.
 `__main__` (`dispatcher.py:412`), the controller actor and its launcher
 (`controller.py:71`, `:804`), and each model actor (`modeling/base.py:132`).
 
+## Adding a provider
+
+A new backing service — another object store, a second metrics sink, a message
+bus — follows the pattern above. The part to get right is failure.
+
+**`CONFIG` entries.** The key is the attribute name; the variable is `NDIF_`-
+prefixed and grouped by subsystem (`NDIF_MYTHING_*`); the default is already typed
+(`10.0`, not `"10.0"`), since the caster applies only when the variable is set;
+booleans go through a `_boolish` caster (`"1"/"true"/"yes"/"on"`), because `bool`
+makes `"false"` truthy. Comment each entry with what it does and what empty means
+— the object store's `CONFIG` is the model. Declare the attribute annotations
+under `CONFIG` for readers and type checkers. Empty means off for an optional
+subsystem; add an `_ENABLED` switch only to disable something that *is*
+configured, as `NDIF_INFLUX_ENABLED` does.
+
+**`connect()` cheap and idempotent; `connected()` a real probe.** Every process
+entry point calls `connect()` without coordinating, so the second call must be a
+no-op, and it should open no socket until first use. `connected()` should reach
+the service (`RedisProvider.connected` pings), not report that an object exists.
+`to_env()` must round-trip everything a model actor needs, since that is how the
+controller ships config into a Ray `runtime_env`. A provider that owns a thread
+says so in its `connect` docstring, because of the fork rule above.
+
+**Fail open — or say why not.** An optional provider survives two independent
+absences:
+
+- *The package isn't installed.* Guard the import at module level and record a
+  flag (`_HAS_CLIENT` in `src/ndif/common/providers/influx.py`), or import lazily
+  inside the builder the way Loki does, only once its URL is set. The module must
+  still import: `ndif.common.metrics` imports the Influx provider on every service,
+  so a hard `ImportError` would take the server down over missing telemetry.
+- *The server is unreachable or flapping.* Wrap every call path so it degrades to
+  a no-op; log at **debug**, not warning, or a flapping server writes a line per
+  flush; bound every queue and retry (Loki drops on a full queue, Influx sets
+  `max_retries=0`); silence library handlers that print a traceback per record.
+
+Fail-open belongs to best-effort telemetry, not to everything. Postgres fails
+closed — a missing `asyncpg` with a URL set raises, and an unreachable database
+is a 503 — because silently disabling auth is a security hole. Redis and the
+object store don't fail open at all: they are the request path. The test: *if
+this call silently did nothing, would the system be degraded-but-correct, or
+quietly wrong?* Degraded → fail open. Quietly wrong → raise.
+
+A minimal fail-open sink, StatsD over UDP:
+
+```python
+try:
+    import statsd
+    _HAS_STATSD = True
+except Exception:
+    statsd, _HAS_STATSD = None, False
+
+class StatsdProvider(Provider):
+    CONFIG = {
+        # Empty (the default) disables StatsD entirely.
+        "url": ("NDIF_STATSD_URL", "", str),
+        "service": ("NDIF_SERVICE", "unknown", str),
+    }
+    client = None
+
+    @classmethod
+    def connect(cls) -> None:
+        if not cls.url or not _HAS_STATSD or cls.client is not None:
+            return
+        try:
+            parsed = urlparse(cls.url)
+            cls.client = statsd.StatsClient(parsed.hostname, parsed.port or 8125,
+                                            prefix=f"ndif.{cls.service}")
+        except Exception:
+            logger.debug("StatsD telemetry unavailable", exc_info=True)
+
+    @classmethod
+    def incr(cls, name: str, count: int = 1) -> None:
+        if cls.client is None:
+            return
+        try:
+            cls.client.incr(name, count)
+        except Exception:
+            logger.debug("StatsD emit failed", exc_info=True)
+
+StatsdProvider.from_env()
+StatsdProvider.connect()
+```
+
+Checklist:
+
+- [ ] `src/ndif/common/providers/<name>.py` with a module docstring that states the
+  design constraint (opt-in? fail-open? fork-sensitive?) before the mechanism.
+- [ ] `CONFIG` as above; `connect` cheap and idempotent; `connected` a real probe.
+- [ ] Optional package guarded or lazily imported; every call path wrapped,
+  failures at debug, queues and retries bounded — or a written reason to raise.
+- [ ] `from_env(); connect()` at the bottom of the module; nothing added to
+  `providers/__init__.py`.
+- [ ] A `[project.optional-dependencies]` extra with a comment on what it turns
+  on; if the image needs it, the extra added to the Dockerfile's
+  `pip install --no-deps` line **and** the package pinned in `requirements.txt` —
+  with `--no-deps`, extras only declare intent.
+- [ ] Each new variable in [env-vars.md](../reference/env-vars.md).
+
 ## Gotchas
 
 > **Defaults are localhost.** Correct for `ndif start` on one host, wrong inside
@@ -331,5 +430,4 @@ a traceback to stderr *per record*.
 
 - `docs/developing/redis-layer.md` — what the Redis clients actually carry, and
   `docs/reference/redis-keys.md` for every key, channel and stream.
-- `docs/developing/adding-a-provider.md` — recipe for writing a new one.
 - `docs/concepts/auth-and-limits.md` — how the Postgres provider becomes API-key auth.

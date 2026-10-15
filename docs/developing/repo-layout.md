@@ -67,7 +67,7 @@ group that adds one command per module under `commands/`.
 
 | Path | Role |
 |---|---|
-| `providers/` | One module per external service (Redis, Ray, object store, Postgres, Loki, InfluxDB) behind the `Provider` base at `providers/base.py:26`. Classmethod singletons, env-driven, connect at import. See [adding-a-provider.md](./adding-a-provider.md). |
+| `providers/` | One module per external service (Redis, Ray, object store, Postgres, Loki, InfluxDB) behind the `Provider` base at `providers/base.py:26`. Classmethod singletons, env-driven, connect at import. See [providers.md](./providers.md#adding-a-provider). |
 | `redis/` | Redis **key** constants only (the connection lives in `providers/redis.py`): the coalesced `/status` and `/env` caches and the dispatcher's operational event stream. |
 | `schema/` | `BackendRequestModel` / `BackendResponseModel` (subclasses of nnsight's own request/response models, so the wire format is the client's) and the controller RPC contracts. |
 | `metrics.py` | One class per InfluxDB measurement, deciding the tag/field split. |
@@ -186,7 +186,7 @@ degrades cleanly without it: `api` (fastapi/gunicorn), `ray` (ray, transformers,
 peft, zstandard), `metrics` (influxdb-client, python-logging-loki), `postgres`
 (asyncpg), `dashboard` (pydantic-settings, bcrypt, ...), `dev` (ruff, pytest,
 pytest-asyncio, httpx). Adding a provider means adding an extra — see
-[adding-a-provider.md](./adding-a-provider.md).
+[providers.md](./providers.md#adding-a-provider).
 
 **`package-data` ships the non-Python files** (`pyproject.toml:144`). Services
 launch via `start.sh`, which setuptools would otherwise leave out of the wheel, so
@@ -260,6 +260,6 @@ client-side.
 
 - [architecture-overview.md](./architecture-overview.md) — the same system top-down rather than by directory.
 - [adding-a-service.md](./adding-a-service.md) — what wiring a fourth service touches.
-- [adding-a-provider.md](./adding-a-provider.md) — the `common/providers/` contract.
+- [providers.md](./providers.md#adding-a-provider) — the `common/providers/` contract.
 - [testing.md](./testing.md) and [contributing.md](./contributing.md) — how to run and land a change.
 - [docs/operating/compose-stack.md](../operating/compose-stack.md) — the same `docker/` tree from an operator's angle.

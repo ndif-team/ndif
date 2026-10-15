@@ -80,7 +80,7 @@ larger goes to an object store and the client gets a presigned URL.
 
 - [Adding a Model Actor](adding-a-model-actor.md) — the five hooks `run()` calls,
   plus the `commit()` seam.
-- [Adding a Provider](adding-a-provider.md) — the base-class contract and
+- [Adding a provider](providers.md#adding-a-provider) — the base-class contract and
   fail-open discipline.
 - [Adding a Service](adding-a-service.md) — the `NDIF_SERVICE` + `start.sh` + CLI
   registry contract.

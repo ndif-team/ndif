@@ -97,7 +97,7 @@ Pick the route first — they are three different pages:
 
 ### "Extend it"
 - [docs/developing/adding-a-model-actor.md](docs/developing/adding-a-model-actor.md) — a custom execution path
-- [docs/developing/adding-a-provider.md](docs/developing/adding-a-provider.md) — a new backing service
+- [docs/developing/providers.md](docs/developing/providers.md#adding-a-provider) — a new backing service
 - [docs/developing/adding-a-service.md](docs/developing/adding-a-service.md) — a fourth service container
 
 ### "The user's question is really about the client"

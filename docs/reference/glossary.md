@@ -93,7 +93,7 @@ its model's queue rather than erroring it (`queue/replica.py:12`).
 A `[project.optional-dependencies]` group in `pyproject.toml` — `api`, `ray`,
 `metrics`, `postgres`, `dashboard`, `dev`. Each gates an optional subsystem whose
 code degrades cleanly when the packages are absent; installed with
-`pip install ".[metrics]"`. See [adding-a-provider.md](../developing/adding-a-provider.md).
+`pip install ".[metrics]"`. See [providers.md](../developing/providers.md#adding-a-provider).
 
 ## Job
 
@@ -177,7 +177,7 @@ Postgres, Loki, InfluxDB), living in `src/ndif/common/providers/`. Providers are
 classmethod singletons — one connection per process, held on the class, configured
 from `NDIF_*` env vars declared in a `CONFIG` dict, established at module import
 (`providers/base.py:26`). See [providers.md](../developing/providers.md) and
-[adding-a-provider.md](../developing/adding-a-provider.md).
+[providers.md](../developing/providers.md#adding-a-provider).
 
 ## Queue
 
