@@ -257,8 +257,8 @@ prints as `PRINT` events instead (`sandbox/model.py:180-186`).
 
 ## 6. The dashboard's auth is separate
 
-The dashboard has its own single-admin login and knows nothing about
-`NDIF_POSTGRES_URL` (`dashboard/backend/auth.py`). The compose file ships it with
+The dashboard has its own single-admin login (`dashboard/backend/auth.py`) and
+knows nothing about `NDIF_POSTGRES_URL`. The compose file ships it with
 auth **disabled** (`NDIF_DASHBOARD_DEV_MODE: "true"`, `docker-compose.yml:216`),
 which makes `require_auth` return the configured username unconditionally
 (`auth.py:70-75`). Since the dashboard can deploy, evict, and restart models —
