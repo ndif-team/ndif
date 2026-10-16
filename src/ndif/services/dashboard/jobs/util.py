@@ -15,7 +15,11 @@ DEFAULT_DATA_DIR = Path(os.environ.get("NDIF_DASHBOARD_DATA_DIR", str(Path.home(
 DEFAULT_LOG_DIR = DEFAULT_DATA_DIR / "logs"
 DEFAULT_CONFIG = DEFAULT_DATA_DIR / "config.json"
 DEFAULT_MAX_DAYS = 30
-TIMEOUT = 10
+# HTTP timeout for the monitor's /connected and /status fetches and for the
+# Discord webhook. /status asks the Ray controller when its cache is cold, and
+# while the cluster is reloading models that can take well over ten seconds;
+# a timeout shorter than that reports a healthy deployment as DOWN.
+TIMEOUT = 30
 
 
 def load_config(path: Path) -> dict:
