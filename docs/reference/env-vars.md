@@ -131,6 +131,7 @@ Read by the controller launcher,
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
 | `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor. A cold spawn (~4 s) is several times a warm execution, so a smaller pool makes a saturated queue pay the spawn inline; each warm runner holds roughly 0.5 GB of RAM whether used or not. Turn it down on memory- or core-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_FORK` | unset (off) | `src/ndif/services/ray/sandbox/host.py` `Pool` | `1` makes each sandboxed actor start one runner zygote that imports torch and nnsight and builds the meta model once, then forks a runner per pool slot instead of spawning a fresh interpreter (about 0.5 s to ready instead of about 4 s). Each forked runner brings CUDA up before it reports ready, so every ready runner holds a CUDA context (about 0.5 GiB of GPU memory) on top of its RAM. If the zygote is unavailable the pool spawns as usual. |
 
 ## Object store
 
