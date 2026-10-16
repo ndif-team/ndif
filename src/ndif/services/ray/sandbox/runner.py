@@ -8,9 +8,9 @@ patches. The process is not hardened (no namespaces, seccomp, rlimits, or
 filesystem jail); what it provides is separation from the model actor and a fresh
 process per request.
 
-Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1]
+Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1] [task]
 As a fork parent (``NDIF_SANDBOX_FORK=1``, see `zygote`):
-                 python -m sandbox.runner --zygote CONTROL PEERS ACTOR_PID [model_key] [1]
+                 python -m sandbox.runner --zygote CONTROL PEERS ACTOR_PID [model_key] [1] [task]
 """
 
 import contextlib
@@ -142,6 +142,7 @@ class Runner:
         peers: int = 1,
         model_key: "str | None" = None,
         trust_remote_code: bool = False,
+        task: "str | None" = None,
     ):
         self.path = path
         self.peers = peers
@@ -149,7 +150,9 @@ class Runner:
             os.unlink(path)
         if model_key is not None:
             try:
-                nns.load_meta_model(model_key, trust_remote_code=trust_remote_code)
+                nns.load_meta_model(
+                    model_key, trust_remote_code=trust_remote_code, task=task
+                )
             except Exception as error:
                 print(
                     f"runner: no meta model for {model_key!r} ({error!r}); "
@@ -157,6 +160,13 @@ class Runner:
                     file=sys.stderr,
                     flush=True,
                 )
+        # Initialize the CUDA driver now, inside the pool's readiness wait: the
+        # first request asks (`request_dtype` calls `torch.cuda.is_available`)
+        # and a fresh process pays about 170 ms for the answer. It creates no
+        # context and takes no GPU memory.
+        import torch
+
+        torch.cuda.is_available()
         self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.socket.bind(path)
         self.socket.listen()
@@ -244,6 +254,7 @@ def zygote(
     actor: int,
     model_key: "str | None" = None,
     trust_remote_code: bool = False,
+    task: "str | None" = None,
 ) -> None:
     """A fork parent for runners: pay imports and the meta-model build once.
 
@@ -268,7 +279,9 @@ def zygote(
         os._exit(1)
     if model_key is not None:
         try:
-            nns.load_meta_model(model_key, trust_remote_code=trust_remote_code)
+            nns.load_meta_model(
+                model_key, trust_remote_code=trust_remote_code, task=task
+            )
         except Exception as error:
             print(
                 f"runner zygote: no meta model for {model_key!r} ({error!r}); "
@@ -312,7 +325,7 @@ def zygote(
 
 if __name__ == "__main__":
     if sys.argv[1] == "--zygote":
-        # --zygote CONTROL PEERS ACTOR_PID [MODEL_KEY TRUST]
+        # --zygote CONTROL PEERS ACTOR_PID [MODEL_KEY TRUST [TASK]]
         argv = sys.argv
         zygote(
             argv[2],
@@ -320,15 +333,18 @@ if __name__ == "__main__":
             int(argv[4]),
             model_key=argv[5] if len(argv) > 5 else None,
             trust_remote_code=len(argv) > 6 and argv[6] == "1",
+            task=argv[7] if len(argv) > 7 else None,
         )
         sys.exit(1)
     die_with_parent()
     peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     model_key = sys.argv[3] if len(sys.argv) > 3 else None
     trust_remote_code = len(sys.argv) > 4 and sys.argv[4] == "1"
+    task = sys.argv[5] if len(sys.argv) > 5 else None
     Runner(
         sys.argv[1],
         peers=peers,
         model_key=model_key,
         trust_remote_code=trust_remote_code,
+        task=task,
     ).serve()

@@ -1099,7 +1099,9 @@ class TestDeterminismAcrossProcesses:
 
         from ndif.services.ray.sandbox import host
 
-        assert 'env["PYTHONHASHSEED"] = "0"' in inspect.getsource(host.spawn)
+        assert 'env["PYTHONHASHSEED"] = "0"' in inspect.getsource(
+            host._runner_process_env
+        )
 
     def test_there_is_one_definition_of_seeding(self):
         # The tensor-parallel name is kept because it reads well at its call
@@ -1603,9 +1605,13 @@ class TestARunnerInheritsNothingSensitive:
 
         from ndif.services.ray.sandbox import host
 
-        source = inspect.getsource(host.spawn)
+        source = inspect.getsource(host._runner_process_env)
         assert "env = runner_env()" in source
         assert "dict(os.environ)" not in source
+        # Both ways a runner is started (a fresh interpreter, or the fork parent
+        # of forked ones) take that environment.
+        for launcher in (host.spawn, host.Zygote.__init__):
+            assert "env=_runner_process_env()" in inspect.getsource(launcher)
 
 
 class TestScaleMatchesWhatIsRunning:

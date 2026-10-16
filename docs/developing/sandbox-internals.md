@@ -157,11 +157,13 @@ creation is largely serialized across processes, which caps throughput at about
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers`, the model key and `trust_remote_code`, and calls
-`nns.load_meta_model(model_key, trust_remote_code=...)` **before binding**, so a
-host that can connect is a host whose runner is warm. A failed build is printed to
-stderr and ignored: the map is an optimization, and without it ids resolve to
-`None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
+path, `peers`, the model key, `trust_remote_code` and the actor's `task`, and
+calls `nns.load_meta_model(model_key, trust_remote_code=..., task=...)` **before
+binding**, so a host that can connect is a host whose runner is warm. A failed
+build is printed to stderr and ignored: the map is an optimization, and without it
+ids resolve to `None`. It then calls `torch.cuda.is_available()`, which the first
+request would otherwise pay for (about 170 ms in a fresh process) when
+`request_dtype` asks; it initializes the driver and creates no context. `__main__` first calls `die_with_parent`, a daemon thread that polls
 `getppid` once a second and `os._exit(1)`s when the runner is reparented — the
 actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
 cleanup ran. It polls rather than using `PR_SET_PDEATHSIG` because that signal
@@ -196,7 +198,13 @@ round trip; anything else resolves to `None` rather than raising.
 
 `load_meta_model` builds the map once per runner from
 `Remotable.from_model_key(...)._remoteable_persistent_objects()` — the map the
-in-process actor builds from its real model, so the keys line up. `set_env`
+in-process actor builds from its real model, so the keys line up. Given the
+task the actor's model resolved to (`SandboxHost.open_pool` passes
+`self.model.task` when the wrapper has one), the build runs with
+`huggingface_hub`'s `HF_HUB_OFFLINE` switched on for its duration and falls back
+to the online build if that fails. Online, each build makes about six
+unauthenticated Hub requests, and one runner per untrusted request exhausts the
+anonymous rate limit (429). `set_env`
 rebuilds it per request from the payload's `env`, because an env can reshape the
 tree (a PEFT adapter prefixes every path with `base_model.model`). Both are
 best-effort: a diverged tree degrades to ids resolving to `None`, since every
@@ -332,7 +340,7 @@ reasoning; the mechanics in brief:
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
 | Host error | the forward raises on the host (a swapped value the next layer can't use, a widen that can't splice an edit) | the host's own exception propagates to the base `format_error` as itself; the runner's recv fails and its noise stays in the runner's stderr |
 | Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, whatever the thread is running by then. The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
-| Always | after every request | `cleanup` → `discard_sandbox` stops the request's runner; `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
+| Always | after every request | `cleanup` → `discard_sandbox` sends the request's runner SIGTERM and waits for it to exit on a background thread, so the replica is not held for the CUDA teardown (about 160 to 260 ms); `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
 
 `next_event` services `PRINT` throughout — it echoes the line as a `Status.LOG`
 response and keeps reading — so a caller waiting for a specific reply never sees
