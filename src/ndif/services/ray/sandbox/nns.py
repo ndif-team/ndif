@@ -550,8 +550,16 @@ def load_meta_model(
             META_MODEL = Remotable.from_model_key(
                 model_key, trust_remote_code=trust_remote_code, task=task
             )
-        except Exception:
-            pass
+        except Exception as error:
+            # The actor just loaded from the same cache, so this is not
+            # expected to fail; say so when it does, since the online build
+            # that follows is the one that runs into the rate limit.
+            print(
+                f"runner: offline meta build for {model_key!r} failed "
+                f"({error!r}); building online",
+                file=sys.stderr,
+                flush=True,
+            )
         finally:
             hub.HF_HUB_OFFLINE = was_offline
     if META_MODEL is None:

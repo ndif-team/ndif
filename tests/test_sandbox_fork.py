@@ -83,12 +83,13 @@ def test_after_fork_reseeds_each_child(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     torch.manual_seed(1234)
     draws = []
+    parent = os.getpid()
     for _ in range(2):
         read, write = os.pipe()
         pid = os.fork()
         if pid == 0:
             os.close(read)
-            runner._after_fork()
+            runner._after_fork(parent)
             os.write(write, repr(torch.rand(4).tolist()).encode())
             os._exit(0)
         os.close(write)

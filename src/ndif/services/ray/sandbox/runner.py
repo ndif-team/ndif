@@ -8,7 +8,7 @@ patches. The process is not hardened (no namespaces, seccomp, rlimits, or
 filesystem jail); what it provides is separation from the model actor and a fresh
 process per request.
 
-Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1] [task]
+Run standalone:  python -m sandbox.runner /path/to/socket PEERS PARENT_PID [model_key] [1] [task]
 As a fork parent (``NDIF_SANDBOX_FORK=1``, see `zygote`):
                  python -m sandbox.runner --zygote CONTROL PEERS ACTOR_PID [model_key] [1] [task]
 """
@@ -26,7 +26,7 @@ from .protocol import Channel, Fanout, pack
 _PARENT_POLL_S = 1.0
 
 
-def die_with_parent() -> None:
+def die_with_parent(parent: int) -> None:
     """Exit when the model actor that spawned this runner goes away.
 
     Without this a runner outlives its actor. The graceful paths already stop it
@@ -48,8 +48,16 @@ def die_with_parent() -> None:
     A daemon thread costs nothing and is thread-agnostic. A pure-Python runaway
     block still yields the GIL on the interpreter's switch interval, so the
     watchdog keeps getting scheduled while user code spins.
+
+    ``parent`` is the pid of the process that created this one, passed in by
+    that process (`host.spawn` sends the actor's, `zygote` its own). Reading
+    ``getppid()`` here instead would record init whenever the parent died
+    first: a spawned runner reaches this point only after about 2 s of imports,
+    and an actor killed in that window left a runner that never exited. A
+    parent that is already gone is checked for at once.
     """
-    parent = os.getppid()
+    if os.getppid() != parent:
+        os._exit(1)
 
     def watch() -> None:
         while True:
@@ -218,11 +226,11 @@ class Runner:
                 nns.run(connection, blob, compress, dtype, seed, env)
 
 
-def _after_fork() -> None:
+def _after_fork(parent: int) -> None:
     """Turn a freshly forked child into a runner of its own.
 
-    Threads do not survive ``fork``, so the child starts its own watchdog, on the
-    fork parent. Every child inherits the parent's RNG state, so two runners
+    Threads do not survive ``fork``, so the child starts its own watchdog, on
+    ``parent``, the zygote's pid. Every child inherits the parent's RNG state, so two runners
     forked from one parent would draw the same numbers: reseed torch, ``random``
     and numpy from the OS. Then bring CUDA up to a live context, which is what
     the first tensor a request delivers would otherwise pay (driver, lazy init
@@ -233,7 +241,7 @@ def _after_fork() -> None:
 
     import torch
 
-    die_with_parent()
+    die_with_parent(parent)
     seed = int.from_bytes(os.urandom(8), "little")
     random.seed(seed)
     torch.manual_seed(seed)
@@ -290,6 +298,7 @@ def zygote(
                 flush=True,
             )
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    me = os.getpid()
     if os.path.exists(control):
         os.unlink(control)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -314,7 +323,7 @@ def zygote(
                 conn.close()
                 signal.signal(signal.SIGCHLD, signal.SIG_DFL)
                 try:
-                    _after_fork()
+                    _after_fork(me)
                     Runner(path, peers=peers).serve()
                 finally:
                     os._exit(1)
@@ -336,11 +345,12 @@ if __name__ == "__main__":
             task=argv[7] if len(argv) > 7 else None,
         )
         sys.exit(1)
-    die_with_parent()
-    peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    model_key = sys.argv[3] if len(sys.argv) > 3 else None
-    trust_remote_code = len(sys.argv) > 4 and sys.argv[4] == "1"
-    task = sys.argv[5] if len(sys.argv) > 5 else None
+    # PATH PEERS PARENT_PID [MODEL_KEY TRUST [TASK]]
+    die_with_parent(int(sys.argv[3]))
+    peers = int(sys.argv[2])
+    model_key = sys.argv[4] if len(sys.argv) > 4 else None
+    trust_remote_code = len(sys.argv) > 5 and sys.argv[5] == "1"
+    task = sys.argv[6] if len(sys.argv) > 6 else None
     Runner(
         sys.argv[1],
         peers=peers,

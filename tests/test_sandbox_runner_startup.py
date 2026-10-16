@@ -106,3 +106,34 @@ def test_discard_returns_before_the_runner_exits(tmp_path):
     while socket_path.exists() and time.time() < deadline:
         time.sleep(0.05)
     assert not socket_path.exists()
+
+
+def test_a_runner_whose_parent_dies_during_imports_exits(tmp_path):
+    """The parent exits while the runner is still importing torch and nnsight,
+    the window in which reading ``getppid`` would have recorded init."""
+    sock = tmp_path / "orphan.sock"
+    launcher = textwrap.dedent(
+        f"""
+        import os, subprocess, sys
+        p = subprocess.Popen(
+            [sys.executable, "-m", "ndif.services.ray.sandbox.runner",
+             {str(sock)!r}, "1", str(os.getpid())],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(p.pid, flush=True)
+        """
+    )
+    env = {**os.environ, "PYTHONPATH": _SRC}
+    out = subprocess.run(
+        [sys.executable, "-c", launcher],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    pid = int(out.stdout.split()[0])
+    deadline = time.time() + 60
+    while os.path.exists(f"/proc/{pid}") and time.time() < deadline:
+        time.sleep(0.1)
+    alive = os.path.exists(f"/proc/{pid}")
+    if alive:
+        os.kill(pid, 9)
+    assert not alive
+    assert not sock.exists()  # it exited before binding
