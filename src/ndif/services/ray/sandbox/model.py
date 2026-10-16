@@ -90,6 +90,9 @@ class SandboxHost:
             # no readable config without it.
             model_key=self.model_key,
             trust_remote_code=self.kwargs.get("trust_remote_code", False),
+            # Only HuggingFace pipeline wrappers resolve a task; for any other
+            # wrapper the runner builds online as before.
+            task=getattr(self.model, "task", None),
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
@@ -190,10 +193,15 @@ class SandboxHost:
         super().restart()
 
     def discard_sandbox(self) -> None:
-        """Stop the request's runner (idempotent — ``stop`` checks the process)."""
-        if self.execution_sandbox is not None:
-            self.execution_sandbox.stop()
-            self.execution_sandbox = None
+        """Stop the request's runner (idempotent — ``stop`` checks the process).
+
+        The signal goes now; waiting for the process to exit (CUDA teardown,
+        about 160 to 260 ms) happens on a thread, so the replica is not held for
+        it."""
+        sandbox, self.execution_sandbox = self.execution_sandbox, None
+        if sandbox is not None:
+            sandbox.process.terminate()
+            threading.Thread(target=sandbox.stop, daemon=True).start()
 
     def close(self) -> None:
         self.pool.close()

@@ -152,6 +152,7 @@ def spawn(
     peers: int = 1,
     model_key: Optional[str] = None,
     trust_remote_code: bool = False,
+    task: Optional[str] = None,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -167,8 +168,39 @@ def spawn(
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
     behaviour before meta models, and what a standalone runner gets.
     ``trust_remote_code`` is the actor's, since the build has to be the same one.
+    ``task`` is the task the actor's model resolved to, which lets the runner build
+    from the cache without Hub calls (see `nns.load_meta_model`).
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
+    # `quiet` silences stdout only. **stderr is never discarded**: the block's own
+    # output is forwarded as PRINT events (see nns.Writer), so anything reaching
+    # this stderr is the runner process failing on its own account -- including
+    # `serve`'s "runner: ..." handler, which is the only report of a request the
+    # runner could not finish. Sending it to DEVNULL made a runner that died
+    # mid-request indistinguishable from one that hung, and cost hours.
+    # The runner's watchdog is told its parent rather than reading `getppid` once
+    # its imports finish: an actor that dies during those ~2 s would otherwise be
+    # recorded as init, and the runner would never exit (see `die_with_parent`).
+    argv = [
+        python, "-m", "ndif.services.ray.sandbox.runner",
+        path, str(peers), str(os.getpid()),
+    ]
+    if model_key is not None:
+        argv += [model_key, "1" if trust_remote_code else "0"]
+        if task is not None:
+            argv.append(task)
+    process = subprocess.Popen(
+        argv,
+        env=_runner_process_env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL if quiet else None,
+        stderr=None,
+    )
+    return _await_ready(path, process, timeout)
+
+
+def _runner_process_env() -> dict:
+    """`runner_env`, plus what `python -m ndif.services.ray.sandbox.runner` needs."""
     env = runner_env()
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
@@ -178,23 +210,12 @@ def spawn(
     # host's, and — under tensor parallelism, where every rank hosts the same runner — from
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
-    # `quiet` silences stdout only. **stderr is never discarded**: the block's own
-    # output is forwarded as PRINT events (see nns.Writer), so anything reaching
-    # this stderr is the runner process failing on its own account -- including
-    # `serve`'s "runner: ..." handler, which is the only report of a request the
-    # runner could not finish. Sending it to DEVNULL made a runner that died
-    # mid-request indistinguishable from one that hung, and cost hours.
-    argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
-    if model_key is not None:
-        argv += [model_key, "1" if trust_remote_code else "0"]
-    process = subprocess.Popen(
-        argv,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL if quiet else None,
-        stderr=None,
-    )
+    return env
 
+
+def _await_ready(path: str, process, timeout: float) -> Sandbox:
+    """Wait until the runner at ``path`` accepts a connection, raising if
+    ``process`` dies first."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         if os.path.exists(path):
@@ -212,6 +233,172 @@ def spawn(
     raise TimeoutError("timed out waiting for the runner socket")
 
 
+def _syscall(number: int, *args) -> int:
+    """A raw Linux syscall. The pidfd calls go through here rather than
+    ``os.pidfd_open`` / ``signal.pidfd_send_signal`` because CPython only has
+    those bindings when it was built against headers that define them, and
+    some builds lack them (conda-forge's CPython 3.12.15, for one). Their
+    numbers are the same on every architecture."""
+    import ctypes
+
+    result = ctypes.CDLL(None, use_errno=True).syscall(number, *args)
+    if result < 0:
+        errno = ctypes.get_errno()
+        # OSError picks the subclass from errno: ESRCH is ProcessLookupError.
+        raise OSError(errno, os.strerror(errno))
+    return result
+
+
+def _pidfd_open(pid: int) -> int:
+    """pidfd_open(2), Linux 5.3+."""
+    return _syscall(434, pid, 0)
+
+
+def _pidfd_send_signal(fd: int, sig: int) -> None:
+    """pidfd_send_signal(2), Linux 5.1+."""
+    _syscall(424, fd, int(sig), None, 0)
+
+
+class ForkedProcess:
+    """The ``Popen`` surface `Sandbox` and `_await_ready` use, for a runner forked
+    by the `Zygote`.
+
+    The actor is not that runner's parent, so it cannot ``waitpid`` it. A pidfd
+    names the process without the pid-reuse race and becomes readable when the
+    process exits. The exit status belongs to the zygote, which lets the kernel
+    reap it, so ``returncode`` is only ``None`` (running) or ``-1`` (exited).
+
+    The pidfd is the handle on the process, so it stays open for as long as this
+    object exists and is closed only when it is collected. Closing it when the
+    exit is first seen would let another thread stopping the same runner (an
+    `interrupt` racing cleanup's background stop) ``select`` on, or signal
+    through, a descriptor number that has since been reused. Signalling an
+    exited process through its pidfd fails with ESRCH, which `_signal` ignores.
+    """
+
+    def __init__(self, pid: int, fd: int):
+        self.pid = pid
+        self.fd = fd
+        self.returncode: Optional[int] = None
+
+    def __del__(self) -> None:
+        os.close(self.fd)
+
+    def _exited(self, timeout: Optional[float] = 0) -> bool:
+        import select
+
+        if self.returncode is None and select.select([self.fd], [], [], timeout)[0]:
+            self.returncode = -1
+        return self.returncode is not None
+
+    def poll(self) -> Optional[int]:
+        self._exited()
+        return self.returncode
+
+    def _signal(self, sig: int) -> None:
+        if not self._exited():
+            try:
+                _pidfd_send_signal(self.fd, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(self) -> None:
+        import signal
+
+        self._signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        import signal
+
+        self._signal(signal.SIGKILL)
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        if not self._exited(timeout):
+            raise subprocess.TimeoutExpired(f"runner pid {self.pid}", timeout)
+        return self.returncode
+
+
+class Zygote:
+    """The actor's handle on a fork parent for its runners (see `runner.zygote`).
+
+    Started like a runner, with the same allowlisted environment, so a forked
+    runner inherits nothing a spawned one would not. `fork` asks it for one
+    runner and waits until that runner accepts, exactly as `spawn` does.
+    """
+
+    def __init__(
+        self,
+        python: str = sys.executable,
+        quiet: bool = True,
+        peers: int = 1,
+        model_key: Optional[str] = None,
+        trust_remote_code: bool = False,
+        task: Optional[str] = None,
+    ):
+        self.control = f"/tmp/sbx-zygote-{uuid.uuid4().hex[:12]}.sock"
+        argv = [
+            python, "-m", "ndif.services.ray.sandbox.runner", "--zygote",
+            self.control, str(peers), str(os.getpid()),
+        ]
+        if model_key is not None:
+            argv += [model_key, "1" if trust_remote_code else "0"]
+            if task is not None:
+                argv.append(task)
+        self.process = subprocess.Popen(
+            argv,
+            env=_runner_process_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL if quiet else None,
+            stderr=None,
+        )
+
+    def _connect(self, deadline: float) -> socket.socket:
+        """Connect to the control socket, waiting out the zygote's own startup
+        (imports and the meta-model build) the first time."""
+        while True:
+            if self.process.poll() is not None:
+                raise RuntimeError("runner zygote exited")
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                sock.connect(self.control)
+                return sock
+            except (FileNotFoundError, ConnectionRefusedError):
+                sock.close()
+                if time.time() > deadline:
+                    raise TimeoutError("timed out waiting for the runner zygote")
+                time.sleep(0.02)
+
+    def fork(self, timeout: float = 60.0) -> Sandbox:
+        deadline = time.time() + timeout
+        path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
+        sock = self._connect(deadline)
+        try:
+            sock.settimeout(timeout)
+            sock.sendall(path.encode())
+            pid = int(sock.recv(64).decode())
+        finally:
+            sock.close()
+        try:
+            fd = _pidfd_open(pid)
+        except OSError:
+            # A runner nobody can track would never be stopped.
+            import signal
+
+            os.kill(pid, signal.SIGKILL)
+            raise
+        process = ForkedProcess(pid, fd)
+        return _await_ready(path, process, max(1.0, deadline - time.time()))
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+        try:
+            os.remove(self.control)
+        except FileNotFoundError:
+            pass
+
+
 class Pool:
     """A warm pool that hands out one *fresh* runner per request.
 
@@ -221,6 +408,12 @@ class Pool:
     in the background so acquiring one doesn't pay python/nnsight startup; taking
     one triggers a refill. Callers must ``stop()`` what they acquire — there's no
     release-back-to-pool.
+
+    With ``NDIF_SANDBOX_FORK=1`` a refill forks the runner from a `Zygote` instead
+    of spawning an interpreter: about 0.5 s to ready instead of about 4 s, and the
+    child arrives with its CUDA context already created, which the first request
+    would otherwise pay. Each ready runner then holds that context (about 0.5 GiB
+    of GPU memory) while it waits. Any fork failure falls back to `spawn`.
     """
 
     def __init__(
@@ -231,6 +424,7 @@ class Pool:
         peers: int = 1,
         model_key: Optional[str] = None,
         trust_remote_code: bool = False,
+        task: Optional[str] = None,
     ):
         self.size = size
         self.python = python
@@ -238,21 +432,42 @@ class Pool:
         self.peers = peers
         self.model_key = model_key
         self.trust_remote_code = trust_remote_code
+        self.task = task
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
         self.closed = False
+        # With NDIF_SANDBOX_FORK=1 runners are forked from one parent that has
+        # already imported everything and built the meta model, instead of each
+        # being a fresh interpreter (see `runner.zygote`).
+        self.zygote: Optional[Zygote] = None
+        if os.environ.get("NDIF_SANDBOX_FORK") == "1":
+            self.zygote = Zygote(
+                python, quiet, peers, model_key, trust_remote_code, task
+            )
         for _ in range(size):
             self.refill()
 
     def _spawn(self) -> Sandbox:
         """One runner, configured the way this pool's runners are."""
+        if self.zygote is not None:
+            try:
+                return self.zygote.fork()
+            except Exception as error:
+                # The spawn path still works; a broken zygote must not take the
+                # sandbox down with it.
+                print(
+                    f"sandbox: forking a runner failed ({error!r}); spawning one",
+                    file=sys.stderr,
+                    flush=True,
+                )
         return spawn(
             python=self.python,
             quiet=self.quiet,
             peers=self.peers,
             model_key=self.model_key,
             trust_remote_code=self.trust_remote_code,
+            task=self.task,
         )
 
     def refill(self) -> None:
@@ -294,3 +509,5 @@ class Pool:
                 self.ready.get_nowait().stop()
             except queue.Empty:
                 break
+        if self.zygote is not None:
+            self.zygote.stop()
