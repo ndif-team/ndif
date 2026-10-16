@@ -227,33 +227,29 @@ def _await_ready(path: str, process, timeout: float) -> Sandbox:
 
 
 def _syscall(number: int, *args) -> int:
+    """A raw Linux syscall. The pidfd calls go through here rather than
+    ``os.pidfd_open`` / ``signal.pidfd_send_signal`` because CPython only has
+    those bindings when it was built against headers that define them, and
+    some builds lack them (conda-forge's CPython 3.12.15, for one). Their
+    numbers are the same on every architecture."""
     import ctypes
 
     result = ctypes.CDLL(None, use_errno=True).syscall(number, *args)
     if result < 0:
         errno = ctypes.get_errno()
-        error = ProcessLookupError if errno == 3 else OSError  # ESRCH
-        raise error(errno, os.strerror(errno))
+        # OSError picks the subclass from errno: ESRCH is ProcessLookupError.
+        raise OSError(errno, os.strerror(errno))
     return result
 
 
 def _pidfd_open(pid: int) -> int:
-    """``os.pidfd_open`` (Linux 5.3+). Some Python builds omit the binding, so
-    fall back to the syscall, whose number (434) is the same on every
-    architecture."""
-    if hasattr(os, "pidfd_open"):
-        return os.pidfd_open(pid)
+    """pidfd_open(2), Linux 5.3+."""
     return _syscall(434, pid, 0)
 
 
 def _pidfd_send_signal(fd: int, sig: int) -> None:
-    """``signal.pidfd_send_signal`` (Linux 5.1+), same fallback (syscall 424)."""
-    import signal
-
-    if hasattr(signal, "pidfd_send_signal"):
-        signal.pidfd_send_signal(fd, sig)
-    else:
-        _syscall(424, fd, int(sig), None, 0)
+    """pidfd_send_signal(2), Linux 5.1+."""
+    _syscall(424, fd, int(sig), None, 0)
 
 
 class ForkedProcess:
