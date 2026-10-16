@@ -499,7 +499,7 @@ META_MODEL = None
 PERSISTENT_OBJECTS = {}
 
 
-def load_meta_model(model_key: str) -> None:
+def load_meta_model(model_key: str, task: "str | None" = None) -> None:
     """Build this runner's meta model and register its persistent-id map.
 
     Called once at runner start (``Runner.__init__``, before the socket binds), so
@@ -520,13 +520,34 @@ def load_meta_model(model_key: str) -> None:
     and huggingface_hub serves a cached file even when its HEAD call fails — which
     is what happens here for a gated repo, since a runner deliberately inherits no
     `HF_TOKEN`.
+
+    Reading from the cache still costs Hub requests online: six per build (model
+    info, tree listings, config HEADs), unauthenticated, from one runner per
+    untrusted request. That exhausts the anonymous rate limit, after which
+    builds see 429s. With ``task``, the task the actor's model resolved to, the
+    build runs offline first; the pipeline factory refuses to infer a task
+    offline, so a key without one has no offline build to try. Offline mode is
+    switched on for the build only, so the user's block still reaches the Hub,
+    and an offline failure falls back to the online build.
     """
     global META_MODEL
 
     # `from_model_key` resolves the wrapper class from the key itself, so this is
     # the same build the actor does (base.py) minus the weights -- and it is right
     # for a non-HuggingFace wrapper too.
-    META_MODEL = Remotable.from_model_key(model_key)
+    META_MODEL = None
+    if task is not None:
+        from huggingface_hub import constants as hub
+
+        was_offline, hub.HF_HUB_OFFLINE = hub.HF_HUB_OFFLINE, True
+        try:
+            META_MODEL = Remotable.from_model_key(model_key, task=task)
+        except Exception:
+            pass
+        finally:
+            hub.HF_HUB_OFFLINE = was_offline
+    if META_MODEL is None:
+        META_MODEL = Remotable.from_model_key(model_key)
     PERSISTENT_OBJECTS.update(META_MODEL._remoteable_persistent_objects())
 
 

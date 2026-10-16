@@ -151,6 +151,7 @@ def spawn(
     timeout: float = 30.0,
     peers: int = 1,
     model_key: Optional[str] = None,
+    task: Optional[str] = None,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -166,6 +167,8 @@ def spawn(
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
     behaviour before meta models, and what a standalone runner gets. Whether
     the checkpoint's own code may run during that build is in the key.
+    ``task`` is the task the actor's model resolved to, which lets the runner build
+    from the cache without Hub calls (see `nns.load_meta_model`).
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     # `quiet` silences stdout only. **stderr is never discarded**: the block's own
@@ -177,6 +180,8 @@ def spawn(
     argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
     if model_key is not None:
         argv.append(model_key)
+        if task is not None:
+            argv.append(task)
     process = subprocess.Popen(
         argv,
         env=_runner_process_env(),
@@ -265,13 +270,19 @@ class ForkedProcess:
         self.pid = pid
         self.fd = _pidfd_open(pid)
         self.returncode: Optional[int] = None
+        # `interrupt` can stop a runner while cleanup's background stop is
+        # waiting on it; without the lock both close the pidfd, and the second
+        # close can hit an unrelated descriptor that reused the number.
+        self.lock = threading.Lock()
 
     def _exited(self, timeout: Optional[float] = 0) -> bool:
         import select
 
         if self.returncode is None and select.select([self.fd], [], [], timeout)[0]:
-            self.returncode = -1
-            os.close(self.fd)
+            with self.lock:
+                if self.returncode is None:
+                    self.returncode = -1
+                    os.close(self.fd)
         return self.returncode is not None
 
     def poll(self) -> Optional[int]:
@@ -315,6 +326,7 @@ class Zygote:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
+        task: Optional[str] = None,
     ):
         self.control = f"/tmp/sbx-zygote-{uuid.uuid4().hex[:12]}.sock"
         argv = [
@@ -323,6 +335,8 @@ class Zygote:
         ]
         if model_key is not None:
             argv.append(model_key)
+            if task is not None:
+                argv.append(task)
         self.process = subprocess.Popen(
             argv,
             env=_runner_process_env(),
@@ -401,12 +415,14 @@ class Pool:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
+        task: Optional[str] = None,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
         self.model_key = model_key
+        self.task = task
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -416,7 +432,7 @@ class Pool:
         # being a fresh interpreter (see `runner.zygote`).
         self.zygote: Optional[Zygote] = None
         if os.environ.get("NDIF_SANDBOX_FORK") == "1":
-            self.zygote = Zygote(python, quiet, peers, model_key)
+            self.zygote = Zygote(python, quiet, peers, model_key, task)
         for _ in range(size):
             self.refill()
 
@@ -438,6 +454,7 @@ class Pool:
             quiet=self.quiet,
             peers=self.peers,
             model_key=self.model_key,
+            task=self.task,
         )
 
     def refill(self) -> None:
