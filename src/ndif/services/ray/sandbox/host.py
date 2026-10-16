@@ -177,7 +177,13 @@ def spawn(
     # `serve`'s "runner: ..." handler, which is the only report of a request the
     # runner could not finish. Sending it to DEVNULL made a runner that died
     # mid-request indistinguishable from one that hung, and cost hours.
-    argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
+    # The runner's watchdog is told its parent rather than reading `getppid` once
+    # its imports finish: an actor that dies during those ~2 s would otherwise be
+    # recorded as init, and the runner would never exit (see `die_with_parent`).
+    argv = [
+        python, "-m", "ndif.services.ray.sandbox.runner",
+        path, str(peers), str(os.getpid()),
+    ]
     if model_key is not None:
         argv.append(model_key)
         if task is not None:
@@ -260,25 +266,28 @@ class ForkedProcess:
     names the process without the pid-reuse race and becomes readable when the
     process exits. The exit status belongs to the zygote, which lets the kernel
     reap it, so ``returncode`` is only ``None`` (running) or ``-1`` (exited).
+
+    The pidfd is the handle on the process, so it stays open for as long as this
+    object exists and is closed only when it is collected. Closing it when the
+    exit is first seen would let another thread stopping the same runner (an
+    `interrupt` racing cleanup's background stop) ``select`` on, or signal
+    through, a descriptor number that has since been reused. Signalling an
+    exited process through its pidfd fails with ESRCH, which `_signal` ignores.
     """
 
-    def __init__(self, pid: int):
+    def __init__(self, pid: int, fd: int):
         self.pid = pid
-        self.fd = _pidfd_open(pid)
+        self.fd = fd
         self.returncode: Optional[int] = None
-        # `interrupt` can stop a runner while cleanup's background stop is
-        # waiting on it; without the lock both close the pidfd, and the second
-        # close can hit an unrelated descriptor that reused the number.
-        self.lock = threading.Lock()
+
+    def __del__(self) -> None:
+        os.close(self.fd)
 
     def _exited(self, timeout: Optional[float] = 0) -> bool:
         import select
 
         if self.returncode is None and select.select([self.fd], [], [], timeout)[0]:
-            with self.lock:
-                if self.returncode is None:
-                    self.returncode = -1
-                    os.close(self.fd)
+            self.returncode = -1
         return self.returncode is not None
 
     def poll(self) -> Optional[int]:
@@ -368,13 +377,14 @@ class Zygote:
         finally:
             sock.close()
         try:
-            process = ForkedProcess(pid)
+            fd = _pidfd_open(pid)
         except OSError:
             # A runner nobody can track would never be stopped.
             import signal
 
             os.kill(pid, signal.SIGKILL)
             raise
+        process = ForkedProcess(pid, fd)
         return _await_ready(path, process, max(1.0, deadline - time.time()))
 
     def stop(self) -> None:

@@ -163,12 +163,15 @@ connect is a host whose runner is warm. A failed build is printed to stderr and
 ignored: the map is an optimization, and without it ids resolve to `None`. It then
 calls `torch.cuda.is_available()`, which the first request would otherwise pay
 for (about 170 ms in a fresh process) when `request_dtype` asks; it initializes
-the driver and creates no context. `__main__` first calls `die_with_parent`, a daemon thread that polls
-`getppid` once a second and `os._exit(1)`s when the runner is reparented — the
-actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
+the driver and creates no context. `__main__` first calls `die_with_parent` with the actor pid that `spawn` passes
+in argv, and exits at once if that is already not its parent. It then starts a
+daemon thread that polls `getppid` once a second and `os._exit(1)`s when the
+runner is reparented — the actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
 cleanup ran. It polls rather than using `PR_SET_PDEATHSIG` because that signal
 fires when the parent *thread* exits, and runners are spawned from short-lived
-threads.
+threads. The parent pid is passed in because the runner reaches this point only
+after about 2 s of imports: reading `getppid` then would record init for an actor
+that died in that window, and that runner would never exit.
 
 `Runner.serve` accepts `peers` connections (dropping `spawn`'s readiness probe via
 `_hung_up`), handles the exchange, and loops forever; a failing exchange goes to
