@@ -147,7 +147,7 @@ zygote is dead or the fork fails, `_spawn` prints the error and spawns. Because
 the CUDA context is created at fork time, each ready runner holds about 0.5 GiB of
 GPU memory while it waits; a pool of 7 holds about 3.5 GiB per actor. Context
 creation is largely serialized across processes, which caps throughput at about
-1.6 req/s at concurrency 4 on one GPU in measurement.
+1.5 req/s at concurrency 4 on one GPU (Qwen3-8B, measured).
 
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and
