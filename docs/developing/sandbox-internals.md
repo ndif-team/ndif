@@ -133,6 +133,22 @@ tokenizer, meta pipeline) and refills contend for the node's CPU, so the sandbox
 path scales worse with replicas than the in-process one. Turn it down on a memory-
 or core-tight node.
 
+With `NDIF_SANDBOX_FORK=1` the pool forks instead of spawning. `Pool.__init__`
+starts one `Zygote`: a runner process in `--zygote` mode (`runner.py` `zygote`)
+that does the imports and the meta-model build once and never touches CUDA. Each
+`_spawn` asks it over a control socket to fork a child bound to a new socket path;
+the child runs `_after_fork` (starts `die_with_parent`, reseeds `random`, torch and
+numpy from `os.urandom`, and creates its CUDA context) and then serves as a spawned
+runner does. Readiness is the same socket wait, about 0.5 s instead of about 4 s.
+The children are not the actor's children, so the host tracks them by pidfd
+(`ForkedProcess`). The zygote exits when its `getppid` stops being the actor pid
+it was given, and its children follow through their own `die_with_parent`. If the
+zygote is dead or the fork fails, `_spawn` prints the error and spawns. Because
+the CUDA context is created at fork time, each ready runner holds about 0.5 GiB of
+GPU memory while it waits; a pool of 7 holds about 3.5 GiB per actor. Context
+creation is largely serialized across processes, which caps throughput at about
+1.6 req/s at concurrency 4 on one GPU in measurement.
+
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and
 > lands in the Ray worker's `.err` file, never the actor's log. The visible symptom
