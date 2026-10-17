@@ -247,7 +247,7 @@ successful schedule write into a 500, and the cron retries.
 
 ## jobs/report.py
 
-A daily digest posted to Discord (cron default `0 0 * * *`). Uptime comes from the
+A daily digest posted to Discord (cron default `0 0 * * *`), to `discord_report_webhook` when set and to `discord_webhook` otherwise. Uptime comes from the
 monitor's `connected_*.log`, so it cannot disagree with the alerts already sent; usage
 (request counts, outcomes, users, models, latency percentiles, bytes) comes from
 InfluxDB. If InfluxDB is unreachable the usage block is reported unavailable and the

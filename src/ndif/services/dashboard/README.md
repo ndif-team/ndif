@@ -120,7 +120,7 @@ login flow during development.
 dashboard/
 ├── README.md
 ├── start.sh                # canonical runner — used by both Docker and standalone
-├── config.example.json     # discord webhook + message templates
+├── config.example.json     # discord webhooks + message templates
 ├── requirements.in         # backend pip deps
 ├── backend/
 │   ├── app.py              # FastAPI app

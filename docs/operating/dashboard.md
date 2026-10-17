@@ -270,15 +270,20 @@ Failures are counted against *received*, not against executed, because a
 request that dies before reaching a replica never emits an `execution_time`
 point. Requests with no `email` tag — all of them when auth is off — are reported
 as `unattributed`. If InfluxDB is unreachable you still get an uptime-only
-report. Run it by hand with `--dry-run` to print instead of posting. Top-list
-size (`report.top_n`) and the message template (`messages.daily_report`, with
-`{window}`, `{uptime}`, `{requests}`, `{users}`, `{models}`, `{latency}`,
-`{data}`) live in `config.json`.
+report. Run it by hand with `--dry-run` to print instead of posting. The
+top-list size is `report.top_n` in `config.json`. The
+`messages.daily_report` template overrides the layout; it takes `{window}`,
+`{uptime}` and `{usage}`, and a template naming any other placeholder is ignored
+in favour of the built-in one.
 
 Discord alerts are off unless `discord_webhook` is set in
 `<data_dir>/config.json`, which `start.sh` seeds from `config.example.json` on
-first run: webhook, optional role id to `@`-mention, and message templates for
+first run: webhooks, optional role id to `@`-mention, and message templates for
 down / still-down / back-up / models-failed / schedule-failed / daily report.
+Status alerts (down, still-down, back-up, models-failed, schedule-failed) post to
+`discord_webhook`; the daily report posts to `discord_report_webhook`, or to
+`discord_webhook` when that is empty. The jobs read `config.json` on every run,
+so a webhook change needs no restart.
 
 ## State on disk
 
@@ -289,7 +294,7 @@ Everything is under `NDIF_DASHBOARD_DATA_DIR` (`/var/lib/dashboard` in compose):
 | `schedule.json` | schedule router | The events; the source of truth for reconcile |
 | `.reconcile.state.json` | reconcile | `prev_model_keys`, `active_count`, `last_run` |
 | `cache/values.json` | deploy + reconcile | MRU autocomplete lists (`repo_id`, `task`, `actor_class`, `envoy_class`) |
-| `config.json` | you (seeded from the example) | Discord webhook, role id, message templates |
+| `config.json` | you (seeded from the example) | Discord webhooks (status, report), role id, message templates |
 | `logs/connected_*.log` | monitor | One JSON object per tick: timestamp + ok/reason |
 | `logs/models_*.log` | monitor | One object per trace pass: per-model status, latency, error |
 | `logs/cluster_*.log` | monitor | Node/GPU/memory snapshot per tick |

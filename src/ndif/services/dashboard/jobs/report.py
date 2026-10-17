@@ -55,15 +55,9 @@ DEFAULT_API_URL = "http://localhost:8001"
 # ``format_report`` truncates as a backstop.
 DISCORD_LIMIT = 2000
 
-DEFAULT_MESSAGE = (
-    "📊 **NDIF report** — {window}\n"
-    "**Uptime** {uptime}\n"
-    "**Requests** {requests}\n"
-    "**Users** {users}\n"
-    "**Models** {models}\n"
-    "**Latency** {latency}\n"
-    "**Data** {data}"
-)
+# ``{usage}`` is a block of Discord ``###`` sections (requests, users, models)
+# rendered by ``format_report``, so the template only places the pieces.
+DEFAULT_MESSAGE = "📊 **NDIF daily report** · {window}\n\n{uptime}\n\n{usage}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -296,62 +290,81 @@ def shorten_model(model_key: str) -> str:
     return model_key.rsplit(":", 1)[-1][:60]
 
 
-def _top(counts: dict, n: int, key: Any = str) -> str:
-    items = list(counts.items())[:n]
-    return ", ".join(f"{key(k)} ({v})" for k, v in items) if items else "none"
+def human_ms(ms: float) -> str:
+    return f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
+
+
+def discord_ts(at: datetime.datetime) -> str:
+    """A Discord timestamp, which each reader sees in their own timezone."""
+    return f"<t:{int(at.timestamp())}:f>"
+
+
+def _ranked(counts: dict, n: int, key: Any = str) -> list[str]:
+    """Top-n as a numbered list. Names go in code spans: emails and repo ids
+    carry underscores, which Discord otherwise pairs up into italics."""
+    return [f"{i}. `{key(k)}` — {v:,}" for i, (k, v) in enumerate(list(counts.items())[:n], 1)]
+
+
+def format_uptime(uptime: dict, hot: Optional[int]) -> str:
+    if not uptime.get("checks"):
+        return "**No connectivity data** (is the monitor cron running?)"
+    head = f"**{uptime['pct']}% uptime**"
+    if uptime["outages"]:
+        n = uptime["outages"]
+        head += f" · {n} outage{'s' if n != 1 else ''}, longest {human_duration(uptime['longest_outage_s'])}"
+    if uptime.get("down_now"):
+        head += " · **currently DOWN**"
+    sub = f"{uptime['ok']}/{uptime['checks']} checks passed"
+    if hot is not None:
+        sub += f" · {hot} model{'s' if hot != 1 else ''} HOT now"
+    return f"{head}\n-# {sub}"
+
+
+def format_usage(usage: Optional[dict], top_n: int) -> str:
+    if usage is None:
+        return "-# Usage unavailable: InfluxDB could not be queried."
+    if not usage["received"] and not usage["executed"]:
+        return "-# No requests in this window."
+
+    lines = [
+        "### Requests",
+        f"**{usage['received']:,}** received · **{usage['completed']:,}** completed · "
+        f"**{usage['failed']:,}** failed ({usage['error_rate']}%)",
+    ]
+    p50, p95 = usage["exec_p50_ms"], usage["exec_p95_ms"]
+    if p50 is not None and p95 is not None:
+        lines.append(f"Latency p50 **{human_ms(p50)}** · p95 **{human_ms(p95)}**")
+    lines.append(f"Data {human_bytes(usage['ingress_bytes'])} in · {human_bytes(usage['egress_bytes'])} out")
+
+    lines.append(f"### Users · {len(usage['users'])} active")
+    lines += _ranked(usage["users"], top_n)
+    if usage["unattributed"]:
+        lines.append(f"-# {usage['unattributed']:,} requests unattributed")
+
+    lines.append(f"### Models · {len(usage['models'])} used")
+    lines += _ranked(usage["models"], top_n, shorten_model)
+    return "\n".join(lines)
 
 
 def format_report(report: dict, config: dict) -> str:
     """Render the report with the configured template."""
-    uptime, usage = report["uptime"], report.get("usage")
     top_n = int(config.get("report", {}).get("top_n", DEFAULT_TOP_N))
-
-    if uptime.get("checks"):
-        bits = [f"{uptime['pct']}% ({uptime['ok']}/{uptime['checks']} checks)"]
-        if uptime["outages"]:
-            bits.append(
-                f"{uptime['outages']} outage(s), longest {human_duration(uptime['longest_outage_s'])}"
-            )
-        if uptime.get("down_now"):
-            bits.append("**currently DOWN**")
-        uptime_line = " · ".join(bits)
-    else:
-        uptime_line = "no connectivity data (is the monitor cron running?)"
-
-    if usage is None:
-        blank = "telemetry unavailable"
-        requests_line = users_line = models_line = latency_line = data_line = blank
-    elif not usage["received"] and not usage["executed"]:
-        blank = "no activity"
-        requests_line = users_line = models_line = latency_line = data_line = blank
-    else:
-        requests_line = (
-            f"{usage['received']} received · {usage['completed']} completed · "
-            f"{usage['failed']} failed ({usage['error_rate']}%)"
-        )
-        users_line = f"{len(usage['users'])} active · {_top(usage['users'], top_n)}"
-        if usage["unattributed"]:
-            users_line += f" · {usage['unattributed']} unattributed"
-        models_line = f"{len(usage['models'])} used · {_top(usage['models'], top_n, shorten_model)}"
-        p50, p95 = usage["exec_p50_ms"], usage["exec_p95_ms"]
-        latency_line = (
-            f"p50 {p50:.0f} ms · p95 {p95:.0f} ms" if p50 is not None and p95 is not None else "no completed requests"
-        )
-        data_line = f"{human_bytes(usage['ingress_bytes'])} in · {human_bytes(usage['egress_bytes'])} out"
-
-    if report.get("hot_models") is not None:
-        models_line += f" · {report['hot_models']} HOT now"
+    end = datetime.datetime.fromisoformat(report["generated_at"])
+    start = end - datetime.timedelta(hours=report["window_hours"])
+    fields = {
+        "window": f"{discord_ts(start)} → {discord_ts(end)}",
+        "uptime": format_uptime(report["uptime"], report.get("hot_models")),
+        "usage": format_usage(report.get("usage"), top_n),
+    }
 
     template = config.get("messages", {}).get("daily_report", DEFAULT_MESSAGE)
-    message = template.format(
-        window=report["window"],
-        uptime=uptime_line,
-        requests=requests_line,
-        users=users_line,
-        models=models_line,
-        latency=latency_line,
-        data=data_line,
-    )
+    try:
+        message = template.format(**fields)
+    except (KeyError, IndexError, ValueError) as e:
+        # A config.json seeded before the report took {window}/{uptime}/{usage}
+        # names placeholders that no longer exist; the default beats no report.
+        print(f"messages.daily_report does not fit the report fields ({e!r}); using the default template.")
+        message = DEFAULT_MESSAGE.format(**fields)
     if len(message) > DISCORD_LIMIT:
         message = message[: DISCORD_LIMIT - 3] + "..."
     return message
@@ -403,9 +416,11 @@ def main() -> None:
         print(message)
         return
 
-    webhook_url = config.get("discord_webhook")
+    # The report has its own channel; status alerts stay on discord_webhook.
+    # Fall back to that one so a config with a single webhook still gets reports.
+    webhook_url = config.get("discord_report_webhook") or config.get("discord_webhook")
     if not webhook_url:
-        print("No discord_webhook configured; report written to the log only.")
+        print("No discord_report_webhook or discord_webhook configured; report written to the log only.")
         print(message)
         return
     send_discord(webhook_url, message)
