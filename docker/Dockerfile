@@ -114,10 +114,8 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
 # record of what it was built with. The build-time inputs go on OCI labels.
 RUN ndif version --write /etc/ndif/build.json
 
-# Build-time inputs. VCS_REF / BUILD_DATE are passed by the publish workflow;
-# a local `docker build` leaves them unset, which is fine.
-ARG VCS_REF=
-ARG BUILD_DATE=
+# The publish workflows add org.opencontainers.image.revision and .created
+# from docker/metadata-action.
 LABEL org.opencontainers.image.title="NDIF" \
       org.opencontainers.image.description="The NDIF server: runs nnsight intervention code against large models on shared GPUs." \
       org.opencontainers.image.url="https://ndif.us" \
@@ -125,8 +123,6 @@ LABEL org.opencontainers.image.title="NDIF" \
       org.opencontainers.image.documentation="https://github.com/ndif-team/ndif/blob/main/docker/README.md" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${NDIF_VERSION}" \
-      org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.created="${BUILD_DATE}" \
       us.ndif.torch.cuda="${TORCH_CUDA}" \
       us.ndif.torch.spec="${TORCH_SPEC}"
 

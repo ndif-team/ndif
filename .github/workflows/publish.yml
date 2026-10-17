@@ -3,7 +3,6 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 # No job gets a token scope it doesn't ask for. The publish job takes id-token
 # (OIDC, for Trusted Publishing); the build job needs nothing at all.
@@ -16,12 +15,12 @@ jobs:
     steps:
       # Full history: setuptools-scm derives the version from the release tag.
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       
@@ -34,7 +33,7 @@ jobs:
         run: python -m build
       
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/*
@@ -51,7 +50,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist

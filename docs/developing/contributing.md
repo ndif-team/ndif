@@ -142,12 +142,12 @@ The workflows in `.github/workflows/` build and publish; none runs the tests or
 
 | Workflow | Trigger | Does |
 |---|---|---|
-| `build_images.yml` | push to `main` (or manual) | builds the hosted image |
-| `publish_docker.yml` | a `v*` tag (or manual) | publishes the `ndif/ndif` images to Docker Hub; `latest` moves only for a final `X.Y.Z` |
-| `publish.yml` | a published GitHub release (or manual) | builds and publishes the wheel to PyPI |
+| `build_images.yml` | manual only | builds the hosted image into ECR for `dev`, `test` or `prod`; with `deploy` ticked, also force-redeploys the API and Dashboard services |
+| `publish_docker.yml` | a published GitHub release (or manual) | publishes the `ndif/ndif` images to Docker Hub; `latest` moves only for a final `X.Y.Z` |
+| `publish.yml` | a published GitHub release | builds and publishes the wheel to PyPI |
 
-Creating a GitHub release pushes its tag, so one release fires both publish
-workflows; a tag is a release, not a checkpoint. The package version is the git tag
+One GitHub release fires both publish workflows; a release tag is a release, not
+a checkpoint. The package version is the git tag
 (setuptools-scm); the image build has no `.git`, so the version reaches it through
 the `NDIF_VERSION` build arg.
 

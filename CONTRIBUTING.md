@@ -2,9 +2,10 @@
 
 ## Branches and PRs
 
-Branch off `dev` and open your pull request into `dev`. A push to `main` builds
-the hosted image, and a `v*` tag publishes the Docker Hub images (the PyPI package
-publishes on a GitHub release), so a tag is a release, not a checkpoint.
+Branch off `dev` and open your pull request into `dev`. Publishing a GitHub
+release publishes both the PyPI package and the Docker Hub images, so a release
+tag is a release, not a checkpoint. The hosted image builds and deploys only when
+someone runs `build_images.yml` by hand.
 
 ## Setup
 
