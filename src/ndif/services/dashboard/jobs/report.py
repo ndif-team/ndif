@@ -55,8 +55,6 @@ DEFAULT_API_URL = "http://localhost:8001"
 # ``format_report`` truncates as a backstop.
 DISCORD_LIMIT = 2000
 
-# ``{usage}`` is a block of Discord ``###`` sections (requests, users, models)
-# rendered by ``format_report``, so the template only places the pieces.
 DEFAULT_MESSAGE = "📊 **NDIF daily report** · {window}\n\n{uptime}\n\n{usage}"
 
 
@@ -294,11 +292,6 @@ def human_ms(ms: float) -> str:
     return f"{ms:.0f} ms" if ms < 1000 else f"{ms / 1000:.1f} s"
 
 
-def discord_ts(at: datetime.datetime) -> str:
-    """A Discord timestamp, which each reader sees in their own timezone."""
-    return f"<t:{int(at.timestamp())}:f>"
-
-
 def _ranked(counts: dict, n: int, key: Any = str) -> list[str]:
     """Top-n as a numbered list. Names go in code spans: emails and repo ids
     carry underscores, which Discord otherwise pairs up into italics."""
@@ -310,13 +303,12 @@ def format_uptime(uptime: dict, hot: Optional[int]) -> str:
         return "**No connectivity data** (is the monitor cron running?)"
     head = f"**{uptime['pct']}% uptime**"
     if uptime["outages"]:
-        n = uptime["outages"]
-        head += f" · {n} outage{'s' if n != 1 else ''}, longest {human_duration(uptime['longest_outage_s'])}"
+        head += f" · {uptime['outages']} outage(s), longest {human_duration(uptime['longest_outage_s'])}"
     if uptime.get("down_now"):
         head += " · **currently DOWN**"
     sub = f"{uptime['ok']}/{uptime['checks']} checks passed"
     if hot is not None:
-        sub += f" · {hot} model{'s' if hot != 1 else ''} HOT now"
+        sub += f" · {hot} HOT now"
     return f"{head}\n-# {sub}"
 
 
@@ -352,7 +344,8 @@ def format_report(report: dict, config: dict) -> str:
     end = datetime.datetime.fromisoformat(report["generated_at"])
     start = end - datetime.timedelta(hours=report["window_hours"])
     fields = {
-        "window": f"{discord_ts(start)} → {discord_ts(end)}",
+        # Discord timestamps render in each reader's own timezone.
+        "window": f"<t:{int(start.timestamp())}:f> → <t:{int(end.timestamp())}:f>",
         "uptime": format_uptime(report["uptime"], report.get("hot_models")),
         "usage": format_usage(report.get("usage"), top_n),
     }
@@ -381,7 +374,6 @@ def build_report(args: argparse.Namespace, log_dir: Path) -> dict:
     report: dict = {
         "generated_at": now.isoformat(),
         "window_hours": args.window_hours,
-        "window": f"{since.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%H:%M')} UTC",
         "uptime": summarize_uptime(log_dir, since),
         "usage": None,
     }
@@ -416,8 +408,7 @@ def main() -> None:
         print(message)
         return
 
-    # The report has its own channel; status alerts stay on discord_webhook.
-    # Fall back to that one so a config with a single webhook still gets reports.
+    # Reports may have their own channel; otherwise they share the alerts webhook.
     webhook_url = config.get("discord_report_webhook") or config.get("discord_webhook")
     if not webhook_url:
         print("No discord_report_webhook or discord_webhook configured; report written to the log only.")
