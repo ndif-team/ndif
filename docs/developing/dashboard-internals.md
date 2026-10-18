@@ -259,8 +259,9 @@ The `dashboard` extra is web-app only (`fastapi`, `uvicorn[standard]`,
 `pydantic-settings`, `itsdangerous`, `bcrypt`, `python-multipart`, `requests`). The
 crons need more: reconcile drives `cli/lib`, so it needs the `ray` extra (Ray pinned
 in `requirements.txt` to match the ray service); the monitor's probe needs nnsight
-plus `peft` / `torchvision` for PEFT and VLM checkpoints; the report reads InfluxDB.
-The image installs every extra, so the container has all of it.
+plus `peft` (in `ray`) and `torchvision` for PEFT and VLM checkpoints; the report
+reads InfluxDB. The image installs every extra, and `docker/Dockerfile` installs
+`torchvision` alongside torch from the PyTorch index, so the container has all of it.
 
 ## Related
 

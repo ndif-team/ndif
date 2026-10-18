@@ -158,7 +158,7 @@ pyyaml, boto3); each role's dependencies are an extra in `pyproject.toml`:
 |---|---|
 | `api` | `ndif start api` — the HTTP surface and the queue dispatcher. |
 | `ray` | A Ray node and the model actors: transformers, accelerate, zstandard for compressed payloads, peft for per-request adapters. |
-| `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
+| `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` (in `ray`) and `torchvision`, which the Dockerfile installs with torch. |
 | `metrics` | Loki and InfluxDB shipping. Without it both providers fail open. |
 | `postgres` | API-key auth (`asyncpg`). |
 | `ext` | Packages a user's traced block may import (datasets, einops, pillow, ...). Not used by NDIF itself. |

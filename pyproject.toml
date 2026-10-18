@@ -115,8 +115,9 @@ postgres = [
 # that drives deploy/evict/status through the cli lib. Enable with
 # `pip install ".[dashboard]"`; run with `ndif start dashboard`. The reconcile
 # cron additionally needs the `ray` extra (it uses the Ray client), and the
-# monitor cron's remote-trace probe of PEFT/VLM checkpoints needs `peft` /
-# `torchvision`.
+# monitor cron's remote-trace probe of PEFT/VLM checkpoints needs `peft` (in
+# `ray`) and `torchvision`, which docker/Dockerfile installs with torch from the
+# PyTorch index rather than through an extra.
 dashboard = [
     "fastapi",
     "uvicorn[standard]",

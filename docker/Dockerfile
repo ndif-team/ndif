@@ -71,9 +71,14 @@ COPY --from=rustfs /usr/bin/rustfs /usr/local/bin/rustfs
 #
 # Its own layer, and first, because it is the largest single install — a
 # requirements.txt change shouldn't re-download it.
+#
+# torchvision comes from the same index in the same command, so pip picks the
+# build that matches torch. The dashboard monitor needs it: building a VLM's
+# wrapper loads its processor, and transformers' video processors refuse to load
+# without torchvision.
 ARG TORCH_SPEC=torch
 ARG TORCH_CUDA=cu126
-RUN pip install "${TORCH_SPEC}" \
+RUN pip install "${TORCH_SPEC}" torchvision \
       --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 
 # Heavy, rarely-changing dependency layer — cached unless requirements.txt
