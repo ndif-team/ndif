@@ -196,7 +196,7 @@ controller's `NDIF_DEPLOYMENTS` startup pins (`_ControllerActor.__init__`).
 **Whether the model runs its own repo code is not a deploy option; it is in the
 model key.** nnsight writes `"trust_remote_code": true` into a HuggingFace model
 key's JSON suffix when the client built the model with `trust_remote_code=True`,
-and omits the field otherwise. `src/ndif/common/model_key.py`
+and omits the field otherwise. `src/ndif/common/types.py`
 `trust_remote_code_of` reads it, and nnsight's `from_model_key` honors it
 wherever the model is sized (the evaluator) or loaded (the actor), so the two
 cannot disagree; a key with the field and one without are two deployments. Who

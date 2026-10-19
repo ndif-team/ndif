@@ -177,7 +177,7 @@ autoscaling is the only relief and it caps at `autoscaling_max_replicas`.
 `Processor.start` asks the controller for the model's current replicas
 (`get_deployment`). If any exist it adopts **all** of them as `Replica` objects;
 otherwise it first refuses, with a `DeploymentError`, a key asking for the
-checkpoint's own code (`src/ndif/common/model_key.py` `trust_remote_code_of`)
+checkpoint's own code (`src/ndif/common/types.py` `trust_remote_code_of`)
 unless `Processor.trust_remote_code` is set — a model already running is open to
 any caller, so this is the one place the permission is checked — and then
 `Replica.provision()` deploys exactly one. Either way it goes

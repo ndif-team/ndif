@@ -177,7 +177,7 @@ checkpoint's key is unchanged. Nothing in ndif carries a second copy:
 (`src/ndif/services/api/queue/replica.py`), and nnsight's `from_model_key` reads
 the flag off the key wherever the model is sized or loaded, so the controller's
 evaluator, the actor and the sandbox runner cannot disagree about it. Server code
-that needs the answer without nnsight calls `src/ndif/common/model_key.py`
+that needs the answer without nnsight calls `src/ndif/common/types.py`
 `trust_remote_code_of`. A client loading with `trust_remote_code=True` mints a
 different key from one loading without, so the two reach different deployments.
 

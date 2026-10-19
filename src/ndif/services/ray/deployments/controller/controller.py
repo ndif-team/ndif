@@ -18,8 +18,7 @@ from .....common.schema.controller import (
     ReplicaState,
     ReplicaStates,
 )
-from .....common.model_key import trust_remote_code_of
-from .....common.types import MODEL_KEY, REPLICA_ID
+from .....common.types import MODEL_KEY, REPLICA_ID, trust_remote_code_of
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel

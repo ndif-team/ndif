@@ -105,7 +105,7 @@ wherever the model is sized or loaded, so the controller sizes and loads a model
 key says — `DeploymentConfig` has no trust field, `Replica.provision` sends a bare
 `DeploymentConfig()`, and the evaluator, the actor and the sandbox runner cannot be told different
 values. `status()` reports `trust_remote_code` per HOT and WARM deployment, read off the key with
-`src/ndif/common/model_key.py` `trust_remote_code_of`. Who may *deploy* such a key is decided at
+`src/ndif/common/types.py` `trust_remote_code_of`. Who may *deploy* such a key is decided at
 the API, not here — the full path is in
 [API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
 

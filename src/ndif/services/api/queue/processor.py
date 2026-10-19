@@ -26,13 +26,12 @@ import time
 from enum import Enum
 from typing import Dict, Optional
 
-from ....common.model_key import trust_remote_code_of
 from ....common.providers.ray import controller_handle
 from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
 from ....common.schema.request import BackendRequestModel
 from ....common.telemetry import error_type_name, event
-from ....common.types import MODEL_KEY, REPLICA_ID
+from ....common.types import MODEL_KEY, REPLICA_ID, trust_remote_code_of
 from .config import CONFIG
 from .replica import DeploymentError, Replica
 from .request_queue import RequestQueue

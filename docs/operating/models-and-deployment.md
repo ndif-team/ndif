@@ -3,7 +3,7 @@ title: Models and Deployment
 one_liner: Getting a model running on an NDIF — model keys, every way a deployment gets created, the per-model config fields, `trust_remote_code` in the key, how GPU memory is checked before a deploy is accepted, tensor parallelism, pinning, eviction, export, and PEFT adapters.
 tags: [operating, controller, cli, ray, runbook, gotchas]
 related: [docs/concepts/deployments-and-eviction.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/configuration.md, docs/operating/quickstart.md, docs/concepts/queue-and-scheduling.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/model-oom-on-deploy.md]
-sources: [src/ndif/common/model_key.py, src/ndif/services/api/auth.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/evict.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/scale.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/processor.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/jobs/reconcile.py]
+sources: [src/ndif/common/types.py, src/ndif/services/api/auth.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/evict.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/scale.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/processor.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/jobs/reconcile.py]
 ---
 
 # Models and Deployment
@@ -53,7 +53,7 @@ wrapper class on the meta device (no weights, no GPU) and calling nnsight's
   restart or scale it.
 - **`trust_remote_code`** — in the JSON only when the client loaded with
   `trust_remote_code=True`, so an ordinary checkpoint's key has no such field
-  (`src/ndif/common/model_key.py` `trust_remote_code_of` reads it). A client
+  (`src/ndif/common/types.py` `trust_remote_code_of` reads it). A client
   loading with it and one without mint two keys, hence two deployments; see
   [`trusted` at deploy time](#trusted-at-deploy-time).
 - **The wrapper class**, `nnsight.modeling.transformers.TransformersModel` by

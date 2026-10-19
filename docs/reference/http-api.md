@@ -244,7 +244,7 @@ string), `n_params`, `size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`
 `execution_timeout_seconds`, `actor_class`, and — unpinned, with a minimum
 deployment time set — `schedule.end_time`. A WARM entry carries the subset from
 `model_key` to `n_params`. `trust_remote_code` is read off the model key
-(`src/ndif/common/model_key.py` `trust_remote_code_of`) and means the model
+(`src/ndif/common/types.py` `trust_remote_code_of`) and means the model
 loads with the checkpoint's own code; it says nothing about whether a given
 request runs trusted.
 

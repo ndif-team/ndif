@@ -3,7 +3,7 @@ title: Auth and Limits
 one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag that gates deploying a model that runs its own repo code, and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/api/queue/processor.py, src/ndif/common/model_key.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/api/queue/processor.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -93,7 +93,7 @@ model key, not a deploy option: nnsight writes `"trust_remote_code": true` into
 the key's JSON suffix when the client built the model with
 `trust_remote_code=True` (an ordinary checkpoint's key has no such field), and
 the controller sizes and loads the model with whatever the key says
-(`src/ndif/common/model_key.py` `trust_remote_code_of` reads it). Who may
+(`src/ndif/common/types.py` `trust_remote_code_of` reads it). Who may
 *deploy* such a key is decided at the API: `Processor.start`
 (`src/ndif/services/api/queue/processor.py`), on learning the controller has
 nothing running and before it asks for a replica, raises `DeploymentError` unless

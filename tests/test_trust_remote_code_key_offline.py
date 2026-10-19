@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ndif.cli.lib._common import normalize_specs
 from ndif.cli.lib.model_config import build_models_list, load_model_config
-from ndif.common.model_key import trust_remote_code_of
+from ndif.common.types import trust_remote_code_of
 from ndif.common.schema.controller import DeployResponse, ModelDeployResult, ReplicaStates
 
 _PLAIN = (

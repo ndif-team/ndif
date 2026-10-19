@@ -111,7 +111,7 @@ JSON identity, e.g.
 `nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`.
 The `task` is part of it, so one repo under two tasks is two models; so is
 `trust_remote_code`, present only when the client built the model with it
-(`src/ndif/common/model_key.py` `trust_remote_code_of` reads it). Minted
+(`src/ndif/common/types.py` `trust_remote_code_of` reads it). Minted
 client-side by `model.to_model_key()` and by the CLI's `get_model_key`
 (`src/ndif/cli/lib/models.py`); the queue's partition key and a telemetry label.
 See [queue-and-scheduling.md](../concepts/queue-and-scheduling.md).
