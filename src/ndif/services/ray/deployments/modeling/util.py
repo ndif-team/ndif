@@ -4,9 +4,11 @@
 support the model actor when it loads weights onto its assigned GPUs.
 """
 
+import asyncio
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+import threading
+from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple
 
 if TYPE_CHECKING:
     from .....common.schema.request import BackendRequestModel
@@ -76,7 +78,6 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     once control returns to Python. No-op if the thread isn't running.
     """
     import ctypes
-    import threading
 
     if ident is None or ident not in {t.ident for t in threading.enumerate()}:
         return
@@ -87,6 +88,45 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     if res > 1:
         # Somehow targeted more than one thread; undo to avoid collateral damage.
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(ident), None)
+
+
+def run_on_own_thread(fn: Callable[[], Any], name: str) -> "asyncio.Future":
+    """Run ``fn`` on a new thread of its own; the returned future gets its result.
+
+    For anything ``kill_thread`` may target. An injected exception lands at the
+    target's next bytecode boundary, which for a thread parked in a native call
+    comes only once that call returns. The sandboxed timeout shows why that
+    matters: ``interrupt()`` stops the runner first, the host thread parked in
+    ``recv`` sees EOF and finishes its request with a ``ConnectionError``, and
+    only then is ``SystemExit`` injected. On a pooled thread
+    (``asyncio.to_thread``) that thread is already back in the pool, and the
+    exception fires as it picks up the next request's work item -- outside the
+    item's ``try``, so the thread dies and that request's future never resolves,
+    wedging the replica (#284). On a thread of its own a late exception can only
+    reach this request's own thread: it lands inside ``fn`` and resolves this
+    future, or the thread has exited and it is dropped. Cancelling the future
+    abandons the thread; it does not stop it.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def resolve(result: Any, error: "BaseException | None") -> None:
+        if future.cancelled():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def body() -> None:
+        try:
+            result, error = fn(), None
+        except BaseException as exception:
+            result, error = None, exception
+        loop.call_soon_threadsafe(resolve, result, error)
+
+    threading.Thread(target=body, name=name, daemon=True).start()
+    return future
 
 
 def set_default_gpu(gpu_mem_bytes_by_id: Dict[int, int]) -> None:

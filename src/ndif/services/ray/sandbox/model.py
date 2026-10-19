@@ -209,6 +209,7 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
     def interrupt(self) -> None:
         # Stopping the runner unblocks the host thread if it's parked on the socket;
         # the base's kill_thread covers it running the forward pass in Python.
+        # An injection that lands late is harmless: see run_on_own_thread.
         if self.execution_sandbox is not None:
             self.execution_sandbox.stop()
         super().interrupt()

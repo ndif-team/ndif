@@ -62,7 +62,7 @@ across a process boundary.
 ## A request, end to end
 
 1. **Dispatch.** `run()` is inherited from `BaseModelDeployment` — a **template**
-   that responds `RUNNING`, drives `execute()` on a worker thread **raced against
+   that responds `RUNNING`, drives `execute()` on a thread of its own **raced against
    the execution timeout and a cancel signal** (`kill_switch`), emits
    metrics/event logs, and does `cleanup`/`restart` plus the `COMPLETED`/`ERROR`
    responses. The sandbox overrides only the hooks that differ:
@@ -75,7 +75,19 @@ across a process boundary.
      (nothing — PRINT events, not host stdout).
 
    On timeout/cancel the template calls `interrupt()`, which stops the runner —
-   closing the socket unblocks the host thread parked on `recv`.
+   closing the socket unblocks the host thread parked on `recv` — and then has
+   the base inject `SystemExit` into that thread (`kill_thread`), which is what
+   stops a host thread busy driving the forward between messages. An injected
+   exception lands only at the thread's next bytecode boundary. A thread parked
+   in `recv` has none until the call returns, and by the time the stop has
+   unblocked it and it has finished the request, the injection may still be
+   pending. That is why `execute()` runs on a thread created for the request
+   (`run_on_own_thread` in `modeling/util.py`) and not on a pooled one: a pooled
+   thread would be idle in the pool by then, and the exception would fire when
+   it picked up the next request's work — outside that work's `try`, so the
+   thread dies and the next request's future never resolves, wedging the
+   replica (#284). On a dedicated thread a late exception can only reach this
+   request's own thread, or, once that thread has exited, nothing.
 
 2. **Ship the payload.** `run_in_runner` acquires a warm runner from the `Pool`,
    opens a `Connection`, and sends `(payload, compress, dtype, seed, env)` — the
