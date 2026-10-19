@@ -51,6 +51,7 @@ from .util import (
     request_meta,
     reset_process_limits,
     resolve_dtype,
+    run_on_own_thread,
     set_default_gpu,
     set_process_limits,
     verify_device_placement,
@@ -351,9 +352,12 @@ class BaseModelDeployment:
             # format_error, rather than the queue's generic submission error.
             await asyncio.to_thread(self.model._remoteable_set_env, request.env)
 
-            # Run the block on a worker thread, raced against the timeout and the
-            # cancel signal. execute() returns (result_blob, deserialize_ms).
-            job = asyncio.create_task(asyncio.to_thread(self.execute, request))
+            # Run the block on a thread of its own (why: run_on_own_thread), raced
+            # against the timeout and the cancel signal. execute() returns
+            # (result_blob, deserialize_ms).
+            job = run_on_own_thread(
+                lambda: self.execute(request), name=f"execute-{request.id}"
+            )
             kill = asyncio.create_task(self.kill_switch.wait())
             with self.execution_scope(request):
                 done, pending = await asyncio.wait(

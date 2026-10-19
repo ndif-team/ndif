@@ -95,8 +95,10 @@ just logs them.
 reconcile event emitted after an out-of-band `ndif deploy` / `ndif evict`). Their
 streams, handlers and reply protocol are in
 [The Redis Layer](redis-layer.md#the-events-stream). An `ndif kill` of an
-executing request goes through `Replica.cancel`: the request is errored and the
-dispatch task cancelled, while the model actor runs the block to completion.
+executing request goes through `Replica.cancel(interrupt=True)`: the request is
+errored, the actor's `cancel()` is called, and the dispatch is given a few
+seconds to return on its own; only if it does not is the dispatch task
+cancelled.
 
 ## The Processor
 

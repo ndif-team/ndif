@@ -62,7 +62,7 @@ across a process boundary.
 ## A request, end to end
 
 1. **Dispatch.** `run()` is inherited from `BaseModelDeployment` — a **template**
-   that responds `RUNNING`, drives `execute()` on a worker thread **raced against
+   that responds `RUNNING`, drives `execute()` on a thread of its own **raced against
    the execution timeout and a cancel signal** (`kill_switch`), emits
    metrics/event logs, and does `cleanup`/`restart` plus the `COMPLETED`/`ERROR`
    responses. The sandbox overrides only the hooks that differ:
@@ -75,7 +75,14 @@ across a process boundary.
      (nothing — PRINT events, not host stdout).
 
    On timeout/cancel the template calls `interrupt()`, which stops the runner —
-   closing the socket unblocks the host thread parked on `recv`.
+   closing the socket unblocks the host thread parked on `recv` — and then has
+   the base inject `SystemExit` into that thread (`kill_thread`), which stops a
+   host thread busy driving the forward between messages. The injection lands
+   at the thread's next bytecode boundary, which can come after the unblocked
+   thread has finished the request. So `execute()` runs on a thread created for
+   the request (`run_on_own_thread` in `modeling/util.py`): on a pooled thread
+   the late exception would fire in the next request's work and wedge the
+   replica (#284); on its own thread it reaches this request or nothing.
 
 2. **Ship the payload.** `run_in_runner` acquires a warm runner from the `Pool`,
    opens a `Connection`, and sends `(payload, compress, dtype, seed, env)` — the

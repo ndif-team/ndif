@@ -187,10 +187,11 @@ the model out entirely. A deployment can override it per model via
 `DeploymentConfig.execution_timeout_seconds`.
 
 `BaseModelDeployment.run` (`src/ndif/services/ray/deployments/modeling/base.py`)
-races the execution, on a worker thread, against the timer and a cancel event
-(`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your job
-exceeded the execution timeout of Ns."; a cancel — in practice only the HOT→WARM
-demotion — re-queues the request instead. The user's answer is bounded by the
+races the execution, on a thread of its own, against the timer and a cancel
+event (`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your
+job exceeded the execution timeout of Ns."; a cancel does the same `interrupt()`
+and either errors the request (`ndif kill`) or, for a HOT→WARM demotion,
+re-queues it. The user's answer is bounded by the
 timeout. What `interrupt` does to the running code depends on the class:
 
 - **In-process (`ModelActor`, and trusted requests on the sandbox class).**
@@ -198,7 +199,8 @@ timeout. What `interrupt` does to the running code depends on the class:
   (`src/ndif/services/ray/deployments/modeling/util.py`), which injects
   `SystemExit` into the execution thread with CPython's async-exception API. It
   fires at that thread's next bytecode boundary, so a CUDA kernel or large tensor
-  op already in flight finishes first.
+  op already in flight finishes first. The thread is the request's own
+  (`run_on_own_thread`), so a late injection cannot reach other work.
 - **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
   the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
   socket the host thread is reading, then does the same `kill_thread`.

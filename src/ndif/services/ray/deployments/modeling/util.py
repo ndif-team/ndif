@@ -4,9 +4,11 @@
 support the model actor when it loads weights onto its assigned GPUs.
 """
 
+import asyncio
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+import threading
+from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple
 
 if TYPE_CHECKING:
     from .....common.schema.request import BackendRequestModel
@@ -76,7 +78,6 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     once control returns to Python. No-op if the thread isn't running.
     """
     import ctypes
-    import threading
 
     if ident is None or ident not in {t.ident for t in threading.enumerate()}:
         return
@@ -87,6 +88,41 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     if res > 1:
         # Somehow targeted more than one thread; undo to avoid collateral damage.
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(ident), None)
+
+
+def run_on_own_thread(fn: Callable[[], Any], name: str) -> "asyncio.Future":
+    """Run ``fn`` on a new thread of its own; the returned future gets its result.
+
+    Use it for any work ``kill_thread`` may target. Cancelling the future
+    abandons the thread; it does not stop it.
+
+    An injected exception can land after ``fn`` has returned (a sandboxed
+    interrupt unblocks the host thread before injecting). On a pooled thread
+    (``asyncio.to_thread``) it would fire in the next request's work item,
+    outside its ``try``, killing the thread and leaving that request's future
+    unresolved, which wedges the replica (#284). On a thread of its own it lands
+    inside ``fn`` or, once the thread has exited, nowhere.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def resolve(result: Any, error: "BaseException | None") -> None:
+        if future.cancelled():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def body() -> None:
+        try:
+            result, error = fn(), None
+        except BaseException as exception:
+            result, error = None, exception
+        loop.call_soon_threadsafe(resolve, result, error)
+
+    threading.Thread(target=body, name=name, daemon=True).start()
+    return future
 
 
 def set_default_gpu(gpu_mem_bytes_by_id: Dict[int, int]) -> None:
