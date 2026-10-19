@@ -385,7 +385,7 @@ What survives the round trip, and what does not (`padding_factor`,
 
 `queue` and `kill` do **not** use HTTP. They append an event to the Redis stream
 `dispatcher:events` carrying a unique `response_key`, then block on `BRPOP` for
-the dispatcher's JSON reply with a 5s timeout (`src/ndif/cli/lib/events.py`
+the dispatcher's JSON reply with a 5s timeout, 15s for a kill (`src/ndif/cli/lib/events.py`
 `_request`). The dispatcher runs as a child of the API's gunicorn master, so
 `No response from the dispatcher` means Redis is up but the **API** is not (or
 its dispatcher died) — not that Redis is down.
@@ -419,14 +419,16 @@ Overview:
 `ndif kill REQUEST_ID [--redis-url URL]` — the dispatcher first scans every
 Processor's queue and, if the request is still waiting, removes it and answers
 the client `ERROR` / "Request cancelled by operator." Otherwise it finds the
-replica executing it and cancels the **dispatch**: the client gets the same
-`ERROR`, and the dispatcher stops waiting on that replica
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`). The model
-actor is not interrupted — the block runs to completion, and the client then
-also receives the eviction sentence; what a blocking versus a non-blocking user
-ends up seeing is in
-[Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs). To get the GPU back from a runaway block, follow with
+replica executing it: the client gets the same `ERROR`, and the model actor is
+told to cancel the request, which interrupts the block the way the execution
+timeout does and leaves the replica serving
+(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
+`src/ndif/services/api/queue/replica.py` `Replica.cancel`). If the actor has not
+finished the request within a few seconds, the dispatcher cancels the
+**dispatch** instead and the block may run on; follow with
 `ndif restart <checkpoint> --replica <id>` (the replica id is in `ndif queue`).
+What a blocking versus a non-blocking user ends up seeing is in
+[Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs).
 An unknown id exits non-zero with a pointer to `ndif queue`.
 
 ### `ndif env`

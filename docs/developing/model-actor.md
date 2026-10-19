@@ -175,7 +175,7 @@ sequenceDiagram
     R->>C: respond RUNNING
     R->>R: gpu_baselines; snapshot linecache/SOURCES/BLOCKS
     R->>M: _remoteable_set_env — PEFT swap
-    R->>T: to_thread execute, raced vs timeout and kill_switch
+    R->>T: run_on_own_thread execute, raced vs timeout and kill_switch
     T->>T: RequestModel.deserialize payload
     T->>M: tracer.execute — interleaved forward pass
     T-->>C: respond LOG per printed line
@@ -190,11 +190,11 @@ sequenceDiagram
 
 ### The race
 
-Execution runs on a worker thread so the event loop can race it
-(`BaseModelDeployment.run`):
+Execution runs on a thread created for the request so the event loop can race
+it (`BaseModelDeployment.run`):
 
 ```python
-job = asyncio.create_task(asyncio.to_thread(self.execute, request))
+job = run_on_own_thread(lambda: self.execute(request), name=f"execute-{request.id}")
 kill = asyncio.create_task(self.kill_switch.wait())
 with self.execution_scope(request):
     done, pending = await asyncio.wait({job, kill},
@@ -205,7 +205,7 @@ with self.execution_scope(request):
 |---|---|---|
 | `job` | continue to upload → `COMPLETED` | `completed` |
 | `kill`, reason `preempted` (`to_cache` parking the replica) | none to the user: raises `CachedActorError`, so the queue re-queues the request at the front of its group | `preempted` |
-| `kill`, any other reason (a deliberate `cancel()`; no current caller — `ndif kill` stops the dispatch, not the actor) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
+| `kill`, any other reason (a deliberate `cancel()`: `ndif kill`, via `Replica.cancel`) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
 | neither (timeout) | `ERROR` "Your job exceeded the execution timeout of `{n}`s." | `timeout` |
 
 The reason travels on `kill_reason`, set by `cancel(reason)`; only
@@ -215,7 +215,13 @@ outside. On cancel, preemption or timeout `interrupt()` calls `kill_thread`
 (`src/ndif/services/ray/deployments/modeling/util.py`), injecting `SystemExit` via `PyThreadState_SetAsyncExc`, which fires only at
 a Python bytecode boundary: it does not interrupt a CUDA kernel or native op already
 in flight, and the response and `cleanup()` do not wait for the thread to stop. The
-sandbox actor stops the runner process first, then does the same.
+sandbox actor stops the runner process first, then does the same; by the time the
+injection lands, the host thread may already have seen the socket close and
+finished. That is why the thread is dedicated to the request rather than taken
+from a pool: a pooled thread would carry the late exception into the next
+request's work and die there, wedging the replica (#284). On its own thread it
+can only reach this request, or nothing once the thread has exited
+(`run_on_own_thread` in `src/ndif/services/ray/deployments/modeling/util.py`).
 
 ### The worker-thread body
 

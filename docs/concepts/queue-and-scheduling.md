@@ -142,10 +142,10 @@ Three things can pull a request back out of flight:
   original `enqueued_at`, so the autoscaler still sees its true wait. The user
   sees no error.
 - **Operator cancel.** `ndif kill <request_id>` goes through the dispatcher's
-  event stream. A queued request is removed and errored. For an executing one,
-  the replica's worker task is cancelled and the request errored to the user;
-  the Ray call the worker was awaiting is not cancelled, so the actor runs the
-  block to completion and its final response can still land
+  event stream. A queued request is removed and errored. An executing one is
+  errored to the user and cancelled on the actor, which interrupts the block and
+  takes the next request; only if the actor has not finished it within a few
+  seconds is the replica's worker task cancelled instead
   ([Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs)).
 - **Purge.** A Ray connection error makes the dispatcher error every queued
   request for every model, clear the queues, cancel all replicas, and reconnect

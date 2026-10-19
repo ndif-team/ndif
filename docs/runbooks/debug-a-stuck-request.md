@@ -238,14 +238,15 @@ a console still printing means the block is running. And the actor's own log
 | Per-model queue wait | none | — | unbounded; autoscaling is the only relief |
 | Replica readiness | none | — | the processor stays `DEPLOYING` |
 | **Execution** | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, or the deployment's `execution_timeout_seconds` | **unset — no cap** | `ERROR` "Your job exceeded the execution timeout of Ns." |
-| `ndif queue` / `ndif kill` | event round trip | 5 s | `No response from the dispatcher` |
+| `ndif queue` / `ndif kill` | event round trip | 5 s (`queue`), 15 s (`kill`) | `No response from the dispatcher` |
 
-> **Gotcha:** the execution timeout stops the in-process thread by injecting an
+> **Gotcha:** the execution timeout stops the request's thread by injecting an
 > exception (`src/ndif/services/ray/deployments/modeling/util.py` `kill_thread`),
 > which CPython delivers only between bytecodes — a long native call (one huge
-> CUDA kernel or tensor op) finishes first. The user gets the timeout `ERROR` on
-> time either way. On the untrusted path the runner process is also stopped
-> (`SandboxModelDeployment.interrupt`).
+> CUDA kernel or tensor op) finishes first. The thread is dedicated to the
+> request (`run_on_own_thread`), so a late exception cannot reach other work.
+> The user gets the timeout `ERROR` on time either way. On the untrusted path
+> the runner process is stopped first (`SandboxModelDeployment.interrupt`).
 
 ## Step 7 — read the logs
 
@@ -292,23 +293,32 @@ ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
 
 The user gets `ERROR` "Request cancelled by operator."
 
-**Executing request:** kill it, then restart its replica.
+**Executing request:**
 
 ```bash
 ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
 # ✓ Request 3f9c… cancelled while executing.
+```
+
+`ndif kill` errors the request to the user, then cancels it on the actor, which
+interrupts the block the way the execution timeout does and frees the replica
+for the next request
+(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
+`src/ndif/services/api/queue/replica.py` `Replica.cancel`).
+The same replica id stays in `ndif queue`. If the actor has not finished the
+request within a few seconds, the dispatcher cancels its own wait on it instead
+and drops the replica from the pool; the actor may then still be running the
+block, and the processor can pick the same replica up again and send it new work
+while it does, which can fail with cross-thread greenlet errors (`Cannot switch
+to a different thread`). In that case — a `request errored: cancelled
+mid-dispatch` warning from `ndif.queue.replica` right after the kill — restart
+the replica:
+
+```bash
 ndif restart openai-community/gpt2 --replica a1b2c     # the id from the ⚙ line
 ```
 
-`ndif kill` errors the request to the user and cancels the dispatcher's wait on
-it, which drops that replica from the processor's pool
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`). It does not reach into
-the actor: the block keeps running there until it finishes or hits the execution
-timeout, holding its memory, and the processor can pick the same replica up again
-and send it new work while it does. Restart the replica **before** it takes new
-work: work dispatched to an actor whose killed block is still running can fail
-with cross-thread greenlet errors (`Cannot switch to a different thread`). `ndif restart` kills the actor; Ray brings it
+`ndif restart` kills the actor; Ray brings it
 back, it reloads the weights, and the command returns once it is ready
 (`src/ndif/cli/lib/restart.py` `restart`). Add `--task` if the deployment's task
 isn't the checkpoint's default, and `--trust-remote-code` if its key carries it. Requests sent to that replica during the restart

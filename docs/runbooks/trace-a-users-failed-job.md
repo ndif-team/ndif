@@ -118,20 +118,23 @@ The server's own record of the failure:
 
 An operator `ndif kill` of an executing request produces two `ERROR` responses in
 a row (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`, `Replica.dispatch`):
-first `Request cancelled by operator.`, then `Replica was evicted while processing
-your request. …`. The actor is not interrupted and keeps running the block.
+`src/ndif/services/api/queue/replica.py` `Replica.cancel`): first `Request
+cancelled by operator.` from the dispatcher, then `Your job was cancelled or
+preempted by the server.` from the actor, which the kill has cancelled
+(`BaseModelDeployment.run`). The actor's log shows `model execution cancelled`,
+and the replica keeps serving.
 
 - **Blocking job:** the client raises on the first `ERROR`, and its description
   shows empty.
 - **Non-blocking job:** `responses/{id}.json` is overwritten by the second, so
-  polling shows the eviction sentence. If the block then finishes, the actor's
-  own final response (`COMPLETED`, or an `ERROR` with a traceback) overwrites it
-  again.
+  polling shows the actor's sentence.
 
-`Your job was cancelled or preempted by the server.` is not sent by any current
-path: the only cancel the actor receives is a HOT→WARM demotion, and that
-re-queues the request instead (`BaseModelDeployment.run`).
+If the actor does not finish the request within a few seconds of the kill (it
+had not started executing yet, or it is wedged), the dispatcher cancels the
+dispatch instead: the second response is then `Replica was evicted while
+processing your request. …`, the replica's worker exits, and the actor may still
+run the block to completion, its own final response (`COMPLETED`, or an `ERROR`)
+overwriting a non-blocking job's stored one.
 
 ## Step 4 — what the server kept
 
