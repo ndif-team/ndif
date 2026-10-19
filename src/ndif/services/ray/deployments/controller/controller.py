@@ -18,6 +18,7 @@ from .....common.schema.controller import (
     ReplicaState,
     ReplicaStates,
 )
+from .....common.model_key import trust_remote_code_of
 from .....common.types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
@@ -312,7 +313,6 @@ class _ControllerActor:
                     self.cluster.evaluator.prefetch,
                     model_key,
                     config.dtype or self.default_dtype,
-                    config.trusted,
                 )
                 for model_key, config in configs.items()
             )
@@ -447,7 +447,6 @@ class _ControllerActor:
                 model_key=deployment.model_key,
                 execution_timeout=execution_timeout,
                 dtype=deployment.dtype or self.default_dtype,
-                trust_remote_code=deployment.trusted,
             )
 
             deployment.create(name, deployment_args)
@@ -614,13 +613,15 @@ class _ControllerActor:
                     **status[application_name],
                     "deployment_level": deployment.deployment_level.name,
                     "pinned": deployment.pinned,
-                    "trusted": deployment.trusted,
                     "dtype": deployment.dtype,
                     "execution_timeout_seconds": deployment.execution_timeout_seconds,
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
                     "task": _task_of(deployment.model_key),
+                    # Read off the key, as the load did: whether this model
+                    # runs its own repo code is part of what it is.
+                    "trust_remote_code": trust_remote_code_of(deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()
@@ -663,6 +664,7 @@ class _ControllerActor:
                     "replica_id": cached_deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
                     "task": _task_of(cached_deployment.model_key),
+                    "trust_remote_code": trust_remote_code_of(cached_deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()

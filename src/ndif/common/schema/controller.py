@@ -29,11 +29,9 @@ class DeploymentConfig(BaseModel):
 
     pinned: bool = False
     replicas: int = 1
-    # Whether this deployment may run the model's own repo code (HF
-    # trust_remote_code). Inherited from the trusted flag of the request that
-    # kicked off the deployment; the controller threads it into the evaluator's
-    # size estimate and the actor's model load, which must agree.
-    trusted: bool = False
+    # Whether the model may run its own repo code (HF trust_remote_code) is not
+    # a deploy option: it is in the model key, where the client put it, and
+    # nnsight reads it off the key wherever the model is sized or loaded.
     # --- placement overrides -------------------------------------------------
     # Everything about where a replica goes is derived from one number: the
     # model's padded size. These let an operator supply any part of that

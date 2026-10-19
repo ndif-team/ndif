@@ -26,6 +26,7 @@ import time
 from enum import Enum
 from typing import Dict, Optional
 
+from ....common.model_key import trust_remote_code_of
 from ....common.providers.ray import controller_handle
 from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
@@ -83,10 +84,10 @@ class Processor:
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
-        # Whether this model's deployment loads with trust_remote_code; set from the
-        # request that kicks off provisioning (see ensure_started) and threaded into
-        # the deploy config.
-        self.trusted = False
+        # Whether the request that kicks off provisioning may deploy a model
+        # whose key asks for trust_remote_code (see ensure_started); checked in
+        # ``start`` before the controller is asked to deploy.
+        self.trust_remote_code = False
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
             self.autoscaling_loop()
@@ -116,7 +117,7 @@ class Processor:
         # (group, prepend, enqueued_at) -- see request_queue.py.
         self.queue.put(request, prepend=prepend)
 
-        self.ensure_started(request.trusted)
+        self.ensure_started(request.trust_remote_code)
 
         # Queue-depth / throughput signal: position is 1-based depth at enqueue.
         event(
@@ -148,21 +149,22 @@ class Processor:
             ),
         )
 
-    def ensure_started(self, trusted: Optional[bool] = None) -> None:
+    def ensure_started(self, trust_remote_code: Optional[bool] = None) -> None:
         """Kick off provisioning when the pool is empty and idle.
 
         No-ops if a replica is already live or setup is already underway, so
-        it's safe to call on every enqueue and on last-replica exit. ``trusted``
-        (the kicking-off request's flag) sets whether the deployment loads with
-        trust_remote_code; a re-provision passes ``None`` to keep the value from the
-        request that first deployed it.
+        it's safe to call on every enqueue and on last-replica exit.
+        ``trust_remote_code`` (the kicking-off request's flag) is whether that
+        request may deploy a key asking for the checkpoint's own code; ``start``
+        checks it against the key. A re-provision passes ``None`` to keep the
+        value from the request that first deployed it.
         """
         if self.replicas:
             return
         if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
             return
-        if trusted is not None:
-            self.trusted = trusted
+        if trust_remote_code is not None:
+            self.trust_remote_code = trust_remote_code
         self.status = ProcessorStatus.PROVISIONING
         asyncio.create_task(self.start())
 
@@ -206,6 +208,20 @@ class Processor:
                     "Error provisioning model. "
                     "Please try again later. Sorry for the inconvenience."
                 )
+                # Nothing is running, so this request is about to *deploy* the
+                # model, and a key asking for the checkpoint's own code may only
+                # be deployed by a key tagged for it. Checked here and not at
+                # ingress because a model someone with the permission already
+                # deployed is open to everyone; and before the controller is
+                # asked, since even sizing such a model runs its config code.
+                if trust_remote_code_of(self.model_key) and not self.trust_remote_code:
+                    raise DeploymentError(
+                        "This model runs code from its own repository "
+                        "(trust_remote_code=True), and deploying such a model "
+                        "needs an API key with the `trust_remote_code` or "
+                        "`trusted` tag. Ask an NDIF admin to deploy it, or "
+                        "to grant your key the tag."
+                    )
                 replica = await Replica.provision(self.model_key, self)
                 self.replicas[replica.replica_id] = replica
                 self.status = ProcessorStatus.DEPLOYING

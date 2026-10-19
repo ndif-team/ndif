@@ -62,7 +62,6 @@ class Deployment:
         execution_timeout_seconds: float | None = None,
         actor_class: Optional[Union[str, type]] = None,
         dtype: Optional[str] = None,
-        trusted: bool = False,
     ):
         self.model_key = model_key
         self.replica_id = replica_id
@@ -74,9 +73,6 @@ class Deployment:
         self.execution_timeout_seconds = execution_timeout_seconds
         self.actor_class = actor_class
         self.dtype = dtype
-        # Whether the model loads with HF trust_remote_code (from the deploying
-        # request's trusted flag); the controller passes it into the actor args.
-        self.trusted = trusted
         self.deployed = time.time()
 
     @property

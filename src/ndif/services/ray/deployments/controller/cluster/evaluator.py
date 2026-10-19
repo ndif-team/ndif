@@ -68,7 +68,6 @@ class CacheEntry:
         config: Any,
         revision: Optional[str],
         dtype: str,
-        trust_remote_code: bool,
         max_tp: Optional[int],
     ):
         self.base_size_in_bytes = base_size_in_bytes
@@ -85,9 +84,6 @@ class CacheEntry:
         # The dtype this estimate was computed for; a request at a different one
         # re-evaluates, since it is the whole difference between the numbers.
         self.dtype = dtype
-        # Whether repo code ran; a different value can build a different
-        # architecture, so it re-evaluates too.
-        self.trust_remote_code = trust_remote_code
         # The largest tensor-parallel degree, or None if it can't be split.
         self.max_tp = max_tp
 
@@ -131,10 +127,14 @@ class ModelEvaluator:
             "dtype": str(torch.get_default_dtype()),
         }
 
-    def _entry(
-        self, model_key: MODEL_KEY, dtype: Any, trust_remote_code: bool
-    ) -> CacheEntry:
+    def _entry(self, model_key: MODEL_KEY, dtype: Any) -> CacheEntry:
         """The memoized answers for this model, computing them if needed.
+
+        Whether the checkpoint's own code runs while it is described is in the
+        key, not a parameter: nnsight reads ``trust_remote_code`` off the key,
+        so two keys differing in it are two entries, and nothing here can
+        describe a model one way and load it another. The caller has already
+        checked that it may ask (``untrusted_remote_code`` in ``cluster.py``).
 
         Raises whatever nnsight raised: the caller turns a failure to evaluate
         into that model's deploy error.
@@ -142,23 +142,17 @@ class ModelEvaluator:
         resolved = _dtype_name(dtype)
 
         cached = self.cache.get(model_key)
-        if (
-            cached is not None
-            and cached.dtype == resolved
-            and cached.trust_remote_code == trust_remote_code
-        ):
+        if cached is not None and cached.dtype == resolved:
             return cached
 
         # One call for everything about the checkpoint itself — nnsight answers
         # them all from a single read of its metadata, where asking one at a time
         # fetched the same config twice.
-        described = Remotable.describe_checkpoint(
-            model_key, resolved, trust_remote_code=trust_remote_code
-        )
+        described = Remotable.describe_checkpoint(model_key, resolved)
         # Separately, because it is a question about the *runtime*, not the
         # files: the same weights shard eight ways under transformers tensor
         # parallelism and not at all under something else.
-        max_tp = Remotable.max_tp_size(model_key, trust_remote_code=trust_remote_code)
+        max_tp = Remotable.max_tp_size(model_key)
 
         base_size_bytes = described.size_bytes
         entry = CacheEntry(
@@ -173,7 +167,6 @@ class ModelEvaluator:
             described.config,
             described.revision,
             resolved,
-            trust_remote_code,
             max_tp,
         )
         self.cache[model_key] = entry
@@ -189,15 +182,13 @@ class ModelEvaluator:
         model_key: MODEL_KEY,
         padding_factor: float | None = None,
         dtype: Any = None,
-        trust_remote_code: bool = False,
         size_bytes: Optional[int] = None,
         padding_bias: Optional[int] = None,
     ) -> Union[float, Exception]:
         """Return the padded byte size for ``model_key`` (or the Exception on failure).
 
         ``dtype`` must match what the actor will load the model in, since element
-        size drives the estimate; None -> bfloat16. ``trust_remote_code`` must
-        likewise match, as repo code can change the architecture.
+        size drives the estimate; None -> bfloat16.
 
         ``size_bytes`` supplies the model's own weights directly — measured
         rather than estimated — and padding still applies on top. It also makes
@@ -215,13 +206,13 @@ class ModelEvaluator:
 
         if size_bytes is None:
             try:
-                base_size = self._entry(model_key, dtype, trust_remote_code).base_size_in_bytes
+                base_size = self._entry(model_key, dtype).base_size_in_bytes
             except Exception as exception:
                 return exception
         else:
             base_size = size_bytes
             try:
-                self._entry(model_key, dtype, trust_remote_code)
+                self._entry(model_key, dtype)
             except Exception:
                 # Only the description failed, and the size is what placement
                 # needs. The status will show this model without a config.
@@ -259,7 +250,6 @@ class ModelEvaluator:
         self,
         model_key: MODEL_KEY,
         dtype: Any = None,
-        trust_remote_code: bool = False,
         override: Optional[int] = None,
     ) -> Optional[int]:
         """The largest tensor-parallel degree this model supports, or None.
@@ -287,7 +277,7 @@ class ModelEvaluator:
             return None
 
         try:
-            limit = self._entry(model_key, dtype, trust_remote_code).max_tp
+            limit = self._entry(model_key, dtype).max_tp
         except CheckpointUnreachable as unreachable:
             if override is not None:
                 # Nothing to check against, and the operator said a number.
@@ -327,12 +317,7 @@ class ModelEvaluator:
             )
         return min(override, limit)
 
-    def prefetch(
-        self,
-        model_key: MODEL_KEY,
-        dtype: Any = None,
-        trust_remote_code: bool = False,
-    ) -> None:
+    def prefetch(self, model_key: MODEL_KEY, dtype: Any = None) -> None:
         """Read everything about ``model_key`` into the cache, off the hot path.
 
         Every other method here is pure arithmetic over a cache entry *except*
@@ -348,7 +333,7 @@ class ModelEvaluator:
         the call that actually needs the answer and can report it properly.
         """
         try:
-            self._entry(model_key, dtype, trust_remote_code)
+            self._entry(model_key, dtype)
         except Exception:
             logger.debug(f"Could not prefetch a description for {model_key}", exc_info=True)
 
@@ -358,7 +343,6 @@ class ModelEvaluator:
         gpus: int,
         default: Any,
         dtype: Any = None,
-        trust_remote_code: bool = False,
         max_tp_override: Optional[int] = None,
     ) -> Any:
         """The actor class to serve this replica with, given the cards it got.
@@ -371,7 +355,7 @@ class ModelEvaluator:
         if not self.tp_enabled or gpus < 2:
             return default
 
-        limit = self.max_tp(model_key, dtype, trust_remote_code, max_tp_override)
+        limit = self.max_tp(model_key, dtype, max_tp_override)
         if tp_degree(limit, gpus) != gpus:
             return default
 

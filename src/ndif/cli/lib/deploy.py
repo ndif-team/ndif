@@ -44,8 +44,9 @@ def deploy(
 
     Args:
         specs: model spec dicts. Required: ``checkpoint``. Optional: ``revision``,
-            ``task``, ``pinned``, ``replicas`` (default 1), ``trusted`` (default
-            False), ``dtype``, ``actor_class``, ``envoy_class``,
+            ``task``, ``trust_remote_code`` (default False; part of the model
+            key), ``pinned``, ``replicas`` (default 1), ``dtype``,
+            ``actor_class``, ``envoy_class``,
             ``padding_factor``, ``size_bytes``, ``padding_bias``, ``gpus``,
             ``max_tp``, ``execution_timeout_seconds``, ``model_key``.
         sync: reconcile the cluster to match ``specs`` exactly (evict extras,
@@ -87,7 +88,7 @@ def deploy(
             emit(on_message, f"Generating model key for {spec['checkpoint']}{rev_str}...")
             model_key = get_model_key(
                 spec["checkpoint"], spec["revision"], spec.get("envoy_class"),
-                spec.get("task"),
+                spec.get("task"), spec.get("trust_remote_code", False),
             )
             emit(on_message, f"  Model key: {model_key}")
             if spec.get("task") is None:
@@ -126,7 +127,6 @@ def deploy(
             mk: DeploymentConfig(
                 pinned=is_pinned,
                 replicas=int(model_keys_map[mk].get("replicas") or 1),
-                trusted=bool(model_keys_map[mk].get("trusted", False)),
                 dtype=model_keys_map[mk].get("dtype"),
                 actor_class=model_keys_map[mk]["actor_class"],
                 padding_factor=model_keys_map[mk]["padding_factor"],

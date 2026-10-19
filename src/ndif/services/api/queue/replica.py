@@ -116,9 +116,11 @@ class Replica:
         # served and has no business deciding. Adding capacity should add more of
         # what is already running -- a sharded model stays sharded -- and the
         # controller fills that in from a live replica. With none running there is
-        # nothing to copy and this behaves exactly as a bare deploy did.
+        # nothing to copy and this behaves exactly as a bare deploy did. Whether
+        # the model runs its own repo code is in the key, and whether this
+        # caller may deploy such a key was checked by the processor already.
         response: DeployResponse = await controller_handle().scale.remote(
-            model_key, 1, DeploymentConfig(trusted=processor.trusted)
+            model_key, 1, DeploymentConfig()
         )
 
         result = response.results[model_key]

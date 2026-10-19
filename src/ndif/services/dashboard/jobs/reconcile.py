@@ -59,8 +59,8 @@ def _spec_from_event(e: ScheduleEvent) -> dict:
         "checkpoint": e.checkpoint,
         "revision": e.revision,
         "task": e.task,
+        "trust_remote_code": e.trust_remote_code,  # part of the key the entry pins
         "pinned": True,  # schedule entries are always pinned
-        "trusted": True,  # admin-configured, so trusted like any dashboard deploy
         "actor_class": e.actor_class,
         "envoy_class": e.envoy_class,
         "padding_factor": e.padding_factor,
