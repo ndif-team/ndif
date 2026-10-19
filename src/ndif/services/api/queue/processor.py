@@ -83,9 +83,9 @@ class Processor:
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
-        # Whether this model's deployment loads with trust_remote_code; set from the
-        # request that kicks off provisioning (see ensure_started) and threaded into
-        # the deploy config.
+        # Whether the request that kicks off provisioning was trusted (see
+        # ensure_started); threaded into the deploy config, where it decides
+        # whether a model key asking for trust_remote_code may be deployed.
         self.trusted = False
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
@@ -153,9 +153,10 @@ class Processor:
 
         No-ops if a replica is already live or setup is already underway, so
         it's safe to call on every enqueue and on last-replica exit. ``trusted``
-        (the kicking-off request's flag) sets whether the deployment loads with
-        trust_remote_code; a re-provision passes ``None`` to keep the value from the
-        request that first deployed it.
+        (the kicking-off request's flag) travels on the deploy config, where it
+        decides whether a key asking for trust_remote_code may be deployed; a
+        re-provision passes ``None`` to keep the value from the request that
+        first deployed it.
         """
         if self.replicas:
             return

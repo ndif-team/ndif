@@ -129,7 +129,8 @@ underway, which is why it is safe to call on every enqueue and on every replica
 exit. Otherwise it flips to `PROVISIONING` and fires `start()` as a task. It also
 records the request's `trusted` flag when the argument is not `None`; a
 re-provision passes `None`, so the first request to deploy a model fixes the
-deployment's `trust_remote_code` — the full path is in
+deployment's `trusted` (and so whether a key asking for `trust_remote_code`
+could be deployed) — the full path is in
 [API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
 
 ### RequestQueue

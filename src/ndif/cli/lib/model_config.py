@@ -7,6 +7,7 @@ File format::
       - checkpoint: meta-llama/Llama-3.1-8B  # full: with options
         revision: null
         task: text-generation    # pipeline task, part of the model key; inferred when unset
+        trust_remote_code: false # let the repo's own modelling code run; part of the key
         pinned: true
         replicas: 2
         trusted: false
@@ -36,6 +37,7 @@ def load_model_config(
     file_path: Path,
     default_revision: Optional[str] = None,
     default_task: Optional[str] = None,
+    default_trust_remote_code: bool = False,
     default_pinned: bool = False,
     default_replicas: int = 1,
     default_model_actor_class: Optional[str] = None,
@@ -52,9 +54,9 @@ def load_model_config(
     """Load model specs from a YAML config file.
 
     Every field the deploy path understands is passed through: ``checkpoint``,
-    ``revision``, ``task``, ``pinned``, ``replicas``, ``actor_class``, ``trusted``,
-    ``dtype``, ``padding_factor``, ``execution_timeout_seconds``,
-    ``envoy_class``, ``model_key``. A per-model value in the file overrides the
+    ``revision``, ``task``, ``trust_remote_code``, ``pinned``, ``replicas``,
+    ``actor_class``, ``trusted``, ``dtype``, ``padding_factor``,
+    ``execution_timeout_seconds``, ``envoy_class``, ``model_key``. A per-model value in the file overrides the
     corresponding ``default_*`` (which the CLI flags feed).
 
     Raises FileNotFoundError if the file is missing, ValueError on bad format.
@@ -79,6 +81,7 @@ def load_model_config(
                 "checkpoint": item,
                 "revision": default_revision,
                 "task": default_task,
+                "trust_remote_code": default_trust_remote_code,
                 "pinned": default_pinned,
                 "replicas": default_replicas,
                 "actor_class": default_model_actor_class,
@@ -100,6 +103,7 @@ def load_model_config(
                 "checkpoint": item["checkpoint"],
                 "revision": item.get("revision", default_revision),
                 "task": item.get("task", default_task),
+                "trust_remote_code": item.get("trust_remote_code", default_trust_remote_code),
                 "pinned": item.get("pinned", default_pinned),
                 "replicas": int(item.get("replicas", default_replicas)),
                 "actor_class": item.get("actor_class", default_model_actor_class),
@@ -134,6 +138,7 @@ def build_models_list(deployments: list[dict]) -> list:
         repo_id = dep.get("repo_id") or dep.get("checkpoint")
         revision = dep.get("revision")
         task = dep.get("task")
+        trust_remote_code = bool(dep.get("trust_remote_code", False))
         pinned = dep.get("pinned", False)
         replicas = int(dep.get("replicas", 1) or 1)
         actor_class = dep.get("actor_class")
@@ -150,7 +155,8 @@ def build_models_list(deployments: list[dict]) -> list:
         gpus = int(gpus) if gpus and int(gpus) > 1 else None
 
         extras = (
-            revision or task or pinned or replicas != 1 or actor_class or trusted
+            revision or task or trust_remote_code or pinned or replicas != 1
+            or actor_class or trusted
             or dtype or padding_factor is not None
             or execution_timeout_seconds is not None
             or envoy_class or model_key or gpus
@@ -163,6 +169,8 @@ def build_models_list(deployments: list[dict]) -> list:
                 entry["revision"] = revision
             if task:
                 entry["task"] = task
+            if trust_remote_code:
+                entry["trust_remote_code"] = True
             if pinned:
                 entry["pinned"] = pinned
             if replicas != 1:

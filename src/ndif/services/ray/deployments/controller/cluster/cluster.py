@@ -15,11 +15,31 @@ from ......common.schema.controller import (
     ReplicaState,
     ReplicaStates,
 )
+from ......common.model_key import trust_remote_code_of
 from ......common.types import MODEL_KEY, NODE_ID, REPLICA_ID
 from .evaluator import ModelEvaluator
 from .node import CandidateLevel, CPUResources, GPU, GPUResources, Node
 
 logger = logging.getLogger("ndif.controller")
+
+
+def untrusted_remote_code(model_key: MODEL_KEY, config: DeploymentConfig) -> Optional[str]:
+    """Why this caller may not deploy this key, or None if they may.
+
+    A key carrying ``trust_remote_code`` asks the server to run the
+    checkpoint's own Python at load, and only a trusted caller may ask for
+    that. The key says what the model is; ``config.trusted`` says who is
+    asking; this is the one place the two are compared, and it has to run
+    before anything reads the checkpoint, since even sizing such a model
+    executes its configuration code.
+    """
+    if trust_remote_code_of(model_key) and not config.trusted:
+        return (
+            f"{model_key} asks to run the checkpoint's own code "
+            "(trust_remote_code), which only a trusted caller may deploy; "
+            "this deployment was requested untrusted."
+        )
+    return None
 
 
 class Cluster:
@@ -183,11 +203,19 @@ class Cluster:
         # Evaluate sizes; record evaluator failures as per-model errors.
         evaluated_configs = []
         for model_key, config in configs.items():
+            # Before the evaluator, not after: sizing a model that asks for its
+            # own code reads its config *with* that code, which is the very
+            # thing an untrusted caller may not have happen.
+            refused = untrusted_remote_code(model_key, config)
+            if refused is not None:
+                logger.error(f"=> Model {model_key} refused: {refused}")
+                response.results.setdefault(model_key, ModelDeployResult()).error = refused
+                continue
+
             size_in_bytes = self.evaluator(
                 model_key,
                 padding_factor=config.padding_factor,
                 dtype=config.dtype,
-                trust_remote_code=config.trusted,
                 size_bytes=config.size_bytes,
                 padding_bias=config.padding_bias,
             )
@@ -229,7 +257,6 @@ class Cluster:
                 max_tp = self.evaluator.max_tp(
                     model_key,
                     dtype=config.dtype,
-                    trust_remote_code=config.trusted,
                     override=config.max_tp,
                 )
 
@@ -300,7 +327,6 @@ class Cluster:
                         len(candidate.gpus),
                         self.default_model_actor_class,
                         dtype=config.dtype,
-                        trust_remote_code=config.trusted,
                         max_tp_override=config.max_tp,
                     ),
                     dtype=config.dtype,

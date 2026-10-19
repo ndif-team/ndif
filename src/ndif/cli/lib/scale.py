@@ -23,6 +23,7 @@ def scale(
     n: int = 1,
     revision: Optional[str] = None,
     task: Optional[str] = None,
+    trust_remote_code: bool = False,
     model_key: Optional[str] = None,
     actor_class: Optional[str] = None,
     dtype: Optional[str] = None,
@@ -59,7 +60,9 @@ def scale(
     controller = get_controller_actor_handle()
 
     if model_key is None:
-        model_key = get_model_key(checkpoint, revision, task=task)
+        model_key = get_model_key(
+            checkpoint, revision, task=task, trust_remote_code=trust_remote_code
+        )
         emit(on_message, f"  Model key for {checkpoint}: {model_key}")
         if task is None:
             emit(on_message,

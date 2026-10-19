@@ -21,12 +21,17 @@ from ..lib.scale import scale as scale_lib
               help="Override the GPU count instead of matching.")
 @click.option("--execution-timeout", "execution_timeout_seconds", type=float, default=None,
               help="Override the execution timeout instead of matching.")
+@click.option("--trust-remote-code", "trust_remote_code", is_flag=True,
+              help="The model was deployed with its own modelling code allowed (HF "
+                   "trust_remote_code); part of the key, so needed to name that "
+                   "deployment.")
 @click.option("--trusted", is_flag=True,
-              help="Run the model's own repo code (HF trust_remote_code).")
+              help="Scale as a trusted caller (inherited from the running replica "
+                   "when it was deployed trusted).")
 @click.option("--pinned", is_flag=True, help="Add as pinned (won't be evicted).")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
-def scale(checkpoint, count, revision, task, actor_class, dtype, gpus,
-          execution_timeout_seconds, trusted, pinned, ray_address):
+def scale(checkpoint, count, revision, task, trust_remote_code, actor_class, dtype,
+          gpus, execution_timeout_seconds, trusted, pinned, ray_address):
     """Add replicas of a model, matching how it is already served.
 
     CHECKPOINT: the model to grow (e.g. "meta-llama/Llama-3.2-1B").

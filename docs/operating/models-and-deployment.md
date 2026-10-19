@@ -137,7 +137,8 @@ they're in the model key.
 |---|---|---|---|---|
 | `pinned` | `False` | — | Exempt from controller-initiated eviction (`Node.evictable`). | CLI, yaml, dashboard |
 | `replicas` | `1` | — | How many **new** replicas this call places. | CLI, yaml, dashboard |
-| `trusted` | `False` | — | Becomes `trust_remote_code` at size and load. See below. | CLI `--trusted`, yaml, dashboard, implicit deploy |
+| `trusted` | `False` | — | The caller is trusted, which is what allows a key asking for `trust_remote_code` to be deployed. See below. | CLI `--trusted`, yaml, dashboard, implicit deploy |
+| `trust_remote_code` | `False` | — | Not a config field: part of the model key, like `task`. Lets the repo's own modelling code run at load. See below. | CLI `--trust-remote-code`, yaml, dashboard, the client's `trust_remote_code=True` |
 | `padding_factor` | `None` | `NDIF_DEFAULT_PADDING_FACTOR` = `0.15` | Headroom on top of the weight size. | CLI, yaml, dashboard |
 | `padding_bias` | `None` | `NDIF_DEFAULT_PADDING_BIAS` = 500 MiB | Flat headroom, per model rather than per cluster. | CLI, yaml |
 | `size_bytes` | `None` | estimated from the checkpoint | The model's own weights, measured. Skips the Hub, so a deploy that names its size places with the Hub unreachable. Padding still applies. | CLI, yaml |
@@ -189,29 +190,36 @@ share a name. The request side — where it comes from and what the sandbox
 changes — is in [Auth and Limits](../concepts/auth-and-limits.md) and
 [Sandbox Execution](../concepts/sandbox-execution.md).
 
-**At load**, `DeploymentConfig.trusted` becomes `trust_remote_code=` both on the
-evaluator's meta build and on the actor's load (`Cluster.deploy` in
-`src/ndif/services/ray/deployments/controller/cluster/cluster.py`). So **an
-untrusted deploy of a model whose HF repo ships custom modelling code fails** —
-anything with `"auto_map"` in its `config.json`. Transformers refuses to run a
-repo's `modeling_*.py` without `trust_remote_code=True`, and the failure lands in
-the evaluator, before any GPU is touched: the cluster records it as that model's
-`error`, and `ndif deploy` prints `✗ <model_key>: <traceback>` with nothing
-placed. Architectures built into transformers (GPT-2, Llama, Qwen) load fine
-untrusted. The evaluator caches per `(dtype, trust_remote_code)` and recomputes
-when either changes, since repo code can build a different architecture.
+**At load**, whether the repo's own code runs is read off the model key:
+`"trust_remote_code": true` is in the key when the client built the model with
+that option (or the deploy said `--trust-remote-code`), and nnsight reads it for
+both the evaluator's meta build and the actor's load, so the two cannot disagree.
+`DeploymentConfig.trusted` decides whether such a key may be deployed at all:
+`Cluster.deploy` (`untrusted_remote_code` in
+`src/ndif/services/ray/deployments/controller/cluster/cluster.py`) refuses it from
+an untrusted config before the checkpoint is read, recording the refusal as that
+model's `error`. So **a model whose HF repo ships custom modelling code** —
+anything with `"auto_map"` in its `config.json` — **needs a key that asks for it,
+deployed trusted**. Without the flag in the key, transformers refuses to run the
+repo's `modeling_*.py`, and the failure lands in the evaluator, before any GPU is
+touched: the cluster records it as that model's `error`, and `ndif deploy` prints
+`✗ <model_key>: <traceback>` with nothing placed. Architectures built into
+transformers (GPT-2, Llama, Qwen) load fine either way. The evaluator caches per
+model key and dtype; the key already distinguishes a model with repo code from
+one without.
 
 Where a deployment's `trusted` comes from is the last column of the table
 above. Two consequences:
 
 - **The dashboard deploys trusted by default**, so anything deployed or
-  scheduled from the UI loads with `trust_remote_code=True`. Deploy from it only
-  what you'd deploy with `--trusted` from a shell.
+  scheduled from the UI with `trust_remote_code: true` loads the repo's code.
+  Deploy from it only what you'd deploy with `--trusted` from a shell.
 - **An implicit deploy inherits the first request's flag.** With auth off a
-  default request is trusted, so a bare `just up` loads models with
-  `trust_remote_code`. With auth on, an untagged key's first request yields an
-  untrusted deployment, and a later trusted request against that model does
-  *not* reload it — evict and redeploy with `--trusted` if the model needs it.
+  default request is trusted, so a bare `just up` deploys any key a client
+  mints, repo code included. With auth on, an untagged key's request for a key
+  asking for `trust_remote_code` is refused, and a trusted request deploys it;
+  once deployed, later requests from anyone run against it, and a scale of it
+  inherits the trust it was deployed with.
 
 ## How a deploy is accepted
 

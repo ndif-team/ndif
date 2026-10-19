@@ -64,7 +64,8 @@ See [queue-internals.md](../developing/queue-internals.md).
 sizes a model for placement: nnsight's `Remotable.describe_checkpoint` reads the
 checkpoint's metadata for its size, parameter count, config and revision, and the
 evaluator pads that (`NDIF_DEFAULT_PADDING_FACTOR`, `NDIF_DEFAULT_PADDING_BIAS`).
-Memoized per model key; re-evaluated when dtype or `trust_remote_code` changes. See
+Memoized per model key (which carries `trust_remote_code`); re-evaluated when dtype
+changes. See
 [controller-internals.md](../developing/controller-internals.md).
 
 ## Eviction
@@ -197,7 +198,8 @@ start command. `NDIF_SERVICE` picks which and labels telemetry. See
 ## Trusted / untrusted
 
 `BackendRequestModel.trusted`: trusted runs the block in the model actor process
-and lets the model load with `trust_remote_code`; untrusted sends it to a runner.
+and may deploy a model key asking for `trust_remote_code`; untrusted sends it to a
+runner.
 Stamped at ingress from the API key; with auth off, defaulted to trusted unless the
 client sends `trusted: false`. See
 [auth-and-limits.md](../concepts/auth-and-limits.md).

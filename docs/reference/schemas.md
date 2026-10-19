@@ -173,7 +173,7 @@ JSON. `MODEL_KEY`, `REPLICA_ID` and `NODE_ID` are `str` aliases from
 |---|---|---|---|
 | `pinned` | `bool` | `False` | Exempt from autoscaling and cache eviction. |
 | `replicas` | `int` | `1` | **Additive** — how many *new* replicas to place. Shrink with evict. |
-| `trusted` | `bool` | `False` | Allow HuggingFace `trust_remote_code` for this deployment — see below. |
+| `trusted` | `bool` | `False` | The caller is trusted, which is what allows a model key asking for HuggingFace `trust_remote_code` to be deployed — see below. |
 | `size_bytes` | `Optional[int]` | `None` | The weights in bytes, measured rather than estimated. Skips the Hub round-trip, so a deploy works with the Hub unreachable. Padding still applies. |
 | `padding_factor` | `Optional[float]` | `None` | Multiplicative slack; overrides `NDIF_DEFAULT_PADDING_FACTOR`. |
 | `padding_bias` | `Optional[int]` | `None` | Additive slack for per-process overhead (CUDA context, NCCL buffers, the runner pool); overrides `NDIF_DEFAULT_PADDING_BIAS`. |
@@ -194,11 +194,15 @@ controller's `NDIF_DEPLOYMENTS` startup pins (`_ControllerActor.__init__`).
 **`DeploymentConfig.trusted` is the request's `trusted` flag, one level up.** On
 demand, `Replica.provision` passes `DeploymentConfig(trusted=processor.trusted)`,
 where `processor.trusted` came from the request that started the model
-(`Processor.ensure_started`). The controller threads it into the evaluator's size
-estimate (`trust_remote_code=config.trusted` in `Cluster.deploy`) and the actor's
-load (`BaseModelDeploymentArgs` in `_ControllerActor.apply`) — the two must agree.
-So a trusted key both runs its block in-process and lets the model's own repo code
-execute at load. The CLI sets it per model with `ndif deploy --trusted`.
+(`Processor.ensure_started`). Whether the model's own repo code runs at load is
+not decided by it: that is in the model key (`"trust_remote_code": true`, written
+by the client that built the model with it, or by `ndif deploy
+--trust-remote-code`), and nnsight reads it off the key for both the size
+estimate and the actor's load, so the two cannot disagree. `Cluster.deploy`
+(`untrusted_remote_code` in `src/ndif/services/ray/deployments/controller/cluster/cluster.py`)
+refuses such a key from an untrusted config before reading the checkpoint. So a
+trusted key runs its block in-process and may deploy a model that runs its own
+code. The CLI sets it per model with `ndif deploy --trusted`.
 
 ### `ModelDeployResult` and `DeployResponse`
 

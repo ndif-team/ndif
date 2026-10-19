@@ -23,10 +23,11 @@ flag; other pages link here.
    *inside the model actor process*, next to the weights; an untrusted one runs
    in a separate runner process driven over a Unix socket
    ([Sandbox Execution](sandbox-execution.md)).
-2. **How a model it provisions loads.** The request that first provisions a
-   model passes its flag into the deployment, which loads with
-   `trust_remote_code=trusted` — so the model repo's own Python executes at load
-   time. The value is sticky for the life of the deployment
+2. **Whether a model it provisions may run its own code.** A model key
+   carrying `trust_remote_code` (the client built the model with it) asks for
+   the repo's own Python to execute at load; the controller deploys such a key
+   only for a trusted request and refuses it otherwise, before reading the
+   checkpoint. The flag is sticky for the life of the deployment
    ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
 
 **How it is set.**
@@ -39,7 +40,7 @@ flag; other pages link here.
 
 Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
 every request that does not say otherwise as trusted: user code in-process, and
-models loaded with `trust_remote_code=True`. That is fine for a laptop and not
+any model key asking for `trust_remote_code` deployed as asked. That is fine for a laptop and not
 for anything reachable by other people; turning auth on is the switch — see
 [Enable auth](../runbooks/enable-auth.md). To exercise the untrusted path in dev
 without Postgres, send `trusted: false`; ingress leaves it false. See
@@ -85,9 +86,9 @@ so new runner pids under the actor show a request took the untrusted path
 command).
 
 **Deploy-time trust.** A dashboard deploy sets `DeploymentConfig.trusted=True`,
-because dashboard access is shell-equivalent on the node, so the model loads with
-`trust_remote_code`. That is the deployment's flag only: each request routed to
-it still forks on its own `request.trusted`. See
+because dashboard access is shell-equivalent on the node, so it may deploy a key
+that asks for `trust_remote_code`. That is the deployment's flag only: each
+request routed to it still forks on its own `request.trusted`. See
 [the dashboard docs](../operating/dashboard.md).
 
 ## How the check works

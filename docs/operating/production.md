@@ -37,10 +37,10 @@ doesn't set it (`src/ndif/services/api/auth.py` `validate_request`).
 - A trusted request's traced block runs **in-process inside the model actor**,
   in the same process as the weights — no runner subprocess, no socket. Whatever
   Python the caller submitted executes with the actor's privileges.
-- The same flag becomes **`trust_remote_code=`** when a model is sized and
-  loaded (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
-  `Cluster.deploy`), so a request naming an arbitrary Hugging Face repo can run
-  that repo's code on your GPU node.
+- The same flag is what lets a request deploy a model key asking for
+  **`trust_remote_code`** (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
+  `untrusted_remote_code`), so a request naming an arbitrary Hugging Face repo
+  built with that option can run that repo's code on your GPU node.
 
 So an unauthenticated NDIF is not "an NDIF anyone can use", it is "an NDIF
 anyone can run arbitrary code on". Enable auth first, then decide who gets the
@@ -119,8 +119,8 @@ stolen cookie is useful. On a headless box, log in with
 `POST /api/auth/login` and reuse the cookie
 ([Admin Dashboard](dashboard.md#scripting-the-dashboard-api)).
 
-Dashboard deploys default to `trusted: true` (an admin action), so they load
-with `trust_remote_code`. Give the dashboard a durable `NDIF_DASHBOARD_DATA_DIR`
+Dashboard deploys default to `trusted: true` (an admin action), so they may
+deploy with `trust_remote_code` when asked to. Give the dashboard a durable `NDIF_DASHBOARD_DATA_DIR`
 volume; its schedule and monitor state live there. See
 [Admin Dashboard](dashboard.md).
 

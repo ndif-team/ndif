@@ -147,6 +147,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
                 "model_key": mk,
                 "repo_id": entry.get("repo_id"),
                 "task": entry.get("task"),
+                "trust_remote_code": bool(entry.get("trust_remote_code", False)),
                 "revision": entry.get("revision"),
                 "n_params": entry.get("n_params"),
                 "size_bytes": entry.get("size_bytes"),

@@ -96,9 +96,10 @@ replicas in advance.
 
 > **Gotcha:** the `Processor` records `trusted` from the request that first
 > provisions it and passes it into the `DeploymentConfig` it sends the
-> controller — which becomes the deployment's `trust_remote_code`. A
-> re-provision keeps the original value, so the *first* requester of a model
-> decides how it loads for everyone who follows, until it is evicted. See
+> controller — which is what allows a model key asking for `trust_remote_code`
+> to be deployed at all. A re-provision keeps the original value, so the
+> *first* requester of a model decides who it was deployed as for everyone who
+> follows, until it is evicted. See
 > [Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
 ## Autoscaling: the second and third replica

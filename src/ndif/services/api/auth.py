@@ -39,8 +39,8 @@ from ndif.common.schema.request import BackendRequestModel
 
 logger = logging.getLogger("ndif.api")
 
-# A key granted this user_tag may run its request without sandbox isolation (and
-# deploy the model with trust_remote_code); see Identity.trusted.
+# A key granted this user_tag may run its request without sandbox isolation, and
+# may deploy a model whose key asks for trust_remote_code; see Identity.trusted.
 TRUSTED_TAG = "trusted"
 
 # A key granted this user_tag sorts ahead of all normal traffic and stays FIFO

@@ -206,7 +206,6 @@ class TestCacheEntryContract:
             config=None,
             revision=None,
             dtype="bfloat16",
-            trust_remote_code=False,
             max_tp=None,
         )
         missing = [name for name in sorted(wanted) if not hasattr(entry, name)]
@@ -1709,6 +1708,21 @@ class TestScaleMatchesWhatIsRunning:
         assert filled.actor_class == "sandbox.Model"
         assert filled.execution_timeout_seconds == 20.0
 
+    def test_trust_is_inherited_from_the_running_replica(self):
+        # A model running with its own code was vetted by whoever deployed it;
+        # one more replica runs nothing new. Without this an untrusted request
+        # could not autoscale a model an admin deployed trusted, since
+        # Cluster.deploy refuses an untrusted config for a trust_remote_code key.
+        controller = self._controller(self._replica())
+        controller.cluster.nodes["n"].deployments["m"]["a"].trusted = True
+
+        assert controller._like_existing("m", self._config(trusted=False)).trusted is True
+
+    def test_trust_is_not_revoked_by_an_untrusted_replica(self):
+        controller = self._controller(self._replica())
+
+        assert controller._like_existing("m", self._config(trusted=True)).trusted is True
+
     def test_with_nothing_running_it_changes_nothing(self):
         # Cold start: nothing in the cluster claims the model is served any
         # particular way, so the evaluator decides as it always has.
@@ -1747,3 +1761,104 @@ class TestScaleMatchesWhatIsRunning:
         source = inspect.getsource(Replica.provision)
         assert "controller_handle().scale.remote" in source
         assert "deploy.remote" not in source
+
+
+class TestRemoteCodeNeedsATrustedCaller:
+    """A key asking for the checkpoint's own code is deployed only for a trusted caller.
+
+    The client writes ``trust_remote_code`` into the key; the server used to
+    decide it from the caller's flag instead, so a trusted caller silently
+    loaded every repo's code and an untrusted one silently loaded none of it.
+    Now the key says what the model is, the config says who is asking, and the
+    controller compares the two before anything reads the checkpoint -- sizing
+    such a model already executes its configuration code.
+    """
+
+    _KEY = (
+        "nnsight.modeling.transformers.TransformersModel:"
+        '{"repo_id": "x/custom", "revision": null, "task": "text-generation", '
+        '"trust_remote_code": true}'
+    )
+
+    @staticmethod
+    def _cluster(calls):
+        from ndif.services.ray.deployments.controller.cluster.cluster import Cluster
+
+        cluster = Cluster()
+
+        class Evaluator:
+            def __call__(self, model_key, **kwargs):
+                calls.append(model_key)
+                return RuntimeError("the evaluator was reached")
+
+        cluster.evaluator = Evaluator()
+        return cluster
+
+    def test_an_untrusted_deploy_is_refused_before_the_evaluator(self):
+        from ndif.common.schema.controller import DeploymentConfig
+
+        calls = []
+        response = self._cluster(calls).deploy({self._KEY: DeploymentConfig(trusted=False)})
+
+        result = response.results[self._KEY]
+        assert "trust_remote_code" in result.error
+        assert result.replicas == []
+        assert calls == [], "the checkpoint must not be read for a caller who may not run its code"
+
+    def test_a_trusted_deploy_reaches_the_evaluator(self):
+        from ndif.common.schema.controller import DeploymentConfig
+
+        calls = []
+        response = self._cluster(calls).deploy({self._KEY: DeploymentConfig(trusted=True)})
+
+        assert calls == [self._KEY]
+        assert "the evaluator was reached" in response.results[self._KEY].error
+
+    def test_the_refusal_is_per_model(self):
+        # One refused key must not fail the others in the same deploy call.
+        from ndif.common.schema.controller import DeploymentConfig
+
+        plain = self._KEY.replace(', "trust_remote_code": true', "")
+        calls = []
+        response = self._cluster(calls).deploy(
+            {self._KEY: DeploymentConfig(trusted=False), plain: DeploymentConfig(trusted=False)}
+        )
+
+        assert "trust_remote_code" in response.results[self._KEY].error
+        assert calls == [plain]
+
+    def test_prefetch_skips_a_key_the_caller_may_not_deploy(self):
+        # `_describe` warms the evaluator off the event loop before the deploy
+        # that will refuse the key; that read runs the repo's code too.
+        import asyncio
+
+        from ndif.common.schema.controller import DeploymentConfig
+        from ndif.services.ray.deployments.controller.controller import _ControllerActor
+
+        fetched = []
+
+        class Evaluator:
+            def prefetch(self, model_key, dtype):
+                fetched.append(model_key)
+
+        class Cluster:
+            evaluator = Evaluator()
+
+        controller = _ControllerActor.__new__(_ControllerActor)
+        controller.cluster = Cluster()
+        controller.default_dtype = "bfloat16"
+
+        plain = self._KEY.replace(', "trust_remote_code": true', "")
+        asyncio.run(controller._describe({
+            self._KEY: DeploymentConfig(trusted=False),
+            plain: DeploymentConfig(trusted=False),
+        }))
+
+        assert fetched == [plain]
+
+    def test_the_actor_is_not_told_separately(self):
+        # The load reads the flag off the key through nnsight's from_model_key;
+        # a second channel is a second opinion, which is the bug this replaces.
+        from ndif.services.ray.deployments.modeling.base import BaseModelDeploymentArgs
+
+        assert "trust_remote_code" not in BaseModelDeploymentArgs.model_fields

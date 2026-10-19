@@ -19,13 +19,17 @@ from ..lib.model_config import load_model_config
               help="Pipeline task (text-generation, fill-mask, ...). Part of the model "
                    "key, so clients must load with the same task; inferred from the "
                    "checkpoint when unset.")
+@click.option("--trust-remote-code", "trust_remote_code", is_flag=True,
+              help="Let the checkpoint's own modelling code run at load (HF "
+                   "trust_remote_code). Part of the model key, so clients must load "
+                   "with it too; needs --trusted.")
 @click.option("--pinned", is_flag=True, help="Deploy as pinned (won't be evicted).")
 @click.option("--replicas", type=int, default=1, show_default=True,
               help="New replicas to add per model (deploy is always additive).")
 @click.option("--actor-class", "actor_class", default=None,
               help="Dotted import path of the Ray actor class (default: controller's).")
 @click.option("--trusted", is_flag=True,
-              help="Run the model's own repo code (HF trust_remote_code) and skip the sandbox.")
+              help="Deploy as a trusted caller, which is what allows --trust-remote-code.")
 @click.option("--dtype", default=None,
               help="How the weights are held: a torch dtype (bfloat16, float32) or a "
                    "quantization (nf4/int4/4bit, fp4, int8/8bit, fp8). "
@@ -42,9 +46,9 @@ from ..lib.model_config import load_model_config
               help="Largest tensor-parallel degree to use; 0 to never place this model tensor-parallel.")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
 @click.option("--redis-url", default=None, help="Redis URL for dispatcher reconcile (default: NDIF_REDIS_URL).")
-def deploy(checkpoints, config_file, sync, revision, task, pinned, replicas,
-           actor_class, trusted, dtype, gpus, size_bytes, padding_factor,
-           padding_bias, max_tp, ray_address, redis_url):
+def deploy(checkpoints, config_file, sync, revision, task, trust_remote_code,
+           pinned, replicas, actor_class, trusted, dtype, gpus, size_bytes,
+           padding_factor, padding_bias, max_tp, ray_address, redis_url):
     """Deploy one or more models.
 
     CHECKPOINTS: model checkpoints (e.g. "gpt2", "meta-llama/Llama-3.1-8B").
@@ -84,6 +88,7 @@ def deploy(checkpoints, config_file, sync, revision, task, pinned, replicas,
                 Path(config_file),
                 default_revision=revision,
                 default_task=task,
+                default_trust_remote_code=trust_remote_code,
                 default_pinned=pinned,
                 default_replicas=replicas,
                 default_model_actor_class=actor_class,
@@ -100,7 +105,8 @@ def deploy(checkpoints, config_file, sync, revision, task, pinned, replicas,
         click.echo(f"Loaded {len(specs)} model(s) from {config_file}")
     else:
         specs = [
-            {"checkpoint": cp, "revision": revision, "task": task, "pinned": pinned,
+            {"checkpoint": cp, "revision": revision, "task": task,
+             "trust_remote_code": trust_remote_code, "pinned": pinned,
              "replicas": replicas, "actor_class": actor_class,
              "trusted": trusted, "dtype": dtype, "gpus": gpus,
              "size_bytes": size_bytes, "padding_factor": padding_factor,

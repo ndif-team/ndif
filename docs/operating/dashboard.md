@@ -134,9 +134,10 @@ to create or edit one; each entry shows its most recent reconcile status.
 
 ### Dashboard deploys are trusted
 
-A deployment's `trusted` flag becomes `trust_remote_code=` when the controller
-sizes and loads the model, so a checkpoint shipping custom modeling code runs
-that code inside the model actor. From the dashboard:
+A deployment's `trusted` flag is what allows a model key asking for
+`trust_remote_code` to be deployed, so a checkpoint shipping custom modeling code
+can run that code inside the model actor when the deploy says
+`trust_remote_code: true` (part of the key, like the task). From the dashboard:
 
 - **Deploy and Add Replica** send `trusted: true` — the default of the
   `DeployRequest` model (`src/ndif/services/dashboard/backend/routers/deployments.py`),

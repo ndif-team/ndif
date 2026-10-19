@@ -36,8 +36,8 @@ ndif() { docker exec -i dev-ray-1 ndif "$@"; }
 `ModelEvaluator._entry`). For a HuggingFace repo that is the Hub's published
 parameter count times the dtype's bytes per element; a repo with no published
 count is built on the meta device and counted instead. Buffers are not in the Hub
-count. The result is memoized per `model_key`, and recomputed when the dtype or
-`trust_remote_code` changes.
+count. The result is memoized per `model_key` (which carries `trust_remote_code`), and
+recomputed when the dtype changes.
 
 Then it pads (`ModelEvaluator.__call__`):
 
@@ -128,7 +128,8 @@ triggered the deploy, as `Could not deploy this model. <reason>`.
 | `CANT_ACCOMMODATE: placed N of M new replicas…` | no node could fit it, even after evicting everything evictable. The message carries no arithmetic — get the sized bytes from the controller log below |
 | `asked for N GPUs, but this model shards at most M ways…` | a node refused for a stated reason: the `gpus` count isn't a degree the model splits into. Pick a divisor of M, or `--max-tp 0` |
 | `No GPU nodes available.` | the controller has no node with a `GPU` resource — see [Add a GPU node](add-a-gpu-node.md) |
-| a Python traceback | the evaluator failed, so the model was never sized: gated repo (401), unknown architecture, a repo needing `trust_remote_code`, no network. Not a memory problem |
+| a Python traceback | the evaluator failed, so the model was never sized: gated repo (401), unknown architecture, a repo needing `trust_remote_code` that the key does not ask for, no network. Not a memory problem |
+| `… asks to run the checkpoint's own code (trust_remote_code), which only a trusted caller may deploy …` | the key asks for repo code and the deploy was untrusted; add `--trusted`. Not a memory problem |
 
 The controller is a Ray actor, so its log is not in `just logs ray`; it is in
 Ray's log directory inside the `ray` container:

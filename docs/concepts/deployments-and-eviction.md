@@ -75,8 +75,9 @@ constant underestimates for a large one. There is no per-request memory
 reservation beyond this padding. Both are overridable per deploy, and
 `DeploymentConfig.size_bytes` replaces the estimate outright.
 
-The estimate depends on `dtype` and `trust_remote_code` (repo code can build a
-different architecture), so the controller pins each config's dtype to a
+The estimate depends on `dtype` and on whether repo code may run (it can build a
+different architecture) — the latter is in the model key, so one key is one
+estimate — and the controller pins each config's dtype to a
 concrete value before evaluating: the number that places the replica must be the
 number the actor loads with. Sizing in practice — which knob to turn, and what
 the ledger cannot see — is in
@@ -109,9 +110,10 @@ two replicas with `replicas=1` gives you three. Shrinking is `evict`'s job.
 
 ### `trusted` follows the deployment
 
-The request that first provisions a model fixes its `trust_remote_code` for the
-life of the deployment; each request still forks on its own `request.trusted` for
-where its block runs. The mechanism is in
+The request that first provisions a model fixes the deployment's `trusted` for
+its life — and so whether a key asking for `trust_remote_code` could be deployed
+at all; each request still forks on its own `request.trusted` for where its
+block runs. The mechanism is in
 [API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load).
 
 ## Eviction

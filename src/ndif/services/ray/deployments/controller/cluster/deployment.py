@@ -74,8 +74,10 @@ class Deployment:
         self.execution_timeout_seconds = execution_timeout_seconds
         self.actor_class = actor_class
         self.dtype = dtype
-        # Whether the model loads with HF trust_remote_code (from the deploying
-        # request's trusted flag); the controller passes it into the actor args.
+        # Whether the caller that deployed this replica was trusted. Not what
+        # the model loads with -- that is in the key -- but what allowed a key
+        # asking for repo code to be deployed at all, and what a scale of this
+        # replica inherits.
         self.trusted = trusted
         self.deployed = time.time()
 

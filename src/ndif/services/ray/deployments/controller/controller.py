@@ -18,10 +18,12 @@ from .....common.schema.controller import (
     ReplicaState,
     ReplicaStates,
 )
+from .....common.model_key import trust_remote_code_of
 from .....common.types import MODEL_KEY, REPLICA_ID
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
+from .cluster.cluster import untrusted_remote_code
 
 logger = logging.getLogger("ndif.controller")
 
@@ -248,6 +250,12 @@ class _ControllerActor:
             filled.gpus = len(model.gpus)
         if filled.execution_timeout_seconds is None:
             filled.execution_timeout_seconds = model.execution_timeout_seconds
+        # Trust is inherited, never revoked: a model that is running with its
+        # own code was vetted by whoever deployed it, and one more replica of
+        # it runs nothing new. Without this an untrusted request could not
+        # autoscale a model an admin deployed trusted, since `Cluster.deploy`
+        # refuses an untrusted config for a key that asks for repo code.
+        filled.trusted = filled.trusted or model.trusted
         # Deliberately *not* size_bytes. A Deployment's is the evaluator's output
         # -- already padded -- while the config field means the model's own
         # weights, with padding applied on top. Copying one into the other pads
@@ -306,15 +314,18 @@ class _ControllerActor:
         if not configs:
             return
 
+        # A key this caller may not deploy is not read at all -- describing a
+        # model that asks for its own code runs that code -- and the deploy
+        # that follows records the refusal.
         await asyncio.gather(
             *(
                 asyncio.to_thread(
                     self.cluster.evaluator.prefetch,
                     model_key,
                     config.dtype or self.default_dtype,
-                    config.trusted,
                 )
                 for model_key, config in configs.items()
+                if untrusted_remote_code(model_key, config) is None
             )
         )
 
@@ -447,7 +458,6 @@ class _ControllerActor:
                 model_key=deployment.model_key,
                 execution_timeout=execution_timeout,
                 dtype=deployment.dtype or self.default_dtype,
-                trust_remote_code=deployment.trusted,
             )
 
             deployment.create(name, deployment_args)
@@ -621,6 +631,7 @@ class _ControllerActor:
                     "replica_id": deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
                     "task": _task_of(deployment.model_key),
+                    "trust_remote_code": trust_remote_code_of(deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()
@@ -663,6 +674,7 @@ class _ControllerActor:
                     "replica_id": cached_deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
                     "task": _task_of(cached_deployment.model_key),
+                    "trust_remote_code": trust_remote_code_of(cached_deployment.model_key),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()

@@ -84,12 +84,10 @@ class SandboxHost:
             size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
             peers=peers,
             # Each runner builds its own meta model from this key, so its
-            # persistent-id map has the same paths as the tree this actor loaded
-            # -- which is also why the build has to be told what this actor's was
-            # told: a checkpoint that defines its architecture in its own repo has
-            # no readable config without it.
+            # persistent-id map has the same paths as the tree this actor loaded.
+            # The key carries whether the checkpoint's own code may run, so the
+            # runner's build is the actor's build by construction.
             model_key=self.model_key,
-            trust_remote_code=self.kwargs.get("trust_remote_code", False),
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.

@@ -42,12 +42,14 @@ lifetime="detached", runtime_env=...).remote(**deployment_args.model_dump())`, w
 | `execution_timeout` | `None` | `DeploymentConfig.execution_timeout_seconds`, else `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, **unset by default**, so no cap at all (`_ControllerActor.apply`) |
 | `gpu_mem_bytes_by_id` | `{}` | Injected by `Deployment.create` from the placement the cluster chose |
 | `dtype` | `"bfloat16"` | `DeploymentConfig.dtype`, else `NDIF_DEFAULT_DTYPE` |
-| `trust_remote_code` | `False` | `DeploymentConfig.trusted`, from the `trusted` flag of the request that triggered the deployment — see [API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load) |
 
-Only these five fields cross the boundary — a constructor parameter that isn't a
+Only these four fields cross the boundary — a constructor parameter that isn't a
 field here can never be set by the controller. `BaseModelDeployment.__init__` binds
-the first four by name; anything else lands in `self.kwargs`, forwarded verbatim into
-`from_model_key` at load time, which is how `trust_remote_code` reaches transformers.
+all four by name; anything else lands in `self.kwargs`, forwarded verbatim into
+`from_model_key` at load time. `trust_remote_code` is not among them: it is in
+the model key, which nnsight's `from_model_key` reads, so the load cannot disagree
+with the estimate that placed it — see
+[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
 `dtype` is kept twice: `dtype_name` (what the loader is handed — a quantization name
 like `nf4` is not a `torch.dtype`) and `dtype`, the resolved compute dtype that user
 execution autocasts to.
@@ -104,7 +106,7 @@ model = HuggingFaceModel.from_model_key(
   `cleanup()` skips them on every request. `from_cache` does not refreeze: a
   request preempted by `to_cache` can still have a thread running then.
 
-> **Gotcha:** `dtype` and `trust_remote_code` must match what the controller's
+> **Gotcha:** `dtype` must match what the controller's
 > evaluator sized this model with, or the GPU accounting that placed the replica is
 > wrong. Hence the controller pins `config.dtype` before evaluating
 > (`src/ndif/services/ray/deployments/controller/controller.py` `_ControllerActor._deploy`).

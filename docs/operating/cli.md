@@ -230,7 +230,8 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--pinned` | flag, off | exempt from autoscaling / cache eviction |
 | `--replicas` | int, `1` | **new** replicas to add per model |
 | `--actor-class` | dotted path, default from the controller's env | Ray actor class serving the deployment |
-| `--trusted` | flag, off | load with `trust_remote_code=True` |
+| `--trust-remote-code` | flag, off | let the repo's own modelling code run at load (`trust_remote_code=True`); part of the model key, so clients must load with it too. Needs `--trusted` |
+| `--trusted` | flag, off | deploy as a trusted caller, which is what allows `--trust-remote-code` |
 | `--dtype` | str, unset | a torch dtype, or a quantization (`nf4`/`int4`/`4bit`, `fp4`, `int8`/`8bit`, `fp8`). Loads *and* sizes the model; defaults to `NDIF_DEFAULT_DTYPE` |
 | `--gpus` | int, unset | place on exactly this many cards |
 | `--size-bytes` | int, unset | the model's weights, measured; skips the Hub estimate |

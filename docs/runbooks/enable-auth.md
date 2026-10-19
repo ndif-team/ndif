@@ -21,8 +21,8 @@ Commands are for the compose stack from a checkout; `just` wraps
 unset, `verify_api_key` returns `None` and `validate_request` stamps
 `trusted=True` on every request whose envelope doesn't set `trusted` itself
 (`src/ndif/services/api/auth.py` `validate_request`). A trusted request runs its
-Python **inside the model actor process**, next to the weights, and a model it
-auto-deploys loads with `trust_remote_code=True`. The full fork is in
+Python **inside the model actor process**, next to the weights, and may
+auto-deploy a model whose key asks for `trust_remote_code=True`. The full fork is in
 [Auth and limits](../concepts/auth-and-limits.md).
 
 ## 1. Bring up Postgres
@@ -86,7 +86,7 @@ issuance is normally the account portal's job; here you do it by hand.
 
 | Tag | Constant | Effect |
 |---|---|---|
-| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and any model it triggers a deploy for loads with `trust_remote_code` |
+| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and it may trigger a deploy of a model key asking for `trust_remote_code` |
 | `priority` | `PRIORITY_TAG` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
 
 Every other tag name is inert.
@@ -300,8 +300,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -b jar localhost:8081/api/schedule   # 
   (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
   `Deployment`), and the queue reuses it for re-provisions
   (`src/ndif/services/api/queue/processor.py` `Processor.ensure_started`). Evict
-  and redeploy after turning auth on if a model should stop loading with
-  `trust_remote_code`.
+  and redeploy after turning auth on if a deployment made while every request
+  was trusted should not keep that trust — a scale of it inherits it
+  (`_ControllerActor._like_existing`).
 - **Enabling auth is what makes per-user attribution work.** `email` is resolved
   at ingress and rides on every log record and metric.
 

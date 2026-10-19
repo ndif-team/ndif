@@ -29,10 +29,12 @@ class DeploymentConfig(BaseModel):
 
     pinned: bool = False
     replicas: int = 1
-    # Whether this deployment may run the model's own repo code (HF
-    # trust_remote_code). Inherited from the trusted flag of the request that
-    # kicked off the deployment; the controller threads it into the evaluator's
-    # size estimate and the actor's model load, which must agree.
+    # Whether the caller is trusted. Inherited from the trusted flag of the
+    # request that kicked off the deployment (always on for an admin's CLI or
+    # dashboard deploy). Whether the model's own repo code runs at load is not
+    # decided here -- it is in the model key, where the client put it -- but
+    # only a trusted caller may deploy a key that asks for it; the controller
+    # refuses the rest before reading the checkpoint.
     trusted: bool = False
     # --- placement overrides -------------------------------------------------
     # Everything about where a replica goes is derived from one number: the

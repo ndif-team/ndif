@@ -64,15 +64,20 @@ def normalize_specs(specs: Iterable[dict]) -> list[dict]:
                 # identity). Unset, nnsight infers it from the checkpoint, the
                 # same way a client with no task= does.
                 "task": spec.get("task"),
+                # Whether the checkpoint's own modelling code may run at load.
+                # Part of the model key, like the task: a client that loads with
+                # it mints a different key, so it has to be said here for the
+                # deployment to be the one that client reaches.
+                "trust_remote_code": bool(spec.get("trust_remote_code", False)),
                 "padding_factor": spec.get("padding_factor"),
                 "size_bytes": spec.get("size_bytes"),
                 "padding_bias": spec.get("padding_bias"),
                 "gpus": spec.get("gpus"),
                 "max_tp": spec.get("max_tp"),
                 "execution_timeout_seconds": spec.get("execution_timeout_seconds"),
-                # Whether the deployment may run the model's own repo code (HF
-                # trust_remote_code) and skip the execution sandbox. Off unless the
-                # caller opts in (the dashboard's deploy paths do).
+                # Whether the deployer is trusted, which is what allows a key
+                # asking for trust_remote_code to be deployed at all. Off unless
+                # the caller opts in (the dashboard's deploy paths do).
                 "trusted": bool(spec.get("trusted", False)),
                 # Optional pre-computed canonical key — when set, deploy skips
                 # ``get_model_key`` and uses this value verbatim.

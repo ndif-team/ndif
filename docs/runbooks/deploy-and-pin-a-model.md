@@ -77,9 +77,11 @@ Useful flags (full list in [The ndif CLI](../operating/cli.md)): `--task`,
 task (`TransformersModel(repo, task="…")`), or their requests provision a second,
 default-task deployment.
 
-**`--trusted`** loads the model with `trust_remote_code=True` (needed for repos
-that ship their own modelling code) and marks the deployment trusted; a plain
-`ndif deploy` is untrusted. Dashboard deploys default to trusted and take
+**`--trust-remote-code`** lets the model run its own modelling code
+(`trust_remote_code=True`, needed for repos that ship it). It is part of the model
+key, so clients must load with `trust_remote_code=True` too, and it needs
+**`--trusted`**, which marks the deployment as made by a trusted caller; a plain
+`ndif deploy` is untrusted and such a key is refused. Dashboard deploys default to trusted and take
 `"trusted": false` per request
 (`src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest`);
 scheduled ones are always trusted. What "trusted" means beyond loading is in

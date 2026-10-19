@@ -28,7 +28,8 @@ Three constraints shape the whole design:
    [Status and Results](../concepts/status-and-results.md)'s topic.
 3. **Ingress is where trust is decided.** The `trusted` flag stamped here
    determines whether a caller's Python runs inside the model actor process or in
-   a separate runner, and whether the model loads with `trust_remote_code` — see
+   a separate runner, and whether it may deploy a model key asking for
+   `trust_remote_code` — see
    [The `trusted` flag](#the-trusted-flag--read-this-before-you-deploy).
 
 ## Boot
@@ -137,12 +138,12 @@ sandbox path by sending `trusted: false` without standing up Postgres.
   driven over a Unix socket, so arbitrary user Python never runs in the actor
   process. This is process separation, not a security boundary — see
   [Sandbox Execution](../concepts/sandbox-execution.md).
-- `trusted` also becomes `trust_remote_code` on the model load, via the path
-  below.
+- `trusted` also decides whether a model key asking for `trust_remote_code` may
+  be deployed, via the path below.
 
 > **Gotcha:** "no Postgres configured" does not only mean "no auth". It means
 > **a caller's arbitrary Python runs in-process next to the weights by default, and
-> models are loaded with `trust_remote_code=True`** — a client can drop to the
+> any model key asking for `trust_remote_code` is deployed as asked** — a client can drop to the
 > sandbox path with `trusted: false`, but nothing forces it to. If your API is
 > reachable by anyone you don't trust, set `NDIF_POSTGRES_URL` and issue keys.
 > `priority` is left as the client sent it when auth is off (only the auth-on
@@ -150,8 +151,9 @@ sandbox path by sending `trusted: false` without standing up Postgres.
 
 ### `trusted` through the queue and into the model load
 
-This section is the reference for how a deployment's `trust_remote_code` is
-fixed; other pages link here.
+This section is the reference for how a deployment's `trusted` is fixed, and
+with it whether a key asking for `trust_remote_code` can be deployed; other pages
+link here.
 
 The flag is not re-derived anywhere. It rides the pickled request into the queue,
 where `Processor.enqueue` passes it to `Processor.ensure_started`, which stores
@@ -159,19 +161,19 @@ it on the processor (`src/ndif/services/api/queue/processor.py`).
 `Replica.provision` then asks the controller for one more replica with
 `DeploymentConfig(trusted=processor.trusted)`
 (`src/ndif/services/api/queue/replica.py`); `Cluster.deploy`
-(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`) passes it to
-the node, which stamps it onto the `Deployment`, and the controller threads it
-into the actor's model load as
-`BaseModelDeploymentArgs(trust_remote_code=deployment.trusted)`
-(`src/ndif/services/ray/deployments/controller/controller.py`
-`_ControllerActor.apply`).
+(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`) first checks
+it against the key (`untrusted_remote_code`: a key carrying `trust_remote_code`
+from an untrusted config is refused before the checkpoint is read), then passes
+it to the node, which stamps it onto the `Deployment`. The actor's load is told
+nothing: nnsight's `from_model_key` reads `trust_remote_code` off the key itself.
 
 `ensure_started` only assigns when its argument is not `None`, and a
 *re*-provision after an eviction passes `None`. So: **whichever request first
-causes a model to be deployed fixes that deployment's `trust_remote_code` for its
-lifetime.** A trusted user's request deploys the model with
-`trust_remote_code=True`, and every later untrusted request runs against that
-same deployment. Evicting and redeploying is the only way to change it.
+causes a model to be deployed fixes that deployment's `trusted` for its
+lifetime.** A trusted user's request deploys a key asking for
+`trust_remote_code`, and every later untrusted request runs against that same
+deployment (and can scale it: `_ControllerActor._like_existing` inherits the
+running replica's trust). Evicting and redeploying is the only way to change it.
 
 **`validate_client_versions`** (`src/ndif/services/api/versioning.py`) is called
 inside the `/request` body, not as a dependency. It compares the client's

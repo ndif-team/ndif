@@ -16,8 +16,8 @@ the client is nnsight, whose docs live in its own repo.
 
 Where user code runs depends on one boolean, `request.trusted`, stamped at ingress
 from the API key. A trusted block runs **inside the model actor process**, next to
-the weights, and the model loads with `trust_remote_code`; an untrusted one runs in
-a separate runner process driven over a Unix socket. With auth off (no
+the weights, and it may deploy a model whose key asks for `trust_remote_code`; an
+untrusted one runs in a separate runner process driven over a Unix socket. With auth off (no
 `NDIF_POSTGRES_URL`) a client-supplied `trusted` is honored and an unspecified one
 defaults to trusted — so a bare `just up` is unauthenticated **and** runs user code
 in-process. Send `trusted: false` to exercise the runner path without Postgres.

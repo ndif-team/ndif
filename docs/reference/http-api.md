@@ -237,12 +237,13 @@ Entries under `deployments` are keyed `{replica_id}:ModelActor:{model_key}` for 
 live actor and by the bare repo id for a COLD model. A HOT entry carries
 `application_state`, `deployment_level`, `model_key`, `replica_id`, `repo_id`,
 `revision`, `task`, `config` (the HF config as a JSON string), `n_params`,
-`size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`, `trusted`,
+`size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`, `trusted`, `trust_remote_code`,
 `execution_timeout_seconds`, `actor_class`, and — unpinned, with a minimum
 deployment time set — `schedule.end_time`. A WARM entry carries the subset from
-`model_key` to `n_params`. The deployment-level `trusted` means the model was
-loaded with `trust_remote_code`; it says nothing about whether a given request
-runs trusted.
+`model_key` to `n_params`. The deployment-level `trusted` means the caller that
+deployed it was trusted; `trust_remote_code` (read off the model key) means the
+model runs the repo's own code. Neither says whether a given request runs
+trusted.
 
 | Code | Cause |
 |---|---|
@@ -342,7 +343,7 @@ not by the job path.
 
 `tags` are the key's `user_tags`. Two are meaningful to the server: `trusted`
 (the request's code runs in-process in the model actor rather than a separate
-runner, and the model may be deployed with `trust_remote_code`) and `priority`
+runner, and it may deploy a model key asking for `trust_remote_code`) and `priority`
 (jump the model's queue). See [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 With auth enabled, a missing key (401) or an unknown one (403) is not an error

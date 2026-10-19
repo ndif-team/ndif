@@ -113,7 +113,7 @@ drained by `settle_control` before `handle` sees them, and are answered in the n
 builds the runner's environment from the `RUNNER_ENV` allowlist via `runner_env`,
 prepends the repo root to `PYTHONPATH`, sets `PYTHONHASHSEED=0`, launches
 `ndif.services.ray.sandbox.runner` with the socket path, `peers`, and — when the
-pool has one — the model key and its `trust_remote_code` flag, then polls until
+pool has one — the model key (which carries `trust_remote_code`), then polls until
 the socket accepts (30s), raising if the process dies first. The runner's stderr
 is never discarded: it is the only report of a request the runner could not
 finish.
@@ -141,8 +141,8 @@ or core-tight node.
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers`, the model key and `trust_remote_code`, and calls
-`nns.load_meta_model(model_key, trust_remote_code=...)` **before binding**, so a
+path, `peers` and the model key, and calls `nns.load_meta_model(model_key)`
+**before binding**, so a
 host that can connect is a host whose runner is warm. A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
 `None`. `__main__` first calls `die_with_parent`, a daemon thread that polls

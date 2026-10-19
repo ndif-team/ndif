@@ -85,9 +85,9 @@ workspace memory that scales with model size, which a pure constant underestimat
 Both are overridable per deploy (`DeploymentConfig.padding_factor` / `.padding_bias`) and have
 controller-wide defaults (`NDIF_DEFAULT_PADDING_FACTOR` / `NDIF_DEFAULT_PADDING_BIAS`).
 
-The estimate is cached by `model_key` and recomputed when the request's `dtype` or
-`trust_remote_code` differs from the cached entry (`ModelEvaluator._entry`) — element sizes change
-the number, and repo code can build a different architecture. This is why `_ControllerActor._deploy`
+The estimate is cached by `model_key` and recomputed when the request's `dtype` differs from the
+cached entry (`ModelEvaluator._entry`) — element sizes change the number. Whether repo code may run,
+which can build a different architecture, is in the key itself, so it needs no second check. This is why `_ControllerActor._deploy`
 pins `config.dtype` to `NDIF_DEFAULT_DTYPE` before evaluating: the estimate and the actor's actual
 load must use the same dtype, or the accounting is wrong from the start. `_ControllerActor.deploy`
 first warms this cache off the event loop (`_describe`), since sizing reaches the Hub. An evaluator
@@ -98,20 +98,29 @@ it into `ModelDeployResult.error` with the full traceback. `ModelEvaluator.__ini
 ## The `trusted` flag
 
 `DeploymentConfig.trusted` (default `False`) is not a knob the controller invents: it rides in from
-the caller and becomes `trust_remote_code` on the model load, so it decides whether a deploy *works
-at all*. From the queue it arrives on the `DeploymentConfig` that `Replica.provision` hands
-`scale`, carrying the trust of the request that first deployed the model — the full path is in
-[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load). Inside the
-controller, `Cluster.deploy` feeds it to the size estimate as `trust_remote_code`, `Node.deploy`
-stores it on the `Deployment`, `_ControllerActor.apply` passes it as
-`BaseModelDeploymentArgs.trust_remote_code`, and `status()` reports it per deployment.
+the caller and says who is asking. What the model *is* — including whether its own repo code may run
+(`trust_remote_code`) — is in the model key, written by the client that built the model. The one
+place the two meet is `untrusted_remote_code`
+(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`): `Cluster.deploy` refuses a key
+asking for repo code from an untrusted config, as that model's `error`, before the evaluator reads
+the checkpoint (sizing such a model already runs its configuration code), and
+`_ControllerActor._describe` skips prefetching it for the same reason. From the queue the flag
+arrives on the `DeploymentConfig` that `Replica.provision` hands `scale`, carrying the trust of the
+request that first deployed the model — the full path is in
+[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load); `_like_existing`
+then inherits trust from a running replica, so an untrusted request can still scale a model an
+admin deployed trusted. `Node.deploy` stores it on the `Deployment`, and `status()` reports it per
+deployment alongside `trust_remote_code` read off the key. The load itself is told nothing extra:
+nnsight's `from_model_key` reads the flag from the key, so the estimate and the actor cannot
+disagree.
 
-So **the same checkpoint can deploy for one caller and fail for another**: a repo shipping custom
-modelling code needs `trust_remote_code=True` merely to *build* the architecture, so an untrusted
-deploy fails during evaluation with the repo's own "requires you to execute the code" error while a
-trusted deploy of the identical checkpoint succeeds. Running with auth off defaults requests to
-trusted and hides the distinction — which is why it surprises people the first time auth is
-switched on.
+So **the same model key can deploy for one caller and be refused for another**: a repo shipping
+custom modelling code needs `trust_remote_code=True` merely to *build* the architecture, so a client
+loads it with that option and mints a key that says so; a trusted request deploys that key and an
+untrusted one is refused with a message naming it. A key *without* the flag for such a repo fails in
+the evaluator for everyone, with the repo's own "requires you to execute the code" error. Running
+with auth off defaults requests to trusted and hides the first distinction — which is why it
+surprises people the first time auth is switched on.
 
 **The trust level of a deployment depends on who deployed it.** The dashboard deploys with
 `trusted: True` as an admin action (`src/ndif/services/dashboard/backend/routers/deployments.py`,
@@ -232,8 +241,7 @@ entry) and `deployments_to_delete` (in state, gone from the cluster model).
 2. **cache** (HOT→WARM) — `actor.to_cache.remote()`, then **blocks** on every future with `ray.get`.
    The one synchronous step, because step 3 assumes that GPU memory is already free.
 3. **from_cache** (WARM→HOT) — `actor.from_cache.remote(self.gpus)`.
-4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype,
-   `trust_remote_code`), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
+4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
    self.gpus`, then awaits `actor.__ray_ready__`.
 
 Steps 3 and 4 are awaited off the main path by `_ControllerActor._monitor_deployment` — awaiting the
@@ -295,9 +303,12 @@ computed against. **"No GPU nodes available."** is different: `Cluster.nodes` is
 passthrough. See [Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
 
 **Deploy fails during evaluation.** The error carries the evaluator's full traceback: usually a
-gated or nonexistent repo, or a model needing `trust_remote_code` (see [The `trusted`
-flag](#the-trusted-flag) — deploy it trusted with `ndif deploy --trusted`, a `trusted: true` entry
-in `models.yaml`, the dashboard, or a request whose API key carries the `trusted` tag).
+gated or nonexistent repo, or a model needing `trust_remote_code` that its key does not ask for (see
+[The `trusted` flag](#the-trusted-flag) — deploy it with `ndif deploy --trust-remote-code --trusted`,
+a `trust_remote_code: true` entry in `models.yaml`, the dashboard, or a client that loads with
+`trust_remote_code=True` under an API key carrying the `trusted` tag). A deploy **refused** before
+evaluation — `… asks to run the checkpoint's own code (trust_remote_code), which only a trusted
+caller may deploy` — is the key asking and the caller not being trusted.
 
 **Evict finds nothing.** `Cluster.evict` returns an empty `ReplicaStates` and the CLI prints `✗
 <key>: nothing to evict` (`src/ndif/cli/lib/evict.py`). Usually a model-key mismatch — the key
