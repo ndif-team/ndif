@@ -36,18 +36,17 @@ server-side ones.
 | `id` | `str` | `uuid4().hex` | The job id: stamps every response, names the result object (`{id}.pt`), and is what a non-blocking client polls. Distinct from `session_id`. Minted server-side unless the envelope supplies one. |
 | `api_key` | `Optional[str]` | `None` | Taken from the `ndif-api-key` header by `validate_request` when one is sent. |
 | `email` | `Optional[str]` | `None` | The key owner's email, resolved at ingress so logs and metrics attribute to a person. With auth on, from Postgres; with auth off, whatever the client sent. |
-| `trusted` | `bool` | `False` | **Selects the execution path** — see below. |
-| `trust_remote_code` | `bool` | `False` | **May deploy a model whose key carries `trust_remote_code`.** Stamped at ingress from the key's `trust_remote_code` or `trusted` tag; equal to `trusted` with auth off. See [auth-and-limits.md](../concepts/auth-and-limits.md#trust_remote_code). |
-| `priority` | `bool` | `False` | Jump the queue. With auth on, from the key's `priority` user_tag (`Identity.priority`). Priority requests sort ahead as a *group*, FIFO within each group (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`); no aging, so saturated priority traffic starves normal requests. |
+| `tags` | `set[str]` | `set()` | The caller's user_tags, stamped at ingress (with auth off: as sent, defaulting to `{"trusted"}`). Read by three properties: `trusted` (**selects the execution path** — see below), `trust_remote_code` (may deploy a model whose key carries `trust_remote_code`; `trusted` implies it — [auth-and-limits.md](../concepts/auth-and-limits.md#trust_remote_code)) and `priority` (sorts ahead as a *group*, FIFO within each group, `src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`; no aging, so saturated priority traffic starves normal requests). |
 | `payload` | `Optional[bytes]` | `None` | The serialized interventions blob, filled from the multipart `blob` part by `create_request`. Not part of the client's JSON envelope. |
 | `enqueued_at` | `Optional[float]` | `None` | Unix time the request joined a model's in-memory queue (`Processor.enqueue`); the autoscaler reads it to spot a stale queue. Preserved on a re-queue. |
 | `last_status` / `last_status_time` | `Optional[Status]` / `Optional[float]` | `None` | The status the request is in and when it entered it. `last_status_time` is seeded at `RECEIVED`, so it doubles as the ingress time; per-stage latency comes from the `status_time` metric ([telemetry-internals.md](../developing/telemetry-internals.md)). |
 
 ### `trusted` — the flag that picks how user code runs
 
-Stamped at ingress by `src/ndif/services/api/auth.py` `validate_request`: with
-auth on, from the key's `trusted` user_tag (a client value is overwritten); with
-auth off, a client-sent value stands and an unset one becomes `True`. Consumed by
+`BackendRequestModel.trusted` is `"trusted" in request.tags`; the tags are
+stamped by `src/ndif/services/api/auth.py` `validate_request` (with auth on, the
+key's user_tags, overwriting a client value; with auth off, as sent, defaulting
+to `{"trusted"}`). Consumed by
 `src/ndif/services/ray/sandbox/model.py` `SandboxModelDeployment.execute`: `True`
 runs the block in the model actor process via `BaseModelDeployment.execute`;
 `False` hands it to a runner subprocess (`SandboxHost.run_in_runner`), which
@@ -272,5 +271,5 @@ Where they intentionally differ:
 
 - [status-and-results.md](../concepts/status-and-results.md) — the lifecycle from the user's side, response channels, presigned URLs; [request-lifecycle.md](../concepts/request-lifecycle.md) — one request end to end
 - [http-api.md](./http-api.md) — the endpoints these models cross; [nnsight-integration.md](../developing/nnsight-integration.md) — the client/server contract and version coupling
-- [controller-internals.md](../developing/controller-internals.md) — what the controller does with `DeploymentConfig`; [sandbox-internals.md](../developing/sandbox-internals.md) — what `trusted=False` actually runs
+- [controller-internals.md](../developing/controller-internals.md) — what the controller does with `DeploymentConfig`; [sandbox-internals.md](../developing/sandbox-internals.md) — what an untrusted request actually runs
 - [telemetry-internals.md](../developing/telemetry-internals.md) — the metrics and events `_advance_status` emits

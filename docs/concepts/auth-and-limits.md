@@ -16,8 +16,9 @@ flag and the `trust_remote_code` tag; other pages link here.
 
 ## The `trusted` flag
 
-`request.trusted` is stamped at ingress by `validate_request`
-(`src/ndif/services/api/auth.py`) and decides two things:
+`request.trusted` is `"trusted" in request.tags`; the tags are stamped at
+ingress by `validate_request` (`src/ndif/services/api/auth.py`). It decides two
+things:
 
 1. **Where the block runs.** On a sandbox actor class, a trusted block runs
    *inside the model actor process*, next to the weights; an untrusted one runs
@@ -28,18 +29,18 @@ flag and the `trust_remote_code` tag; other pages link here.
 
 **How it is set.**
 
-| Mode | `trusted` on the request |
+| Mode | `tags` on the request |
 |---|---|
-| Auth on (`NDIF_POSTGRES_URL` set) | from the key: `True` iff the key carries the `trusted` user_tag. A client-supplied value is overwritten. |
-| Auth off, client sent `trusted` | left as sent — `True` or `False` |
-| Auth off, client sent nothing | `True` |
+| Auth on (`NDIF_POSTGRES_URL` set) | the key's user_tags. A client-supplied value is overwritten. |
+| Auth off, client sent `tags` | left as sent |
+| Auth off, client sent nothing | `{"trusted"}` |
 
 Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
 every request that does not say otherwise as trusted: user code in-process, and
 free to deploy a model that runs its own repo code. That is fine for a laptop and
 not for anything reachable by other people; turning auth on is the switch — see
 [Enable auth](../runbooks/enable-auth.md). To exercise the untrusted path in dev
-without Postgres, send `trusted: false`; ingress leaves it false. See
+without Postgres, send `tags: []`; ingress leaves it empty. See
 [testing](../developing/testing.md).
 
 **Which actor class honors it.** The fork lives in the actor class, not the
@@ -87,12 +88,11 @@ A model key carrying `"trust_remote_code": true` loads the checkpoint's own
 modelling code ([the key field](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).
 The API decides who may deploy one.
 
-**The permission.** `validate_request` stamps `request.trust_remote_code`
-(`src/ndif/common/schema/request.py` `BackendRequestModel`). With auth on it is
-`True` iff the key carries the `trust_remote_code` or `trusted` user_tag
-(`Identity.trust_remote_code`); with auth off it equals `request.trusted`. The
-`trust_remote_code` tag grants nothing else: the key's blocks still run in the
-sandbox. Postgres needs its `user_tags` row
+**The permission.** `request.trust_remote_code`
+(`src/ndif/common/schema/request.py` `BackendRequestModel`) is `True` iff
+`request.tags` has `trust_remote_code` or `trusted` (how the tags are stamped is
+[above](#the-trusted-flag)). The `trust_remote_code` tag grants nothing else: the
+key's blocks still run in the sandbox. Postgres needs its `user_tags` row
 ([Enable auth](../runbooks/enable-auth.md)).
 
 **The gate.** `Processor.start` (`src/ndif/services/api/queue/processor.py`),
@@ -139,9 +139,9 @@ tags mean anything to the server:
 
 | Tag | Effect |
 |---|---|
-| `trusted` | `request.trusted = True` and `request.trust_remote_code = True` — see above |
-| `trust_remote_code` | `request.trust_remote_code = True` — see [`trust_remote_code`](#trust_remote_code) |
-| `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests. With auth off, `priority` is left as the client sent it (`False` by default). |
+| `trusted` | `request.trusted` and `request.trust_remote_code` — see above |
+| `trust_remote_code` | `request.trust_remote_code` — see [`trust_remote_code`](#trust_remote_code) |
+| `priority` | `request.priority`: the request sorts ahead of all normal traffic for that model, FIFO against other priority requests. |
 
 Everything else about identity is **observability only**. `email` travels with
 the request across the Ray boundary so every downstream log line and metric

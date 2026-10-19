@@ -139,11 +139,11 @@ actor — drop the replica, re-queue at the front. An actor class that sets
 
 ## Trusted and untrusted requests
 
-`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`, default `False`)
-is stamped at ingress from the API key's `trusted` user_tag; **with auth off — no
-`NDIF_POSTGRES_URL` — it defaults to trusted but honors a client-supplied
-`trusted: false`** (`src/ndif/services/api/auth.py` `validate_request`). The flag
-decides where the block runs:
+`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`) is whether
+the request's tags, stamped at ingress from the API key, include `trusted`;
+**with auth off — no `NDIF_POSTGRES_URL` — the tags default to `{"trusted"}` but
+a client-supplied `tags: []` is honored** (`src/ndif/services/api/auth.py`
+`validate_request`). The flag decides where the block runs:
 
 - **Trusted** → `BaseModelDeployment.execute`, in the actor process, in the same
   address space as the weights. That is the path documented below.

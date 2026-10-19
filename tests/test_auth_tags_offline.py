@@ -1,42 +1,28 @@
-"""Offline tests for what the API key's tags grant — no Postgres, no server.
+"""What a request's tags grant, offline: no Postgres, no server.
 
-``trusted`` runs the caller's code next to the weights and may deploy a model
-whose key asks for ``trust_remote_code``; the ``trust_remote_code`` tag grants
-only the latter.
+``validate_request`` stamps the key's user_tags onto the request; the request's
+``trusted`` / ``trust_remote_code`` / ``priority`` properties read them.
 """
 
 import asyncio
 
-import pytest
-
 from ndif.common.schema.request import BackendRequestModel
 from ndif.services.api import auth
-from ndif.services.api.auth import TRUST_REMOTE_CODE_TAG, TRUSTED_TAG, Identity
+from ndif.services.api.auth import Identity
 
 
-def _identity(*tags):
-    return Identity(key_id="k", user_id="u", email="a@b", user_tags=list(tags))
+class TestTheProperties:
+    def test_trust_remote_code_alone(self):
+        request = BackendRequestModel(model_key="m", tags={"trust_remote_code"})
+        assert request.trust_remote_code and not request.trusted and not request.priority
 
+    def test_trusted_implies_trust_remote_code(self):
+        request = BackendRequestModel(model_key="m", tags={"trusted"})
+        assert request.trusted and request.trust_remote_code
 
-class TestIdentity:
-    def test_the_trust_remote_code_tag_grants_the_deploy_permission_only(self):
-        identity = _identity(TRUST_REMOTE_CODE_TAG)
-        assert identity.trust_remote_code is True
-        assert identity.trusted is False
-
-    def test_trusted_implies_it(self):
-        identity = _identity(TRUSTED_TAG)
-        assert identity.trusted is True
-        assert identity.trust_remote_code is True
-
-    def test_an_untagged_key_gets_neither(self):
-        identity = _identity()
-        assert identity.trusted is False
-        assert identity.trust_remote_code is False
-
-
-def _envelope(**fields):
-    return BackendRequestModel(model_key="m", **fields).model_dump_json(exclude_unset=True)
+    def test_no_tags(self):
+        request = BackendRequestModel(model_key="m")
+        assert not (request.trusted or request.trust_remote_code or request.priority)
 
 
 def _validate(monkeypatch, identity, **fields):
@@ -44,33 +30,18 @@ def _validate(monkeypatch, identity, **fields):
         return identity
 
     monkeypatch.setattr(auth, "verify_api_key", verify)
-    return asyncio.run(auth.validate_request(data=_envelope(**fields), api_key="key"))
+    data = BackendRequestModel(model_key="m", **fields).model_dump_json(exclude_unset=True)
+    return asyncio.run(auth.validate_request(data=data, api_key="key"))
 
 
-class TestValidateRequestWithAuthOn:
-    def test_the_trust_remote_code_tag_stamps_only_that_flag(self, monkeypatch):
-        request = _validate(monkeypatch, _identity(TRUST_REMOTE_CODE_TAG))
-        assert request.trust_remote_code is True
-        assert request.trusted is False, "the sandbox stays on for this key"
+class TestValidateRequest:
+    def test_auth_on_stamps_the_keys_tags_over_the_clients(self, monkeypatch):
+        identity = Identity(key_id="k", user_id="u", user_tags=["priority"])
+        request = _validate(monkeypatch, identity, tags={"trusted"})
+        assert request.tags == {"priority"}
 
-    def test_the_trusted_tag_stamps_both(self, monkeypatch):
-        request = _validate(monkeypatch, _identity(TRUSTED_TAG))
-        assert request.trusted is True
-        assert request.trust_remote_code is True
+    def test_auth_off_defaults_to_trusted(self, monkeypatch):
+        assert _validate(monkeypatch, None).tags == {"trusted"}
 
-    def test_a_client_cannot_grant_itself_either(self, monkeypatch):
-        request = _validate(monkeypatch, _identity(), trusted=True, trust_remote_code=True)
-        assert request.trusted is False
-        assert request.trust_remote_code is False
-
-
-class TestValidateRequestWithAuthOff:
-    def test_an_unspecified_request_is_trusted_and_so_may_deploy_repo_code(self, monkeypatch):
-        request = _validate(monkeypatch, None)
-        assert request.trusted is True
-        assert request.trust_remote_code is True
-
-    def test_opting_out_of_trusted_opts_out_of_both(self, monkeypatch):
-        request = _validate(monkeypatch, None, trusted=False)
-        assert request.trusted is False
-        assert request.trust_remote_code is False
+    def test_auth_off_honors_explicit_tags(self, monkeypatch):
+        assert _validate(monkeypatch, None, tags=set()).tags == set()

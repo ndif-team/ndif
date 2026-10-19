@@ -85,12 +85,10 @@ Submit a job. This is the endpoint nnsight's `RemoteBackend` posts to.
 `data` is validated as a whole `BackendRequestModel`, so it may also carry that
 model's server-side fields (unknown fields are ignored). `payload` always comes
 from the blob part, and `api_key` from the `ndif-api-key` header when one is sent.
-With auth enabled, `email`, `trusted`, `trust_remote_code` and `priority` are
-overwritten from the verified key. With auth disabled `email`, `trusted` and
-`priority` survive as sent, an unset `trusted` becomes `true`, and
-`trust_remote_code` is set equal to `trusted` — so `trusted: false` is how a
-client exercises the sandbox without Postgres. `id` is minted unless `data`
-supplies one. What `trusted` decides is in
+With auth enabled, `email` and `tags` are overwritten from the verified key.
+With auth disabled `email` and `tags` survive as sent and unset `tags` become
+`["trusted"]` — so `tags: []` is how a client exercises the sandbox without
+Postgres. `id` is minted unless `data` supplies one. What the tags decide is in
 [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 **Response** — `200` with a `BackendResponseModel`:

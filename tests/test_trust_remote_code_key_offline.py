@@ -42,7 +42,7 @@ class TestWhoMayProvisionIt:
     """Only a request with the permission provisions a key asking for repo code."""
 
     @staticmethod
-    def _run(monkeypatch, model_key, **flags):
+    def _run(monkeypatch, model_key, tags):
         from ndif.services.api.queue import processor as processor_module
         from ndif.services.api.queue import replica as replica_module
         from ndif.services.api.queue.processor import Processor, ProcessorStatus
@@ -85,7 +85,7 @@ class TestWhoMayProvisionIt:
 
             processor.reply = reply
             processor.purge = purge
-            processor.queue.put(BackendRequestModel(model_key=model_key, **flags))
+            processor.queue.put(BackendRequestModel(model_key=model_key, tags=tags))
             processor.status = ProcessorStatus.PROVISIONING
             await processor.start()
             processor.status = ProcessorStatus.CANCELLED
@@ -95,18 +95,18 @@ class TestWhoMayProvisionIt:
         return scaled, purged
 
     def test_an_untagged_request_is_refused_before_the_controller_deploys(self, monkeypatch):
-        scaled, purged = self._run(monkeypatch, _TRUSTING, trusted=False, trust_remote_code=False)
+        scaled, purged = self._run(monkeypatch, _TRUSTING, set())
 
         assert scaled == []
         assert len(purged) == 1 and "trust_remote_code" in purged[0] and "trusted" in purged[0]
 
     def test_the_trust_remote_code_permission_alone_deploys_it(self, monkeypatch):
-        scaled, purged = self._run(monkeypatch, _TRUSTING, trusted=False, trust_remote_code=True)
+        scaled, purged = self._run(monkeypatch, _TRUSTING, {"trust_remote_code"})
 
         assert scaled == [_TRUSTING] and purged == []
 
     def test_an_ordinary_key_needs_no_permission(self, monkeypatch):
-        scaled, purged = self._run(monkeypatch, _PLAIN, trusted=False, trust_remote_code=False)
+        scaled, purged = self._run(monkeypatch, _PLAIN, set())
 
         assert scaled == [_PLAIN] and purged == []
 

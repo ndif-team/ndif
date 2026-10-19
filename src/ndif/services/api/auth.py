@@ -39,19 +39,6 @@ from ndif.common.schema.request import BackendRequestModel
 
 logger = logging.getLogger("ndif.api")
 
-# A key granted this user_tag may run its request without sandbox isolation, and
-# may deploy a model whose key asks for trust_remote_code; see Identity.trusted.
-TRUSTED_TAG = "trusted"
-
-# A key granted this user_tag may deploy a model whose key asks for
-# trust_remote_code -- and nothing more: its requests still run in the sandbox.
-# The trusted tag implies it; see Identity.trust_remote_code.
-TRUST_REMOTE_CODE_TAG = "trust_remote_code"
-
-# A key granted this user_tag sorts ahead of all normal traffic and stays FIFO
-# among its peers (RequestQueue.rank); see Identity.priority.
-PRIORITY_TAG = "priority"
-
 # One row per user_tag granted to the key; no rows means the key doesn't exist.
 # The LEFT JOINs mean a key with no tag assignments still returns a single row
 # (with tag = NULL), distinguishing "known key, no tags" from "unknown key".
@@ -75,25 +62,6 @@ class Identity:
     user_id: str
     email: Optional[str] = None
     user_tags: List[str] = field(default_factory=list)
-
-    @property
-    def trusted(self) -> bool:
-        """Whether this key carries the ``trusted`` user_tag."""
-        return TRUSTED_TAG in self.user_tags
-
-    @property
-    def trust_remote_code(self) -> bool:
-        """Whether this key may deploy a model whose key asks for trust_remote_code.
-
-        Either tag grants it: ``trusted`` already lets the caller's own code run
-        next to the weights, so a checkpoint's code is nothing more.
-        """
-        return TRUST_REMOTE_CODE_TAG in self.user_tags or self.trusted
-
-    @property
-    def priority(self) -> bool:
-        """Whether this key carries the ``priority`` user_tag."""
-        return PRIORITY_TAG in self.user_tags
 
 
 async def verify_api_key(api_key: Optional[str]) -> Optional[Identity]:
@@ -161,17 +129,15 @@ async def validate_request(
     bad envelope), carries the ``ndif-api-key`` header onto it (the client sends
     the key there, not in the JSON), verifies it against the Postgres keys DB
     (raising 401/400/403/503 on failure, short-circuiting before enqueue), and
-    stamps the caller's ``email``, ``trusted``, ``trust_remote_code`` and
-    ``priority`` flags onto the request so they travel with it through the queue.
+    stamps the caller's ``email`` and ``tags`` onto the request so they travel
+    with it through the queue (``request.trusted`` / ``trust_remote_code`` /
+    ``priority`` read the tags).
 
-    ``trusted`` and ``priority`` come from the key's ``trusted`` / ``priority``
-    user_tags; ``trust_remote_code`` from its ``trust_remote_code`` tag or
-    ``trusted``. With auth off (no Postgres configured) the deployment is assumed
-    to sit on a trusted network: a client-supplied ``trusted`` is honored (so a
-    caller can opt into the sandbox path with ``trusted=False``), when the
-    client leaves it unspecified it defaults to True, and ``trust_remote_code``
-    follows it. ``email`` and ``priority`` from the client are left as sent in
-    that mode.
+    With auth on the tags are the key's user_tags and a client value is
+    overwritten. With auth off (no Postgres configured) the deployment is assumed
+    to sit on a trusted network: client-supplied ``tags`` are honored (so a
+    caller can opt into the sandbox path with ``tags: []``) and unspecified ones
+    default to ``{"trusted"}``; ``email`` is left as sent.
     """
     try:
         request = BackendRequestModel.model_validate_json(data)
@@ -180,26 +146,16 @@ async def validate_request(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
 
-    # Whether the client put ``trusted`` in the envelope, distinguished from the
-    # field's default so the auth-off branch can tell "unspecified" from an
-    # explicit ``trusted=False``.
-    client_set_trusted = "trusted" in request.model_fields_set
-
     if api_key:
         request.api_key = api_key
 
     identity = await verify_api_key(request.api_key)
     if identity is not None:
         request.email = identity.email
-        request.trusted = identity.trusted
-        request.trust_remote_code = identity.trust_remote_code
-        request.priority = identity.priority
-    else:
-        if not client_set_trusted:
-            # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev
-            # mode. Default to trusted when the client didn't ask; an explicit
-            # request value (True or False) is left untouched.
-            request.trusted = True
-        request.trust_remote_code = request.trusted
+        request.tags = set(identity.user_tags)
+    elif "tags" not in request.model_fields_set:
+        # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev mode.
+        # Trusted when the client didn't say; explicit tags are left untouched.
+        request.tags = {"trusted"}
 
     return request

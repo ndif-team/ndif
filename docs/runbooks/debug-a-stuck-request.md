@@ -221,7 +221,7 @@ timeout (`src/ndif/services/ray/deployments/modeling/base.py`
   side can be waiting: the runner for a module the forward pass never reaches, or
   the actor for a reply that never comes.
 
-With auth off a request is trusted unless the client sent `trusted: false`
+With auth off a request is trusted unless the client sent `tags: []`
 ([Auth and limits](../concepts/auth-and-limits.md)).
 
 Two signals. The block's `print()` output and stderr arrive as `LOG` responses, so

@@ -19,7 +19,7 @@ Commands are for the compose stack from a checkout; `just` wraps
 
 `NDIF_POSTGRES_URL` decides how user code runs, not only who may submit. With it
 unset, `verify_api_key` returns `None` and `validate_request` stamps
-`trusted=True` on every request whose envelope doesn't set `trusted` itself
+`tags={"trusted"}` on every request whose envelope doesn't set `tags` itself
 (`src/ndif/services/api/auth.py` `validate_request`). A trusted request runs its
 Python **inside the model actor process**, next to the weights, and may deploy a
 model whose key carries `trust_remote_code`. The full fork is in
@@ -84,11 +84,11 @@ Pick one of these before you issue keys you care about:
 `keys`, and its `user_tags` come back through `key_user_tag_assignments`. Key
 issuance is normally the account portal's job; here you do it by hand.
 
-| Tag | Constant | Effect |
+| Tag | Property | Effect |
 |---|---|---|
-| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and has the `trust_remote_code` permission |
-| `trust_remote_code` | `TRUST_REMOTE_CODE_TAG` | the request may deploy a model whose key carries `trust_remote_code`, and nothing more ([Auth and limits](../concepts/auth-and-limits.md#trust_remote_code)) |
-| `priority` | `PRIORITY_TAG` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
+| `trusted` | `BackendRequestModel.trusted` | the request runs in-process instead of in a runner, and has the `trust_remote_code` permission |
+| `trust_remote_code` | `BackendRequestModel.trust_remote_code` | the request may deploy a model whose key carries `trust_remote_code`, and nothing more ([Auth and limits](../concepts/auth-and-limits.md#trust_remote_code)) |
+| `priority` | `BackendRequestModel.priority` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
 
 Every other tag name is inert.
 

@@ -200,8 +200,9 @@ start command. `NDIF_SERVICE` picks which and labels telemetry. See
 ## Trusted / untrusted
 
 `BackendRequestModel.trusted`: trusted runs the block in the model actor process;
-untrusted sends it to a runner. Stamped at ingress from the API key; with auth
-off, defaulted to trusted unless the client sends `trusted: false`. Distinct from
+untrusted sends it to a runner. `"trusted" in request.tags`, stamped at ingress
+from the API key; with auth off, the tags default to `{"trusted"}` unless the
+client sends `tags: []`. Distinct from
 `BackendRequestModel.trust_remote_code`, the permission to deploy a
 `trust_remote_code` key, which `trusted` implies. See
 [auth-and-limits.md](../concepts/auth-and-limits.md).

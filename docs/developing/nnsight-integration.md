@@ -332,7 +332,7 @@ intact, and nothing about the queue, actor or sandbox.
    `src/ndif/`.
 3. **Do `_saves()`, `inc()`, `dec()` keep their semantics?** They are
    underscore-private and carry no stability promise.
-4. **Does the sandbox still interleave?** Send `trusted=False` (a bare `just up`
+4. **Does the sandbox still interleave?** Send `tags: []` (a bare `just up`
    otherwise runs everything trusted) and run a read, a swap, a multi-invoke batch,
    a `tracer.iter` loop and a barrier; compare against the same request trusted.
 5. **Do model keys still round-trip?** A change to `to_model_key`'s format orphans

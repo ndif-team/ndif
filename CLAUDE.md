@@ -20,9 +20,9 @@ the weights; an untrusted one runs in a separate runner process driven over a Un
 socket. Whether a model runs its own repo code is the model key's
 `trust_remote_code` field, a different thing; who may deploy one is in
 `docs/concepts/auth-and-limits.md`. With auth off (no
-`NDIF_POSTGRES_URL`) a client-supplied `trusted` is honored and an unspecified one
-defaults to trusted — so a bare `just up` is unauthenticated **and** runs user code
-in-process. Send `trusted: false` to exercise the runner path without Postgres.
+`NDIF_POSTGRES_URL`) client-supplied `tags` are honored and unspecified ones
+default to trusted — so a bare `just up` is unauthenticated **and** runs user code
+in-process. Send `tags: []` to exercise the runner path without Postgres.
 The sandbox is process separation, not a security boundary. Read
 [docs/concepts/sandbox-execution.md](docs/concepts/sandbox-execution.md) before
 changing or describing it.

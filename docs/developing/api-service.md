@@ -102,41 +102,29 @@ row (tag NULL), distinguishing "known key, no tags" from "unknown key".
 
 ### The `trusted` flag — read this before you deploy
 
-`validate_request` stamps four things onto the request from the resolved
-`Identity`: `email`, `trusted` (`Identity.trusted` — the key carries the
-`TRUSTED_TAG` user_tag), `trust_remote_code` (`Identity.trust_remote_code` — the
-key carries the `TRUST_REMOTE_CODE_TAG` user_tag, or `trusted`, which implies it)
-and `priority` (`Identity.priority`, the `PRIORITY_TAG`).
+`validate_request` stamps two things onto the request from the resolved
+`Identity`: `email` and `tags` (the key's `user_tags`).
 
 ```python
-client_set_trusted = "trusted" in request.model_fields_set
 identity = await verify_api_key(request.api_key)
 if identity is not None:
     request.email = identity.email
-    request.trusted = identity.trusted        # overwrites any client value
-    request.trust_remote_code = identity.trust_remote_code
-    request.priority = identity.priority
-else:
-    if not client_set_trusted:
-        # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
-        # Default to trusted only when the client didn't ask; an explicit
-        # trusted=True/False from the client stands.
-        request.trusted = True
-    request.trust_remote_code = request.trusted
+    request.tags = set(identity.user_tags)    # overwrites any client value
+elif "tags" not in request.model_fields_set:
+    # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
+    request.tags = {"trusted"}
 ```
 
-`BackendRequestModel.trusted` defaults to `False`
-(`src/ndif/common/schema/request.py`), and that default is what makes user code
-run in a separate process. With auth **on**, the key's `trusted` user_tag decides
-and any client-supplied value is overwritten. With auth **off**, the client's
-own `trusted` is honored — `model_fields_set` distinguishes "unspecified" (which
-defaults to `True`) from an explicit `trusted=False`, so a dev can opt into the
-sandbox path by sending `trusted: false` without standing up Postgres.
-
-`BackendRequestModel.trust_remote_code` (same file, default `False`) is the
-permission to deploy a model whose key carries `trust_remote_code`; it is not
-client-settable. [Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code)
-defines it and the gate.
+`BackendRequestModel.tags` (`src/ndif/common/schema/request.py`) defaults to
+empty, and the properties `trusted`, `trust_remote_code` and `priority` read it:
+`trusted` is `"trusted" in tags` and is what keeps user code out of the model
+process; `trust_remote_code` is that tag or `trusted`; `priority` is its tag.
+With auth **on** the key's tags decide and any client-supplied value is
+overwritten. With auth **off** the client's own `tags` are honored and an
+unspecified value becomes `{"trusted"}`, so a dev can opt into the sandbox path
+by sending `tags: []` without standing up Postgres.
+[Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code) defines the
+`trust_remote_code` permission and the gate.
 
 **What `trusted` decides on the GPU side:**
 
@@ -154,7 +142,7 @@ defines it and the gate.
 > **Gotcha:** "no Postgres configured" does not only mean "no auth". It means
 > **a caller's arbitrary Python runs in-process next to the weights by default, and
 > any caller may deploy a model whose key carries `trust_remote_code`** — a client
-> can drop to the sandbox path with `trusted: false`, but nothing forces it to. If your API is
+> can drop to the sandbox path with `tags: []`, but nothing forces it to. If your API is
 > reachable by anyone you don't trust, set `NDIF_POSTGRES_URL` and issue keys.
 > `priority` is left as the client sent it when auth is off (only the auth-on
 > branch stamps it), defaulting to False.

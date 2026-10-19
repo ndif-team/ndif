@@ -77,7 +77,7 @@ Ray have localhost defaults, and the three optional providers are off.
 |---|---|---|---|
 | Loki | `NDIF_LOKI_URL` | the `ndif` logger also ships JSON lines to Loki | console logging only |
 | InfluxDB | `NDIF_INFLUX_URL` (+ token; `NDIF_INFLUX_ENABLED` not false) | metrics are batched to InfluxDB | every `Metric.update(...)` is a no-op |
-| Postgres | `NDIF_POSTGRES_URL` | API-key auth; `trusted`/`trust_remote_code`/`priority` come from the key's tags | **no auth**, and requests are trusted unless the client sends `trusted: false` |
+| Postgres | `NDIF_POSTGRES_URL` | API-key auth; the request's `tags` are the key's user_tags | **no auth**, and requests are trusted unless the client sends `tags: []` |
 
 Loki and InfluxDB are best-effort telemetry and fail open — their absence costs
 observability and nothing else; the exact fallbacks are in

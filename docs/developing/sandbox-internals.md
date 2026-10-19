@@ -35,8 +35,8 @@ message payloads; this page adds the request-level context and the lifecycle.
 
 ## The first branch: trusted vs untrusted
 
-`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`, default
-`False`) decides whether the sandbox runs at all:
+`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`; `"trusted"
+in request.tags`) decides whether the sandbox runs at all:
 
 | `request.trusted` | Path | Where the block runs |
 |---|---|---|
@@ -45,12 +45,12 @@ message payloads; this page adds the request-level context and the lifecycle.
 
 `SandboxHost.execution_scope` forks the same way: trusted reuses the base's
 stdout/stderr capture, untrusted gets a `nullcontext` because its output arrives as
-`PRINT` messages. How the flag is stamped (the key's `trusted` tag with auth on; a
-client-supplied value honored and an unspecified one defaulting to `True` with
-auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
+`PRINT` messages. How the tags are stamped (the key's user_tags with auth on;
+client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
+with auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 
 > **Gotcha:** a plain local `just up` has no Postgres, so a request is trusted by
-> default and the sandbox path doesn't run. Send `trusted: false` in the request to
+> default and the sandbox path doesn't run. Send `tags: []` in the request to
 > force it — no Postgres needed. The design intent is that both paths produce the
 > same results for the same request, which is why the sandbox reuses nnsight's own
 > `Mediator.handle`, `Batcher` and `Cache` rather than reimplementing them;

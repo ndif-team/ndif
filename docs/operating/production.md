@@ -29,8 +29,8 @@ number, or a topology.
 `NDIF_POSTGRES_URL` is commented out in the compose file's `api` service and
 unset in the published image and a from-source install. With it empty,
 `PostgresProvider.enabled()` is False, `verify_api_key` returns `None`, and
-`validate_request` defaults **`request.trusted` to true** for any request that
-doesn't set it (`src/ndif/services/api/auth.py` `validate_request`).
+`validate_request` defaults **`request.tags` to `{"trusted"}`** for any request
+that doesn't set them (`src/ndif/services/api/auth.py` `validate_request`).
 
 `trusted` is the most consequential flag in the system:
 
