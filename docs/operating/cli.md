@@ -218,7 +218,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 
 ### `ndif deploy`
 
-`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--pinned] [--replicas N] [--actor-class PATH] [--trust-remote-code] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
+`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--trust-remote-code] [--pinned] [--replicas N] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -227,10 +227,10 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--sync` | flag, off | reconcile the cluster to the file exactly; requires `-f`, forbids positional args |
 | `--revision` | str, unset | HF branch/revision; part of the model key |
 | `--task` | str, unset | pipeline task (`text-generation`, `fill-mask`, ...); part of the model key, so each task is its own deployment. Inferred when unset |
+| `--trust-remote-code` | flag, off | let the checkpoint's own modelling code run at load; part of the model key |
 | `--pinned` | flag, off | exempt from autoscaling / cache eviction |
 | `--replicas` | int, `1` | **new** replicas to add per model |
 | `--actor-class` | dotted path, default from the controller's env | Ray actor class serving the deployment |
-| `--trust-remote-code` | flag, off | let the checkpoint's own modelling code run at load (HF `trust_remote_code`); goes into the model key, so only a client loading with `trust_remote_code=True` reaches the deployment |
 | `--dtype` | str, unset | a torch dtype, or a quantization (`nf4`/`int4`/`4bit`, `fp4`, `int8`/`8bit`, `fp8`). Loads *and* sizes the model; defaults to `NDIF_DEFAULT_DTYPE` |
 | `--gpus` | int, unset | place on exactly this many cards |
 | `--size-bytes` | int, unset | the model's weights, measured; skips the Hub estimate |
@@ -239,8 +239,10 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--max-tp` | int, unset | largest tensor-parallel degree; `0` never places it tensor-parallel |
 | `--ray-address` / `--redis-url` | `NDIF_RAY_ADDRESS` / `NDIF_REDIS_URL` | Redis is only for the post-deploy nudge |
 
-What each field does, and what `trust_remote_code` changes at load, is in
-[Models and Deployment](models-and-deployment.md#per-model-configuration).
+What each field does is in
+[Models and Deployment](models-and-deployment.md#per-model-configuration);
+`trust_remote_code` is in
+[`trust_remote_code` in the model key](models-and-deployment.md#trust_remote_code-in-the-model-key).
 
 **Deploy is additive.** Each call asks the controller for `--replicas` *more*
 replicas regardless of what is running; `ndif deploy gpt2` twice gives you two.
@@ -311,9 +313,8 @@ non-default-dtype model gives more of the same, not a differently-served replica
 under the same key. Anything you pass is used as-is *and* picks which live
 replica to copy the rest from — `ndif scale gpt2 --gpus 1` copies the single-GPU
 replica. With nothing running it behaves as a plain deploy. The queue's
-autoscaler provisions through the same controller call. `--trust-remote-code`
-is part of the key, so a deployment made with it needs the flag here to be
-found at all.
+autoscaler provisions through the same controller call. A deployment made
+with `--trust-remote-code` needs the flag here too, as on `evict` and `restart`.
 
 ### `ndif evict`
 

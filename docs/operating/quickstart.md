@@ -33,9 +33,9 @@ nnsight client sends none, so in practice every request runs trusted:
 
 - The traced block runs **in-process inside the model actor**, next to the
   weights, with the actor's privileges — not in a separate runner process.
-- A trusted request may provision a model whose key asks for
+- A trusted request may provision a model whose key carries
   `trust_remote_code`, so a request naming an arbitrary Hugging Face repo can
-  run that repo's code on your GPU node at load.
+  run that repo's code on your GPU node.
 
 That is the intended default for an NDIF only you can reach, and the wrong one
 the moment anyone else can. Two more things are open by default:

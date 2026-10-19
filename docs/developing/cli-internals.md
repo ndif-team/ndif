@@ -139,8 +139,8 @@ import path prefixes the key, so a key names the class to reconstruct, the repo,
 revision, the pipeline **task** and — only when asked for — `trust_remote_code`.
 Left unset, the task is inferred from the checkpoint exactly as an nnsight client
 with no `task=` infers it, so both mint the same key; one checkpoint deployed under
-two tasks is two deployments, and so is one deployed with and without
-`trust_remote_code` (a client that loads with it mints the key that carries it).
+two tasks is two deployments. The `trust_remote_code` field is defined in
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
 Helpers in the same module:
 
 - `extract_repo_id_from_model_key` — display-only string scan; returns the key

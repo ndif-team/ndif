@@ -57,7 +57,7 @@ sequenceDiagram
     alt no replica yet (cold start)
         D->>R: PUBLISH <session_id> PROVISIONING
         D->>K: get_deployment(model_key)
-        D->>D: key asks trust_remote_code and request may not deploy it? DeploymentError
+        D->>D: key has trust_remote_code and no queued request may deploy it? DeploymentError
         D->>K: else scale(model_key, 1, DeploymentConfig())
         K->>M: create actor, load weights onto assigned GPUs
         D->>R: PUBLISH DEPLOYING
@@ -132,10 +132,8 @@ and replies. With a replica serving, the reply is `QUEUED` with the position
 the queue reports. On a cold start `ensure_started` has already set the
 processor to provisioning, so the first reply is `PROVISIONING`, not `QUEUED`;
 `start()` then asks the controller for existing replicas and adopts them, or
-asks `controller.scale` for one more — unless the key asks for
-`trust_remote_code` and the provisioning request lacks
-`request.trust_remote_code`, which fails the request with a `DeploymentError`
-before the controller is asked ([Auth and Limits](auth-and-limits.md#the-trusted-flag)) —
+asks `controller.scale` for one more (refused for an untagged caller when the
+key carries `trust_remote_code`; [Auth and Limits](auth-and-limits.md#trust_remote_code)),
 and broadcasts `DEPLOYING`, then `QUEUED` with positions once the pool is ready.
 
 **6. Controller places a replica.** `scale` sizes the model from its

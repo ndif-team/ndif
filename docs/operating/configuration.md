@@ -105,8 +105,8 @@ behavior outside compose, set it. See
 `validate_request` keeps a `trusted` the client sent and sets it to true when
 the client sent none (`src/ndif/services/api/auth.py` `validate_request`). The
 nnsight client sends none, so its requests run trusted: the traced block runs
-in-process in the model actor, and the request may provision a model whose key
-asks for `trust_remote_code`. [Auth and Limits](../concepts/auth-and-limits.md) and
+in-process in the model actor, and it may provision a model whose key carries
+`trust_remote_code`. [Auth and Limits](../concepts/auth-and-limits.md) and
 [Enable auth](../runbooks/enable-auth.md) cover turning it on.
 
 ## The fail-open switches

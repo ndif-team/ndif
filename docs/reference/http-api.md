@@ -86,12 +86,11 @@ Submit a job. This is the endpoint nnsight's `RemoteBackend` posts to.
 model's server-side fields (unknown fields are ignored). `payload` always comes
 from the blob part, and `api_key` from the `ndif-api-key` header when one is sent.
 With auth enabled, `email`, `trusted`, `trust_remote_code` and `priority` are
-overwritten from the verified key. With auth disabled they survive as sent, an
-unset `trusted` becomes `true`, and `trust_remote_code` is raised to `true` for a
-trusted request — so `trusted: false` is how a client exercises the sandbox
-without Postgres, and `trusted: false, trust_remote_code: true` an untrusted
-caller that may still deploy a model whose key asks for repo code. `id` is
-minted unless `data` supplies one. What `trusted` decides is in
+overwritten from the verified key. With auth disabled `email`, `trusted` and
+`priority` survive as sent, an unset `trusted` becomes `true`, and
+`trust_remote_code` is set equal to `trusted` — so `trusted: false` is how a
+client exercises the sandbox without Postgres. `id` is minted unless `data`
+supplies one. What `trusted` decides is in
 [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 **Response** — `200` with a `BackendResponseModel`:
@@ -243,10 +242,9 @@ live actor and by the bare repo id for a COLD model. A HOT entry carries
 string), `n_params`, `size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`,
 `execution_timeout_seconds`, `actor_class`, and — unpinned, with a minimum
 deployment time set — `schedule.end_time`. A WARM entry carries the subset from
-`model_key` to `n_params`. `trust_remote_code` is read off the model key
-(`src/ndif/common/types.py` `trust_remote_code_of`) and means the model
-loads with the checkpoint's own code; it says nothing about whether a given
-request runs trusted.
+`model_key` to `n_params`. `trust_remote_code` is the model key's field
+([models-and-deployment.md](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)),
+not the per-request `trusted`.
 
 | Code | Cause |
 |---|---|
@@ -346,9 +344,8 @@ not by the job path.
 
 `tags` are the key's `user_tags`. Three are meaningful to the server: `trusted`
 (the request's code runs in-process in the model actor rather than a separate
-runner, and it may deploy a model whose key asks for `trust_remote_code`),
-`trust_remote_code` (that deploy permission alone; the request's code still runs
-in a runner) and `priority` (jump the model's queue). See
+runner, and it may deploy a `trust_remote_code` key), `trust_remote_code` (that
+deploy permission alone) and `priority` (jump the model's queue). See
 [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 With auth enabled, a missing key (401) or an unknown one (403) is not an error

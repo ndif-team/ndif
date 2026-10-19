@@ -17,9 +17,9 @@ the client is nnsight, whose docs live in its own repo.
 Where user code runs depends on one boolean, `request.trusted`, stamped at ingress
 from the API key. A trusted block runs **inside the model actor process**, next to
 the weights; an untrusted one runs in a separate runner process driven over a Unix
-socket. Whether a model runs its own repo code is in its model key
-(`trust_remote_code`), not a deploy flag; only a request whose key carries the
-`trust_remote_code` or `trusted` tag may deploy such a model. With auth off (no
+socket. Whether a model runs its own repo code is the model key's
+`trust_remote_code` field, a different thing; who may deploy one is in
+`docs/concepts/auth-and-limits.md`. With auth off (no
 `NDIF_POSTGRES_URL`) a client-supplied `trusted` is honored and an unspecified one
 defaults to trusted — so a bare `just up` is unauthenticated **and** runs user code
 in-process. Send `trusted: false` to exercise the runner path without Postgres.

@@ -64,8 +64,7 @@ See [queue-internals.md](../developing/queue-internals.md).
 sizes a model for placement: nnsight's `Remotable.describe_checkpoint` reads the
 checkpoint's metadata for its size, parameter count, config and revision, and the
 evaluator pads that (`NDIF_DEFAULT_PADDING_FACTOR`, `NDIF_DEFAULT_PADDING_BIAS`).
-Memoized per model key and re-evaluated when the dtype changes; `trust_remote_code`
-is in the key, so a key with it and one without are two entries. See
+Memoized per model key and re-evaluated when the dtype changes. See
 [controller-internals.md](../developing/controller-internals.md).
 
 ## Eviction
@@ -111,7 +110,7 @@ JSON identity, e.g.
 `nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`.
 The `task` is part of it, so one repo under two tasks is two models; so is
 `trust_remote_code`, present only when the client built the model with it
-(`src/ndif/common/types.py` `trust_remote_code_of` reads it). Minted
+([models-and-deployment.md](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)). Minted
 client-side by `model.to_model_key()` and by the CLI's `get_model_key`
 (`src/ndif/cli/lib/models.py`); the queue's partition key and a telemetry label.
 See [queue-and-scheduling.md](../concepts/queue-and-scheduling.md).
@@ -202,10 +201,9 @@ start command. `NDIF_SERVICE` picks which and labels telemetry. See
 
 `BackendRequestModel.trusted`: trusted runs the block in the model actor process;
 untrusted sends it to a runner. Stamped at ingress from the API key; with auth
-off, defaulted to trusted unless the client sends `trusted: false`. A trusted
-request may also deploy a model whose key asks for `trust_remote_code`
-(`BackendRequestModel.trust_remote_code`), a permission the `trust_remote_code`
-user_tag grants on its own. See
+off, defaulted to trusted unless the client sends `trusted: false`. Distinct from
+`BackendRequestModel.trust_remote_code`, the permission to deploy a
+`trust_remote_code` key, which `trusted` implies. See
 [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 ---

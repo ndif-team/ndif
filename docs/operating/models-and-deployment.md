@@ -52,10 +52,8 @@ wrapper class on the meta device (no weights, no GPU) and calling nnsight's
   deployed with a non-default `--task` needs the same `--task` to evict,
   restart or scale it.
 - **`trust_remote_code`** — in the JSON only when the client loaded with
-  `trust_remote_code=True`, so an ordinary checkpoint's key has no such field
-  (`src/ndif/common/types.py` `trust_remote_code_of` reads it). A client
-  loading with it and one without mint two keys, hence two deployments; see
-  [`trusted` at deploy time](#trusted-at-deploy-time).
+  `trust_remote_code=True`; see
+  [`trust_remote_code` in the model key](#trust_remote_code-in-the-model-key).
 - **The wrapper class**, `nnsight.modeling.transformers.TransformersModel` by
   default (`DEFAULT_ENVOY_CLASS`).
 
@@ -71,9 +69,9 @@ with what nnsight computed locally.
 | `ndif deploy -f models.yaml` (`--sync`) | `src/ndif/cli/lib/model_config.py` `load_model_config` | per entry | per entry, default `False`; goes into the key |
 | `ndif scale <checkpoint>` | `src/ndif/cli/lib/scale.py` `scale` → the controller's `scale` | `--pinned` | `--trust-remote-code` names the key to grow; other unset fields copied from a live replica |
 | The queue's autoscaler | `Processor.scale_up` → `Replica.deploy` → the controller's `scale` | `False` | whatever the key says |
-| Implicit, on the first request for an undeployed model | `Processor.start` → `Replica.provision` → the controller's `scale` | `False` | whatever the key says — the client's `trust_remote_code=True` put it there; refused unless the request's API key carries the `trust_remote_code` or `trusted` tag |
+| Implicit, on the first request for an undeployed model | `Processor.start` → `Replica.provision` → the controller's `scale` | `False` | whatever the key says; gated by API key tag ([Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code)) |
 | `NDIF_DEPLOYMENTS` at controller boot | `ControllerDeploymentArgs`, `deployments` | **`True`** (hard-coded) | whatever each key says (entries are raw keys) |
-| Dashboard Deploy / Add Replica | `src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest` | per request | `trust_remote_code`, default `False` (a field an API caller can set; the UI has no control for it) |
+| Dashboard Deploy / Add Replica | `src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest` | per request | `trust_remote_code`, default `False` (a checkbox in the Deploy modal) |
 | Dashboard schedule reconcile cron | `src/ndif/services/dashboard/jobs/reconcile.py` `_spec_from_event` | **`True`** (hard-coded) | per event (`ScheduleEventIn.trust_remote_code`, default `False`), written into the event's key |
 
 The implicit path matters most. When a request arrives for a model with no HOT
@@ -82,8 +80,8 @@ calls `Replica.provision`, which asks the controller to scale the model by one
 with a bare `DeploymentConfig()` (`src/ndif/services/api/queue/replica.py`).
 **You do not have to pre-deploy anything** — a user's first `remote=True` trace
 pulls the model down and loads it. Pre-deploying and pinning control *which*
-models stay warm. The one check on this path is for a key that asks for the
-checkpoint's own code; see [`trusted` at deploy time](#trusted-at-deploy-time).
+models stay warm. The one check on this path is for a key carrying
+`trust_remote_code`; see [Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code).
 
 `scale` (and therefore the autoscaler and the implicit path) differs from
 `deploy` only in where unspecified settings come from: `deploy` uses the
@@ -138,13 +136,12 @@ adds only what's missing.
 
 Everything the controller stores about a deployment is `DeploymentConfig`
 (`src/ndif/common/schema/controller.py`). Revision, task and
-`trust_remote_code` are not here — they're in the model key.
+`trust_remote_code` are in the model key instead.
 
 | Field | Default | Falls back to | Effect | Set by |
 |---|---|---|---|---|
 | `pinned` | `False` | — | Exempt from controller-initiated eviction (`Node.evictable`). | CLI, yaml, dashboard |
 | `replicas` | `1` | — | How many **new** replicas this call places. | CLI, yaml, dashboard |
-| `trust_remote_code` | `False` | — | Part of the model key, not of `DeploymentConfig`: the CLI, yaml and dashboard write it into the key at mint, and the controller sizes and loads with whatever the key says. See below. | CLI `--trust-remote-code`, yaml, dashboard |
 | `padding_factor` | `None` | `NDIF_DEFAULT_PADDING_FACTOR` = `0.15` | Headroom on top of the weight size. | CLI, yaml, dashboard |
 | `padding_bias` | `None` | `NDIF_DEFAULT_PADDING_BIAS` = 500 MiB | Flat headroom, per model rather than per cluster. | CLI, yaml |
 | `size_bytes` | `None` | estimated from the checkpoint | The model's own weights, measured. Skips the Hub, so a deploy that names its size places with the Hub unreachable. Padding still applies. | CLI, yaml |
@@ -188,52 +185,30 @@ builds its quantizer config from, so sizing and loading accept the same set.
   cards holds roughly 43 GB in total against ~141 GB at bfloat16. Every rank is
   handed the same dtype name, so they quantize identically.
 
-## `trusted` at deploy time
+## `trust_remote_code` in the model key
 
-Whether a model loads with `trust_remote_code=True` is part of the **model
-key**, not a flag on the deployment. nnsight writes `"trust_remote_code": true`
-into the key's JSON when the client built the model with it and omits the field
-otherwise, and its `from_model_key` reads it back wherever the model is sized or
-loaded — the evaluator's meta build and the actor's load alike — so the
-controller never has to be told. `trusted` on a *request* is a different flag:
-it decides where that request's code runs, and is covered in
-[Auth and Limits](../concepts/auth-and-limits.md) and
-[Sandbox Execution](../concepts/sandbox-execution.md).
+Whether a model loads with the checkpoint's own modelling code is a field of the
+model key. nnsight writes `"trust_remote_code": true` into the key's JSON when
+the client built the model with it and omits the field otherwise. nnsight's
+`from_model_key` reads it wherever the model is built — the evaluator's sizing
+and the actor's load — and ndif reads it with `src/ndif/common/types.py`
+`key_field`. Keys that differ only in this field are two deployments.
 
-**What the key does.** A checkpoint whose HF repo ships custom modelling code —
-anything with `"auto_map"` in its `config.json` — loads only under a key that
-carries the field; without it transformers refuses to run the repo's
-`modeling_*.py`, the failure lands in the evaluator before any GPU is touched,
-the cluster records it as that model's `error`, and `ndif deploy` prints
-`✗ <model_key>: <traceback>` with nothing placed. Architectures built into
-transformers (GPT-2, Llama, Qwen) load fine without it. Two keys that differ
-only in the field are two deployments: a client loading with
-`trust_remote_code=True` reaches one, a client without reaches the other, and
-the evaluator caches them separately (repo code can build a different
-architecture). An admin mints a key with the field from `ndif deploy
---trust-remote-code`, a `trust_remote_code: true` yaml entry, or the dashboard's
-`DeployRequest.trust_remote_code`; all of these are admin surfaces and the
-controller, CLI and dashboard check nothing.
+A checkpoint whose repo ships its own modelling code (`"auto_map"` in its
+`config.json`) loads only under a key with the field; without it the evaluator
+fails before any GPU is touched and `ndif deploy` prints
+`✗ <model_key>: <traceback>`. Architectures built into transformers (GPT-2,
+Llama, Qwen) load without it.
 
-**Who may provision one.** The check is in the API, in `Processor.start`
-(`src/ndif/services/api/queue/processor.py`), at the moment it learns the
-controller has nothing running for the key and before `Replica.provision` is
-called: a model key that asks for the checkpoint's own code is refused unless
-the request that kicks off provisioning carries the `trust_remote_code` user tag
-(or `trusted`, which implies it; `src/ndif/services/api/auth.py` `Identity`).
-The refusal is a `DeploymentError`, delivered on the request's response stream
-(not as an HTTP status) as "Could not deploy this model. This model runs code
-from its own repository (trust_remote_code=True), and deploying such a model
-needs an API key with the `trust_remote_code` or `trusted` tag. Ask an NDIF
-admin to deploy it, or to grant your key the tag."; the queue for that key is
-purged. It happens before the controller is asked because even sizing such a
-model runs its config code. With auth off the permission follows `trusted`, so
-a bare `just up` lets every client provision such a model.
-
-**A running model is open to everyone.** The gate fires only on the request
-that provisions; once an admin (or a tagged key) has the model HOT, any caller's
-request runs against it, and the autoscaler and the controller's `scale` do not
-check.
+An admin mints such a key with `--trust-remote-code` on `ndif
+deploy/scale/evict/restart`, `trust_remote_code: true` in models.yaml (default
+`false`), or the dashboard's Deploy and Schedule modals
+(`DeployRequest.trust_remote_code`, `ScheduleEventIn.trust_remote_code`, default
+`False`). `ndif export` writes it and `ndif status` reports it. A client's own
+`trust_remote_code=True` mints it too; whether that client may deploy it is
+decided at the API — see [Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code).
+The per-request `trusted` flag is unrelated
+([Sandbox Execution](../concepts/sandbox-execution.md)).
 
 ## How a deploy is accepted
 

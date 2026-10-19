@@ -102,9 +102,7 @@ dispatch task cancelled, while the model actor runs the block to completion.
 
 One `Processor` per `model_key` (`src/ndif/services/api/queue/processor.py`),
 owning a `RequestQueue` (the per-model line), a `Dict[REPLICA_ID, Replica]` pool
-sharing it, a `trust_remote_code` flag (whether the request that kicks off
-provisioning may deploy a key asking for the checkpoint's own code), an
-autoscaling task created in `__init__` and
+sharing it, an autoscaling task created in `__init__` and
 never cancelled, and a `status` (`ProcessorStatus`): `UNINITIALIZED` /
 `PROVISIONING` / `DEPLOYING` / `READY` / `CANCELLED`. There is no BUSY —
 busy-ness lives per replica, and a Processor is READY whenever at least one
@@ -118,7 +116,7 @@ empty pool and is re-provisioned on the next request.
 `Processor.enqueue` hands the request to `RequestQueue.put`, which stamps
 `enqueued_at` **only if unset** — so a request handed back after an eviction
 keeps its original timestamp and the autoscaler still sees how long it has
-really waited. Then `ensure_started(request.trust_remote_code)` and a QUEUED reply
+really waited. Then `ensure_started()` and a QUEUED reply
 carrying the request's 1-based position, read back from the queue rather than
 assumed to be the depth.
 
@@ -128,11 +126,7 @@ prepend — it sorts ahead by group.
 
 `Processor.ensure_started` no-ops if any replica exists or setup is already
 underway, which is why it is safe to call on every enqueue and on every replica
-exit. Otherwise it flips to `PROVISIONING` and fires `start()` as a task. It also
-records the request's `trust_remote_code` flag when the argument is not `None`;
-a re-provision passes `None`, so the request that kicks off provisioning is the
-one `start` checks against the key — the full path is in
-[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
+exit. Otherwise it flips to `PROVISIONING` and fires `start()` as a task.
 
 ### RequestQueue
 
@@ -176,11 +170,9 @@ autoscaling is the only relief and it caps at `autoscaling_max_replicas`.
 
 `Processor.start` asks the controller for the model's current replicas
 (`get_deployment`). If any exist it adopts **all** of them as `Replica` objects;
-otherwise it first refuses, with a `DeploymentError`, a key asking for the
-checkpoint's own code (`src/ndif/common/types.py` `trust_remote_code_of`)
-unless `Processor.trust_remote_code` is set — a model already running is open to
-any caller, so this is the one place the permission is checked — and then
-`Replica.provision()` deploys exactly one. Either way it goes
+otherwise `Replica.provision()` deploys exactly one — unless the key carries
+`trust_remote_code` and no queued request has `request.trust_remote_code`, which
+raises `DeploymentError` ([API Service](api-service.md#who-may-deploy-a-trust_remote_code-key)). Either way it goes
 `DEPLOYING`, then for each replica: `await replica.wait()`, `replica.start()`,
 status `READY`. `reply()` fires after each phase transition so queued clients
 see `PROVISIONING` / `DEPLOYING` / `QUEUED` in order.

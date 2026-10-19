@@ -37,8 +37,7 @@ ndif() { docker exec -i dev-ray-1 ndif "$@"; }
 parameter count times the dtype's bytes per element; a repo with no published
 count is built on the meta device and counted instead. Buffers are not in the Hub
 count. The result is memoized per `model_key` and recomputed when the dtype
-changes; `trust_remote_code` is in the key, so a key with it and one without are
-sized separately.
+changes.
 
 Then it pads (`ModelEvaluator.__call__`):
 

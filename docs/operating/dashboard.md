@@ -123,7 +123,7 @@ card refreshes accurately right after you act on it. It collapses per-replica
 entries into one card per `model_key`, and tags a card `pinned` if the
 controller says so *or* an active schedule event names that key. Per card you
 get Deploy, Add Replica, Restart and Evict, and expanding a card gives the same
-actions per replica. A COLD card opens the deploy modal (`task`, `actor_class`,
+actions per replica. A COLD card opens the deploy modal (`task`, `trust_remote_code`, `actor_class`,
 `envoy_class`, `padding_factor`, `execution_timeout_seconds`, pinned); a WARM
 card redeploys the existing `model_key` with no modal.
 
@@ -132,33 +132,16 @@ to create or edit one; each entry shows its most recent reconcile status.
 
 **Login** (`/login`). In dev mode the router never sends you here.
 
-### Dashboard deploys are trusted
+### `trust_remote_code` on dashboard deploys
 
-A model loads with `trust_remote_code=True` only when its model key says so,
-and the dashboard mints that key from the `trust_remote_code` field it is
-given — the same field `ndif deploy --trust-remote-code` sets. A checkpoint
-shipping custom modeling code then runs that code inside the model actor. From
-the dashboard:
-
-- **Deploy and Add Replica** carry `trust_remote_code` on the `DeployRequest`
-  model (`src/ndif/services/dashboard/backend/routers/deployments.py`), default
-  `false`. The UI has no control for it, so setting it is a call to the HTTP API
-  with `trust_remote_code: true`; a WARM card's redeploy sends the existing
-  `model_key`, which already carries whatever was minted.
-- **Scheduled models** are always pinned and carry the field per event:
-  `ScheduleEventIn.trust_remote_code` (default `false`) goes into the event's
-  `model_key` when it is written (`_canonicalize` in
-  `src/ndif/services/dashboard/backend/routers/schedule.py`), and reconcile
-  passes it through (`src/ndif/services/dashboard/jobs/reconcile.py`
-  `_spec_from_event`).
-
-The dashboard is an admin surface and checks nothing about who asked: set the
-field only for what you'd deploy with `ndif deploy --trust-remote-code`. Once
-the model is running, every API key can use it. The field says nothing about
-where a *request's* code runs — that is the request's own `trusted`, stamped by
-the API. See
-[Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) and
-[Sandbox Execution](../concepts/sandbox-execution.md).
+The Deploy and Schedule modals have a `trust_remote_code` checkbox (default off)
+that sets `DeployRequest.trust_remote_code` or `ScheduleEventIn.trust_remote_code`
+and goes into the minted model key; a card whose key carries it shows a
+`trust_remote_code` pill. A WARM card's redeploy reuses its existing key. The
+dashboard does not check who asks. The field is defined in
+[Models and Deployment](models-and-deployment.md#trust_remote_code-in-the-model-key);
+it does not decide where a request's code runs
+([Sandbox Execution](../concepts/sandbox-execution.md)).
 
 ### Scripting the dashboard API
 

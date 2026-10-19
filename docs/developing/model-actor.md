@@ -46,9 +46,9 @@ lifetime="detached", runtime_env=...).remote(**deployment_args.model_dump())`, w
 Only these four fields cross the boundary — a constructor parameter that isn't a
 field here can never be set by the controller. `BaseModelDeployment.__init__` binds
 all four by name; anything else lands in `self.kwargs`, forwarded verbatim into
-`from_model_key` at load time. `trust_remote_code` is not an argument: it is in the
-model key, which `from_model_key` reads — see
-[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
+`from_model_key` at load time. `trust_remote_code` is not an argument: `from_model_key`
+reads it off the model key
+([Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).
 `dtype` is kept twice: `dtype_name` (what the loader is handed — a quantization name
 like `nf4` is not a `torch.dtype`) and `dtype`, the resolved compute dtype that user
 execution autocasts to.
@@ -109,7 +109,6 @@ model = HuggingFaceModel.from_model_key(
 > with, or the GPU accounting that placed the replica is wrong. Hence the controller
 > pins `config.dtype` before evaluating
 > (`src/ndif/services/ray/deployments/controller/controller.py` `_ControllerActor._deploy`).
-> `trust_remote_code` cannot drift the same way: both read it off the key.
 
 PEFT adapters are **not** a load-time concern: the base model is named by the model
 key, and an adapter travels per request in `request.env`, applied by

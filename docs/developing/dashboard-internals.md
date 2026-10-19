@@ -70,8 +70,7 @@ the cache would show the previous level for up to `NDIF_STATUS_TTL_S`. It then:
 2. **Aggregates replicas.** `_aggregate_by_model_key` collapses one-entry-per-replica
    into one card per `model_key` with a `replicas` array; card fields take the best
    value across siblings (`HOT > WARM > COLD`, `RUNNING > DEPLOYING > NOT_STARTED >
-   UNHEALTHY`, `pinned` OR'd; `trust_remote_code` is uniform across siblings, being
-   part of the key). COLD entries pass through keyed by app name.
+   UNHEALTHY`, `pinned` OR'd). COLD entries pass through keyed by app name.
 3. **Tags pinned.** `pinned` is OR'd with "this `model_key` matches an active
    schedule event", using the key stamped on the event at write time.
 
@@ -84,24 +83,21 @@ the cache would show the previous level for up to `NDIF_STATUS_TTL_S`. It then:
 transcript and per-model failures, since the deploy lib returns 200 even when
 individual models fail.
 
-### Dashboard deploys are deployment-trusted
+### `trust_remote_code` on dashboard deploys
 
 `DeployRequest.trust_remote_code`
-(`src/ndif/services/dashboard/backend/routers/deployments.py`) defaults to `False`
-and goes into the minted model key, like the task: a checkpoint with custom modeling
-code runs that code at load only under a key that asks for it, and only a client
-loading with `trust_remote_code=True` reaches that deployment. Schedule entries carry
-the same field (`ScheduleEventIn.trust_remote_code`,
-`src/ndif/services/dashboard/backend/schedule_store.py`): `_canonicalize`
-(`src/ndif/services/dashboard/backend/routers/schedule.py`) passes it to
-`canonicalize_checkpoint` when stamping the event's key, and `_spec_from_event`
-(`src/ndif/services/dashboard/jobs/reconcile.py`) passes it through on every
-scheduled deploy. The dashboard is an admin surface and does not check who asks;
-the frontend has no control for the field yet.
+(`src/ndif/services/dashboard/backend/routers/deployments.py`) and
+`ScheduleEventIn.trust_remote_code`
+(`src/ndif/services/dashboard/backend/schedule_store.py`), both default `False`,
+go into the minted model key: `_canonicalize`
+(`src/ndif/services/dashboard/backend/routers/schedule.py`) passes the schedule
+entry's value to `canonicalize_checkpoint`, and `_spec_from_event`
+(`src/ndif/services/dashboard/jobs/reconcile.py`) passes it on every scheduled
+deploy. The dashboard does not check who asks. The field itself is defined in
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
 
-A *different* flag, `BackendRequestModel.trusted`, decides whether a request's
-block runs in-process or in a runner, and is set per request at ingress (see
-[Auth and limits](../concepts/auth-and-limits.md)) — never from the dashboard.
+`BackendRequestModel.trusted`, the per-request sandbox flag, is set at ingress
+([Auth and limits](../concepts/auth-and-limits.md)), never from the dashboard.
 
 ## Config and auth
 

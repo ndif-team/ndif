@@ -1,6 +1,6 @@
 ---
 title: Controller Internals
-one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, what the model key says about `trust_remote_code`, and how eviction is chosen and executed.
+one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, `trust_remote_code` in the key, and how eviction is chosen and executed.
 tags: [internals, dev, controller, ray, gotchas]
 related: [docs/developing/ray-service.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/queue-internals.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/operating/models-and-deployment.md, docs/runbooks/model-oom-on-deploy.md]
 sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/common/schema/controller.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/auth.py]
@@ -86,9 +86,8 @@ Both are overridable per deploy (`DeploymentConfig.padding_factor` / `.padding_b
 controller-wide defaults (`NDIF_DEFAULT_PADDING_FACTOR` / `NDIF_DEFAULT_PADDING_BIAS`).
 
 The estimate is cached by `model_key` and recomputed when the request's `dtype` differs from the
-cached entry (`ModelEvaluator._entry`) — element sizes change the number. Whether repo code runs
-while the checkpoint is described is in the key, so two keys differing in `trust_remote_code` are
-two entries, and the evaluator cannot describe a model one way and the actor load it another. This is why `_ControllerActor._deploy`
+cached entry (`ModelEvaluator._entry`) — element sizes change the number. `trust_remote_code` is in
+the key, so keys differing in it are separate entries. This is why `_ControllerActor._deploy`
 pins `config.dtype` to `NDIF_DEFAULT_DTYPE` before evaluating: the estimate and the actor's actual
 load must use the same dtype, or the accounting is wrong from the start. `_ControllerActor.deploy`
 first warms this cache off the event loop (`_describe`), since sizing reaches the Hub. An evaluator
@@ -96,32 +95,18 @@ failure (bad repo id, gated model, a key without the `trust_remote_code` its che
 it into `ModelDeployResult.error` with the full traceback. `ModelEvaluator.__init__` also calls
 `torch.set_default_dtype(torch.bfloat16)`, a process-global side effect.
 
-## The `trusted` flag
+## `trust_remote_code`
 
-Whether a model loads with `trust_remote_code` is not a deploy option and not a knob the
-controller invents: it is in the model key. nnsight writes `"trust_remote_code": true` into the
-key's JSON suffix when the client built the model with it, and `from_model_key` reads it back
-wherever the model is sized or loaded, so the controller sizes and loads a model with whatever the
-key says — `DeploymentConfig` has no trust field, `Replica.provision` sends a bare
-`DeploymentConfig()`, and the evaluator, the actor and the sandbox runner cannot be told different
-values. `status()` reports `trust_remote_code` per HOT and WARM deployment, read off the key with
-`src/ndif/common/types.py` `trust_remote_code_of`. Who may *deploy* such a key is decided at
-the API, not here — the full path is in
-[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
+The controller sizes and loads a model with whatever the key's `trust_remote_code` field says;
+`DeploymentConfig` has no such field, and `status()` reports it per HOT and WARM deployment via
+`src/ndif/common/types.py` `key_field`. The key field and how it is minted are in
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key);
+who may deploy such a key is decided at the API
+([Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code)). The controller does not check.
 
-So **the same checkpoint deploys under two keys**: a repo shipping custom modelling code needs
-`trust_remote_code=True` merely to *build* the architecture, so a key without the field fails
-during evaluation with the repo's own "requires you to execute the code" error while the key
-carrying it succeeds — and a client loading with `trust_remote_code=True` reaches only the latter.
-
-**Minting such a key means saying so.** The dashboard's `DeployRequest.trust_remote_code`
-(`src/ndif/services/dashboard/backend/routers/deployments.py`, default `False`) and its schedule
-entries carry the field, and the CLI sets it explicitly: `ndif deploy --trust-remote-code`, or
-`trust_remote_code: true` in `models.yaml` — `load_model_config`
-(`src/ndif/cli/lib/model_config.py`) passes every `DeploymentConfig` field through, so a `dtype:`,
-`padding_factor:` or `execution_timeout_seconds:` line takes effect too. `ndif deploy --dtype`
-likewise overrides `NDIF_DEFAULT_DTYPE` for that deploy. The controller, CLI and dashboard are an
-admin surface: none of them checks who asks.
+`load_model_config` (`src/ndif/cli/lib/model_config.py`) passes every `DeploymentConfig` field
+through, so a `dtype:`, `padding_factor:` or `execution_timeout_seconds:` line in `models.yaml`
+takes effect; `ndif deploy --dtype` likewise overrides `NDIF_DEFAULT_DTYPE` for that deploy.
 
 The per-*request* `trusted` flag decides whether user code runs in a separate runner
 process — process separation, not a security boundary; see
@@ -298,10 +283,7 @@ passthrough. See [Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
 
 **Deploy fails during evaluation.** The error carries the evaluator's full traceback: usually a
 gated or nonexistent repo, or a model needing `trust_remote_code` deployed under a key without it
-(see [The `trusted` flag](#the-trusted-flag) — mint the key with `ndif deploy --trust-remote-code`,
-a `trust_remote_code: true` entry in `models.yaml`, the dashboard's `trust_remote_code` field, or a
-client that loads with `trust_remote_code=True` from an API key carrying the `trust_remote_code` or
-`trusted` tag).
+(see [`trust_remote_code`](#trust_remote_code)).
 
 **Evict finds nothing.** `Cluster.evict` returns an empty `ReplicaStates` and the CLI prints `✗
 <key>: nothing to evict` (`src/ndif/cli/lib/evict.py`). Usually a model-key mismatch — the key

@@ -37,10 +37,10 @@ doesn't set it (`src/ndif/services/api/auth.py` `validate_request`).
 - A trusted request's traced block runs **in-process inside the model actor**,
   in the same process as the weights — no runner subprocess, no socket. Whatever
   Python the caller submitted executes with the actor's privileges.
-- A trusted request may **provision a model whose key asks for
-  `trust_remote_code`** (`src/ndif/services/api/queue/processor.py`
-  `Processor.start`), so a request naming an arbitrary Hugging Face repo can
-  run that repo's code on your GPU node at load.
+- A trusted request may **provision a model whose key carries
+  `trust_remote_code`**, so a request naming an arbitrary Hugging Face repo can
+  run that repo's code on your GPU node
+  ([Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code)).
 
 So an unauthenticated NDIF is not "an NDIF anyone can use", it is "an NDIF
 anyone can run arbitrary code on". Enable auth first, then decide who gets the
@@ -52,13 +52,10 @@ it at a Postgres you control with a real password rather than `admin`/`admin`,
 and create users and keys — API keys are UUIDs, and a key is a row in `keys`
 joined to a `users` row. Grant the `trusted` user_tag only to keys you would
 hand your own shell to; grant `priority` to keys that should jump the queue.
-A third tag, `trust_remote_code`, lets a key provision a model whose key asks
-for the checkpoint's own code and nothing more — its requests still run in the
-sandbox (`trusted` implies it; `src/ndif/services/api/auth.py` `Identity`).
-Postgres needs a `user_tags` row for it:
-`INSERT INTO user_tags (name, description) VALUES ('trust_remote_code', 'may deploy checkpoints that run their own code');`.
-Once any key has deployed such a model, every key can use it. Full walkthrough
-in [Enable auth](../runbooks/enable-auth.md).
+Grant the `trust_remote_code` tag to keys that may deploy a model whose key
+carries `trust_remote_code`
+([Auth and Limits](../concepts/auth-and-limits.md#trust_remote_code)). Full
+walkthrough in [Enable auth](../runbooks/enable-auth.md).
 
 **Turning auth on changes behavior for every key without the `trusted` tag.**
 Such a request runs in the sandbox runner, against a weightless copy of the
@@ -125,9 +122,8 @@ stolen cookie is useful. On a headless box, log in with
 `POST /api/auth/login` and reuse the cookie
 ([Admin Dashboard](dashboard.md#scripting-the-dashboard-api)).
 
-The dashboard is an admin surface: a deploy or schedule entry with
-`trust_remote_code: true` mints a key that loads the checkpoint's own code, and
-nothing checks who asked. Give the dashboard a durable
+The dashboard deploys a `trust_remote_code` key without checking who asked.
+Give the dashboard a durable
 `NDIF_DASHBOARD_DATA_DIR` volume; its schedule and monitor state live there.
 See [Admin Dashboard](dashboard.md).
 

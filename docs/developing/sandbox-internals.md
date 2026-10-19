@@ -143,8 +143,7 @@ or core-tight node.
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
 path, `peers` and the model key, and calls `nns.load_meta_model(model_key)`
 **before binding**, so a host that can connect is a host whose runner is warm.
-Whether the checkpoint's own code may run during that build is in the key, so the
-runner's build is the actor's build by construction. A failed build is printed to
+A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
 `None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
 `getppid` once a second and `os._exit(1)`s when the runner is reparented — the

@@ -77,17 +77,10 @@ Useful flags (full list in [The ndif CLI](../operating/cli.md)): `--task`,
 task (`TransformersModel(repo, task="…")`), or their requests provision a second,
 default-task deployment.
 
-**`--trust-remote-code`** lets the checkpoint's own modelling code run at load
-(HF `trust_remote_code`). Like `--task` it is part of the model key, so clients
-must load with `trust_remote_code=True` too, or their requests go to a different
-deployment without it. The CLI and dashboard deploy such a key without a tag
-check; a client request that would deploy one needs a key with the
-`trust_remote_code` or `trusted` tag ([Enable auth](enable-auth.md)). Dashboard
-deploys take `"trust_remote_code": true` per request, default false
-(`src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest`);
-a schedule entry carries its own (`ScheduleEventIn.trust_remote_code`). Whether a
-*request* runs in-process is a separate flag, covered in
-[Auth and limits](../concepts/auth-and-limits.md).
+**`--trust-remote-code`** lets the checkpoint's own modelling code run at load.
+Like `--task` it is part of the model key, so clients must load with
+`trust_remote_code=True` too; see
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
 
 ## 2. Confirm it is serving
 
@@ -224,7 +217,7 @@ the Hub and stores the resulting model key, returning **400** if it can't
 The reconcile job (`src/ndif/services/dashboard/jobs/reconcile.py`) runs from cron
 every `NDIF_DASHBOARD_RECONCILE_CRON` (default `*/2 * * * *`) and right after any
 schedule write. It deploys every active entry that is new or no longer HOT,
-pinned, with the entry's `trust_remote_code` in the key, and evicts model keys
+pinned, and evicts model keys
 that were active on the previous pass and no longer are.
 
 Run a pass by hand:
