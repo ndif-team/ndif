@@ -93,19 +93,15 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
 def run_on_own_thread(fn: Callable[[], Any], name: str) -> "asyncio.Future":
     """Run ``fn`` on a new thread of its own; the returned future gets its result.
 
-    For anything ``kill_thread`` may target. An injected exception lands at the
-    target's next bytecode boundary, which for a thread parked in a native call
-    comes only once that call returns. The sandboxed timeout shows why that
-    matters: ``interrupt()`` stops the runner first, the host thread parked in
-    ``recv`` sees EOF and finishes its request with a ``ConnectionError``, and
-    only then is ``SystemExit`` injected. On a pooled thread
-    (``asyncio.to_thread``) that thread is already back in the pool, and the
-    exception fires as it picks up the next request's work item -- outside the
-    item's ``try``, so the thread dies and that request's future never resolves,
-    wedging the replica (#284). On a thread of its own a late exception can only
-    reach this request's own thread: it lands inside ``fn`` and resolves this
-    future, or the thread has exited and it is dropped. Cancelling the future
+    Use it for any work ``kill_thread`` may target. Cancelling the future
     abandons the thread; it does not stop it.
+
+    An injected exception can land after ``fn`` has returned (a sandboxed
+    interrupt unblocks the host thread before injecting). On a pooled thread
+    (``asyncio.to_thread``) it would fire in the next request's work item,
+    outside its ``try``, killing the thread and leaving that request's future
+    unresolved, which wedges the replica (#284). On a thread of its own it lands
+    inside ``fn`` or, once the thread has exited, nowhere.
     """
     loop = asyncio.get_running_loop()
     future = loop.create_future()

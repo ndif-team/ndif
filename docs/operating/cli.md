@@ -419,13 +419,13 @@ Overview:
 `ndif kill REQUEST_ID [--redis-url URL]` — the dispatcher first scans every
 Processor's queue and, if the request is still waiting, removes it and answers
 the client `ERROR` / "Request cancelled by operator." Otherwise it finds the
-replica executing it: the client gets the same `ERROR`, and the model actor is
-told to cancel the request, which interrupts the block the way the execution
-timeout does and leaves the replica serving
+replica executing it: the client gets the same `ERROR`, and the model actor
+cancels the request, interrupting the block as the execution timeout does; the
+replica keeps serving
 (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`). If the actor has not
-finished the request within a few seconds, the dispatcher cancels the
-**dispatch** instead and the block may run on; follow with
+`src/ndif/services/api/queue/replica.py` `Replica.cancel`).
+If the actor has not finished the request within a few seconds, the dispatcher
+cancels the **dispatch** instead and the block may run on; follow with
 `ndif restart <checkpoint> --replica <id>` (the replica id is in `ndif queue`).
 What a blocking versus a non-blocking user ends up seeing is in
 [Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs).

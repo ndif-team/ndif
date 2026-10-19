@@ -334,12 +334,10 @@ class TestIsOom:
 
 
 class TestRunOnOwnThread:
-    """A late ``kill_thread`` fails nothing but the request it was aimed at.
+    """A ``kill_thread`` that lands after the block has finished fails no later work.
 
-    The order of an untrusted timeout: the runner is stopped, the host thread
-    sees EOF and finishes its request, and only then is the exception injected
-    (the mechanism is in ``run_on_own_thread``'s docstring). Under
-    ``asyncio.to_thread`` this test hangs to its deadline (#284).
+    Replays an untrusted timeout (EOF ends the block, then the injection) and
+    checks the next ``asyncio.to_thread`` call still completes.
     """
 
     def test_a_late_interrupt_fails_only_its_own_request(self):

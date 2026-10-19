@@ -199,8 +199,8 @@ timeout. What `interrupt` does to the running code depends on the class:
   (`src/ndif/services/ray/deployments/modeling/util.py`), which injects
   `SystemExit` into the execution thread with CPython's async-exception API. It
   fires at that thread's next bytecode boundary, so a CUDA kernel or large tensor
-  op already in flight finishes first. The thread is the request's own, so a
-  late exception cannot reach other work.
+  op already in flight finishes first. The thread is the request's own
+  (`run_on_own_thread`), so a late injection cannot reach other work.
 - **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
   the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
   socket the host thread is reading, then does the same `kill_thread`.

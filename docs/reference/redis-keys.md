@@ -73,7 +73,7 @@ never reused. Event types on `dispatcher:events`:
 | `event_type` | Fields | Dispatcher does |
 |---|---|---|
 | `queue_state_request` | `response_key` | Replies `{"processors": {model_key: snapshot}}` (`Dispatcher._handle_queue_state`) |
-| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one is errored and cancelled on the model actor (`Replica.cancel`), whose replica worker is cancelled only if the actor does not finish it within a few seconds. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
+| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one is errored and cancelled on the model actor (`Replica.cancel`), and its replica worker is cancelled only if the actor does not finish it within a few seconds. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
 | `reconcile_model` | `model_key` | Re-syncs that Processor's replica pool. Fire-and-forget, no reply (`Dispatcher._handle_reconcile`) |
 
 ## Response channels

@@ -243,10 +243,9 @@ a console still printing means the block is running. And the actor's own log
 > **Gotcha:** the execution timeout stops the request's thread by injecting an
 > exception (`src/ndif/services/ray/deployments/modeling/util.py` `kill_thread`),
 > which CPython delivers only between bytecodes — a long native call (one huge
-> CUDA kernel or tensor op) finishes first. The thread is dedicated to the
-> request (`run_on_own_thread`), so a late exception cannot reach other work.
-> The user gets the timeout `ERROR` on time either way. On the untrusted path
-> the runner process is stopped first (`SandboxModelDeployment.interrupt`).
+> CUDA kernel or tensor op) finishes first. The user gets the timeout `ERROR` on
+> time either way. On the untrusted path the runner process is stopped first
+> (`SandboxModelDeployment.interrupt`).
 
 ## Step 7 — read the logs
 
@@ -301,18 +300,16 @@ ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
 ```
 
 `ndif kill` errors the request to the user, then cancels it on the actor, which
-interrupts the block the way the execution timeout does and frees the replica
-for the next request
+interrupts the block as the execution timeout does; the replica keeps serving
 (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
 `src/ndif/services/api/queue/replica.py` `Replica.cancel`).
-The same replica id stays in `ndif queue`. If the actor has not finished the
-request within a few seconds, the dispatcher cancels its own wait on it instead
-and drops the replica from the pool; the actor may then still be running the
-block, and the processor can pick the same replica up again and send it new work
-while it does, which can fail with cross-thread greenlet errors (`Cannot switch
-to a different thread`). In that case — a `request errored: cancelled
-mid-dispatch` warning from `ndif.queue.replica` right after the kill — restart
-the replica:
+
+If the actor has not finished the request within a few seconds, the dispatcher
+cancels its wait instead and drops the replica from the pool, and
+`ndif.queue.replica` logs `request errored: cancelled mid-dispatch`. The block may
+still be running on the actor, and new work the processor sends that replica can
+fail with cross-thread greenlet errors (`Cannot switch to a different thread`).
+Restart it:
 
 ```bash
 ndif restart openai-community/gpt2 --replica a1b2c     # the id from the ⚙ line

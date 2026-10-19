@@ -215,13 +215,10 @@ outside. On cancel, preemption or timeout `interrupt()` calls `kill_thread`
 (`src/ndif/services/ray/deployments/modeling/util.py`), injecting `SystemExit` via `PyThreadState_SetAsyncExc`, which fires only at
 a Python bytecode boundary: it does not interrupt a CUDA kernel or native op already
 in flight, and the response and `cleanup()` do not wait for the thread to stop. The
-sandbox actor stops the runner process first, then does the same; by the time the
-injection lands, the host thread may already have seen the socket close and
-finished. That is why the thread is dedicated to the request rather than taken
-from a pool: a pooled thread would carry the late exception into the next
-request's work and die there, wedging the replica (#284). On its own thread it
-can only reach this request, or nothing once the thread has exited
-(`run_on_own_thread` in `src/ndif/services/ray/deployments/modeling/util.py`).
+sandbox actor stops the runner process first, then does the same. The thread is
+created for the request, so an injection that lands late reaches only this
+request or nothing (`run_on_own_thread` in
+`src/ndif/services/ray/deployments/modeling/util.py` says why).
 
 ### The worker-thread body
 
