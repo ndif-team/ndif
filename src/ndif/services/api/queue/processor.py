@@ -83,10 +83,11 @@ class Processor:
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
-        # Whether the request that kicks off provisioning was trusted (see
-        # ensure_started); threaded into the deploy config, where it decides
-        # whether a model key asking for trust_remote_code may be deployed.
-        self.trusted = False
+        # Whether the request that kicks off provisioning may deploy a model
+        # key asking for trust_remote_code (see ensure_started); threaded into
+        # the deploy config as its `trusted`, which is what the controller
+        # checks a key against.
+        self.trust_remote_code = False
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
             self.autoscaling_loop()
@@ -116,7 +117,7 @@ class Processor:
         # (group, prepend, enqueued_at) -- see request_queue.py.
         self.queue.put(request, prepend=prepend)
 
-        self.ensure_started(request.trusted)
+        self.ensure_started(request.trust_remote_code)
 
         # Queue-depth / throughput signal: position is 1-based depth at enqueue.
         event(
@@ -148,22 +149,23 @@ class Processor:
             ),
         )
 
-    def ensure_started(self, trusted: Optional[bool] = None) -> None:
+    def ensure_started(self, trust_remote_code: Optional[bool] = None) -> None:
         """Kick off provisioning when the pool is empty and idle.
 
         No-ops if a replica is already live or setup is already underway, so
-        it's safe to call on every enqueue and on last-replica exit. ``trusted``
-        (the kicking-off request's flag) travels on the deploy config, where it
-        decides whether a key asking for trust_remote_code may be deployed; a
-        re-provision passes ``None`` to keep the value from the request that
-        first deployed it.
+        it's safe to call on every enqueue and on last-replica exit.
+        ``trust_remote_code`` (the kicking-off request's flag: it holds the
+        ``trusted`` or ``trust_remote_code`` tag) travels on the deploy config,
+        where it decides whether a key asking for trust_remote_code may be
+        deployed; a re-provision passes ``None`` to keep the value from the
+        request that first deployed it.
         """
         if self.replicas:
             return
         if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
             return
-        if trusted is not None:
-            self.trusted = trusted
+        if trust_remote_code is not None:
+            self.trust_remote_code = trust_remote_code
         self.status = ProcessorStatus.PROVISIONING
         asyncio.create_task(self.start())
 

@@ -37,6 +37,7 @@ server-side ones.
 | `api_key` | `Optional[str]` | `None` | Taken from the `ndif-api-key` header by `validate_request` when one is sent. |
 | `email` | `Optional[str]` | `None` | The key owner's email, resolved at ingress so logs and metrics attribute to a person. With auth on, from Postgres; with auth off, whatever the client sent. |
 | `trusted` | `bool` | `False` | **Selects the execution path** — see below. |
+| `trust_remote_code` | `bool` | `False` | May deploy a model whose key asks for `trust_remote_code`. With auth on, from the key's `trust_remote_code` user_tag or `trusted` (`Identity.trust_remote_code`); with auth off, as sent, or `True` when the request is trusted. Grants nothing about where the request's own code runs. |
 | `priority` | `bool` | `False` | Jump the queue. With auth on, from the key's `priority` user_tag (`Identity.priority`). Priority requests sort ahead as a *group*, FIFO within each group (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`); no aging, so saturated priority traffic starves normal requests. |
 | `payload` | `Optional[bytes]` | `None` | The serialized interventions blob, filled from the multipart `blob` part by `create_request`. Not part of the client's JSON envelope. |
 | `enqueued_at` | `Optional[float]` | `None` | Unix time the request joined a model's in-memory queue (`Processor.enqueue`); the autoscaler reads it to spot a stale queue. Preserved on a re-queue. |
@@ -52,8 +53,9 @@ runs the block in the model actor process via `BaseModelDeployment.execute`;
 `False` hands it to a runner subprocess (`SandboxHost.run_in_runner`), which
 receives `(payload, compress, dtype, seed, env)` and drives the host's model over
 a Unix socket. A base `ModelActor` ignores the flag and runs everything
-in-process. The flag also rides into the deployment as `DeploymentConfig.trusted`
-(below). The full story, including what each path exposes, is in
+in-process. The permission to deploy repo-code keys rides into the deployment as
+`DeploymentConfig.trusted` (below) from `request.trust_remote_code`, which
+`trusted` implies. The full story, including what each path exposes, is in
 [auth-and-limits.md](../concepts/auth-and-limits.md) and
 [sandbox-execution.md](../concepts/sandbox-execution.md).
 
@@ -81,10 +83,11 @@ the same sentence. Past the API, the whole request travels as pickle:
 | actor → result | `torch.save` with a CUDA→CPU relocating pickler, zstd level 3 if `compress` | `BaseModelDeployment.execute`, `BaseModelDeployment.prepare_result` |
 
 > **Gotcha:** every server-side field is a declared field, so a client can put
-> `id`, `email`, `priority` or `trusted` in the envelope. With auth on,
-> `validate_request` overwrites `email`, `trusted` and `priority`; with auth off
-> only an unset `trusted` is changed, and client-supplied `email`, `priority` and
-> `id` survive.
+> `id`, `email`, `priority`, `trusted` or `trust_remote_code` in the envelope.
+> With auth on, `validate_request` overwrites `email`, `trusted`,
+> `trust_remote_code` and `priority`; with auth off only an unset `trusted` is
+> changed (and `trust_remote_code` is raised to match a trusted request), and
+> client-supplied `email`, `priority` and `id` survive.
 
 ### Response methods
 
@@ -191,9 +194,10 @@ directly instead of expressing "four cards" as a padding fudge factor.
 `replicas=1`), the CLI's deploy lib (`src/ndif/cli/lib/deploy.py`), and the
 controller's `NDIF_DEPLOYMENTS` startup pins (`_ControllerActor.__init__`).
 
-**`DeploymentConfig.trusted` is the request's `trusted` flag, one level up.** On
-demand, `Replica.provision` passes `DeploymentConfig(trusted=processor.trusted)`,
-where `processor.trusted` came from the request that started the model
+**`DeploymentConfig.trusted` is the request's `trust_remote_code` flag, one
+level up** — the permission either tag grants, not the sandbox choice. On demand,
+`Replica.provision` passes `DeploymentConfig(trusted=processor.trust_remote_code)`,
+where `processor.trust_remote_code` came from the request that started the model
 (`Processor.ensure_started`). Whether the model's own repo code runs at load is
 not decided by it: that is in the model key (`"trust_remote_code": true`, written
 by the client that built the model with it, or by `ndif deploy
@@ -201,8 +205,9 @@ by the client that built the model with it, or by `ndif deploy
 estimate and the actor's load, so the two cannot disagree. `Cluster.deploy`
 (`untrusted_remote_code` in `src/ndif/services/ray/deployments/controller/cluster/cluster.py`)
 refuses such a key from an untrusted config before reading the checkpoint. So a
-trusted key runs its block in-process and may deploy a model that runs its own
-code. The CLI sets it per model with `ndif deploy --trusted`.
+`trusted` key runs its block in-process and may deploy a model that runs its own
+code, and a `trust_remote_code` key may only do the latter. The CLI sets it per
+model with `ndif deploy --trusted`.
 
 ### `ModelDeployResult` and `DeployResponse`
 

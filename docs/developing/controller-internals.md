@@ -306,7 +306,7 @@ passthrough. See [Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
 gated or nonexistent repo, or a model needing `trust_remote_code` that its key does not ask for (see
 [The `trusted` flag](#the-trusted-flag) — deploy it with `ndif deploy --trust-remote-code --trusted`,
 a `trust_remote_code: true` entry in `models.yaml`, the dashboard, or a client that loads with
-`trust_remote_code=True` under an API key carrying the `trusted` tag). A deploy **refused** before
+`trust_remote_code=True` under an API key carrying the `trusted` or `trust_remote_code` tag). A deploy **refused** before
 evaluation — `… asks to run the checkpoint's own code (trust_remote_code), which only a trusted
 caller may deploy` — is the key asking and the caller not being trusted.
 

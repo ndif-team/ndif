@@ -44,7 +44,8 @@ doesn't set it (`src/ndif/services/api/auth.py` `validate_request`).
 
 So an unauthenticated NDIF is not "an NDIF anyone can use", it is "an NDIF
 anyone can run arbitrary code on". Enable auth first, then decide who gets the
-`trusted` tag.
+`trusted` tag, and who gets only `trust_remote_code` (deploy checkpoints that run
+their own code, sandbox still on).
 
 Enabling it means: set `NDIF_POSTGRES_URL` on the **api** service (the schema in
 `docker/postgres/init.sql` already matches what `verify_api_key` queries), point

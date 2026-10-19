@@ -94,10 +94,11 @@ so replicas of the same model compete for the same line — the first free repli
 takes the next request in service order. Nothing partitions requests across
 replicas in advance.
 
-> **Gotcha:** the `Processor` records `trusted` from the request that first
+> **Gotcha:** the `Processor` records `trust_remote_code` (granted by the
+> `trusted` or the `trust_remote_code` tag) from the request that first
 > provisions it and passes it into the `DeploymentConfig` it sends the
-> controller — which is what allows a model key asking for `trust_remote_code`
-> to be deployed at all. A re-provision keeps the original value, so the
+> controller as its `trusted` — which is what allows a model key asking for
+> `trust_remote_code` to be deployed at all. A re-provision keeps the original value, so the
 > *first* requester of a model decides who it was deployed as for everyone who
 > follows, until it is evicted. See
 > [Auth and Limits](auth-and-limits.md#the-trusted-flag).

@@ -341,10 +341,11 @@ not by the job path.
 {"email": "someone@example.com", "tags": ["trusted", "priority"]}
 ```
 
-`tags` are the key's `user_tags`. Two are meaningful to the server: `trusted`
+`tags` are the key's `user_tags`. Three are meaningful to the server: `trusted`
 (the request's code runs in-process in the model actor rather than a separate
-runner, and it may deploy a model key asking for `trust_remote_code`) and `priority`
-(jump the model's queue). See [auth-and-limits.md](../concepts/auth-and-limits.md).
+runner, and it may deploy a model key asking for `trust_remote_code`),
+`trust_remote_code` (only that deploy permission; the sandbox stays on) and
+`priority` (jump the model's queue). See [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 With auth enabled, a missing key (401) or an unknown one (403) is not an error
 here: `whoami` turns both into `{"email": null, "tags": []}`. A malformed key

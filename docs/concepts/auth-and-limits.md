@@ -26,8 +26,9 @@ flag; other pages link here.
 2. **Whether a model it provisions may run its own code.** A model key
    carrying `trust_remote_code` (the client built the model with it) asks for
    the repo's own Python to execute at load; the controller deploys such a key
-   only for a trusted request and refuses it otherwise, before reading the
-   checkpoint. The flag is sticky for the life of the deployment
+   only for a request whose key carries the `trusted` or the `trust_remote_code`
+   tag (`request.trust_remote_code`) and refuses it otherwise, before reading
+   the checkpoint. The permission is sticky for the life of the deployment
    ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
 
 **How it is set.**
@@ -37,6 +38,11 @@ flag; other pages link here.
 | Auth on (`NDIF_POSTGRES_URL` set) | from the key: `True` iff the key carries the `trusted` user_tag. A client-supplied value is overwritten. |
 | Auth off, client sent `trusted` | left as sent — `True` or `False` |
 | Auth off, client sent nothing | `True` |
+
+`request.trust_remote_code` — the permission to deploy a key asking for repo code
+— is `True` with auth on iff the key carries `trust_remote_code` or `trusted`;
+with auth off it is whatever the client sent, or `True` when the request ends up
+trusted.
 
 Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
 every request that does not say otherwise as trusted: user code in-process, and
@@ -105,7 +111,7 @@ short-circuit before the request is ever enqueued.
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
 | Postgres unreachable or erroring | `503` — fail **closed**, never allow on a backend error |
-| Key found | `Identity` returned; `email` / `trusted` / `priority` stamped on the request |
+| Key found | `Identity` returned; `email` / `trusted` / `trust_remote_code` / `priority` stamped on the request |
 
 **A key is valid iff its row exists in the `keys` table.** The owning user's
 `verification_status` is not checked — issuing and gating keys is the account
@@ -121,12 +127,13 @@ malformed key returns `400` and a Postgres failure `503`.
 
 ## What identity buys you
 
-`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly two
+`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly three
 tags mean anything to the server:
 
 | Tag | Effect |
 |---|---|
-| `trusted` | `request.trusted = True` — see above |
+| `trusted` | `request.trusted = True` (and so `request.trust_remote_code = True`) — see above |
+| `trust_remote_code` | `request.trust_remote_code = True`: the key may deploy a model whose key asks for `trust_remote_code`; its own code still runs in a runner |
 | `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests. With auth off, `priority` is left as the client sent it (`False` by default). |
 
 Everything else about identity is **observability only**. `email` travels with

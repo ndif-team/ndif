@@ -29,11 +29,12 @@ class DeploymentConfig(BaseModel):
 
     pinned: bool = False
     replicas: int = 1
-    # Whether the caller is trusted. Inherited from the trusted flag of the
-    # request that kicked off the deployment (always on for an admin's CLI or
+    # Whether the caller may deploy a model whose key asks for
+    # trust_remote_code. From the request that kicked off the deployment (its
+    # `trusted` or `trust_remote_code` tag; always on for an admin's CLI or
     # dashboard deploy). Whether the model's own repo code runs at load is not
     # decided here -- it is in the model key, where the client put it -- but
-    # only a trusted caller may deploy a key that asks for it; the controller
+    # only a caller with this may deploy a key that asks for it; the controller
     # refuses the rest before reading the checkpoint.
     trusted: bool = False
     # --- placement overrides -------------------------------------------------

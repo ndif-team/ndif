@@ -111,9 +111,9 @@ two replicas with `replicas=1` gives you three. Shrinking is `evict`'s job.
 ### `trusted` follows the deployment
 
 The request that first provisions a model fixes the deployment's `trusted` for
-its life — and so whether a key asking for `trust_remote_code` could be deployed
-at all; each request still forks on its own `request.trusted` for where its
-block runs. The mechanism is in
+its life — the permission its `trusted` or `trust_remote_code` tag granted, and
+so whether a key asking for `trust_remote_code` could be deployed at all; each
+request still forks on its own `request.trusted` for where its block runs. The mechanism is in
 [API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load).
 
 ## Eviction

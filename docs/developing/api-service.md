@@ -102,9 +102,11 @@ row (tag NULL), distinguishing "known key, no tags" from "unknown key".
 
 ### The `trusted` flag — read this before you deploy
 
-`validate_request` stamps three things onto the request from the resolved
+`validate_request` stamps four things onto the request from the resolved
 `Identity`: `email`, `trusted` (`Identity.trusted` — the key carries the
-`TRUSTED_TAG` user_tag) and `priority` (`Identity.priority`, the `PRIORITY_TAG`).
+`TRUSTED_TAG` user_tag), `trust_remote_code` (`Identity.trust_remote_code` — the
+`TRUST_REMOTE_CODE_TAG` user_tag, or `trusted`, which implies it) and `priority`
+(`Identity.priority`, the `PRIORITY_TAG`).
 
 ```python
 client_set_trusted = "trusted" in request.model_fields_set
@@ -112,13 +114,20 @@ identity = await verify_api_key(request.api_key)
 if identity is not None:
     request.email = identity.email
     request.trusted = identity.trusted        # overwrites any client value
+    request.trust_remote_code = identity.trust_remote_code
     request.priority = identity.priority
-elif not client_set_trusted:
-    # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
-    # Default to trusted only when the client didn't ask; an explicit
-    # trusted=True/False from the client stands.
-    request.trusted = True
+else:
+    if not client_set_trusted:
+        # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
+        # Default to trusted only when the client didn't ask; an explicit
+        # trusted=True/False from the client stands.
+        request.trusted = True
+    request.trust_remote_code = request.trust_remote_code or request.trusted
 ```
+
+`trust_remote_code` is the narrower grant: it lets the key deploy a model whose
+key asks for the checkpoint's own code, and says nothing about where the
+request's own code runs.
 
 `BackendRequestModel.trusted` defaults to `False`
 (`src/ndif/common/schema/request.py`), and that default is what makes user code
@@ -155,11 +164,13 @@ This section is the reference for how a deployment's `trusted` is fixed, and
 with it whether a key asking for `trust_remote_code` can be deployed; other pages
 link here.
 
-The flag is not re-derived anywhere. It rides the pickled request into the queue,
-where `Processor.enqueue` passes it to `Processor.ensure_started`, which stores
-it on the processor (`src/ndif/services/api/queue/processor.py`).
+The flag is not re-derived anywhere. `request.trust_remote_code` (true for the
+`trusted` *or* the `trust_remote_code` tag) rides the pickled request into the
+queue, where `Processor.enqueue` passes it to `Processor.ensure_started`, which
+stores it on the processor (`src/ndif/services/api/queue/processor.py`).
 `Replica.provision` then asks the controller for one more replica with
-`DeploymentConfig(trusted=processor.trusted)`
+`DeploymentConfig(trusted=processor.trust_remote_code)` — the config's `trusted`
+is that permission, not the sandbox choice —
 (`src/ndif/services/api/queue/replica.py`); `Cluster.deploy`
 (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`) first checks
 it against the key (`untrusted_remote_code`: a key carrying `trust_remote_code`
@@ -170,8 +181,8 @@ nothing: nnsight's `from_model_key` reads `trust_remote_code` off the key itself
 `ensure_started` only assigns when its argument is not `None`, and a
 *re*-provision after an eviction passes `None`. So: **whichever request first
 causes a model to be deployed fixes that deployment's `trusted` for its
-lifetime.** A trusted user's request deploys a key asking for
-`trust_remote_code`, and every later untrusted request runs against that same
+lifetime.** A request carrying either tag deploys a key asking for
+`trust_remote_code`, and every later untagged request runs against that same
 deployment (and can scale it: `_ControllerActor._like_existing` inherits the
 running replica's trust). Evicting and redeploying is the only way to change it.
 

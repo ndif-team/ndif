@@ -22,7 +22,8 @@ unset, `verify_api_key` returns `None` and `validate_request` stamps
 `trusted=True` on every request whose envelope doesn't set `trusted` itself
 (`src/ndif/services/api/auth.py` `validate_request`). A trusted request runs its
 Python **inside the model actor process**, next to the weights, and may
-auto-deploy a model whose key asks for `trust_remote_code=True`. The full fork is in
+auto-deploy a model whose key asks for `trust_remote_code=True` (the
+`trust_remote_code` tag grants only the latter). The full fork is in
 [Auth and limits](../concepts/auth-and-limits.md).
 
 ## 1. Bring up Postgres
@@ -87,6 +88,7 @@ issuance is normally the account portal's job; here you do it by hand.
 | Tag | Constant | Effect |
 |---|---|---|
 | `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and it may trigger a deploy of a model key asking for `trust_remote_code` |
+| `trust_remote_code` | `TRUST_REMOTE_CODE_TAG` | the request may trigger a deploy of a model key asking for `trust_remote_code`, and nothing more — its own code still runs in a runner. `trusted` implies it (`Identity.trust_remote_code`) |
 | `priority` | `PRIORITY_TAG` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
 
 Every other tag name is inert.
@@ -95,6 +97,7 @@ Every other tag name is inert.
 docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif -c "
 INSERT INTO user_tags (name, description)
 VALUES ('trusted',  'code runs in the model process'),
+       ('trust_remote_code', 'may deploy checkpoints that run their own code'),
        ('priority', 'served ahead of untagged traffic');"
 ```
 

@@ -43,6 +43,11 @@ logger = logging.getLogger("ndif.api")
 # may deploy a model whose key asks for trust_remote_code; see Identity.trusted.
 TRUSTED_TAG = "trusted"
 
+# A key granted this user_tag may deploy a model whose key asks for
+# trust_remote_code -- and nothing more: its requests still run in the sandbox.
+# The trusted tag implies it; see Identity.trust_remote_code.
+TRUST_REMOTE_CODE_TAG = "trust_remote_code"
+
 # A key granted this user_tag sorts ahead of all normal traffic and stays FIFO
 # among its peers (RequestQueue.rank); see Identity.priority.
 PRIORITY_TAG = "priority"
@@ -75,6 +80,15 @@ class Identity:
     def trusted(self) -> bool:
         """Whether this key carries the ``trusted`` user_tag."""
         return TRUSTED_TAG in self.user_tags
+
+    @property
+    def trust_remote_code(self) -> bool:
+        """Whether this key may deploy a model whose key asks for trust_remote_code.
+
+        Either tag grants it: ``trusted`` already lets the caller's own code run
+        next to the weights, so a checkpoint's code is nothing more.
+        """
+        return TRUST_REMOTE_CODE_TAG in self.user_tags or self.trusted
 
     @property
     def priority(self) -> bool:
@@ -147,15 +161,17 @@ async def validate_request(
     bad envelope), carries the ``ndif-api-key`` header onto it (the client sends
     the key there, not in the JSON), verifies it against the Postgres keys DB
     (raising 401/400/403/503 on failure, short-circuiting before enqueue), and
-    stamps the caller's ``email``, ``trusted``, and ``priority`` flags onto the
-    request so they travel with it through the queue.
+    stamps the caller's ``email``, ``trusted``, ``trust_remote_code`` and
+    ``priority`` flags onto the request so they travel with it through the queue.
 
     ``trusted`` and ``priority`` come from the key's ``trusted`` / ``priority``
-    user_tags. With auth off (no Postgres configured) the deployment is assumed to
-    sit on a trusted network: a client-supplied ``trusted`` is honored (so a caller
-    can opt into the sandbox path with ``trusted=False``), and when the client
-    leaves it unspecified it defaults to True. ``email`` and ``priority`` from the
-    client are left as sent in that mode.
+    user_tags; ``trust_remote_code`` from its ``trust_remote_code`` tag or
+    ``trusted``. With auth off (no Postgres configured) the deployment is assumed
+    to sit on a trusted network: a client-supplied ``trusted`` is honored (so a
+    caller can opt into the sandbox path with ``trusted=False``), and when the
+    client leaves it unspecified it defaults to True; ``trust_remote_code`` is
+    then whatever the client sent, or True when the request is trusted. ``email``
+    and ``priority`` from the client are left as sent in that mode.
     """
     try:
         request = BackendRequestModel.model_validate_json(data)
@@ -176,11 +192,16 @@ async def validate_request(
     if identity is not None:
         request.email = identity.email
         request.trusted = identity.trusted
+        request.trust_remote_code = identity.trust_remote_code
         request.priority = identity.priority
-    elif not client_set_trusted:
-        # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev mode.
-        # Default to trusted when the client didn't ask; an explicit request
-        # value (True or False) is left untouched.
-        request.trusted = True
+    else:
+        if not client_set_trusted:
+            # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev
+            # mode. Default to trusted when the client didn't ask; an explicit
+            # request value (True or False) is left untouched.
+            request.trusted = True
+        # Trusted implies it, as it does with auth on; otherwise the client's
+        # own value stands, so a dev can grant it without granting trusted.
+        request.trust_remote_code = request.trust_remote_code or request.trusted
 
     return request

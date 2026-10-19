@@ -117,8 +117,12 @@ class Replica:
         # what is already running -- a sharded model stays sharded -- and the
         # controller fills that in from a live replica. With none running there is
         # nothing to copy and this behaves exactly as a bare deploy did.
+        # `DeploymentConfig.trusted` is the permission to deploy a key that
+        # asks for trust_remote_code, which either the `trusted` or the
+        # `trust_remote_code` tag grants -- not whether the request's own code
+        # runs in-process, which stays per request.
         response: DeployResponse = await controller_handle().scale.remote(
-            model_key, 1, DeploymentConfig(trusted=processor.trusted)
+            model_key, 1, DeploymentConfig(trusted=processor.trust_remote_code)
         )
 
         result = response.results[model_key]
