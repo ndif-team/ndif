@@ -104,17 +104,42 @@ def set_default_gpu(gpu_mem_bytes_by_id: Dict[int, int]) -> None:
     torch.cuda.set_device(next(iter(gpu_mem_bytes_by_id)))
 
 
-def remove_accelerate_hooks(module) -> None:
-    """Strip accelerate's dispatch hooks from ``module`` and its submodules.
+def redispatch(module, device_map: Dict[str, Any]) -> None:
+    """Move an already-dispatched module onto ``device_map``, keeping nnsight's
+    forwards.
 
-    Dispatching an already-dispatched module (e.g. restoring from cache) would
-    otherwise stack hooks on top of the existing ones.
+    nnsight's controller lives in each module's instance ``forward``, the slot
+    accelerate's wrapper also uses (``run_body`` calls the ``_hf_hook`` itself).
+    Both steps of a re-dispatch overwrite it: ``remove_hook_from_module`` writes
+    ``_old_forward`` back, and ``dispatch_model`` wraps that. Left like that, the
+    model runs uninstrumented and every trace raises ``OutOfOrderError`` (#339).
+    So the slots are saved first and written back after the new hooks are on;
+    restoring before ``dispatch_model`` would have accelerate wrap the controller
+    and run its hook twice. By value rather than by nnsight type, so it holds for
+    whatever nnsight puts in the slot. The old hooks still have to come off, or
+    ``dispatch_model`` stacks a second set on them. ``skip_keys`` is what
+    transformers passes on the initial load: a kwarg the hook must not move.
     """
+    from accelerate import dispatch_model
     from accelerate.hooks import remove_hook_from_module
 
-    for _, submodule in module.named_modules():
+    forwards = {
+        submodule: submodule.__dict__["forward"]
+        for submodule in module.modules()
+        if "forward" in submodule.__dict__
+    }
+    for submodule in module.modules():
         if getattr(submodule, "_hf_hook", None) is not None:
             remove_hook_from_module(submodule)
+
+    dispatch_model(
+        module,
+        device_map=device_map,
+        skip_keys=getattr(module, "_skip_keys_device_placement", None),
+    )
+
+    for submodule, forward in forwards.items():
+        submodule.__dict__["forward"] = forward
 
 
 def set_process_limits(gpu_mem_bytes_by_id: Dict[int, int]) -> None:

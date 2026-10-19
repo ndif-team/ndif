@@ -123,10 +123,14 @@ The controller moves a replica between levels through `Deployment.cache` and
 | Call | Method | What happens |
 |---|---|---|
 | HOT→WARM | `BaseModelDeployment.to_cache` | `cancel("preempted")` any in-flight run, `_module.to("cpu")`, `reset_process_limits`, `synchronize` + `gc.collect` + `empty_cache`, `self.cached = True` |
-| WARM→HOT | `BaseModelDeployment.from_cache` | Re-apply limits for the (possibly different) GPUs, compute a balanced `device_map`, `remove_accelerate_hooks` then `dispatch_model`, verify, `self.cached = False`, emit `ModelLoadTimeMetric(load_type="from_cache")` |
+| WARM→HOT | `BaseModelDeployment.from_cache` | Re-apply limits for the (possibly different) GPUs, compute a balanced `device_map`, `redispatch` onto it, verify, `self.cached = False`, emit `ModelLoadTimeMetric(load_type="from_cache")` |
 
-`remove_accelerate_hooks` is not optional — re-dispatching an already-dispatched
-module stacks a second set of hooks on the first. While `cached` is true, `run()`
+`redispatch` is not a bare `dispatch_model`. It strips the previous dispatch's
+accelerate hooks first, or the new ones stack on top of them, and it keeps every
+module's instance `forward` across the re-dispatch: nnsight's controller lives in
+that slot, and both the hook removal and the new dispatch overwrite it, which left
+a restored multi-GPU replica uninstrumented and every trace on it raising
+`OutOfOrderError` (#339). While `cached` is true, `run()`
 raises `CachedActorError` *before* its try block so it reaches the queue as an
 eviction rather than a user-facing ERROR; `Replica.dispatch` treats it like a dead
 actor — drop the replica, re-queue at the front. An actor class that sets

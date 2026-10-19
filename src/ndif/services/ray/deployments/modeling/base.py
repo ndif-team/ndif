@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import ray
 import torch
 import zstandard
-from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 from transformers.integrations.accelerate import _get_device_map
 
@@ -48,7 +47,7 @@ from .util import (
     gpu_baselines,
     gpu_peaks,
     kill_thread,
-    remove_accelerate_hooks,
+    redispatch,
     request_meta,
     reset_process_limits,
     resolve_dtype,
@@ -286,10 +285,7 @@ class BaseModelDeployment:
         module = self.model._module
 
         device_map = _get_device_map(module, "balanced", max_memory, None)
-        # Drop the previous dispatch's hooks before re-dispatching, or accelerate
-        # stacks a second set on top of the existing ones.
-        remove_accelerate_hooks(module)
-        dispatch_model(module, device_map=device_map)
+        redispatch(module, device_map)
 
         torch.cuda.synchronize()
         gc.collect()
