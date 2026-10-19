@@ -175,7 +175,7 @@ flowchart TB
   C["nnsight client"]
   subgraph W["gunicorn worker (uvicorn)"]
     D1["require_ray_connection<br/>GET ray:connected"]
-    D2["validate_request<br/>parse data + verify_api_key<br/>stamp email/trusted/trust_remote_code/priority"]
+    D2["validate_request<br/>parse data + verify_api_key<br/>stamp email + tags"]
     B["create_request body<br/>blob.read() -> payload<br/>response(RECEIVED)"]
     S["/subscribe websocket"]
   end

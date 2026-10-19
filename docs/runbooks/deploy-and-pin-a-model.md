@@ -22,11 +22,12 @@ each step. Three facts shape the procedure:
    (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
    `Cluster.deploy`). `ndif deploy gpt2` three times gives three replicas. Only
    `ndif deploy -f models.yaml --sync` reconciles to a count.
-3. **The model key includes the pipeline task.** A client's key is
-   `TransformersModel:{"repo_id": …, "revision": …, "task": …}`, with the task
-   always resolved. A deployment serves only requests whose key matches exactly, so
-   a model deployed under another task — or under a key with no task — is a
-   separate deployment that no default client request reaches.
+3. **The model key includes the pipeline task and `trust_remote_code`.** A
+   client's key is `TransformersModel:{"repo_id": …, "revision": …, "task": …}`,
+   plus `"trust_remote_code": true` when the client set it, with the task always
+   resolved. A deployment serves only requests whose key matches exactly, so a
+   model deployed under another task or trust value — or under a key with no task
+   — is a separate deployment that no default client request reaches.
 
 `ndif` commands run wherever the CLI reaches `NDIF_RAY_ADDRESS`. On the compose
 stack, run them in the `ray` container:

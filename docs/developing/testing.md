@@ -168,8 +168,8 @@ same `request_dtype` autocast region — the runner around the block, the
 
 **With real auth** instead of a client-set flag: enable Postgres
 ([Enable auth](../runbooks/enable-auth.md)), create a key *without* the `trusted`
-tag, and set `NDIF_API_KEY` for the client. The key's tag then decides and a
-client-supplied `trusted` is overwritten; this also exercises `verify_api_key`'s
+tag, and set `NDIF_API_KEY` for the client. The key's tags then decide and
+client-supplied `tags` are overwritten; this also exercises `verify_api_key`'s
 401/400/403/503 responses, which nothing else does.
 
 To confirm which path a request took, look for a runner process per request:

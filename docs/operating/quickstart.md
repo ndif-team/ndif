@@ -27,8 +27,8 @@ publish ports.
 
 **None of the three routes sets `NDIF_POSTGRES_URL`, so none of them has
 authentication.** With auth off, `verify_api_key` returns `None` and
-`validate_request` honors a client-supplied `trusted` and defaults an
-unspecified one to true (both in `src/ndif/services/api/auth.py`). A default
+`validate_request` honors client-supplied `tags` and defaults unspecified
+ones to `{"trusted"}` (both in `src/ndif/services/api/auth.py`). A default
 nnsight client sends none, so in practice every request runs trusted:
 
 - The traced block runs **in-process inside the model actor**, next to the

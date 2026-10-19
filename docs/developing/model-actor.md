@@ -93,7 +93,8 @@ model = HuggingFaceModel.from_model_key(
 - `from_model_key` is nnsight's `Remotable` classmethod: it splits the class import
   path off the key and delegates to that wrapper's `_remoteable_from_model_key`. For
   a HuggingFace model the rest of the key is `{"repo_id": ..., "revision": ...,
-  "task": ...}`, so **the revision and the pipeline task are part of the model key**,
+  "task": ..., "trust_remote_code": true}` (the last only when set), so **the
+  revision, the pipeline task and `trust_remote_code` are part of the model key**,
   not separate args. `dispatch=True` skips nnsight's meta-device phase.
 - After a `torch.cuda.synchronize()` (accelerate's copies are async),
   `verify_device_placement` walks every parameter and buffer and raises if one is
@@ -157,7 +158,7 @@ a client-supplied `tags: []` is honored** (`src/ndif/services/api/auth.py`
 
 The queue's replica worker calls `handle.run.remote(request)` and awaits it
 (`Replica.dispatch` in `src/ndif/services/api/queue/replica.py`). The request carries
-`payload` (the serialized tracer blob), `compress`, `env`, `trusted`, and the
+`payload` (the serialized tracer blob), `compress`, `env`, `tags`, and the
 identity fields (`id`, `api_key`, `email`, `session_id`) used for responses and
 telemetry.
 

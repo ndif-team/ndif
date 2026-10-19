@@ -20,7 +20,7 @@ Two things to know before reading the table. **Auth is off by default** —
 `verify_api_key` (`src/ndif/services/api/auth.py`) is a no-op unless
 `NDIF_POSTGRES_URL` is set, so the Auth column describes behavior *when auth is
 enabled*; with it disabled every request is accepted, and one that doesn't set
-`trusted` is marked trusted. And **no route requires auth except `/request`** —
+`tags` is marked trusted. And **no route requires auth except `/request`** —
 `/response/{id}` included.
 
 ## All endpoints

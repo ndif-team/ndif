@@ -12,6 +12,7 @@ Schema (``schedule.json``)
           "checkpoint": "meta-llama/Llama-3.1-8B",
           "revision": null,
           "task": null,
+          "trust_remote_code": false,
           "actor_class": null,
           "envoy_class": null,
           "padding_factor": null,

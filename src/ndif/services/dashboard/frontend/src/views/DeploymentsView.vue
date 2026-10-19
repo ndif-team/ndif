@@ -44,9 +44,10 @@ const PENDING_TTL_MS = 5 * 60 * 1000
 function pendingKey(
   repo_id: string,
   revision: string | null | undefined,
-  task?: string | null
+  task?: string | null,
+  trust_remote_code?: boolean
 ): string {
-  return `${repo_id}|${revision || ''}|${task || ''}`
+  return `${repo_id}|${revision || ''}|${task || ''}|${trust_remote_code ? 'trc' : ''}`
 }
 
 // model_key -> "restart" | "evict" while a per-card action is in flight.
@@ -82,7 +83,7 @@ async function load() {
         continue
       // Both forms: the task-carrying key matches a placeholder that named a
       // task, the task-less key matches one that left it to inference.
-      live.add(pendingKey(d.repo_id as string, d.revision ?? null, d.task))
+      live.add(pendingKey(d.repo_id as string, d.revision ?? null, d.task, d.trust_remote_code))
       live.add(pendingKey(d.repo_id as string, d.revision ?? null))
     }
     pending.value = pending.value.filter(
@@ -161,7 +162,7 @@ async function onDeploy(form: DeployForm) {
   // pulsing card so the admin gets feedback before the controller responds
   // (deploy can take 10s+ for a model that's never been loaded).
   const placeholder: PendingDeploy = {
-    key: pendingKey(form.checkpoint, form.revision, form.task),
+    key: pendingKey(form.checkpoint, form.revision, form.task, form.trust_remote_code),
     repo_id: form.checkpoint,
     revision: form.revision,
     task: form.task,

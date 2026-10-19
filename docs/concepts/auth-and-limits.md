@@ -118,7 +118,7 @@ short-circuit before the request is ever enqueued.
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
 | Postgres unreachable or erroring | `503` — fail **closed**, never allow on a backend error |
-| Key found | `Identity` returned; `email` / `trusted` / `trust_remote_code` / `priority` stamped on the request |
+| Key found | `Identity` returned; `email` and `tags` stamped on the request |
 
 **A key is valid iff its row exists in the `keys` table.** The owning user's
 `verification_status` is not checked — issuing and gating keys is the account

@@ -29,8 +29,8 @@ Four facts frame the whole design:
    Redis-backed cache that the dispatcher refreshes.
 3. **Execution forks on one boolean.** `request.trusted` decides whether a user's
    traced block runs inside the model actor process or in a separate runner
-   process driven over a Unix socket. With auth off a client-supplied `trusted`
-   is honored, and an unspecified one defaults to trusted
+   process driven over a Unix socket. With auth off client-supplied `tags`
+   are honored, and unspecified ones default to `{"trusted"}`
    (`src/ndif/services/api/auth.py` `validate_request`).
 4. **Redis is the only durable handoff.** Once a request leaves the Redis list it
    is a Python object in the dispatcher's memory until it reaches a terminal

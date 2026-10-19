@@ -82,11 +82,9 @@ the same sentence. Past the API, the whole request travels as pickle:
 | actor → result | `torch.save` with a CUDA→CPU relocating pickler, zstd level 3 if `compress` | `BaseModelDeployment.execute`, `BaseModelDeployment.prepare_result` |
 
 > **Gotcha:** every server-side field is a declared field, so a client can put
-> `id`, `email`, `priority` or `trusted` in the envelope. With auth on,
-> `validate_request` overwrites `email`, `trusted`, `trust_remote_code` and
-> `priority`; with auth off only an unset `trusted` is changed,
-> `trust_remote_code` is set equal to `trusted`, and client-supplied `email`,
-> `priority` and `id` survive.
+> `id`, `email` or `tags` in the envelope. With auth on, `validate_request`
+> overwrites `email` and `tags`; with auth off only unset `tags` are changed
+> (to `{"trusted"}`), and client-supplied `email`, `tags` and `id` survive.
 
 ### Response methods
 
@@ -253,10 +251,9 @@ translation, and is spelled out here in full so you don't need the client source
 Where they intentionally differ:
 
 - **Identity and trust are server-decided.** The official client sends the key
-  only in the `ndif-api-key` header and none of `email`, `trusted`,
-  `trust_remote_code` or `priority`. With auth on the server stamps all four
-  from the key; with auth off it accepts what the envelope carries except
-  `trust_remote_code` (the gotcha above).
+  only in the `ndif-api-key` header and neither `email` nor `tags`. With auth on
+  the server stamps both from the key; with auth off it accepts what the
+  envelope carries (the gotcha above).
 - **The payload is out-of-band on the client, in-band on the server.** The client
   keeps the blob out of `RequestModel` and posts it as a separate multipart part;
   the server's `payload: Optional[bytes]` carries it through the queue and across

@@ -14,8 +14,8 @@ the client is nnsight, whose docs live in its own repo.
 
 ## Read this before anything else
 
-Where user code runs depends on one boolean, `request.trusted`, stamped at ingress
-from the API key. A trusted block runs **inside the model actor process**, next to
+Where user code runs depends on one boolean, `request.trusted`, read from the tags
+stamped at ingress from the API key. A trusted block runs **inside the model actor process**, next to
 the weights; an untrusted one runs in a separate runner process driven over a Unix
 socket. Whether a model runs its own repo code is the model key's
 `trust_remote_code` field, a different thing; who may deploy one is in

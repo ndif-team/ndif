@@ -160,9 +160,9 @@ See [queue-internals.md](../developing/queue-internals.md).
 ## Request
 
 The unit of work, `BackendRequestModel` (`src/ndif/common/schema/request.py`):
-nnsight's `RequestModel` plus a server-side `id`, identity, `trusted` /
-`trust_remote_code` / `priority`,
-the `payload`, and status timing. See [schemas.md](schemas.md) and
+nnsight's `RequestModel` plus a server-side `id`, identity, `tags` (read by the
+`trusted` / `trust_remote_code` / `priority` properties), the `payload`, and
+status timing. See [schemas.md](schemas.md) and
 [request-lifecycle.md](../concepts/request-lifecycle.md).
 
 ## Result delivery (inline or presigned)

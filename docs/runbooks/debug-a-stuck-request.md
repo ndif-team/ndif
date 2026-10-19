@@ -141,9 +141,9 @@ in service order, then `... (+N more)`.
 it pops for that model. None means the request never got there: it is still on
 the ingress list (step 2), it was rejected at the API (401/403/422/503 — see
 [Trace a user's failed job](trace-a-users-failed-job.md)), or the user is on a
-different NDIF — or under a different task: the processor line shows the task in
-the model key, and a client that loaded the model with another task asks for a
-different deployment.
+different NDIF — or under a different key: the processor line shows the task and
+`trust_remote_code` from the model key, and a client that loaded the model with
+another task or `trust_remote_code` value asks for a different deployment.
 
 **`UNINITIALIZED`.** The pool is empty and nothing is provisioning. A processor
 goes idle here when its last replica exits with an empty queue. Queued requests
@@ -311,7 +311,7 @@ work: work dispatched to an actor whose killed block is still running can fail
 with cross-thread greenlet errors (`Cannot switch to a different thread`). `ndif restart` kills the actor; Ray brings it
 back, it reloads the weights, and the command returns once it is ready
 (`src/ndif/cli/lib/restart.py` `restart`). Add `--task` if the deployment's task
-isn't the checkpoint's default. Requests sent to that replica during the restart
+isn't the checkpoint's default, and `--trust-remote-code` if its key carries it. Requests sent to that replica during the restart
 are re-queued or errored.
 
 **Wedged actor, no single culprit:** the same `ndif restart <checkpoint> --replica <id>`.
@@ -319,8 +319,8 @@ If `ndif restart` reports it can't get the actor handle, the actor is dead for
 good — the `HOT | UNHEALTHY` row in step 4.
 
 **By exact key.** `ndif evict <checkpoint>` and `ndif restart <checkpoint>` act on
-the inferred task's key only. For a key with no task or another task, pass the
-exact `model_key` from `ndif status --json-output`:
+the key their flags mint (`--task`, `--trust-remote-code`). For any other key,
+pass the exact `model_key` from `ndif status --json-output`:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec ray python -c "
