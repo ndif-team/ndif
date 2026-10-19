@@ -68,11 +68,9 @@ class BackendRequestModel(RequestModel):
     # decided at ingress is set elsewhere.)
     trusted: bool = False
 
-    # Whether this request may *deploy* a model whose key asks for the
-    # checkpoint's own code to run (trust_remote_code in the key). Set at ingress
-    # from the key's ``trust_remote_code`` or ``trusted`` tag; only checked when
-    # the request is the one that provisions the model (Processor.start) -- a
-    # model already running was vetted by whoever deployed it.
+    # Whether this request may deploy a model whose key asks for
+    # trust_remote_code. Set at ingress from the key's ``trust_remote_code`` or
+    # ``trusted`` tag; checked in Processor.start.
     trust_remote_code: bool = False
 
     # Whether this request jumps the queue. When True it's prepended to the front

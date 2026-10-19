@@ -1661,7 +1661,7 @@ class TestScaleMatchesWhatIsRunning:
     def test_it_copies_the_actor_class_and_gpu_count(self):
         controller = self._controller(self._replica())
 
-        filled = controller._like_existing("m", self._config(pinned=True))
+        filled = controller._like_existing("m", self._config())
 
         assert filled.actor_class == "tp.Sandboxed"
         assert filled.gpus == 2
@@ -1712,7 +1712,7 @@ class TestScaleMatchesWhatIsRunning:
         # Cold start: nothing in the cluster claims the model is served any
         # particular way, so the evaluator decides as it always has.
         controller = self._controller()
-        asked = self._config(pinned=True)
+        asked = self._config()
 
         filled = controller._like_existing("m", asked)
 

@@ -31,7 +31,7 @@ from ....common.schema import Status
 from ....common.schema.controller import ReplicaStates
 from ....common.schema.request import BackendRequestModel
 from ....common.telemetry import error_type_name, event
-from ....common.types import MODEL_KEY, REPLICA_ID, trust_remote_code_of
+from ....common.types import MODEL_KEY, REPLICA_ID, key_field
 from .config import CONFIG
 from .replica import DeploymentError, Replica
 from .request_queue import RequestQueue
@@ -83,10 +83,6 @@ class Processor:
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
-        # Whether the request that kicks off provisioning may deploy a model
-        # whose key asks for trust_remote_code (see ensure_started); checked in
-        # ``start`` before the controller is asked to deploy.
-        self.trust_remote_code = False
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
             self.autoscaling_loop()
@@ -116,7 +112,7 @@ class Processor:
         # (group, prepend, enqueued_at) -- see request_queue.py.
         self.queue.put(request, prepend=prepend)
 
-        self.ensure_started(request.trust_remote_code)
+        self.ensure_started()
 
         # Queue-depth / throughput signal: position is 1-based depth at enqueue.
         event(
@@ -148,22 +144,16 @@ class Processor:
             ),
         )
 
-    def ensure_started(self, trust_remote_code: Optional[bool] = None) -> None:
+    def ensure_started(self) -> None:
         """Kick off provisioning when the pool is empty and idle.
 
         No-ops if a replica is already live or setup is already underway, so
         it's safe to call on every enqueue and on last-replica exit.
-        ``trust_remote_code`` (the kicking-off request's flag) is whether that
-        request may deploy a key asking for the checkpoint's own code; ``start``
-        checks it against the key. A re-provision passes ``None`` to keep the
-        value from the request that first deployed it.
         """
         if self.replicas:
             return
         if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
             return
-        if trust_remote_code is not None:
-            self.trust_remote_code = trust_remote_code
         self.status = ProcessorStatus.PROVISIONING
         asyncio.create_task(self.start())
 
@@ -207,13 +197,12 @@ class Processor:
                     "Error provisioning model. "
                     "Please try again later. Sorry for the inconvenience."
                 )
-                # Nothing is running, so this request is about to *deploy* the
-                # model, and a key asking for the checkpoint's own code may only
-                # be deployed by a key tagged for it. Checked here and not at
-                # ingress because a model someone with the permission already
-                # deployed is open to everyone; and before the controller is
-                # asked, since even sizing such a model runs its config code.
-                if trust_remote_code_of(self.model_key) and not self.trust_remote_code:
+                # A key asking for the checkpoint's own code is deployed only
+                # for a request tagged to do so (a running model is open to
+                # everyone).
+                if key_field(self.model_key, "trust_remote_code") and not any(
+                    request.trust_remote_code for request in self.queue.snapshot()
+                ):
                     raise DeploymentError(
                         "This model runs code from its own repository "
                         "(trust_remote_code=True), and deploying such a model "

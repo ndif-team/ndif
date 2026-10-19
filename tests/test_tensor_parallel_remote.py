@@ -19,7 +19,6 @@ several GPUs and an explicit deploy. To set one up::
       - checkpoint: meta-llama/Llama-3.2-3B
         replicas: 1
         pinned: true
-        trusted: true
         dtype: bfloat16
         actor_class: ndif.services.ray.tp.model.TPModelActor
         padding_factor: 35.6   # forces a 4-GPU allocation; see the actor's docs

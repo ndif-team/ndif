@@ -31,10 +31,7 @@ class DeployRequest(BaseModel):
     # when unset) — so two tasks of one checkpoint are two deployments.
     task: Optional[str] = None
     # Whether the checkpoint's own modelling code may run at load (HF
-    # trust_remote_code). Baked into the model key like the task, so a client
-    # that loads with it reaches this deployment and one that does not reaches
-    # a different one. Off by default: most checkpoints do not need it, and a
-    # key that asks for it is one no ordinary client mints.
+    # trust_remote_code). Part of the model key, like the task.
     trust_remote_code: bool = False
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None

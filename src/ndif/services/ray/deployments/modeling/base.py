@@ -97,9 +97,6 @@ class BaseModelDeploymentArgs(BaseModel):
     # torch dtype name (e.g. "bfloat16"). Must match the dtype the controller's
     # evaluator estimated this model's size with, or GPU accounting is wrong.
     dtype: str = "bfloat16"
-    # Whether the model may run its own repo code at load (HF trust_remote_code)
-    # is not an argument: it is in the model key, which nnsight's from_model_key
-    # reads, so the load and the evaluator's sizing cannot disagree about it.
 
 
 class BaseModelDeployment:

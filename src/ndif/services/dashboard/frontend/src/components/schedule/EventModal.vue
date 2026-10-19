@@ -10,6 +10,9 @@ export interface EventForm {
   revision: string | null
   // Pipeline task — part of the model key the entry pins. null = inferred.
   task: string | null
+  // Let the checkpoint's own modelling code run (HF trust_remote_code); part
+  // of the model key the entry pins.
+  trust_remote_code: boolean
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -183,6 +186,14 @@ function toggleOpenEnded(e: Event) {
             :required="form.end != null"
             @input="onEndInput"
           />
+        </label>
+
+        <label class="field full check-field">
+          <input type="checkbox" v-model="form.trust_remote_code" />
+          <span>
+            <strong>Trust remote code</strong>
+            <span class="muted">— run the checkpoint's own modelling code; part of the model key.</span>
+          </span>
         </label>
 
         <label class="field full check-field">

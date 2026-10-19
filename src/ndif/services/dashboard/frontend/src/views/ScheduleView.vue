@@ -14,6 +14,7 @@ interface ScheduleEvent {
   checkpoint: string
   revision: string | null
   task: string | null
+  trust_remote_code?: boolean
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -51,6 +52,7 @@ function emptyForm(start?: Date): EventForm {
     checkpoint: '',
     revision: null,
     task: null,
+    trust_remote_code: false,
     actor_class: null,
     envoy_class: DEFAULT_ENVOY_CLASS,
     padding_factor: null,
@@ -113,6 +115,7 @@ function openEdit(eventId: string) {
     checkpoint: e.checkpoint,
     revision: e.revision,
     task: e.task ?? null,
+    trust_remote_code: e.trust_remote_code ?? false,
     actor_class: e.actor_class,
     envoy_class: e.envoy_class ?? DEFAULT_ENVOY_CLASS,
     padding_factor: e.padding_factor,
@@ -137,6 +140,7 @@ async function save(data: EventForm) {
       checkpoint: data.checkpoint,
       revision: data.revision || null,
       task: data.task || null,
+      trust_remote_code: data.trust_remote_code,
       actor_class: data.actor_class || null,
       envoy_class: data.envoy_class || null,
       padding_factor: data.padding_factor ?? null,

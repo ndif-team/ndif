@@ -168,10 +168,10 @@ async def validate_request(
     user_tags; ``trust_remote_code`` from its ``trust_remote_code`` tag or
     ``trusted``. With auth off (no Postgres configured) the deployment is assumed
     to sit on a trusted network: a client-supplied ``trusted`` is honored (so a
-    caller can opt into the sandbox path with ``trusted=False``), and when the
-    client leaves it unspecified it defaults to True; ``trust_remote_code`` is
-    then whatever the client sent, or True when the request is trusted. ``email``
-    and ``priority`` from the client are left as sent in that mode.
+    caller can opt into the sandbox path with ``trusted=False``), when the
+    client leaves it unspecified it defaults to True, and ``trust_remote_code``
+    follows it. ``email`` and ``priority`` from the client are left as sent in
+    that mode.
     """
     try:
         request = BackendRequestModel.model_validate_json(data)
@@ -200,8 +200,6 @@ async def validate_request(
             # mode. Default to trusted when the client didn't ask; an explicit
             # request value (True or False) is left untouched.
             request.trusted = True
-        # Trusted implies it, as it does with auth on; otherwise the client's
-        # own value stands, so a dev can grant it without granting trusted.
-        request.trust_remote_code = request.trust_remote_code or request.trusted
+        request.trust_remote_code = request.trusted
 
     return request

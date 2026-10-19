@@ -513,11 +513,7 @@ def load_meta_model(model_key: str) -> None:
     ``__setstate__`` marks it dispatched, so no ``interleave`` in this process can
     decide it needs real weights. This object is only ever read for its map.
 
-    Whether the checkpoint's own code may run -- the one load option that decides
-    whether this build is *possible*, since a checkpoint whose architecture is
-    defined in its own repo has no config to read without it -- is in the key,
-    so this build is the actor's build, and the repo code it runs has already
-    run there.
+    ``trust_remote_code`` is in the key, so this build is the actor's build.
 
     No hub round trip is required: the actor loads its model before it opens its
     pool, so the config and tokenizer this reads are already in the shared cache,

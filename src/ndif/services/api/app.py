@@ -141,7 +141,8 @@ async def create_request(
     validate_client_versions(nnsight_version, python_version)
 
     # The request has been parsed, key-verified, and stamped with the caller's
-    # email + trusted flag by the validate_request dependency (see auth.py).
+    # email / trusted / trust_remote_code / priority flags by the validate_request
+    # dependency (see auth.py).
 
     # The blob (serialized interventions) rides on the request through the
     # queue; the dispatcher routes it and the model actor runs it via Ray.

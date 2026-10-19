@@ -18,7 +18,7 @@ from .....common.schema.controller import (
     ReplicaState,
     ReplicaStates,
 )
-from .....common.types import MODEL_KEY, REPLICA_ID, trust_remote_code_of
+from .....common.types import MODEL_KEY, REPLICA_ID, key_field
 from ..modeling.base import BaseModelDeploymentArgs
 from ..modeling.util import get_downloaded_models
 from .cluster import Cluster, Deployment, DeploymentLevel
@@ -617,10 +617,8 @@ class _ControllerActor:
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
-                    "task": _task_of(deployment.model_key),
-                    # Read off the key, as the load did: whether this model
-                    # runs its own repo code is part of what it is.
-                    "trust_remote_code": trust_remote_code_of(deployment.model_key),
+                    "task": key_field(deployment.model_key, "task"),
+                    "trust_remote_code": bool(key_field(deployment.model_key, "trust_remote_code")),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()
@@ -662,8 +660,8 @@ class _ControllerActor:
                     "model_key": cached_deployment.model_key,
                     "replica_id": cached_deployment.replica_id,
                     "repo_id": getattr(entry.config, "_name_or_path", None),
-                    "task": _task_of(cached_deployment.model_key),
-                    "trust_remote_code": trust_remote_code_of(cached_deployment.model_key),
+                    "task": key_field(cached_deployment.model_key, "task"),
+                    "trust_remote_code": bool(key_field(cached_deployment.model_key, "trust_remote_code")),
                     "revision": entry.revision,
                     "config": (
                         entry.config.to_json_string()
@@ -837,18 +835,3 @@ if __name__ == "__main__":
     ray.init(address="auto", namespace="NDIF", logging_level="error")
     app()
 
-
-def _task_of(model_key: MODEL_KEY) -> Optional[str]:
-    """The pipeline task baked into the key's JSON suffix.
-
-    None for a suffix that carries no task — non-JSON (a VLLM key), or a
-    wrapper whose identity has no task. At the end of the module on purpose:
-    docs cite this file by line, and an insertion higher up shifts every
-    citation after it.
-    """
-    import json
-
-    try:
-        return json.loads(model_key.split(":", 1)[1]).get("task")
-    except (IndexError, ValueError, AttributeError):
-        return None

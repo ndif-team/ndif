@@ -1,10 +1,8 @@
 """Offline tests for what the API key's tags grant — no Postgres, no server.
 
-Two tags reach the model-deploy path: ``trusted`` (the caller's own code runs
-next to the weights, and it may deploy a checkpoint that runs its own code) and
-``trust_remote_code`` (only the latter). Either one lets the request provision a
-model whose key asks for ``trust_remote_code``; only ``trusted`` skips the
-sandbox.
+``trusted`` runs the caller's code next to the weights and may deploy a model
+whose key asks for ``trust_remote_code``; the ``trust_remote_code`` tag grants
+only the latter.
 """
 
 import asyncio
@@ -67,7 +65,7 @@ class TestValidateRequestWithAuthOn:
 
 
 class TestValidateRequestWithAuthOff:
-    def test_an_unspecified_request_is_trusted_and_may_deploy_repo_code(self, monkeypatch):
+    def test_an_unspecified_request_is_trusted_and_so_may_deploy_repo_code(self, monkeypatch):
         request = _validate(monkeypatch, None)
         assert request.trusted is True
         assert request.trust_remote_code is True
@@ -76,28 +74,3 @@ class TestValidateRequestWithAuthOff:
         request = _validate(monkeypatch, None, trusted=False)
         assert request.trusted is False
         assert request.trust_remote_code is False
-
-    def test_the_client_may_grant_the_deploy_permission_alone(self, monkeypatch):
-        # The dev-mode way to exercise an untrusted caller that may still deploy
-        # a checkpoint running its own code.
-        request = _validate(monkeypatch, None, trusted=False, trust_remote_code=True)
-        assert request.trusted is False
-        assert request.trust_remote_code is True
-
-
-class TestItReachesTheProcessor:
-    def test_the_processor_records_the_deploy_permission_not_trusted(self):
-        # The gate in `Processor.start` compares the key against the request's
-        # deploy permission, which either tag grants -- so the processor must
-        # record `request.trust_remote_code`, not `request.trusted`, or a
-        # trust_remote_code-tagged key could never deploy the model its tag is
-        # for.
-        import inspect
-
-        from ndif.services.api.queue import processor
-
-        assert "self.ensure_started(request.trust_remote_code)" in inspect.getsource(
-            processor.Processor.enqueue
-        )
-        source = inspect.getsource(processor.Processor.start)
-        assert "trust_remote_code_of(self.model_key) and not self.trust_remote_code" in source

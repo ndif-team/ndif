@@ -18,6 +18,8 @@ export interface Deployment {
   // Pipeline task parsed from the model_key server-side; null when the key's
   // suffix carries no task (e.g. a VLLM key).
   task?: string | null
+  // Whether the key lets the checkpoint's own code run (HF trust_remote_code).
+  trust_remote_code?: boolean
   revision?: string | null
   // Card-level "best" across replicas (HOT > WARM > COLD).
   deployment_level?: 'HOT' | 'WARM' | 'COLD' | string
@@ -361,6 +363,9 @@ function onMenuBlur(e: FocusEvent) {
         <div class="meta">
           <span v-if="deployment.task" class="shrink" :title="'pipeline task: ' + deployment.task">
             ⌬ {{ deployment.task }}
+          </span>
+          <span v-if="deployment.trust_remote_code" title="loads with trust_remote_code">
+            ⚠ remote code
           </span>
           <span v-if="deployment.revision" :title="'revision: ' + deployment.revision">
             ⌖ {{ deployment.revision }}

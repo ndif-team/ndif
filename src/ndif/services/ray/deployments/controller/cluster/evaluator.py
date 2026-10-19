@@ -130,13 +130,7 @@ class ModelEvaluator:
     def _entry(self, model_key: MODEL_KEY, dtype: Any) -> CacheEntry:
         """The memoized answers for this model, computing them if needed.
 
-        Whether the checkpoint's own code runs while it is described is in the
-        key, not a parameter: nnsight reads ``trust_remote_code`` off the key,
-        so two keys differing in it are two entries, and nothing here can
-        describe a model one way and load it another. Describing such a model
-        runs the repo's config code, which is why the API checks who may deploy
-        a key asking for it (``Processor.start``) before the controller is
-        asked at all; the controller itself trusts its callers.
+        ``trust_remote_code`` is read off the key.
 
         Raises whatever nnsight raised: the caller turns a failure to evaluate
         into that model's deploy error.
