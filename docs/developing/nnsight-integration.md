@@ -198,7 +198,7 @@ exercises the untrusted path.
 Two subclasses that change nothing on the wire. `BackendResponseModel` adds nothing
 to nnsight's `ResponseModel`, and `Status` is re-exported verbatim.
 `BackendRequestModel` adds server-only fields (`id`, `api_key`, `email`,
-`trusted`, `priority`, `payload`, the timing fields — full list in
+`trusted`, `trust_remote_code`, `priority`, `payload`, the timing fields — full list in
 [Schemas](../reference/schemas.md)) plus `respond`/`arespond`.
 
 So **a new status or response field is an nnsight change, not an NDIF change**: a

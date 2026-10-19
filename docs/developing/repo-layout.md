@@ -70,7 +70,7 @@ api/
 ├── start.sh            exec gunicorn with gunicorn_conf
 ├── gunicorn_conf.py    binds the port; forks workers; spawns the dispatcher
 ├── app.py              every HTTP/WS endpoint
-├── auth.py             API-key verification; stamps trusted / priority / email
+├── auth.py             API-key verification; stamps trusted / trust_remote_code / priority / email
 ├── versioning.py       the client nnsight/python version gate
 └── queue/
     ├── config.py         NDIF_QUEUE_* / NDIF_AUTOSCALING_* knobs

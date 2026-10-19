@@ -56,7 +56,9 @@ sequenceDiagram
     D->>D: Processor(model_key).enqueue(...)
     alt no replica yet (cold start)
         D->>R: PUBLISH <session_id> PROVISIONING
-        D->>K: get_deployment(model_key), else scale(model_key, 1, DeploymentConfig(trusted=...))
+        D->>K: get_deployment(model_key)
+        D->>D: key asks trust_remote_code and request may not deploy it? DeploymentError
+        D->>K: else scale(model_key, 1, DeploymentConfig())
         K->>M: create actor, load weights onto assigned GPUs
         D->>R: PUBLISH DEPLOYING
         D->>M: __ray_ready__ (poll until up)
@@ -106,7 +108,8 @@ envelope as the `data` form field and the block as the `blob` file.
 `create_request`) runs three gates before it does any work:
 `require_ray_connection` (503 if the `ray:connected` Redis flag is absent),
 `validate_request` (parse the envelope, verify the API key, stamp `email` /
-`trusted` / `priority` onto the request), and `validate_client_versions`. Then
+`trusted` / `trust_remote_code` / `priority` onto the request), and
+`validate_client_versions`. Then
 it reads the blob into `request.payload`, advances the request to `RECEIVED`,
 and `LPUSH`es the *pickled* request onto the Redis list named by
 `NDIF_QUEUE_KEY` (default `queue`). The `RECEIVED` response is what the HTTP call
@@ -129,8 +132,11 @@ and replies. With a replica serving, the reply is `QUEUED` with the position
 the queue reports. On a cold start `ensure_started` has already set the
 processor to provisioning, so the first reply is `PROVISIONING`, not `QUEUED`;
 `start()` then asks the controller for existing replicas and adopts them, or
-asks `controller.scale` for one more, and broadcasts `DEPLOYING`, then `QUEUED`
-with positions once the pool is ready.
+asks `controller.scale` for one more — unless the key asks for
+`trust_remote_code` and the provisioning request lacks
+`request.trust_remote_code`, which fails the request with a `DeploymentError`
+before the controller is asked ([Auth and Limits](auth-and-limits.md#the-trusted-flag)) —
+and broadcasts `DEPLOYING`, then `QUEUED` with positions once the pool is ready.
 
 **6. Controller places a replica.** `scale` sizes the model from its
 checkpoint's metadata, picks the best node/GPUs, evicts if it must, and creates a detached Ray actor

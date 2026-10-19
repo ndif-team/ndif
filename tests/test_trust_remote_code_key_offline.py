@@ -209,9 +209,13 @@ class TestSpecPlumbing:
 
     def test_the_cli_flags(self):
         from ndif.cli.commands.deploy import deploy
+        from ndif.cli.commands.evict import evict
+        from ndif.cli.commands.restart import restart
         from ndif.cli.commands.scale import scale
 
-        for command in (deploy, scale):
+        # Every command that mints a key from a checkpoint name takes it, or it
+        # could not name a deployment made with it.
+        for command in (deploy, scale, evict, restart):
             names = {opt for p in command.params for opt in p.opts}
             assert "--trust-remote-code" in names
             assert "--trusted" not in names

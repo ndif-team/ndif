@@ -64,7 +64,8 @@ See [queue-internals.md](../developing/queue-internals.md).
 sizes a model for placement: nnsight's `Remotable.describe_checkpoint` reads the
 checkpoint's metadata for its size, parameter count, config and revision, and the
 evaluator pads that (`NDIF_DEFAULT_PADDING_FACTOR`, `NDIF_DEFAULT_PADDING_BIAS`).
-Memoized per model key; re-evaluated when dtype or `trust_remote_code` changes. See
+Memoized per model key and re-evaluated when the dtype changes; `trust_remote_code`
+is in the key, so a key with it and one without are two entries. See
 [controller-internals.md](../developing/controller-internals.md).
 
 ## Eviction
@@ -108,7 +109,9 @@ The WARM tier: weights in a node's **CPU RAM**, budgeted at total RAM ×
 The string identifying a model: the nnsight wrapper's import path, a colon, and its
 JSON identity, e.g.
 `nnsight.modeling.transformers.TransformersModel:{"repo_id": "openai-community/gpt2", "revision": null, "task": "text-generation"}`.
-The `task` is part of it, so one repo under two tasks is two models. Minted
+The `task` is part of it, so one repo under two tasks is two models; so is
+`trust_remote_code`, present only when the client built the model with it
+(`src/ndif/common/model_key.py` `trust_remote_code_of` reads it). Minted
 client-side by `model.to_model_key()` and by the CLI's `get_model_key`
 (`src/ndif/cli/lib/models.py`); the queue's partition key and a telemetry label.
 See [queue-and-scheduling.md](../concepts/queue-and-scheduling.md).
@@ -158,7 +161,8 @@ See [queue-internals.md](../developing/queue-internals.md).
 ## Request
 
 The unit of work, `BackendRequestModel` (`src/ndif/common/schema/request.py`):
-nnsight's `RequestModel` plus a server-side `id`, identity, `trusted` / `priority`,
+nnsight's `RequestModel` plus a server-side `id`, identity, `trusted` /
+`trust_remote_code` / `priority`,
 the `payload`, and status timing. See [schemas.md](schemas.md) and
 [request-lifecycle.md](../concepts/request-lifecycle.md).
 
@@ -196,10 +200,12 @@ start command. `NDIF_SERVICE` picks which and labels telemetry. See
 
 ## Trusted / untrusted
 
-`BackendRequestModel.trusted`: trusted runs the block in the model actor process
-and lets the model load with `trust_remote_code`; untrusted sends it to a runner.
-Stamped at ingress from the API key; with auth off, defaulted to trusted unless the
-client sends `trusted: false`. See
+`BackendRequestModel.trusted`: trusted runs the block in the model actor process;
+untrusted sends it to a runner. Stamped at ingress from the API key; with auth
+off, defaulted to trusted unless the client sends `trusted: false`. A trusted
+request may also deploy a model whose key asks for `trust_remote_code`
+(`BackendRequestModel.trust_remote_code`), a permission the `trust_remote_code`
+user_tag grants on its own. See
 [auth-and-limits.md](../concepts/auth-and-limits.md).
 
 ---

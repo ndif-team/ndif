@@ -1,6 +1,6 @@
 ---
 title: Controller Internals
-one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, how the trusted flag reaches the model load, and how eviction is chosen and executed.
+one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, what the model key says about `trust_remote_code`, and how eviction is chosen and executed.
 tags: [internals, dev, controller, ray, gotchas]
 related: [docs/developing/ray-service.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/queue-internals.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/operating/models-and-deployment.md, docs/runbooks/model-oom-on-deploy.md]
 sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/common/schema/controller.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/auth.py]
@@ -57,7 +57,7 @@ one-shot launching driver `start.sh` runs exits. Because `_ControllerActor.deplo
 | `_ControllerActor` | `src/ndif/services/ray/deployments/controller/controller.py` | The RPC surface. Owns `self.state` (last-applied replicas) and drives Ray actor lifecycle via `build()`/`apply()`. Makes **no** placement decisions. |
 | `Cluster` | `src/ndif/services/ray/deployments/controller/cluster/cluster.py` | The node set. Syncs nodes from Ray, ranks candidate nodes for a placement, fans an evict across nodes. Owns the `ModelEvaluator`. |
 | `Node` | `src/ndif/services/ray/deployments/controller/cluster/node.py` | One GPU node: `GPUResources`, `CPUResources`, its HOT `deployments` and its WARM `cache`. All memory arithmetic and eviction *selection* lives here. |
-| `Deployment` | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | One replica. Placement bookkeeping (gpus, size, pinned, trusted, `deployed` timestamp) **plus** the Ray ops `create`/`delete`/`cache`/`from_cache`. |
+| `Deployment` | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` | One replica. Placement bookkeeping (gpus, size, pinned, `deployed` timestamp) **plus** the Ray ops `create`/`delete`/`cache`/`from_cache`. |
 | `ModelEvaluator` | `src/ndif/services/ray/deployments/controller/cluster/evaluator.py` | Estimates a model's padded byte footprint and how far it shards, memoized per `model_key`. |
 | `Candidate` | `src/ndif/services/ray/deployments/controller/cluster/node.py` | A node's answer to "can you take this model": a `CandidateLevel`, the GPU allocation it would use, the evictions required, and optionally a stated `reason` for refusing. |
 
@@ -85,43 +85,45 @@ workspace memory that scales with model size, which a pure constant underestimat
 Both are overridable per deploy (`DeploymentConfig.padding_factor` / `.padding_bias`) and have
 controller-wide defaults (`NDIF_DEFAULT_PADDING_FACTOR` / `NDIF_DEFAULT_PADDING_BIAS`).
 
-The estimate is cached by `model_key` and recomputed when the request's `dtype` or
-`trust_remote_code` differs from the cached entry (`ModelEvaluator._entry`) — element sizes change
-the number, and repo code can build a different architecture. This is why `_ControllerActor._deploy`
+The estimate is cached by `model_key` and recomputed when the request's `dtype` differs from the
+cached entry (`ModelEvaluator._entry`) — element sizes change the number. Whether repo code runs
+while the checkpoint is described is in the key, so two keys differing in `trust_remote_code` are
+two entries, and the evaluator cannot describe a model one way and the actor load it another. This is why `_ControllerActor._deploy`
 pins `config.dtype` to `NDIF_DEFAULT_DTYPE` before evaluating: the estimate and the actor's actual
 load must use the same dtype, or the accounting is wrong from the start. `_ControllerActor.deploy`
 first warms this cache off the event loop (`_describe`), since sizing reaches the Hub. An evaluator
-failure (bad repo id, gated model, missing trust) is *returned*, not raised — `Cluster.deploy` turns
+failure (bad repo id, gated model, a key without the `trust_remote_code` its checkpoint needs) is *returned*, not raised — `Cluster.deploy` turns
 it into `ModelDeployResult.error` with the full traceback. `ModelEvaluator.__init__` also calls
 `torch.set_default_dtype(torch.bfloat16)`, a process-global side effect.
 
 ## The `trusted` flag
 
-`DeploymentConfig.trusted` (default `False`) is not a knob the controller invents: it rides in from
-the caller and becomes `trust_remote_code` on the model load, so it decides whether a deploy *works
-at all*. From the queue it arrives on the `DeploymentConfig` that `Replica.provision` hands
-`scale`, carrying the trust of the request that first deployed the model — the full path is in
-[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load). Inside the
-controller, `Cluster.deploy` feeds it to the size estimate as `trust_remote_code`, `Node.deploy`
-stores it on the `Deployment`, `_ControllerActor.apply` passes it as
-`BaseModelDeploymentArgs.trust_remote_code`, and `status()` reports it per deployment.
+Whether a model loads with `trust_remote_code` is not a deploy option and not a knob the
+controller invents: it is in the model key. nnsight writes `"trust_remote_code": true` into the
+key's JSON suffix when the client built the model with it, and `from_model_key` reads it back
+wherever the model is sized or loaded, so the controller sizes and loads a model with whatever the
+key says — `DeploymentConfig` has no trust field, `Replica.provision` sends a bare
+`DeploymentConfig()`, and the evaluator, the actor and the sandbox runner cannot be told different
+values. `status()` reports `trust_remote_code` per HOT and WARM deployment, read off the key with
+`src/ndif/common/model_key.py` `trust_remote_code_of`. Who may *deploy* such a key is decided at
+the API, not here — the full path is in
+[API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load).
 
-So **the same checkpoint can deploy for one caller and fail for another**: a repo shipping custom
-modelling code needs `trust_remote_code=True` merely to *build* the architecture, so an untrusted
-deploy fails during evaluation with the repo's own "requires you to execute the code" error while a
-trusted deploy of the identical checkpoint succeeds. Running with auth off defaults requests to
-trusted and hides the distinction — which is why it surprises people the first time auth is
-switched on.
+So **the same checkpoint deploys under two keys**: a repo shipping custom modelling code needs
+`trust_remote_code=True` merely to *build* the architecture, so a key without the field fails
+during evaluation with the repo's own "requires you to execute the code" error while the key
+carrying it succeeds — and a client loading with `trust_remote_code=True` reaches only the latter.
 
-**The trust level of a deployment depends on who deployed it.** The dashboard deploys with
-`trusted: True` as an admin action (`src/ndif/services/dashboard/backend/routers/deployments.py`,
-and its reconcile job), the API queue carries the request's own flag, and the CLI can set it
-explicitly: `ndif deploy --trusted`, or `trusted: true` in `models.yaml` — `load_model_config`
+**Minting such a key means saying so.** The dashboard's `DeployRequest.trust_remote_code`
+(`src/ndif/services/dashboard/backend/routers/deployments.py`, default `False`) and its schedule
+entries carry the field, and the CLI sets it explicitly: `ndif deploy --trust-remote-code`, or
+`trust_remote_code: true` in `models.yaml` — `load_model_config`
 (`src/ndif/cli/lib/model_config.py`) passes every `DeploymentConfig` field through, so a `dtype:`,
 `padding_factor:` or `execution_timeout_seconds:` line takes effect too. `ndif deploy --dtype`
-likewise overrides `NDIF_DEFAULT_DTYPE` for that deploy.
+likewise overrides `NDIF_DEFAULT_DTYPE` for that deploy. The controller, CLI and dashboard are an
+admin surface: none of them checks who asks.
 
-The per-*request* `trusted` flag additionally decides whether user code runs in a separate runner
+The per-*request* `trusted` flag decides whether user code runs in a separate runner
 process — process separation, not a security boundary; see
 [Sandbox Internals](sandbox-internals.md).
 
@@ -232,8 +234,7 @@ entry) and `deployments_to_delete` (in state, gone from the cluster model).
 2. **cache** (HOT→WARM) — `actor.to_cache.remote()`, then **blocks** on every future with `ray.get`.
    The one synchronous step, because step 3 assumes that GPU memory is already free.
 3. **from_cache** (WARM→HOT) — `actor.from_cache.remote(self.gpus)`.
-4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype,
-   `trust_remote_code`), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
+4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
    self.gpus`, then awaits `actor.__ray_ready__`.
 
 Steps 3 and 4 are awaited off the main path by `_ControllerActor._monitor_deployment` — awaiting the
@@ -260,7 +261,8 @@ Schemas live in `src/ndif/common/schema/controller.py` because both sides speak 
 ([Schemas](../reference/schemas.md)); `ModelDeployResult` guarantees exactly one of `replicas` /
 `error` is meaningful. `_ControllerActor.status` starts from Ray's `list_actors()`, collapses
 duplicate records for an actor name to the healthiest state (`RUNNING` < `DEPLOYING` < `UNHEALTHY`),
-then enriches each entry the controller tracks with its level, `pinned`, `trusted`, `dtype`,
+then enriches each entry the controller tracks with its level, `pinned`, `trust_remote_code` (read
+off the key), `dtype`,
 `execution_timeout_seconds`, `repo_id`, `task`, `revision`, `n_params`, `size_bytes`, `actor_class`
 and `gpus` count — so an actor Ray knows about but the controller doesn't ends up with **only**
 `application_state` set.
@@ -295,9 +297,11 @@ computed against. **"No GPU nodes available."** is different: `Cluster.nodes` is
 passthrough. See [Model OOM on Deploy](../runbooks/model-oom-on-deploy.md).
 
 **Deploy fails during evaluation.** The error carries the evaluator's full traceback: usually a
-gated or nonexistent repo, or a model needing `trust_remote_code` (see [The `trusted`
-flag](#the-trusted-flag) — deploy it trusted with `ndif deploy --trusted`, a `trusted: true` entry
-in `models.yaml`, the dashboard, or a request whose API key carries the `trusted` tag).
+gated or nonexistent repo, or a model needing `trust_remote_code` deployed under a key without it
+(see [The `trusted` flag](#the-trusted-flag) — mint the key with `ndif deploy --trust-remote-code`,
+a `trust_remote_code: true` entry in `models.yaml`, the dashboard's `trust_remote_code` field, or a
+client that loads with `trust_remote_code=True` from an API key carrying the `trust_remote_code` or
+`trusted` tag).
 
 **Evict finds nothing.** `Cluster.evict` returns an empty `ReplicaStates` and the CLI prints `✗
 <key>: nothing to evict` (`src/ndif/cli/lib/evict.py`). Usually a model-key mismatch — the key

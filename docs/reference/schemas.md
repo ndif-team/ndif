@@ -37,6 +37,7 @@ server-side ones.
 | `api_key` | `Optional[str]` | `None` | Taken from the `ndif-api-key` header by `validate_request` when one is sent. |
 | `email` | `Optional[str]` | `None` | The key owner's email, resolved at ingress so logs and metrics attribute to a person. With auth on, from Postgres; with auth off, whatever the client sent. |
 | `trusted` | `bool` | `False` | **Selects the execution path** — see below. |
+| `trust_remote_code` | `bool` | `False` | **May deploy a model whose key asks for `trust_remote_code`.** Stamped at ingress by `validate_request`: with auth on, from the key's `trust_remote_code` user_tag or its `trusted` tag (`Identity.trust_remote_code`; trusted implies it); with auth off, the client's value, raised to `True` when the request is trusted. Read only by the request that provisions the model (`Processor.start`, below); a model already running is open to any caller. |
 | `priority` | `bool` | `False` | Jump the queue. With auth on, from the key's `priority` user_tag (`Identity.priority`). Priority requests sort ahead as a *group*, FIFO within each group (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`); no aging, so saturated priority traffic starves normal requests. |
 | `payload` | `Optional[bytes]` | `None` | The serialized interventions blob, filled from the multipart `blob` part by `create_request`. Not part of the client's JSON envelope. |
 | `enqueued_at` | `Optional[float]` | `None` | Unix time the request joined a model's in-memory queue (`Processor.enqueue`); the autoscaler reads it to spot a stale queue. Preserved on a re-queue. |
@@ -52,8 +53,9 @@ runs the block in the model actor process via `BaseModelDeployment.execute`;
 `False` hands it to a runner subprocess (`SandboxHost.run_in_runner`), which
 receives `(payload, compress, dtype, seed, env)` and drives the host's model over
 a Unix socket. A base `ModelActor` ignores the flag and runs everything
-in-process. The flag also rides into the deployment as `DeploymentConfig.trusted`
-(below). The full story, including what each path exposes, is in
+in-process. Whether the *model* runs its own repo code is a separate question,
+answered by the model key (see `DeploymentConfig` below). The full story,
+including what each path exposes, is in
 [auth-and-limits.md](../concepts/auth-and-limits.md) and
 [sandbox-execution.md](../concepts/sandbox-execution.md).
 
@@ -81,10 +83,11 @@ the same sentence. Past the API, the whole request travels as pickle:
 | actor → result | `torch.save` with a CUDA→CPU relocating pickler, zstd level 3 if `compress` | `BaseModelDeployment.execute`, `BaseModelDeployment.prepare_result` |
 
 > **Gotcha:** every server-side field is a declared field, so a client can put
-> `id`, `email`, `priority` or `trusted` in the envelope. With auth on,
-> `validate_request` overwrites `email`, `trusted` and `priority`; with auth off
-> only an unset `trusted` is changed, and client-supplied `email`, `priority` and
-> `id` survive.
+> `id`, `email`, `priority`, `trusted` or `trust_remote_code` in the envelope.
+> With auth on, `validate_request` overwrites `email`, `trusted`,
+> `trust_remote_code` and `priority`; with auth off only an unset `trusted` is
+> changed (and `trust_remote_code` is raised to `true` for a trusted request),
+> and client-supplied `email`, `priority` and `id` survive.
 
 ### Response methods
 
@@ -173,7 +176,6 @@ JSON. `MODEL_KEY`, `REPLICA_ID` and `NODE_ID` are `str` aliases from
 |---|---|---|---|
 | `pinned` | `bool` | `False` | Exempt from autoscaling and cache eviction. |
 | `replicas` | `int` | `1` | **Additive** — how many *new* replicas to place. Shrink with evict. |
-| `trusted` | `bool` | `False` | Allow HuggingFace `trust_remote_code` for this deployment — see below. |
 | `size_bytes` | `Optional[int]` | `None` | The weights in bytes, measured rather than estimated. Skips the Hub round-trip, so a deploy works with the Hub unreachable. Padding still applies. |
 | `padding_factor` | `Optional[float]` | `None` | Multiplicative slack; overrides `NDIF_DEFAULT_PADDING_FACTOR`. |
 | `padding_bias` | `Optional[int]` | `None` | Additive slack for per-process overhead (CUDA context, NCCL buffers, the runner pool); overrides `NDIF_DEFAULT_PADDING_BIAS`. |
@@ -191,14 +193,22 @@ directly instead of expressing "four cards" as a padding fudge factor.
 `replicas=1`), the CLI's deploy lib (`src/ndif/cli/lib/deploy.py`), and the
 controller's `NDIF_DEPLOYMENTS` startup pins (`_ControllerActor.__init__`).
 
-**`DeploymentConfig.trusted` is the request's `trusted` flag, one level up.** On
-demand, `Replica.provision` passes `DeploymentConfig(trusted=processor.trusted)`,
-where `processor.trusted` came from the request that started the model
-(`Processor.ensure_started`). The controller threads it into the evaluator's size
-estimate (`trust_remote_code=config.trusted` in `Cluster.deploy`) and the actor's
-load (`BaseModelDeploymentArgs` in `_ControllerActor.apply`) — the two must agree.
-So a trusted key both runs its block in-process and lets the model's own repo code
-execute at load. The CLI sets it per model with `ndif deploy --trusted`.
+**Whether the model runs its own repo code is not a deploy option; it is in the
+model key.** nnsight writes `"trust_remote_code": true` into a HuggingFace model
+key's JSON suffix when the client built the model with `trust_remote_code=True`,
+and omits the field otherwise. `src/ndif/common/model_key.py`
+`trust_remote_code_of` reads it, and nnsight's `from_model_key` honors it
+wherever the model is sized (the evaluator) or loaded (the actor), so the two
+cannot disagree; a key with the field and one without are two deployments. Who
+may *deploy* such a key is decided at the API: `src/ndif/services/api/queue/processor.py`
+`Processor.start`, on finding nothing running, refuses a key that asks for repo
+code unless the provisioning request's `trust_remote_code` flag is set, and the
+refusal reaches the caller as `Could not deploy this model. …`
+([error-messages.md](./error-messages.md)). A model already running is open to
+any caller — autoscaling and `scale` do not check — and the controller, CLI and
+dashboard are an admin surface that does not check either. The CLI mints such a
+key with `ndif deploy --trust-remote-code`; `Replica.provision` sends a bare
+`DeploymentConfig()`.
 
 ### `ModelDeployResult` and `DeployResponse`
 
@@ -258,8 +268,9 @@ translation, and is spelled out here in full so you don't need the client source
 Where they intentionally differ:
 
 - **Identity and trust are server-decided.** The official client sends the key
-  only in the `ndif-api-key` header and none of `email`, `trusted` or `priority`.
-  With auth on the server stamps all three from the key; with auth off it
+  only in the `ndif-api-key` header and none of `email`, `trusted`,
+  `trust_remote_code` or `priority`. With auth on the server stamps all four
+  from the key; with auth off it
   accepts what the envelope carries (the gotcha above).
 - **The payload is out-of-band on the client, in-band on the server.** The client
   keeps the blob out of `RequestModel` and posts it as a separate multipart part;

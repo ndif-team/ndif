@@ -173,7 +173,8 @@ Sizing, revisions, dtypes and pinning:
 **This image is for running NDIF for yourself.** With authentication off (the
 default — there is no Postgres user database in the container) every request
 is treated as *trusted*: the submitted code runs inside the model process, and
-checkpoints load with `trust_remote_code`. That is the right default on your
+any request may deploy a model that runs its own repo code (`trust_remote_code`
+in its model key). That is the right default on your
 own machine and the wrong one on a network. Before you let anyone else send
 requests, read
 [docs/runbooks/enable-auth.md](https://github.com/ndif-team/ndif/blob/main/docs/runbooks/enable-auth.md)

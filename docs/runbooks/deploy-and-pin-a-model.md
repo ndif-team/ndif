@@ -70,19 +70,23 @@ What happened (`src/ndif/cli/lib/deploy.py` `deploy`):
    failed deploy exits non-zero.
 
 Useful flags (full list in [The ndif CLI](../operating/cli.md)): `--task`,
-`--replicas N`, `--revision`, `--pinned`, `--trusted`, `--dtype`,
+`--replicas N`, `--revision`, `--pinned`, `--trust-remote-code`, `--dtype`,
 `--actor-class`, `-f models.yaml`.
 
 **`--task`** deploys a non-default task. Clients must then load with the same
 task (`TransformersModel(repo, task="…")`), or their requests provision a second,
 default-task deployment.
 
-**`--trusted`** loads the model with `trust_remote_code=True` (needed for repos
-that ship their own modelling code) and marks the deployment trusted; a plain
-`ndif deploy` is untrusted. Dashboard deploys default to trusted and take
-`"trusted": false` per request
+**`--trust-remote-code`** lets the checkpoint's own modelling code run at load
+(HF `trust_remote_code`). Like `--task` it is part of the model key, so clients
+must load with `trust_remote_code=True` too, or their requests go to a different
+deployment without it. The CLI and dashboard deploy such a key without a tag
+check; a client request that would deploy one needs a key with the
+`trust_remote_code` or `trusted` tag ([Enable auth](enable-auth.md)). Dashboard
+deploys take `"trust_remote_code": true` per request, default false
 (`src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest`);
-scheduled ones are always trusted. What "trusted" means beyond loading is in
+a schedule entry carries its own (`ScheduleEventIn.trust_remote_code`). Whether a
+*request* runs in-process is a separate flag, covered in
 [Auth and limits](../concepts/auth-and-limits.md).
 
 ## 2. Confirm it is serving
@@ -108,7 +112,7 @@ Per replica:
 
 ```bash
 ndif status --json-output | jq '.deployments[] | select(.deployment_level=="HOT") |
-  {repo_id, task, replica_id, state: .application_state, pinned, trusted, dtype}'
+  {repo_id, task, replica_id, state: .application_state, pinned, trust_remote_code, dtype}'
 ```
 
 **The real proof is a request.** Nothing above runs a forward pass:
@@ -220,8 +224,8 @@ the Hub and stores the resulting model key, returning **400** if it can't
 The reconcile job (`src/ndif/services/dashboard/jobs/reconcile.py`) runs from cron
 every `NDIF_DASHBOARD_RECONCILE_CRON` (default `*/2 * * * *`) and right after any
 schedule write. It deploys every active entry that is new or no longer HOT,
-pinned and trusted, and evicts model keys that were active on the previous pass
-and no longer are.
+pinned, with the entry's `trust_remote_code` in the key, and evicts model keys
+that were active on the previous pass and no longer are.
 
 Run a pass by hand:
 

@@ -37,10 +37,10 @@ doesn't set it (`src/ndif/services/api/auth.py` `validate_request`).
 - A trusted request's traced block runs **in-process inside the model actor**,
   in the same process as the weights — no runner subprocess, no socket. Whatever
   Python the caller submitted executes with the actor's privileges.
-- The same flag becomes **`trust_remote_code=`** when a model is sized and
-  loaded (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
-  `Cluster.deploy`), so a request naming an arbitrary Hugging Face repo can run
-  that repo's code on your GPU node.
+- A trusted request may **provision a model whose key asks for
+  `trust_remote_code`** (`src/ndif/services/api/queue/processor.py`
+  `Processor.start`), so a request naming an arbitrary Hugging Face repo can
+  run that repo's code on your GPU node at load.
 
 So an unauthenticated NDIF is not "an NDIF anyone can use", it is "an NDIF
 anyone can run arbitrary code on". Enable auth first, then decide who gets the
@@ -52,7 +52,13 @@ it at a Postgres you control with a real password rather than `admin`/`admin`,
 and create users and keys — API keys are UUIDs, and a key is a row in `keys`
 joined to a `users` row. Grant the `trusted` user_tag only to keys you would
 hand your own shell to; grant `priority` to keys that should jump the queue.
-Full walkthrough in [Enable auth](../runbooks/enable-auth.md).
+A third tag, `trust_remote_code`, lets a key provision a model whose key asks
+for the checkpoint's own code and nothing more — its requests still run in the
+sandbox (`trusted` implies it; `src/ndif/services/api/auth.py` `Identity`).
+Postgres needs a `user_tags` row for it:
+`INSERT INTO user_tags (name, description) VALUES ('trust_remote_code', 'may deploy checkpoints that run their own code');`.
+Once any key has deployed such a model, every key can use it. Full walkthrough
+in [Enable auth](../runbooks/enable-auth.md).
 
 **Turning auth on changes behavior for every key without the `trusted` tag.**
 Such a request runs in the sandbox runner, against a weightless copy of the
@@ -119,10 +125,11 @@ stolen cookie is useful. On a headless box, log in with
 `POST /api/auth/login` and reuse the cookie
 ([Admin Dashboard](dashboard.md#scripting-the-dashboard-api)).
 
-Dashboard deploys default to `trusted: true` (an admin action), so they load
-with `trust_remote_code`. Give the dashboard a durable `NDIF_DASHBOARD_DATA_DIR`
-volume; its schedule and monitor state live there. See
-[Admin Dashboard](dashboard.md).
+The dashboard is an admin surface: a deploy or schedule entry with
+`trust_remote_code: true` mints a key that loads the checkpoint's own code, and
+nothing checks who asked. Give the dashboard a durable
+`NDIF_DASHBOARD_DATA_DIR` volume; its schedule and monitor state live there.
+See [Admin Dashboard](dashboard.md).
 
 ## 3. Real object storage, reachable from two networks
 
@@ -263,7 +270,8 @@ durable volumes and retention policy for anything it needs to keep. See
   can fetch that request's latest response, including its result URL. Request
   ids are the only thing protecting it.
 - **No rate limiting or quotas.** The only per-key behaviors implemented are the
-  `trusted` and `priority` tags. A single key can submit unlimited requests.
+  `trusted`, `trust_remote_code` and `priority` tags. A single key can submit
+  unlimited requests.
 - **No multi-tenancy.** All users share the same model deployments and the same
   GPUs. There is no per-user isolation beyond the trusted/untrusted execution
   fork, and no accounting.
@@ -291,7 +299,7 @@ durable volumes and retention policy for anything it needs to keep. See
 
 | # | Check | Where | Done when |
 |---|---|---|---|
-| 1 | `NDIF_POSTGRES_URL` set on the API, keys created, `trusted` granted deliberately | api | `GET /whoami` with a key returns your email; without one, `/request` 401s |
+| 1 | `NDIF_POSTGRES_URL` set on the API, keys created, `trusted` and `trust_remote_code` granted deliberately | api | `GET /whoami` with a key returns your email; without one, `/request` 401s |
 | 2 | Model actor class is a sandbox actor: `NDIF_MODEL_IMPORT_PATH` (or `NDIF_DEFAULT_MODEL_ACTOR_CLASS`) = `ndif.services.ray.sandbox.model.SandboxModelActor`, and `NDIF_TP_MODEL_ACTOR_CLASS` = `ndif.services.ray.tp.model.SandboxedTPModelActor` if TP is on | ray | `ndif status --json-output` shows a sandbox `actor_class` on every replica |
 | 3 | Users told that untagged keys can no longer read weights, take gradients or train | — | — |
 | 4 | Postgres password is not `admin`, and the DB is not published | postgres | — |

@@ -34,7 +34,8 @@ of its hops.
    presigned URL.
 7. **[Auth and Limits](auth-and-limits.md)** — API keys, the `trusted` flag end
    to end (its auth-off default, which actor classes honor it, what the untrusted
-   path cannot do), and what is and isn't enforced.
+   path cannot do), the `trust_remote_code` tag that gates deploying a model that
+   runs its own repo code, and what is and isn't enforced.
 
 ## Related
 

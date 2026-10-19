@@ -75,10 +75,12 @@ constant underestimates for a large one. There is no per-request memory
 reservation beyond this padding. Both are overridable per deploy, and
 `DeploymentConfig.size_bytes` replaces the estimate outright.
 
-The estimate depends on `dtype` and `trust_remote_code` (repo code can build a
-different architecture), so the controller pins each config's dtype to a
-concrete value before evaluating: the number that places the replica must be the
-number the actor loads with. Sizing in practice — which knob to turn, and what
+The estimate depends on `dtype` and on whether the model key asks for
+`trust_remote_code` (repo code can build a different architecture; the evaluator
+reads it off the key, so a checkpoint with and without it is two keys and two
+cache entries), so the controller pins each config's dtype to a concrete value
+before evaluating: the number that places the replica must be the number the
+actor loads with. Sizing in practice — which knob to turn, and what
 the ledger cannot see — is in
 [Model OOM on deploy](../runbooks/model-oom-on-deploy.md).
 
@@ -109,10 +111,14 @@ two replicas with `replicas=1` gives you three. Shrinking is `evict`'s job.
 
 ### `trusted` follows the deployment
 
-The request that first provisions a model fixes its `trust_remote_code` for the
-life of the deployment; each request still forks on its own `request.trusted` for
-where its block runs. The mechanism is in
-[API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load).
+Whether a model runs its own repo code is part of its model key
+(`"trust_remote_code": true` in the key's JSON suffix, written by nnsight when
+the client asked for it), so every replica of a deployment loads the same way,
+`status()` reports `trust_remote_code` per deployment, and a checkpoint loaded
+with and without it is two keys and two deployments. Who may deploy such a key is
+checked once, at the API, by the request that provisions the model; each request
+still forks on its own `request.trusted` for where its block runs. See
+[Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
 ## Eviction
 
@@ -178,9 +184,9 @@ deployment is exempt from eviction and is reported without the
 `schedule.end_time` that non-pinned deployments carry in `status()`.
 
 Replicas the *queue* provisions are never pinned — `Replica.provision` asks
-`controller.scale` with a `DeploymentConfig` that sets only `trusted`, and
-`scale` copies a live replica's class, dtype and GPU count but not `pinned` — so
-autoscaled capacity is always reclaimable.
+`controller.scale` with a bare `DeploymentConfig()`, and `scale` copies a live
+replica's class, dtype and GPU count but not `pinned` — so autoscaled capacity
+is always reclaimable.
 
 ## Related
 

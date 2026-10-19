@@ -58,8 +58,9 @@ driver; the container routes also need the NVIDIA container toolkit.
 
 **Trust default:** with no `NDIF_POSTGRES_URL` the API is unauthenticated, and an
 unspecified `trusted` defaults to trusted — the submitted block executes in-process
-next to the model weights and models load with `trust_remote_code`; an explicit
-`trusted: false` is honored. That is the intended default for running one for
+next to the model weights, and the request may deploy a model that runs its own
+repo code (`trust_remote_code` in its model key); an explicit `trusted: false` is
+honored. That is the intended default for running one for
 yourself. Before anyone else can reach it, work through
 [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md).
 

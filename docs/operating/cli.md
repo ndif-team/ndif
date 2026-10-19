@@ -218,7 +218,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 
 ### `ndif deploy`
 
-`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--pinned] [--replicas N] [--actor-class PATH] [--trusted] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
+`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--pinned] [--replicas N] [--actor-class PATH] [--trust-remote-code] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -230,7 +230,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--pinned` | flag, off | exempt from autoscaling / cache eviction |
 | `--replicas` | int, `1` | **new** replicas to add per model |
 | `--actor-class` | dotted path, default from the controller's env | Ray actor class serving the deployment |
-| `--trusted` | flag, off | load with `trust_remote_code=True` |
+| `--trust-remote-code` | flag, off | let the checkpoint's own modelling code run at load (HF `trust_remote_code`); goes into the model key, so only a client loading with `trust_remote_code=True` reaches the deployment |
 | `--dtype` | str, unset | a torch dtype, or a quantization (`nf4`/`int4`/`4bit`, `fp4`, `int8`/`8bit`, `fp8`). Loads *and* sizes the model; defaults to `NDIF_DEFAULT_DTYPE` |
 | `--gpus` | int, unset | place on exactly this many cards |
 | `--size-bytes` | int, unset | the model's weights, measured; skips the Hub estimate |
@@ -239,7 +239,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--max-tp` | int, unset | largest tensor-parallel degree; `0` never places it tensor-parallel |
 | `--ray-address` / `--redis-url` | `NDIF_RAY_ADDRESS` / `NDIF_REDIS_URL` | Redis is only for the post-deploy nudge |
 
-What each field does, and what `trusted` changes at load, is in
+What each field does, and what `trust_remote_code` changes at load, is in
 [Models and Deployment](models-and-deployment.md#per-model-configuration).
 
 **Deploy is additive.** Each call asks the controller for `--replicas` *more*
@@ -290,7 +290,7 @@ models:
 ```
 
 Every field the deploy path understands passes through: `checkpoint`,
-`revision`, `task`, `pinned`, `replicas`, `actor_class`, `trusted`, `dtype`,
+`revision`, `task`, `pinned`, `replicas`, `actor_class`, `trust_remote_code`, `dtype`,
 `padding_factor`, `padding_bias`, `size_bytes`, `gpus`, `max_tp`,
 `execution_timeout_seconds`, `envoy_class`, and a precomputed `model_key`. Any
 other key is silently dropped. A per-model value overrides the matching CLI flag;
@@ -302,7 +302,7 @@ error. The fully annotated example is in
 
 ### `ndif scale`
 
-`ndif scale CHECKPOINT [-n N] [--revision REV] [--task TASK] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--execution-timeout SECONDS] [--trusted] [--pinned] [--ray-address ADDR]`
+`ndif scale CHECKPOINT [-n N] [--revision REV] [--task TASK] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--execution-timeout SECONDS] [--trust-remote-code] [--pinned] [--ray-address ADDR]`
 
 Adds `-n` replicas (default 1, additive) that look like the ones already serving
 that model: unspecified settings are copied from a live replica rather than
@@ -311,11 +311,13 @@ non-default-dtype model gives more of the same, not a differently-served replica
 under the same key. Anything you pass is used as-is *and* picks which live
 replica to copy the rest from — `ndif scale gpt2 --gpus 1` copies the single-GPU
 replica. With nothing running it behaves as a plain deploy. The queue's
-autoscaler provisions through the same controller call.
+autoscaler provisions through the same controller call. `--trust-remote-code`
+is part of the key, so a deployment made with it needs the flag here to be
+found at all.
 
 ### `ndif evict`
 
-`ndif evict [CHECKPOINTS...] [--revision REV] [--task TASK] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
+`ndif evict [CHECKPOINTS...] [--revision REV] [--task TASK] [--trust-remote-code] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
 
 `--revision` and `--task` apply to *every* checkpoint given. `--replica ID`
 targets one replica and requires exactly one checkpoint. `--all` targets every
@@ -331,7 +333,7 @@ target; name it explicitly.
 
 ### `ndif restart`
 
-`ndif restart CHECKPOINT [--revision REV] [--task TASK] [--replica ID] [--ray-address ADDR]`
+`ndif restart CHECKPOINT [--revision REV] [--task TASK] [--trust-remote-code] [--replica ID] [--ray-address ADDR]`
 — resolves the model key, asks the controller for the deployment's replicas,
 then per replica calls `ray.kill(actor, no_restart=False)` and waits for it to
 come back (`src/ndif/cli/lib/restart.py` `_restart_one`). The actor is declared
@@ -458,7 +460,7 @@ always matches.
 ## Related
 
 - [Models and Deployment](models-and-deployment.md) — keys, levels, pinning,
-  `NDIF_DEPLOYMENTS`, deploy-time `trusted`, what export keeps.
+  `NDIF_DEPLOYMENTS`, `trust_remote_code` in the key, what export keeps.
 - [Configuration](configuration.md) — the precedence the CLI layers on.
 - [The Compose Stack](compose-stack.md), [Quickstart](quickstart.md) — the `just` path.
 - [Admin Dashboard](dashboard.md) — the web UI driving the same `cli/lib` functions.

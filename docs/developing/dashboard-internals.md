@@ -70,7 +70,8 @@ the cache would show the previous level for up to `NDIF_STATUS_TTL_S`. It then:
 2. **Aggregates replicas.** `_aggregate_by_model_key` collapses one-entry-per-replica
    into one card per `model_key` with a `replicas` array; card fields take the best
    value across siblings (`HOT > WARM > COLD`, `RUNNING > DEPLOYING > NOT_STARTED >
-   UNHEALTHY`, `pinned`/`trusted` OR'd). COLD entries pass through keyed by app name.
+   UNHEALTHY`, `pinned` OR'd; `trust_remote_code` is uniform across siblings, being
+   part of the key). COLD entries pass through keyed by app name.
 3. **Tags pinned.** `pinned` is OR'd with "this `model_key` matches an active
    schedule event", using the key stamped on the event at write time.
 
@@ -85,16 +86,22 @@ individual models fail.
 
 ### Dashboard deploys are deployment-trusted
 
-`DeployRequest.trusted` defaults to `True`, and `_spec_from_event`
-(`src/ndif/services/dashboard/jobs/reconcile.py`) hardcodes it for scheduled
-deploys. It becomes `DeploymentConfig.trusted` and then `trust_remote_code=` for both
-the controller's size estimate and the actor's model load — so a checkpoint with
-custom modeling code runs that code in the model actor.
+`DeployRequest.trust_remote_code`
+(`src/ndif/services/dashboard/backend/routers/deployments.py`) defaults to `False`
+and goes into the minted model key, like the task: a checkpoint with custom modeling
+code runs that code at load only under a key that asks for it, and only a client
+loading with `trust_remote_code=True` reaches that deployment. Schedule entries carry
+the same field (`ScheduleEventIn.trust_remote_code`,
+`src/ndif/services/dashboard/backend/schedule_store.py`): `_canonicalize`
+(`src/ndif/services/dashboard/backend/routers/schedule.py`) passes it to
+`canonicalize_checkpoint` when stamping the event's key, and `_spec_from_event`
+(`src/ndif/services/dashboard/jobs/reconcile.py`) passes it through on every
+scheduled deploy. The dashboard is an admin surface and does not check who asks;
+the frontend has no control for the field yet.
 
-A *different* flag shares the name: `BackendRequestModel.trusted` decides whether a
-request's block runs in-process or in a runner, and is set per request at ingress
-(see [Auth and limits](../concepts/auth-and-limits.md)) — never from the dashboard's
-deploy flag.
+A *different* flag, `BackendRequestModel.trusted`, decides whether a request's
+block runs in-process or in a runner, and is set per request at ingress (see
+[Auth and limits](../concepts/auth-and-limits.md)) — never from the dashboard.
 
 ## Config and auth
 
@@ -238,7 +245,7 @@ deploy raises after a successful evict, so the next tick doesn't re-evict. Per-e
 `last_status`/`last_error` come from the deploy result matched by `checkpoint`;
 failures go to Discord via the `schedule_failed` template; successful specs are
 mirrored into the autocomplete cache. `_spec_from_event` holds the schedule's policy:
-`pinned=True`, `trusted=True`.
+`pinned=True`, plus the entry's `trust_remote_code`.
 
 `_trigger_reconcile` (`src/ndif/services/dashboard/backend/routers/schedule.py`)
 imports `reconcile_once` lazily (it pulls in Ray and nnsight) and swallows every

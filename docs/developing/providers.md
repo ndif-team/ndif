@@ -77,13 +77,13 @@ Ray have localhost defaults, and the three optional providers are off.
 |---|---|---|---|
 | Loki | `NDIF_LOKI_URL` | the `ndif` logger also ships JSON lines to Loki | console logging only |
 | InfluxDB | `NDIF_INFLUX_URL` (+ token; `NDIF_INFLUX_ENABLED` not false) | metrics are batched to InfluxDB | every `Metric.update(...)` is a no-op |
-| Postgres | `NDIF_POSTGRES_URL` | API-key auth; `trusted`/`priority` come from the key's tags | **no auth**, and requests are trusted unless the client sends `trusted: false` |
+| Postgres | `NDIF_POSTGRES_URL` | API-key auth; `trusted`/`trust_remote_code`/`priority` come from the key's tags | **no auth**, and requests are trusted unless the client sends `trusted: false` |
 
 Loki and InfluxDB are best-effort telemetry and fail open — their absence costs
 observability and nothing else; the exact fallbacks are in
 [Telemetry internals](telemetry-internals.md#fail-open-behavior). The Postgres row
 is the high-consequence one: a trusted request runs the caller's Python in the model
-actor process, and a deployment it cold-starts loads with `trust_remote_code`.
+actor process, and may deploy a model whose key asks for `trust_remote_code`.
 [Auth and limits](../concepts/auth-and-limits.md) is the home for those
 consequences.
 

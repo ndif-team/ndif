@@ -28,7 +28,8 @@ Three constraints shape the whole design:
    [Status and Results](../concepts/status-and-results.md)'s topic.
 3. **Ingress is where trust is decided.** The `trusted` flag stamped here
    determines whether a caller's Python runs inside the model actor process or in
-   a separate runner, and whether the model loads with `trust_remote_code` — see
+   a separate runner, and the `trust_remote_code` flag stamped beside it whether
+   the caller may deploy a model that runs its own repo code — see
    [The `trusted` flag](#the-trusted-flag--read-this-before-you-deploy).
 
 ## Boot
@@ -80,8 +81,8 @@ raises 503 if absent. Applied to `/request`, `/status`, `/env`, and `/connected`
 dependency. It parses the multipart `data` form field into a
 `BackendRequestModel` (422 on a bad envelope), copies the `ndif-api-key` header
 onto `request.api_key`, calls `verify_api_key`, and stamps `email` / `trusted` /
-`priority` from the resolved `Identity` so they travel with the request through
-the queue.
+`trust_remote_code` / `priority` from the resolved `Identity` so they travel with
+the request through the queue.
 
 **`verify_api_key`** (`src/ndif/services/api/auth.py`) is the policy layer over
 `PostgresProvider`. Auth is entirely optional: if `NDIF_POSTGRES_URL` is unset,
@@ -101,9 +102,11 @@ row (tag NULL), distinguishing "known key, no tags" from "unknown key".
 
 ### The `trusted` flag — read this before you deploy
 
-`validate_request` stamps three things onto the request from the resolved
+`validate_request` stamps four things onto the request from the resolved
 `Identity`: `email`, `trusted` (`Identity.trusted` — the key carries the
-`TRUSTED_TAG` user_tag) and `priority` (`Identity.priority`, the `PRIORITY_TAG`).
+`TRUSTED_TAG` user_tag), `trust_remote_code` (`Identity.trust_remote_code` — the
+key carries the `TRUST_REMOTE_CODE_TAG` user_tag, or `trusted`, which implies it)
+and `priority` (`Identity.priority`, the `PRIORITY_TAG`).
 
 ```python
 client_set_trusted = "trusted" in request.model_fields_set
@@ -111,12 +114,16 @@ identity = await verify_api_key(request.api_key)
 if identity is not None:
     request.email = identity.email
     request.trusted = identity.trusted        # overwrites any client value
+    request.trust_remote_code = identity.trust_remote_code
     request.priority = identity.priority
-elif not client_set_trusted:
-    # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
-    # Default to trusted only when the client didn't ask; an explicit
-    # trusted=True/False from the client stands.
-    request.trusted = True
+else:
+    if not client_set_trusted:
+        # Auth is off (NDIF_POSTGRES_URL unset), a trusted-network / dev mode.
+        # Default to trusted only when the client didn't ask; an explicit
+        # trusted=True/False from the client stands.
+        request.trusted = True
+    # Trusted implies it; otherwise the client's own value stands.
+    request.trust_remote_code = request.trust_remote_code or request.trusted
 ```
 
 `BackendRequestModel.trusted` defaults to `False`
@@ -126,6 +133,14 @@ and any client-supplied value is overwritten. With auth **off**, the client's
 own `trusted` is honored — `model_fields_set` distinguishes "unspecified" (which
 defaults to `True`) from an explicit `trusted=False`, so a dev can opt into the
 sandbox path by sending `trusted: false` without standing up Postgres.
+
+`BackendRequestModel.trust_remote_code` (same file, default `False`) is the
+permission to *deploy* a model whose key asks for the checkpoint's own code. With
+auth **on** it is the key's `trust_remote_code` tag or `trusted`. With auth
+**off** it is the client's own value, raised to `True` when the request is
+trusted — so a dev can send `trusted: false, trust_remote_code: true` to
+exercise an untrusted caller that may still deploy such a model. Only `trusted`
+skips the sandbox; the `trust_remote_code` tag grants the deploy permission alone.
 
 **What `trusted` decides on the GPU side:**
 
@@ -137,13 +152,14 @@ sandbox path by sending `trusted: false` without standing up Postgres.
   driven over a Unix socket, so arbitrary user Python never runs in the actor
   process. This is process separation, not a security boundary — see
   [Sandbox Execution](../concepts/sandbox-execution.md).
-- `trusted` also becomes `trust_remote_code` on the model load, via the path
-  below.
+- Whether the model loads with `trust_remote_code` is **not** `trusted`'s call:
+  that is in the model key, and `trust_remote_code` only decides who may deploy
+  such a key — the path below.
 
 > **Gotcha:** "no Postgres configured" does not only mean "no auth". It means
 > **a caller's arbitrary Python runs in-process next to the weights by default, and
-> models are loaded with `trust_remote_code=True`** — a client can drop to the
-> sandbox path with `trusted: false`, but nothing forces it to. If your API is
+> any caller may deploy a model whose key asks for `trust_remote_code`** — a client
+> can drop to the sandbox path with `trusted: false`, but nothing forces it to. If your API is
 > reachable by anyone you don't trust, set `NDIF_POSTGRES_URL` and issue keys.
 > `priority` is left as the client sent it when auth is off (only the auth-on
 > branch stamps it), defaulting to False.
@@ -151,27 +167,50 @@ sandbox path by sending `trusted: false` without standing up Postgres.
 ### `trusted` through the queue and into the model load
 
 This section is the reference for how a deployment's `trust_remote_code` is
-fixed; other pages link here.
+fixed, and who may fix it; other pages link here.
 
-The flag is not re-derived anywhere. It rides the pickled request into the queue,
-where `Processor.enqueue` passes it to `Processor.ensure_started`, which stores
-it on the processor (`src/ndif/services/api/queue/processor.py`).
-`Replica.provision` then asks the controller for one more replica with
-`DeploymentConfig(trusted=processor.trusted)`
-(`src/ndif/services/api/queue/replica.py`); `Cluster.deploy`
-(`src/ndif/services/ray/deployments/controller/cluster/cluster.py`) passes it to
-the node, which stamps it onto the `Deployment`, and the controller threads it
-into the actor's model load as
-`BaseModelDeploymentArgs(trust_remote_code=deployment.trusted)`
-(`src/ndif/services/ray/deployments/controller/controller.py`
-`_ControllerActor.apply`).
+**The model key carries it.** nnsight writes `"trust_remote_code": true` into a
+HuggingFace model key's JSON suffix when the client built the model with
+`trust_remote_code=True`, and omits the field otherwise, so an ordinary
+checkpoint's key is unchanged. Nothing in ndif carries a second copy:
+`Replica.provision` sends a bare `DeploymentConfig()`
+(`src/ndif/services/api/queue/replica.py`), and nnsight's `from_model_key` reads
+the flag off the key wherever the model is sized or loaded, so the controller's
+evaluator, the actor and the sandbox runner cannot disagree about it. Server code
+that needs the answer without nnsight calls `src/ndif/common/model_key.py`
+`trust_remote_code_of`. A client loading with `trust_remote_code=True` mints a
+different key from one loading without, so the two reach different deployments.
 
-`ensure_started` only assigns when its argument is not `None`, and a
-*re*-provision after an eviction passes `None`. So: **whichever request first
-causes a model to be deployed fixes that deployment's `trust_remote_code` for its
-lifetime.** A trusted user's request deploys the model with
-`trust_remote_code=True`, and every later untrusted request runs against that
-same deployment. Evicting and redeploying is the only way to change it.
+**The request carries the permission.** `BackendRequestModel.trust_remote_code`
+(`src/ndif/common/schema/request.py`) is stamped at ingress (above) and rides the
+pickled request into the queue, where `Processor.enqueue` passes it to
+`Processor.ensure_started`, which records it as `Processor.trust_remote_code`
+(`src/ndif/services/api/queue/processor.py`). `ensure_started` only assigns when
+its argument is not `None`, and a re-provision (the last replica exited with
+requests queued) passes `None`, so the value is that of the request that kicks
+off provisioning.
+
+**The gate is `Processor.start`.** Once `get_deployment` says nothing is running,
+and before `Replica.provision` asks the controller, a key for which
+`trust_remote_code_of` is true is refused as a `DeploymentError` unless
+`Processor.trust_remote_code` is set. The handler delivers it on the request's
+response stream, not as an HTTP status, and purges the queue:
+
+> Could not deploy this model. This model runs code from its own repository
+> (trust_remote_code=True), and deploying such a model needs an API key with the
+> `trust_remote_code` or `trusted` tag. Ask an NDIF admin to deploy it, or to
+> grant your key the tag.
+
+The check sits there rather than at ingress because **a model already running is open
+to any caller**: autoscaling (`scale_up`) and the controller's `scale` do not
+check, and the controller, CLI and dashboard are an admin surface that does not
+check either. It sits before the controller is asked because even sizing such a
+model runs its config code.
+
+With auth on, the tag's row must exist in Postgres —
+`INSERT INTO user_tags (name, description) VALUES ('trust_remote_code', 'may
+deploy checkpoints that run their own code');` — see
+[Enable auth](../runbooks/enable-auth.md).
 
 **`validate_client_versions`** (`src/ndif/services/api/versioning.py`) is called
 inside the `/request` body, not as a dependency. It compares the client's
@@ -188,7 +227,7 @@ flowchart TB
   C["nnsight client"]
   subgraph W["gunicorn worker (uvicorn)"]
     D1["require_ray_connection<br/>GET ray:connected"]
-    D2["validate_request<br/>parse data + verify_api_key<br/>stamp email/trusted/priority"]
+    D2["validate_request<br/>parse data + verify_api_key<br/>stamp email/trusted/trust_remote_code/priority"]
     B["create_request body<br/>blob.read() -> payload<br/>response(RECEIVED)"]
     S["/subscribe websocket"]
   end

@@ -1,9 +1,9 @@
 ---
 title: Auth and Limits
-one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), and every bound the code actually enforces on a request.
+one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag that gates deploying a model that runs its own repo code, and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/api/queue/processor.py, src/ndif/common/model_key.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -23,11 +23,9 @@ flag; other pages link here.
    *inside the model actor process*, next to the weights; an untrusted one runs
    in a separate runner process driven over a Unix socket
    ([Sandbox Execution](sandbox-execution.md)).
-2. **How a model it provisions loads.** The request that first provisions a
-   model passes its flag into the deployment, which loads with
-   `trust_remote_code=trusted` — so the model repo's own Python executes at load
-   time. The value is sticky for the life of the deployment
-   ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
+2. **Whether it may deploy a model that runs its own repo code.** `trusted`
+   implies the `trust_remote_code` permission checked when a request provisions
+   a model whose key asks for `trust_remote_code` (*Deploy-time trust*, below).
 
 **How it is set.**
 
@@ -39,11 +37,17 @@ flag; other pages link here.
 
 Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
 every request that does not say otherwise as trusted: user code in-process, and
-models loaded with `trust_remote_code=True`. That is fine for a laptop and not
-for anything reachable by other people; turning auth on is the switch — see
+free to deploy a model that runs its own repo code. That is fine for a laptop and
+not for anything reachable by other people; turning auth on is the switch — see
 [Enable auth](../runbooks/enable-auth.md). To exercise the untrusted path in dev
 without Postgres, send `trusted: false`; ingress leaves it false. See
 [testing](../developing/testing.md).
+
+`request.trust_remote_code` is stamped next to it: with auth on it is `True` iff
+the key carries the `trust_remote_code` or `trusted` user_tag; with auth off it
+is whatever the client sent, raised to `True` when the request is trusted — so
+`trusted: false, trust_remote_code: true` exercises an untrusted caller that may
+still deploy such a model.
 
 **Which actor class honors it.** The fork lives in the actor class, not the
 request path:
@@ -84,10 +88,24 @@ so new runner pids under the actor show a request took the untrusted path
 ([Enable auth](../runbooks/enable-auth.md#what-an-untagged-key-can-do) has the
 command).
 
-**Deploy-time trust.** A dashboard deploy sets `DeploymentConfig.trusted=True`,
-because dashboard access is shell-equivalent on the node, so the model loads with
-`trust_remote_code`. That is the deployment's flag only: each request routed to
-it still forks on its own `request.trusted`. See
+**Deploy-time trust.** Whether a model runs its own repo code is part of its
+model key, not a deploy option: nnsight writes `"trust_remote_code": true` into
+the key's JSON suffix when the client built the model with
+`trust_remote_code=True` (an ordinary checkpoint's key has no such field), and
+the controller sizes and loads the model with whatever the key says
+(`src/ndif/common/model_key.py` `trust_remote_code_of` reads it). Who may
+*deploy* such a key is decided at the API: `Processor.start`
+(`src/ndif/services/api/queue/processor.py`), on learning the controller has
+nothing running and before it asks for a replica, raises `DeploymentError` unless
+the provisioning request carries `request.trust_remote_code`. The caller gets the
+reason on the request's response stream and the queue is purged. A model already
+running is open to any caller — autoscaling and `controller.scale` do not check —
+and the controller, CLI and dashboard are an admin surface that does not check
+either; `ndif deploy --trust-remote-code`, `trust_remote_code:` in models.yaml
+and the dashboard's `DeployRequest.trust_remote_code` put the field into the key
+they mint. `status()` reports `trust_remote_code` per deployment, read off the
+key. That is the deployment's property only: each request routed to it still
+forks on its own `request.trusted`. See
 [the dashboard docs](../operating/dashboard.md).
 
 ## How the check works
@@ -99,12 +117,12 @@ short-circuit before the request is ever enqueued.
 
 | Situation | Result |
 |---|---|
-| Postgres not configured | `verify_api_key` returns `None`; request allowed, `trusted` as in the table above |
+| Postgres not configured | `verify_api_key` returns `None`; request allowed, `trusted` as in the table above, `trust_remote_code` as the client sent it or `True` when trusted |
 | No key sent | `401` — "Missing or invalid API key" |
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
 | Postgres unreachable or erroring | `503` — fail **closed**, never allow on a backend error |
-| Key found | `Identity` returned; `email` / `trusted` / `priority` stamped on the request |
+| Key found | `Identity` returned; `email` / `trusted` / `trust_remote_code` / `priority` stamped on the request |
 
 **A key is valid iff its row exists in the `keys` table.** The owning user's
 `verification_status` is not checked — issuing and gating keys is the account
@@ -120,12 +138,13 @@ malformed key returns `400` and a Postgres failure `503`.
 
 ## What identity buys you
 
-`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly two
+`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly three
 tags mean anything to the server:
 
 | Tag | Effect |
 |---|---|
-| `trusted` | `request.trusted = True` — see above |
+| `trusted` | `request.trusted = True`, which implies `request.trust_remote_code` — see above |
+| `trust_remote_code` | `request.trust_remote_code = True`: the request may provision a model whose key asks for the checkpoint's own code to run. Nothing more — its blocks still run in the sandbox. The tag is a `user_tags` row the operator seeds ([Enable auth](../runbooks/enable-auth.md)). |
 | `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests. With auth off, `priority` is left as the client sent it (`False` by default). |
 
 Everything else about identity is **observability only**. `email` travels with

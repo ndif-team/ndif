@@ -85,11 +85,14 @@ Submit a job. This is the endpoint nnsight's `RemoteBackend` posts to.
 `data` is validated as a whole `BackendRequestModel`, so it may also carry that
 model's server-side fields (unknown fields are ignored). `payload` always comes
 from the blob part, and `api_key` from the `ndif-api-key` header when one is sent.
-With auth enabled, `email`, `trusted` and `priority` are overwritten from the
-verified key. With auth disabled they survive as sent, and an unset `trusted`
-becomes `true` — so `trusted: false` is how a client exercises the sandbox
-without Postgres. `id` is minted unless `data` supplies one. What `trusted`
-decides is in [auth-and-limits.md](../concepts/auth-and-limits.md).
+With auth enabled, `email`, `trusted`, `trust_remote_code` and `priority` are
+overwritten from the verified key. With auth disabled they survive as sent, an
+unset `trusted` becomes `true`, and `trust_remote_code` is raised to `true` for a
+trusted request — so `trusted: false` is how a client exercises the sandbox
+without Postgres, and `trusted: false, trust_remote_code: true` an untrusted
+caller that may still deploy a model whose key asks for repo code. `id` is
+minted unless `data` supplies one. What `trusted` decides is in
+[auth-and-limits.md](../concepts/auth-and-limits.md).
 
 **Response** — `200` with a `BackendResponseModel`:
 
@@ -236,13 +239,14 @@ rest wait on the `status:ready` pub/sub channel, bounded by
 Entries under `deployments` are keyed `{replica_id}:ModelActor:{model_key}` for a
 live actor and by the bare repo id for a COLD model. A HOT entry carries
 `application_state`, `deployment_level`, `model_key`, `replica_id`, `repo_id`,
-`revision`, `task`, `config` (the HF config as a JSON string), `n_params`,
-`size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`, `trusted`,
+`revision`, `task`, `trust_remote_code`, `config` (the HF config as a JSON
+string), `n_params`, `size_bytes`, `gpus` (how many it spans), `dtype`, `pinned`,
 `execution_timeout_seconds`, `actor_class`, and — unpinned, with a minimum
 deployment time set — `schedule.end_time`. A WARM entry carries the subset from
-`model_key` to `n_params`. The deployment-level `trusted` means the model was
-loaded with `trust_remote_code`; it says nothing about whether a given request
-runs trusted.
+`model_key` to `n_params`. `trust_remote_code` is read off the model key
+(`src/ndif/common/model_key.py` `trust_remote_code_of`) and means the model
+loads with the checkpoint's own code; it says nothing about whether a given
+request runs trusted.
 
 | Code | Cause |
 |---|---|
@@ -340,10 +344,12 @@ not by the job path.
 {"email": "someone@example.com", "tags": ["trusted", "priority"]}
 ```
 
-`tags` are the key's `user_tags`. Two are meaningful to the server: `trusted`
+`tags` are the key's `user_tags`. Three are meaningful to the server: `trusted`
 (the request's code runs in-process in the model actor rather than a separate
-runner, and the model may be deployed with `trust_remote_code`) and `priority`
-(jump the model's queue). See [auth-and-limits.md](../concepts/auth-and-limits.md).
+runner, and it may deploy a model whose key asks for `trust_remote_code`),
+`trust_remote_code` (that deploy permission alone; the request's code still runs
+in a runner) and `priority` (jump the model's queue). See
+[auth-and-limits.md](../concepts/auth-and-limits.md).
 
 With auth enabled, a missing key (401) or an unknown one (403) is not an error
 here: `whoami` turns both into `{"email": null, "tags": []}`. A malformed key

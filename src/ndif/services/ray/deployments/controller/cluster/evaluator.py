@@ -133,8 +133,10 @@ class ModelEvaluator:
         Whether the checkpoint's own code runs while it is described is in the
         key, not a parameter: nnsight reads ``trust_remote_code`` off the key,
         so two keys differing in it are two entries, and nothing here can
-        describe a model one way and load it another. The caller has already
-        checked that it may ask (``untrusted_remote_code`` in ``cluster.py``).
+        describe a model one way and load it another. Describing such a model
+        runs the repo's config code, which is why the API checks who may deploy
+        a key asking for it (``Processor.start``) before the controller is
+        asked at all; the controller itself trusts its callers.
 
         Raises whatever nnsight raised: the caller turns a failure to evaluate
         into that model's deploy error.

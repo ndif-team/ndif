@@ -21,8 +21,9 @@ Commands are for the compose stack from a checkout; `just` wraps
 unset, `verify_api_key` returns `None` and `validate_request` stamps
 `trusted=True` on every request whose envelope doesn't set `trusted` itself
 (`src/ndif/services/api/auth.py` `validate_request`). A trusted request runs its
-Python **inside the model actor process**, next to the weights, and a model it
-auto-deploys loads with `trust_remote_code=True`. The full fork is in
+Python **inside the model actor process**, next to the weights, and may deploy a
+model whose key asks for the checkpoint's own code (`trust_remote_code`). The
+full fork is in
 [Auth and limits](../concepts/auth-and-limits.md).
 
 ## 1. Bring up Postgres
@@ -86,7 +87,8 @@ issuance is normally the account portal's job; here you do it by hand.
 
 | Tag | Constant | Effect |
 |---|---|---|
-| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and any model it triggers a deploy for loads with `trust_remote_code` |
+| `trusted` | `TRUSTED_TAG` | the request runs in-process instead of in a runner, and may deploy a model whose key asks for `trust_remote_code` |
+| `trust_remote_code` | `TRUST_REMOTE_CODE_TAG` | the request may deploy a model whose key asks for `trust_remote_code` (the checkpoint's own modelling code runs at load), and nothing more: its own code still runs in a runner. `trusted` implies it (`Identity.trust_remote_code`) |
 | `priority` | `PRIORITY_TAG` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`) |
 
 Every other tag name is inert.
@@ -95,6 +97,7 @@ Every other tag name is inert.
 docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif -c "
 INSERT INTO user_tags (name, description)
 VALUES ('trusted',  'code runs in the model process'),
+       ('trust_remote_code', 'may deploy checkpoints that run their own code'),
        ('priority', 'served ahead of untagged traffic');"
 ```
 
@@ -155,6 +158,8 @@ SELECT '<key_id>', user_tag_id FROM user_tags WHERE name = 'trusted';
 ```
 
 Grant `trusted` only to keys you would hand a shell on the model node.
+`trust_remote_code` is the narrower grant: the checkpoint's code runs in the
+model process at load, the user's does not.
 
 ### What an untagged key can do
 
@@ -252,9 +257,10 @@ The dashboard has its own single-admin login and ignores `NDIF_POSTGRES_URL`.
 The compose file ships it with `NDIF_DASHBOARD_DEV_MODE: "true"`, which makes
 `require_auth` return the configured username unconditionally
 (`src/ndif/services/dashboard/backend/auth.py` `require_auth`). The dashboard can
-deploy, evict and restart models, and its deploy endpoint defaults to
-`trusted: true` (`src/ndif/services/dashboard/backend/routers/deployments.py`
-`DeployRequest`), so an open dashboard is remote code execution.
+deploy, evict and restart models, and its deploy endpoint takes
+`trust_remote_code: true` with no tag check
+(`src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest`),
+so an open dashboard can load any checkpoint's code onto the cluster.
 
 Generate a bcrypt hash:
 
@@ -295,13 +301,13 @@ curl -s -o /dev/null -w '%{http_code}\n' -b jar localhost:8081/api/schedule   # 
   [Ports](../reference/ports.md).
 - **A database outage rejects every keyed request with 503**, by design: a
   Postgres blip must never re-open the trusted path.
-- **Models deployed while auth was off keep their trusted deployment.** The flag
-  is fixed on the `Deployment` when it is created
-  (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
-  `Deployment`), and the queue reuses it for re-provisions
-  (`src/ndif/services/api/queue/processor.py` `Processor.ensure_started`). Evict
-  and redeploy after turning auth on if a model should stop loading with
-  `trust_remote_code`.
+- **Turning auth on does not change how a running model loads, or who may use
+  it.** Whether a model runs its own repo code is in its model key, not in any
+  request, so a key asking for `trust_remote_code` loads the same way whoever
+  deploys it. Auth decides only who may *deploy* such a key when nothing is
+  running (`src/ndif/services/api/queue/processor.py` `Processor.start`); a model
+  already running is open to every caller. Evict a model deployed while auth was
+  off if untagged keys should not be able to use it.
 - **Enabling auth is what makes per-user attribution work.** `email` is resolved
   at ingress and rides on every log record and metric.
 

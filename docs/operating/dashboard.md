@@ -1,6 +1,6 @@
 ---
 title: Admin Dashboard
-one_liner: Running the NDIF admin dashboard — bringing it up, auth, the views, deploy-time trust, the schedule model, and the monitor + reconcile + report crons.
+one_liner: Running the NDIF admin dashboard — bringing it up, auth, the views, `trust_remote_code` on a deploy, the schedule model, and the monitor + reconcile + report crons.
 tags: [operating, dashboard, gotchas]
 related: [docs/developing/dashboard-internals.md, docs/developing/dashboard-frontend.md, docs/operating/compose-stack.md, docs/operating/models-and-deployment.md, docs/operating/cli.md, docs/operating/observability.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/concepts/sandbox-execution.md]
 sources: [src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/backend/routers/deploy.py, src/ndif/services/dashboard/backend/routers/schedule.py, src/ndif/services/dashboard/backend/schedule_store.py, src/ndif/services/dashboard/jobs/monitor.py, src/ndif/services/dashboard/jobs/reconcile.py, src/ndif/services/dashboard/jobs/report.py, src/ndif/services/dashboard/jobs/util.py, docker/docker-compose.yml, src/ndif/cli/service.py]
@@ -134,21 +134,29 @@ to create or edit one; each entry shows its most recent reconcile status.
 
 ### Dashboard deploys are trusted
 
-A deployment's `trusted` flag becomes `trust_remote_code=` when the controller
-sizes and loads the model, so a checkpoint shipping custom modeling code runs
-that code inside the model actor. From the dashboard:
+A model loads with `trust_remote_code=True` only when its model key says so,
+and the dashboard mints that key from the `trust_remote_code` field it is
+given — the same field `ndif deploy --trust-remote-code` sets. A checkpoint
+shipping custom modeling code then runs that code inside the model actor. From
+the dashboard:
 
-- **Deploy and Add Replica** send `trusted: true` — the default of the
-  `DeployRequest` model (`src/ndif/services/dashboard/backend/routers/deployments.py`),
-  which the UI never changes. A caller of the HTTP API can send
-  `trusted: false`.
-- **Scheduled models** are always trusted and pinned: reconcile builds each spec
-  with both hard-coded (`src/ndif/services/dashboard/jobs/reconcile.py`
+- **Deploy and Add Replica** carry `trust_remote_code` on the `DeployRequest`
+  model (`src/ndif/services/dashboard/backend/routers/deployments.py`), default
+  `false`. The UI has no control for it, so setting it is a call to the HTTP API
+  with `trust_remote_code: true`; a WARM card's redeploy sends the existing
+  `model_key`, which already carries whatever was minted.
+- **Scheduled models** are always pinned and carry the field per event:
+  `ScheduleEventIn.trust_remote_code` (default `false`) goes into the event's
+  `model_key` when it is written (`_canonicalize` in
+  `src/ndif/services/dashboard/backend/routers/schedule.py`), and reconcile
+  passes it through (`src/ndif/services/dashboard/jobs/reconcile.py`
   `_spec_from_event`).
 
-Deploy from the dashboard only what you'd deploy with `ndif deploy --trusted`.
-This is deploy-time trust; it does not decide where a *request's* code runs —
-that is the request's own `trusted`, stamped by the API. See
+The dashboard is an admin surface and checks nothing about who asked: set the
+field only for what you'd deploy with `ndif deploy --trust-remote-code`. Once
+the model is running, every API key can use it. The field says nothing about
+where a *request's* code runs — that is the request's own `trusted`, stamped by
+the API. See
 [Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) and
 [Sandbox Execution](../concepts/sandbox-execution.md).
 
@@ -162,7 +170,7 @@ D=http://localhost:8081
 curl -s -c jar -H 'content-type: application/json' \
   -d '{"username":"admin","password":"<password>"}' $D/api/auth/login
 curl -s -b jar -H 'content-type: application/json' $D/api/deployments/deploy \
-  -d '{"checkpoint":"openai-community/gpt2","trusted":false}'
+  -d '{"checkpoint":"openai-community/gpt2","pinned":true}'
 curl -s -b jar -H 'content-type: application/json' $D/api/deployments/evict \
   -d '{"model_key":"<model_key>","replica":"<replica_id>"}'
 ```
@@ -170,10 +178,10 @@ curl -s -b jar -H 'content-type: application/json' $D/api/deployments/evict \
 | Endpoint | Body (`src/ndif/services/dashboard/backend/routers/`) |
 |---|---|
 | `POST /api/auth/login` | `{username, password}`; sets the HttpOnly session cookie |
-| `POST /api/deployments/deploy` | `DeployRequest`: `checkpoint` (required), optional `model_key` (used verbatim), `trusted` (default `true`), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`, `pinned`, `replicas` |
+| `POST /api/deployments/deploy` | `DeployRequest`: `checkpoint` (required), optional `model_key` (used verbatim), `trust_remote_code` (default `false`; part of the minted key), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`, `pinned`, `replicas` |
 | `POST /api/deployments/evict` | `EvictRequest`: `model_key`, optional `replica` |
 | `POST /api/deployments/restart` | `RestartRequest`: `model_key`, optional `replica` |
-| `POST /api/schedule` | `ScheduleEventIn`: `title`, `checkpoint`, `start`, optional `end` (open-ended when absent), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`; `model_key` is recomputed server-side |
+| `POST /api/schedule` | `ScheduleEventIn`: `title`, `checkpoint`, `start`, optional `end` (open-ended when absent), `revision`, `task`, `trust_remote_code` (default `false`; part of the key), `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`; `model_key` is recomputed server-side |
 
 ## The schedule model
 
@@ -181,12 +189,12 @@ A schedule event is *one model, pinned, over a time window*. It is not a
 deployment topology and not a replica count.
 
 - **One model per event.** Want three models scheduled? Three events.
-- **Always pinned** (and trusted). `pinned` means only "the controller must not
-  evict this".
+- **Always pinned.** `pinned` means only "the controller must not evict this".
 - **Active window is `[start, end)`.** `end: null` is open-ended — active forever
   after `start` — which is how the UI expresses "just keep this pinned".
 - **Per-event fields mirror the deployment config**: `revision`, `task`,
-  `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`.
+  `trust_remote_code`, `actor_class`, `envoy_class`, `padding_factor`,
+  `execution_timeout_seconds`.
 - **`model_key` is server-set.** Every write resolves the checkpoint against
   HuggingFace and stamps the canonical checkpoint, revision and `model_key` onto
   the event. A typo'd repo fails the write with a 400 instead of silently failing

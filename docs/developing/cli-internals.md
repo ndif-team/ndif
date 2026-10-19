@@ -110,11 +110,11 @@ Three conventions make it work for both callers:
 `RayProvider.connected()`, which requires the `Controller` actor) and
 `normalize_specs`, the one place a deploy spec's shape is defined. Its fields:
 `checkpoint`, `revision`, `task`, `pinned`, `replicas`, `actor_class`,
-`envoy_class`, `trusted`, `execution_timeout_seconds`, the placement overrides
+`envoy_class`, `trust_remote_code`, `execution_timeout_seconds`, the placement overrides
 `padding_factor`, `padding_bias`, `size_bytes`, `gpus`, `max_tp`, and an optional
 precomputed `model_key`. `dtype` is not normalized; `lib.deploy.deploy` carries it
 across from the raw spec. Every field is reachable from `ndif deploy` flags
-(`--task`, `--trusted`, `--dtype`, `--gpus`, `--size-bytes`, `--padding-factor`,
+(`--task`, `--trust-remote-code`, `--dtype`, `--gpus`, `--size-bytes`, `--padding-factor`,
 `--padding-bias`, `--max-tp`, `--actor-class`, ...) and from a `models.yaml` entry.
 
 ## Model keys and models.yaml
@@ -124,25 +124,30 @@ dispatcher, actor names). `src/ndif/cli/lib/models.py` `get_model_key` builds th
 nnsight wrapper class on meta — no weights — and calls `to_model_key()`:
 
 ```python
-def get_model_key(checkpoint, revision=None, envoy_class=None, task=None) -> str:
+def get_model_key(checkpoint, revision=None, envoy_class=None, task=None,
+                  trust_remote_code=False) -> str:
     from nnsight.util import from_import_path
     cls = from_import_path(envoy_class or DEFAULT_ENVOY_CLASS)
     kwargs = {} if task is None else {"task": task}
+    if trust_remote_code:
+        kwargs["trust_remote_code"] = True
     return cls(checkpoint, revision=revision, **kwargs).to_model_key()
 ```
 
 `DEFAULT_ENVOY_CLASS` is `nnsight.modeling.transformers.TransformersModel`, and its
 import path prefixes the key, so a key names the class to reconstruct, the repo, the
-revision and the pipeline **task**. Left unset, the task is inferred from the
-checkpoint exactly as an nnsight client with no `task=` infers it, so both mint the
-same key; one checkpoint deployed under two tasks is two deployments. Helpers in the
-same module:
+revision, the pipeline **task** and — only when asked for — `trust_remote_code`.
+Left unset, the task is inferred from the checkpoint exactly as an nnsight client
+with no `task=` infers it, so both mint the same key; one checkpoint deployed under
+two tasks is two deployments, and so is one deployed with and without
+`trust_remote_code` (a client that loads with it mints the key that carries it).
+Helpers in the same module:
 
 - `extract_repo_id_from_model_key` — display-only string scan; returns the key
   unchanged when it can't find a repo id.
 - `extract_task_from_model_key` — the `task` from the JSON suffix, or `None` for a
   suffix that carries none (a vLLM key, a wrapper with no task).
-- `canonicalize_checkpoint(checkpoint, revision, envoy_class, task)` —
+- `canonicalize_checkpoint(checkpoint, revision, envoy_class, task, trust_remote_code)` —
   `(repo_id, revision, model_key)` from one lookup, so the dashboard's schedule store
   persists both without resolving twice.
 
