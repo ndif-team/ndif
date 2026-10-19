@@ -94,12 +94,10 @@ so replicas of the same model compete for the same line — the first free repli
 takes the next request in service order. Nothing partitions requests across
 replicas in advance.
 
-> **Gotcha:** the `Processor` records `trusted` from the request that first
-> provisions it and passes it into the `DeploymentConfig` it sends the
-> controller — which becomes the deployment's `trust_remote_code`. A
-> re-provision keeps the original value, so the *first* requester of a model
-> decides how it loads for everyone who follows, until it is evicted. See
-> [Auth and Limits](auth-and-limits.md#the-trusted-flag).
+> **Gotcha:** `Processor.start` refuses to provision a key carrying
+> `trust_remote_code` unless a queued request's API key has the
+> `trust_remote_code` or `trusted` tag; a model already running serves everyone.
+> See [Auth and Limits](auth-and-limits.md#trust_remote_code).
 
 ## Autoscaling: the second and third replica
 

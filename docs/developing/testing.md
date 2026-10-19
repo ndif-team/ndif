@@ -137,17 +137,17 @@ run in a runner process:
 
 1. **The request is untrusted.** `SandboxModelDeployment.execute`
    (`src/ndif/services/ray/sandbox/model.py`) sends a trusted request to the base
-   in-process path. With auth off an unspecified `trusted` defaults to `True`, but
-   `validate_request` (`src/ndif/services/api/auth.py`) honors an explicit value —
-   so sending `trusted: false` forces the sandbox path with no Postgres.
+   in-process path. With auth off unspecified `tags` default to `{"trusted"}`, but
+   `validate_request` (`src/ndif/services/api/auth.py`) honors explicit ones —
+   so sending `tags: []` forces the sandbox path with no Postgres.
 2. **The deployed actor class is the sandbox one.** The controller's default is the
    in-process `ModelActor`; the compose stack selects `SandboxModelActor` through
    `NDIF_DEFAULT_MODEL_ACTOR_CLASS`. A hand-run `ndif start ray` that sets neither
    has no sandbox to use.
 
-With compose, condition 2 holds. nnsight's request envelope has no `trusted` field,
+With compose, condition 2 holds. nnsight's request envelope has no `tags` field,
 so condition 1 means injecting it: `tests/conftest_untrusted.py` patches
-`RequestModel.metadata` to add `"trusted": false`, as a plugin that forces the
+`RequestModel.metadata` to add `"tags": []`, as a plugin that forces the
 whole run untrusted:
 
 ```bash
@@ -168,8 +168,8 @@ same `request_dtype` autocast region — the runner around the block, the
 
 **With real auth** instead of a client-set flag: enable Postgres
 ([Enable auth](../runbooks/enable-auth.md)), create a key *without* the `trusted`
-tag, and set `NDIF_API_KEY` for the client. The key's tag then decides and a
-client-supplied `trusted` is overwritten; this also exercises `verify_api_key`'s
+tag, and set `NDIF_API_KEY` for the client. The key's tags then decide and
+client-supplied `tags` are overwritten; this also exercises `verify_api_key`'s
 401/400/403/503 responses, which nothing else does.
 
 To confirm which path a request took, look for a runner process per request:
@@ -199,6 +199,6 @@ standard is in the root [CONTRIBUTING.md](../../CONTRIBUTING.md#docs).
 ## Related
 
 [Contributing](contributing.md) for house style; [Sandbox internals](sandbox-internals.md)
-for what `trusted=False` exercises; [Auth and limits](../concepts/auth-and-limits.md)
+for what an untrusted request exercises; [Auth and limits](../concepts/auth-and-limits.md)
 for why auth-off implies trusted; [Quickstart](../operating/quickstart.md) for
 bringing a stack up.

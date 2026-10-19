@@ -42,12 +42,13 @@ lifetime="detached", runtime_env=...).remote(**deployment_args.model_dump())`, w
 | `execution_timeout` | `None` | `DeploymentConfig.execution_timeout_seconds`, else `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, **unset by default**, so no cap at all (`_ControllerActor.apply`) |
 | `gpu_mem_bytes_by_id` | `{}` | Injected by `Deployment.create` from the placement the cluster chose |
 | `dtype` | `"bfloat16"` | `DeploymentConfig.dtype`, else `NDIF_DEFAULT_DTYPE` |
-| `trust_remote_code` | `False` | `DeploymentConfig.trusted`, from the `trusted` flag of the request that triggered the deployment — see [API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load) |
 
-Only these five fields cross the boundary — a constructor parameter that isn't a
+Only these four fields cross the boundary — a constructor parameter that isn't a
 field here can never be set by the controller. `BaseModelDeployment.__init__` binds
-the first four by name; anything else lands in `self.kwargs`, forwarded verbatim into
-`from_model_key` at load time, which is how `trust_remote_code` reaches transformers.
+all four by name; anything else lands in `self.kwargs`, forwarded verbatim into
+`from_model_key` at load time. `trust_remote_code` is not an argument: `from_model_key`
+reads it off the model key
+([Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).
 `dtype` is kept twice: `dtype_name` (what the loader is handed — a quantization name
 like `nf4` is not a `torch.dtype`) and `dtype`, the resolved compute dtype that user
 execution autocasts to.
@@ -92,7 +93,8 @@ model = HuggingFaceModel.from_model_key(
 - `from_model_key` is nnsight's `Remotable` classmethod: it splits the class import
   path off the key and delegates to that wrapper's `_remoteable_from_model_key`. For
   a HuggingFace model the rest of the key is `{"repo_id": ..., "revision": ...,
-  "task": ...}`, so **the revision and the pipeline task are part of the model key**,
+  "task": ..., "trust_remote_code": true}` (the last only when set), so **the
+  revision, the pipeline task and `trust_remote_code` are part of the model key**,
   not separate args. `dispatch=True` skips nnsight's meta-device phase.
 - After a `torch.cuda.synchronize()` (accelerate's copies are async),
   `verify_device_placement` walks every parameter and buffer and raises if one is
@@ -104,9 +106,9 @@ model = HuggingFaceModel.from_model_key(
   `cleanup()` skips them on every request. `from_cache` does not refreeze: a
   request preempted by `to_cache` can still have a thread running then.
 
-> **Gotcha:** `dtype` and `trust_remote_code` must match what the controller's
-> evaluator sized this model with, or the GPU accounting that placed the replica is
-> wrong. Hence the controller pins `config.dtype` before evaluating
+> **Gotcha:** `dtype` must match what the controller's evaluator sized this model
+> with, or the GPU accounting that placed the replica is wrong. Hence the controller
+> pins `config.dtype` before evaluating
 > (`src/ndif/services/ray/deployments/controller/controller.py` `_ControllerActor._deploy`).
 
 PEFT adapters are **not** a load-time concern: the base model is named by the model
@@ -138,11 +140,11 @@ actor — drop the replica, re-queue at the front. An actor class that sets
 
 ## Trusted and untrusted requests
 
-`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`, default `False`)
-is stamped at ingress from the API key's `trusted` user_tag; **with auth off — no
-`NDIF_POSTGRES_URL` — it defaults to trusted but honors a client-supplied
-`trusted: false`** (`src/ndif/services/api/auth.py` `validate_request`). The flag
-decides where the block runs:
+`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`) is whether
+the request's tags, stamped at ingress from the API key, include `trusted`;
+**with auth off — no `NDIF_POSTGRES_URL` — the tags default to `{"trusted"}` but
+a client-supplied `tags: []` is honored** (`src/ndif/services/api/auth.py`
+`validate_request`). The flag decides where the block runs:
 
 - **Trusted** → `BaseModelDeployment.execute`, in the actor process, in the same
   address space as the weights. That is the path documented below.
@@ -156,7 +158,7 @@ decides where the block runs:
 
 The queue's replica worker calls `handle.run.remote(request)` and awaits it
 (`Replica.dispatch` in `src/ndif/services/api/queue/replica.py`). The request carries
-`payload` (the serialized tracer blob), `compress`, `env`, `trusted`, and the
+`payload` (the serialized tracer blob), `compress`, `env`, `tags`, and the
 identity fields (`id`, `api_key`, `email`, `session_id`) used for responses and
 telemetry.
 

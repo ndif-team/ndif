@@ -188,7 +188,6 @@ class Node:
         execution_timeout_seconds: Optional[float] = None,
         actor_class: Optional[Union[str, type]] = None,
         dtype: Optional[str] = None,
-        trusted: bool = False,
     ) -> REPLICA_ID:
         """Place a new HOT replica, optionally promoting a WARM one.
 
@@ -225,7 +224,6 @@ class Node:
             execution_timeout_seconds=execution_timeout_seconds,
             actor_class=actor_class,
             dtype=dtype,
-            trusted=trusted,
         )
 
         return replica_id

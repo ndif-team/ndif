@@ -14,13 +14,15 @@ the client is nnsight, whose docs live in its own repo.
 
 ## Read this before anything else
 
-Where user code runs depends on one boolean, `request.trusted`, stamped at ingress
-from the API key. A trusted block runs **inside the model actor process**, next to
-the weights, and the model loads with `trust_remote_code`; an untrusted one runs in
-a separate runner process driven over a Unix socket. With auth off (no
-`NDIF_POSTGRES_URL`) a client-supplied `trusted` is honored and an unspecified one
-defaults to trusted — so a bare `just up` is unauthenticated **and** runs user code
-in-process. Send `trusted: false` to exercise the runner path without Postgres.
+Where user code runs depends on one boolean, `request.trusted`, read from the tags
+stamped at ingress from the API key. A trusted block runs **inside the model actor process**, next to
+the weights; an untrusted one runs in a separate runner process driven over a Unix
+socket. Whether a model runs its own repo code is the model key's
+`trust_remote_code` field, a different thing; who may deploy one is in
+`docs/concepts/auth-and-limits.md`. With auth off (no
+`NDIF_POSTGRES_URL`) client-supplied `tags` are honored and unspecified ones
+default to trusted — so a bare `just up` is unauthenticated **and** runs user code
+in-process. Send `tags: []` to exercise the runner path without Postgres.
 The sandbox is process separation, not a security boundary. Read
 [docs/concepts/sandbox-execution.md](docs/concepts/sandbox-execution.md) before
 changing or describing it.

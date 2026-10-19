@@ -68,7 +68,7 @@ narrower "what is installed".
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
 | `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status --verbose` per-GPU free memory | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
-| `ndif deploy` errors with an HF `trust_remote_code` message | CLI deploys are untrusted unless you say otherwise | the evaluator traceback in the error | `ndif deploy --trusted <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) |
+| `ndif deploy` errors with an HF `trust_remote_code` message | The repo ships custom modelling code and the key lacks `trust_remote_code` | the evaluator traceback in the error | `ndif deploy --trust-remote-code <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trust_remote_code-in-the-model-key) |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision and task are part of the key), or the replica is only WARM | `ndif status --json-output` for the exact key | Pass the deployment's `--revision` / `--task` |
 | `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not — or the API restarted under five seconds ago | `curl localhost:8001/ping` | Wait five seconds; if it persists, restart `api` |
 | `ndif start` printed ✓ but `/connected` never leaves 503 | A service died after its 2-second startup check | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
@@ -241,7 +241,8 @@ Model-actor logs are the ones people can't find: they are under
 | `CANT_ACCOMMODATE: placed N of M new replicas before the cluster ran out of room.` | Nodes exist; none can fit the padded size, even after every legal eviction | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | A node-stated reason (for example a `gpus` count the model can't split into) | The request itself can't be placed as asked | Fix the `gpus` / `max_tp` you passed |
 | An evaluator traceback (gated repo, 401, unknown repo id) | Sizing failed before placement. `HF_TOKEN` must be present wherever the deploy runs | Set `HF_TOKEN` |
-| An HF "requires you to execute the code" error | The deployment is untrusted; the repo ships custom modeling code | Redeploy trusted: `ndif deploy --trusted`, a `trusted: true` YAML entry, or the dashboard |
+| An HF "requires you to execute the code" error | The repo ships custom modeling code and the key lacks `trust_remote_code` | Deploy with `--trust-remote-code` ([the key field](models-and-deployment.md#trust_remote_code-in-the-model-key)) |
+| The `Could not deploy this model` refusal for `trust_remote_code` on a client's request | Nothing is running for that key and no queued request's API key has the tag ([Error Messages](../reference/error-messages.md#error-responses)) | Deploy it as an admin, or grant the key the `trust_remote_code` user_tag |
 | `ndif status` shows the actor `UNHEALTHY`, repeatedly | The actor dies during weight load and Ray restarts it | The actor's log in the Ray dashboard; usually a load-time OOM |
 | Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/api/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
 

@@ -141,6 +141,8 @@ def _print_deployment(dep: dict, indent: int = 4) -> None:
         parts.append(dep["application_state"])
     if dep.get("task"):
         parts.append(dep["task"])
+    if dep.get("trust_remote_code"):
+        parts.append("trust_remote_code")
     if dep.get("revision"):
         parts.append(f"rev: {dep['revision']}")
     n = dep.get("n_params")

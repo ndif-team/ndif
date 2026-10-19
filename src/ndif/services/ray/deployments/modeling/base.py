@@ -97,10 +97,6 @@ class BaseModelDeploymentArgs(BaseModel):
     # torch dtype name (e.g. "bfloat16"). Must match the dtype the controller's
     # evaluator estimated this model's size with, or GPU accounting is wrong.
     dtype: str = "bfloat16"
-    # Whether the model may run its own repo code at load (HF trust_remote_code).
-    # Set from the trusted flag of the request that deployed it; forwarded through
-    # the actor's **kwargs into from_model_key. Must match what the evaluator sized.
-    trust_remote_code: bool = False
 
 
 class BaseModelDeployment:

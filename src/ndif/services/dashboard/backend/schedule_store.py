@@ -12,6 +12,7 @@ Schema (``schedule.json``)
           "checkpoint": "meta-llama/Llama-3.1-8B",
           "revision": null,
           "task": null,
+          "trust_remote_code": false,
           "actor_class": null,
           "envoy_class": null,
           "padding_factor": null,
@@ -73,6 +74,9 @@ class ScheduleEventIn(BaseModel):
     # mints, so it decides which deployment the entry pins. Inferred from the
     # checkpoint when unset.
     task: Optional[str] = None
+    # Whether the checkpoint's own modelling code may run at load; part of the
+    # model_key like the task.
+    trust_remote_code: bool = False
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None

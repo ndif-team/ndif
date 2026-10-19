@@ -187,7 +187,6 @@ class Cluster:
                 model_key,
                 padding_factor=config.padding_factor,
                 dtype=config.dtype,
-                trust_remote_code=config.trusted,
                 size_bytes=config.size_bytes,
                 padding_bias=config.padding_bias,
             )
@@ -229,7 +228,6 @@ class Cluster:
                 max_tp = self.evaluator.max_tp(
                     model_key,
                     dtype=config.dtype,
-                    trust_remote_code=config.trusted,
                     override=config.max_tp,
                 )
 
@@ -300,11 +298,9 @@ class Cluster:
                         len(candidate.gpus),
                         self.default_model_actor_class,
                         dtype=config.dtype,
-                        trust_remote_code=config.trusted,
                         max_tp_override=config.max_tp,
                     ),
                     dtype=config.dtype,
-                    trusted=config.trusted,
                 )
 
                 model_result.replicas.append(new_replica_id)

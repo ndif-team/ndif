@@ -39,7 +39,7 @@ request runs in the model actor process, the plain in-process path. The fork is
 `SandboxModelDeployment.execute` (`src/ndif/services/ray/sandbox/model.py`).
 How the flag is set — including the auth-off default of trusted, which means a
 bare `just up` never exercises the sandbox unless a request sends
-`trusted: false` — and which actor classes fork at all are in
+`tags: []` — and which actor classes fork at all are in
 [Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
 The sandbox reuses nnsight's own mediator, batching, and cache machinery rather

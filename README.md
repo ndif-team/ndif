@@ -18,8 +18,8 @@ large models on a shared GPU cluster. Researchers point nnsight at an NDIF
 endpoint and run experiments on models too big to fit on their own hardware.
 
 With no authentication configured — the default — a request that doesn't specify
-`trusted` is trusted, and its code runs inside the model process; an explicit
-`trusted: false` is honored. An untrusted request's code runs in a separate
+`tags` is trusted, and its code runs inside the model process; an explicit
+`tags: []` is honored. An untrusted request's code runs in a separate
 process, one fresh process per request, when the deployment uses the sandboxed
 model actor, which the compose stack sets and the published image and a
 from-source install do not (`NDIF_DEFAULT_MODEL_ACTOR_CLASS`; see
@@ -57,9 +57,10 @@ Three ways to stand up your own NDIF. All three need an NVIDIA GPU and a CUDA
 driver; the container routes also need the NVIDIA container toolkit.
 
 **Trust default:** with no `NDIF_POSTGRES_URL` the API is unauthenticated, and an
-unspecified `trusted` defaults to trusted — the submitted block executes in-process
-next to the model weights and models load with `trust_remote_code`; an explicit
-`trusted: false` is honored. That is the intended default for running one for
+unspecified `tags` default to trusted — the submitted block executes in-process
+next to the model weights, and the request may deploy a model that runs its own
+repo code (`trust_remote_code` in its model key); an explicit `tags: []` is
+honored. That is the intended default for running one for
 yourself. Before anyone else can reach it, work through
 [docs/runbooks/enable-auth.md](docs/runbooks/enable-auth.md).
 

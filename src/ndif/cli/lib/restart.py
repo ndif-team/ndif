@@ -14,6 +14,7 @@ def restart(
     *,
     revision: Optional[str] = None,
     task: Optional[str] = None,
+    trust_remote_code: bool = False,
     model_key: Optional[str] = None,
     replica: Optional[str] = None,
     ray_address: Optional[str] = None,
@@ -38,7 +39,9 @@ def restart(
             raise ValueError("Either model_key or checkpoint is required")
         rev_str = f" (revision: {revision})" if revision else ""
         emit(on_message, f"Generating model key for {checkpoint}{rev_str}...")
-        model_key = get_model_key(checkpoint, revision, task=task)
+        model_key = get_model_key(
+            checkpoint, revision, task=task, trust_remote_code=trust_remote_code
+        )
         emit(on_message, f"  Model key: {model_key}")
         if task is None:
             emit(on_message,

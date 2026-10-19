@@ -151,7 +151,6 @@ def spawn(
     timeout: float = 30.0,
     peers: int = 1,
     model_key: Optional[str] = None,
-    trust_remote_code: bool = False,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -165,8 +164,8 @@ def spawn(
     local objects rather than to ``None``. It is told at launch for the same
     reason ``peers`` is, and because the build is what the readiness wait is
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
-    behaviour before meta models, and what a standalone runner gets.
-    ``trust_remote_code`` is the actor's, since the build has to be the same one.
+    behaviour before meta models, and what a standalone runner gets. Whether
+    the checkpoint's own code may run during that build is in the key.
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     env = runner_env()
@@ -186,7 +185,7 @@ def spawn(
     # mid-request indistinguishable from one that hung, and cost hours.
     argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
     if model_key is not None:
-        argv += [model_key, "1" if trust_remote_code else "0"]
+        argv.append(model_key)
     process = subprocess.Popen(
         argv,
         env=env,
@@ -230,14 +229,12 @@ class Pool:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
-        trust_remote_code: bool = False,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
         self.model_key = model_key
-        self.trust_remote_code = trust_remote_code
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -252,7 +249,6 @@ class Pool:
             quiet=self.quiet,
             peers=self.peers,
             model_key=self.model_key,
-            trust_remote_code=self.trust_remote_code,
         )
 
     def refill(self) -> None:

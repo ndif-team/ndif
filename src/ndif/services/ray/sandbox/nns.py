@@ -499,7 +499,7 @@ META_MODEL = None
 PERSISTENT_OBJECTS = {}
 
 
-def load_meta_model(model_key: str, trust_remote_code: bool = False) -> None:
+def load_meta_model(model_key: str) -> None:
     """Build this runner's meta model and register its persistent-id map.
 
     Called once at runner start (``Runner.__init__``, before the socket binds), so
@@ -513,11 +513,7 @@ def load_meta_model(model_key: str, trust_remote_code: bool = False) -> None:
     ``__setstate__`` marks it dispatched, so no ``interleave`` in this process can
     decide it needs real weights. This object is only ever read for its map.
 
-    ``trust_remote_code`` mirrors the actor's, and is the one load option that
-    decides whether this build is *possible*: a checkpoint whose architecture is
-    defined in its own repo has no config to read without it. It is the actor's
-    setting because the tree has to match the actor's, and the repo code it runs
-    has already run there.
+    ``trust_remote_code`` is in the key, so this build is the actor's build.
 
     No hub round trip is required: the actor loads its model before it opens its
     pool, so the config and tokenizer this reads are already in the shared cache,
@@ -530,9 +526,7 @@ def load_meta_model(model_key: str, trust_remote_code: bool = False) -> None:
     # `from_model_key` resolves the wrapper class from the key itself, so this is
     # the same build the actor does (base.py) minus the weights -- and it is right
     # for a non-HuggingFace wrapper too.
-    META_MODEL = Remotable.from_model_key(
-        model_key, trust_remote_code=trust_remote_code
-    )
+    META_MODEL = Remotable.from_model_key(model_key)
     PERSISTENT_OBJECTS.update(META_MODEL._remoteable_persistent_objects())
 
 
