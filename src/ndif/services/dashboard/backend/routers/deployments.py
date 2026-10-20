@@ -30,15 +30,15 @@ class DeployRequest(BaseModel):
     # Pipeline task, baked into the model key (inferred from the checkpoint
     # when unset) — so two tasks of one checkpoint are two deployments.
     task: Optional[str] = None
+    # Whether the checkpoint's own modelling code may run at load (HF
+    # trust_remote_code). Part of the model key, like the task.
+    trust_remote_code: bool = False
     actor_class: Optional[str] = None
     envoy_class: Optional[str] = None
     padding_factor: Optional[float] = None
     execution_timeout_seconds: Optional[float] = None
     pinned: bool = False
     replicas: int = 1
-    # A dashboard deploy is an admin action, so the model is trusted to run its
-    # own repo code (HF trust_remote_code) and to skip the execution sandbox.
-    trusted: bool = True
     # When supplied, cli/lib/deploy skips ``get_model_key`` and uses this
     # value verbatim. The dashboard's WARM redeploy path sets this from
     # the existing deployment card so we don't pay a second canonicalize

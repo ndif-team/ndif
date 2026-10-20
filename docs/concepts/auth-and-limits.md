@@ -1,9 +1,9 @@
 ---
 title: Auth and Limits
-one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), and every bound the code actually enforces on a request.
+one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag and the API gate on deploying a model that runs its own repo code, and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/api/queue/processor.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -12,37 +12,35 @@ sources: [src/ndif/services/api/auth.py, src/ndif/services/api/versioning.py, sr
 
 Who the server thinks you are, what that identity buys you, and every bound the
 code actually enforces on a request. This is the one home for the `trusted`
-flag; other pages link here.
+flag and the `trust_remote_code` tag; other pages link here.
 
 ## The `trusted` flag
 
-`request.trusted` is stamped at ingress by `validate_request`
-(`src/ndif/services/api/auth.py`) and decides two things:
+`request.trusted` is `"trusted" in request.tags`; the tags are stamped at
+ingress by `validate_request` (`src/ndif/services/api/auth.py`). It decides two
+things:
 
 1. **Where the block runs.** On a sandbox actor class, a trusted block runs
    *inside the model actor process*, next to the weights; an untrusted one runs
    in a separate runner process driven over a Unix socket
    ([Sandbox Execution](sandbox-execution.md)).
-2. **How a model it provisions loads.** The request that first provisions a
-   model passes its flag into the deployment, which loads with
-   `trust_remote_code=trusted` — so the model repo's own Python executes at load
-   time. The value is sticky for the life of the deployment
-   ([API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load)).
+2. **Whether it may deploy a model that runs its own repo code.** `trusted`
+   implies the [`trust_remote_code`](#trust_remote_code) permission.
 
 **How it is set.**
 
-| Mode | `trusted` on the request |
+| Mode | `tags` on the request |
 |---|---|
-| Auth on (`NDIF_POSTGRES_URL` set) | from the key: `True` iff the key carries the `trusted` user_tag. A client-supplied value is overwritten. |
-| Auth off, client sent `trusted` | left as sent — `True` or `False` |
-| Auth off, client sent nothing | `True` |
+| Auth on (`NDIF_POSTGRES_URL` set) | the key's user_tags. A client-supplied value is overwritten. |
+| Auth off, client sent `tags` | left as sent |
+| Auth off, client sent nothing | `{"trusted"}` |
 
 Auth is off unless `NDIF_POSTGRES_URL` is set, so a zero-config `just up` runs
 every request that does not say otherwise as trusted: user code in-process, and
-models loaded with `trust_remote_code=True`. That is fine for a laptop and not
-for anything reachable by other people; turning auth on is the switch — see
+free to deploy a model that runs its own repo code. That is fine for a laptop and
+not for anything reachable by other people; turning auth on is the switch — see
 [Enable auth](../runbooks/enable-auth.md). To exercise the untrusted path in dev
-without Postgres, send `trusted: false`; ingress leaves it false. See
+without Postgres, send `tags: []`; ingress leaves it empty. See
 [testing](../developing/testing.md).
 
 **Which actor class honors it.** The fork lives in the actor class, not the
@@ -84,11 +82,27 @@ so new runner pids under the actor show a request took the untrusted path
 ([Enable auth](../runbooks/enable-auth.md#what-an-untagged-key-can-do) has the
 command).
 
-**Deploy-time trust.** A dashboard deploy sets `DeploymentConfig.trusted=True`,
-because dashboard access is shell-equivalent on the node, so the model loads with
-`trust_remote_code`. That is the deployment's flag only: each request routed to
-it still forks on its own `request.trusted`. See
-[the dashboard docs](../operating/dashboard.md).
+## `trust_remote_code`
+
+A model key carrying `"trust_remote_code": true` loads the checkpoint's own
+modelling code ([the key field](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).
+The API decides who may deploy one.
+
+**The permission.** `request.trust_remote_code`
+(`src/ndif/common/schema/request.py` `BackendRequestModel`) is `True` iff
+`request.tags` has `trust_remote_code` or `trusted` (how the tags are stamped is
+[above](#the-trusted-flag)). The `trust_remote_code` tag grants nothing else: the
+key's blocks still run in the sandbox. Postgres needs its `user_tags` row
+([Enable auth](../runbooks/enable-auth.md)).
+
+**The gate.** `Processor.start` (`src/ndif/services/api/queue/processor.py`),
+when the controller reports no replicas for the key, raises `DeploymentError` if
+the key carries `trust_remote_code` and no queued request has
+`request.trust_remote_code`. Every queued request gets the
+[`Could not deploy this model` refusal](../reference/error-messages.md#error-responses)
+and the queue is purged. Nothing else checks: a running model serves every
+caller, and autoscaling, the controller's `scale`, the CLI and the dashboard
+deploy without the check.
 
 ## How the check works
 
@@ -99,12 +113,12 @@ short-circuit before the request is ever enqueued.
 
 | Situation | Result |
 |---|---|
-| Postgres not configured | `verify_api_key` returns `None`; request allowed, `trusted` as in the table above |
+| Postgres not configured | `verify_api_key` returns `None`; request allowed, `trusted` as in the table above, `trust_remote_code` equal to it |
 | No key sent | `401` — "Missing or invalid API key" |
 | Key present but not a UUID | `400` — key format message |
 | Well-formed key not in `keys` | `403` — "Invalid API key" |
 | Postgres unreachable or erroring | `503` — fail **closed**, never allow on a backend error |
-| Key found | `Identity` returned; `email` / `trusted` / `priority` stamped on the request |
+| Key found | `Identity` returned; `email` and `tags` stamped on the request |
 
 **A key is valid iff its row exists in the `keys` table.** The owning user's
 `verification_status` is not checked — issuing and gating keys is the account
@@ -120,13 +134,14 @@ malformed key returns `400` and a Postgres failure `503`.
 
 ## What identity buys you
 
-`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly two
+`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly three
 tags mean anything to the server:
 
 | Tag | Effect |
 |---|---|
-| `trusted` | `request.trusted = True` — see above |
-| `priority` | The request sorts ahead of all normal traffic for that model, FIFO against other priority requests. With auth off, `priority` is left as the client sent it (`False` by default). |
+| `trusted` | `request.trusted` and `request.trust_remote_code` — see above |
+| `trust_remote_code` | `request.trust_remote_code` — see [`trust_remote_code`](#trust_remote_code) |
+| `priority` | `request.priority`: the request sorts ahead of all normal traffic for that model, FIFO against other priority requests. |
 
 Everything else about identity is **observability only**. `email` travels with
 the request across the Ray boundary so every downstream log line and metric
@@ -172,10 +187,11 @@ the model out entirely. A deployment can override it per model via
 `DeploymentConfig.execution_timeout_seconds`.
 
 `BaseModelDeployment.run` (`src/ndif/services/ray/deployments/modeling/base.py`)
-races the execution, on a worker thread, against the timer and a cancel event
-(`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your job
-exceeded the execution timeout of Ns."; a cancel — in practice only the HOT→WARM
-demotion — re-queues the request instead. The user's answer is bounded by the
+races the execution, on a thread of its own, against the timer and a cancel
+event (`kill_switch`). On expiry it calls `interrupt()` and responds `ERROR` "Your
+job exceeded the execution timeout of Ns."; a cancel does the same `interrupt()`
+and either errors the request (`ndif kill`) or, for a HOT→WARM demotion,
+re-queues it. The user's answer is bounded by the
 timeout. What `interrupt` does to the running code depends on the class:
 
 - **In-process (`ModelActor`, and trusted requests on the sandbox class).**
@@ -183,7 +199,8 @@ timeout. What `interrupt` does to the running code depends on the class:
   (`src/ndif/services/ray/deployments/modeling/util.py`), which injects
   `SystemExit` into the execution thread with CPython's async-exception API. It
   fires at that thread's next bytecode boundary, so a CUDA kernel or large tensor
-  op already in flight finishes first.
+  op already in flight finishes first. The thread is the request's own
+  (`run_on_own_thread`), so a late injection cannot reach other work.
 - **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
   the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
   socket the host thread is reading, then does the same `kill_thread`.

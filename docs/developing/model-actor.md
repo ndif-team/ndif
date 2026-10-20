@@ -42,12 +42,13 @@ lifetime="detached", runtime_env=...).remote(**deployment_args.model_dump())`, w
 | `execution_timeout` | `None` | `DeploymentConfig.execution_timeout_seconds`, else `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, **unset by default**, so no cap at all (`_ControllerActor.apply`) |
 | `gpu_mem_bytes_by_id` | `{}` | Injected by `Deployment.create` from the placement the cluster chose |
 | `dtype` | `"bfloat16"` | `DeploymentConfig.dtype`, else `NDIF_DEFAULT_DTYPE` |
-| `trust_remote_code` | `False` | `DeploymentConfig.trusted`, from the `trusted` flag of the request that triggered the deployment — see [API Service](api-service.md#trusted-through-the-queue-and-into-the-model-load) |
 
-Only these five fields cross the boundary — a constructor parameter that isn't a
+Only these four fields cross the boundary — a constructor parameter that isn't a
 field here can never be set by the controller. `BaseModelDeployment.__init__` binds
-the first four by name; anything else lands in `self.kwargs`, forwarded verbatim into
-`from_model_key` at load time, which is how `trust_remote_code` reaches transformers.
+all four by name; anything else lands in `self.kwargs`, forwarded verbatim into
+`from_model_key` at load time. `trust_remote_code` is not an argument: `from_model_key`
+reads it off the model key
+([Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).
 `dtype` is kept twice: `dtype_name` (what the loader is handed — a quantization name
 like `nf4` is not a `torch.dtype`) and `dtype`, the resolved compute dtype that user
 execution autocasts to.
@@ -92,7 +93,8 @@ model = HuggingFaceModel.from_model_key(
 - `from_model_key` is nnsight's `Remotable` classmethod: it splits the class import
   path off the key and delegates to that wrapper's `_remoteable_from_model_key`. For
   a HuggingFace model the rest of the key is `{"repo_id": ..., "revision": ...,
-  "task": ...}`, so **the revision and the pipeline task are part of the model key**,
+  "task": ..., "trust_remote_code": true}` (the last only when set), so **the
+  revision, the pipeline task and `trust_remote_code` are part of the model key**,
   not separate args. `dispatch=True` skips nnsight's meta-device phase.
 - After a `torch.cuda.synchronize()` (accelerate's copies are async),
   `verify_device_placement` walks every parameter and buffer and raises if one is
@@ -104,9 +106,9 @@ model = HuggingFaceModel.from_model_key(
   `cleanup()` skips them on every request. `from_cache` does not refreeze: a
   request preempted by `to_cache` can still have a thread running then.
 
-> **Gotcha:** `dtype` and `trust_remote_code` must match what the controller's
-> evaluator sized this model with, or the GPU accounting that placed the replica is
-> wrong. Hence the controller pins `config.dtype` before evaluating
+> **Gotcha:** `dtype` must match what the controller's evaluator sized this model
+> with, or the GPU accounting that placed the replica is wrong. Hence the controller
+> pins `config.dtype` before evaluating
 > (`src/ndif/services/ray/deployments/controller/controller.py` `_ControllerActor._deploy`).
 
 PEFT adapters are **not** a load-time concern: the base model is named by the model
@@ -123,10 +125,14 @@ The controller moves a replica between levels through `Deployment.cache` and
 | Call | Method | What happens |
 |---|---|---|
 | HOT→WARM | `BaseModelDeployment.to_cache` | `cancel("preempted")` any in-flight run, `_module.to("cpu")`, `reset_process_limits`, `synchronize` + `gc.collect` + `empty_cache`, `self.cached = True` |
-| WARM→HOT | `BaseModelDeployment.from_cache` | Re-apply limits for the (possibly different) GPUs, compute a balanced `device_map`, `remove_accelerate_hooks` then `dispatch_model`, verify, `self.cached = False`, emit `ModelLoadTimeMetric(load_type="from_cache")` |
+| WARM→HOT | `BaseModelDeployment.from_cache` | Re-apply limits for the (possibly different) GPUs, compute a balanced `device_map`, `redispatch` onto it, verify, `self.cached = False`, emit `ModelLoadTimeMetric(load_type="from_cache")` |
 
-`remove_accelerate_hooks` is not optional — re-dispatching an already-dispatched
-module stacks a second set of hooks on the first. While `cached` is true, `run()`
+`redispatch` is not a bare `dispatch_model`. It strips the previous dispatch's
+accelerate hooks first, or the new ones stack on top of them, and it keeps every
+module's instance `forward` across the re-dispatch: nnsight's controller lives in
+that slot, and both the hook removal and the new dispatch overwrite it, which left
+a restored multi-GPU replica uninstrumented and every trace on it raising
+`OutOfOrderError` (#339). While `cached` is true, `run()`
 raises `CachedActorError` *before* its try block so it reaches the queue as an
 eviction rather than a user-facing ERROR; `Replica.dispatch` treats it like a dead
 actor — drop the replica, re-queue at the front. An actor class that sets
@@ -134,11 +140,11 @@ actor — drop the replica, re-queue at the front. An actor class that sets
 
 ## Trusted and untrusted requests
 
-`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`, default `False`)
-is stamped at ingress from the API key's `trusted` user_tag; **with auth off — no
-`NDIF_POSTGRES_URL` — it defaults to trusted but honors a client-supplied
-`trusted: false`** (`src/ndif/services/api/auth.py` `validate_request`). The flag
-decides where the block runs:
+`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`) is whether
+the request's tags, stamped at ingress from the API key, include `trusted`;
+**with auth off — no `NDIF_POSTGRES_URL` — the tags default to `{"trusted"}` but
+a client-supplied `tags: []` is honored** (`src/ndif/services/api/auth.py`
+`validate_request`). The flag decides where the block runs:
 
 - **Trusted** → `BaseModelDeployment.execute`, in the actor process, in the same
   address space as the weights. That is the path documented below.
@@ -152,7 +158,7 @@ decides where the block runs:
 
 The queue's replica worker calls `handle.run.remote(request)` and awaits it
 (`Replica.dispatch` in `src/ndif/services/api/queue/replica.py`). The request carries
-`payload` (the serialized tracer blob), `compress`, `env`, `trusted`, and the
+`payload` (the serialized tracer blob), `compress`, `env`, `tags`, and the
 identity fields (`id`, `api_key`, `email`, `session_id`) used for responses and
 telemetry.
 
@@ -169,7 +175,7 @@ sequenceDiagram
     R->>C: respond RUNNING
     R->>R: gpu_baselines; snapshot linecache/SOURCES/BLOCKS
     R->>M: _remoteable_set_env — PEFT swap
-    R->>T: to_thread execute, raced vs timeout and kill_switch
+    R->>T: run_on_own_thread execute, raced vs timeout and kill_switch
     T->>T: RequestModel.deserialize payload
     T->>M: tracer.execute — interleaved forward pass
     T-->>C: respond LOG per printed line
@@ -184,11 +190,11 @@ sequenceDiagram
 
 ### The race
 
-Execution runs on a worker thread so the event loop can race it
-(`BaseModelDeployment.run`):
+Execution runs on a thread created for the request so the event loop can race
+it (`BaseModelDeployment.run`):
 
 ```python
-job = asyncio.create_task(asyncio.to_thread(self.execute, request))
+job = run_on_own_thread(lambda: self.execute(request), name=f"execute-{request.id}")
 kill = asyncio.create_task(self.kill_switch.wait())
 with self.execution_scope(request):
     done, pending = await asyncio.wait({job, kill},
@@ -199,7 +205,7 @@ with self.execution_scope(request):
 |---|---|---|
 | `job` | continue to upload → `COMPLETED` | `completed` |
 | `kill`, reason `preempted` (`to_cache` parking the replica) | none to the user: raises `CachedActorError`, so the queue re-queues the request at the front of its group | `preempted` |
-| `kill`, any other reason (a deliberate `cancel()`; no current caller — `ndif kill` stops the dispatch, not the actor) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
+| `kill`, any other reason (a deliberate `cancel()`: `ndif kill`, via `Replica.cancel`) | `ERROR` "Your job was cancelled or preempted by the server." | `cancelled` |
 | neither (timeout) | `ERROR` "Your job exceeded the execution timeout of `{n}`s." | `timeout` |
 
 The reason travels on `kill_reason`, set by `cancel(reason)`; only
@@ -209,7 +215,10 @@ outside. On cancel, preemption or timeout `interrupt()` calls `kill_thread`
 (`src/ndif/services/ray/deployments/modeling/util.py`), injecting `SystemExit` via `PyThreadState_SetAsyncExc`, which fires only at
 a Python bytecode boundary: it does not interrupt a CUDA kernel or native op already
 in flight, and the response and `cleanup()` do not wait for the thread to stop. The
-sandbox actor stops the runner process first, then does the same.
+sandbox actor stops the runner process first, then does the same. The thread is
+created for the request, so an injection that lands late reaches only this
+request or nothing (`run_on_own_thread` in
+`src/ndif/services/ray/deployments/modeling/util.py` says why).
 
 ### The worker-thread body
 

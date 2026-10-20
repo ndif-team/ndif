@@ -9,6 +9,9 @@ export interface DeployForm {
   // Pipeline task — part of the model key, so it selects/creates a distinct
   // deployment. null = inferred from the checkpoint.
   task: string | null
+  // Let the checkpoint's own modelling code run (HF trust_remote_code); part
+  // of the model key.
+  trust_remote_code: boolean
   actor_class: string | null
   envoy_class: string | null
   padding_factor: number | null
@@ -32,6 +35,7 @@ const form = ref<DeployForm>({
   checkpoint: '',
   revision: null,
   task: null,
+  trust_remote_code: false,
   actor_class: null,
   envoy_class: DEFAULT_ENVOY_CLASS,
   padding_factor: null,
@@ -121,6 +125,14 @@ function submit() {
             v-model.number="form.execution_timeout_seconds"
             placeholder="(default)"
           />
+        </label>
+
+        <label class="field full check-field">
+          <input type="checkbox" v-model="form.trust_remote_code" />
+          <span>
+            <strong>Trust remote code</strong>
+            <span class="muted">— run the checkpoint's own modelling code; part of the model key.</span>
+          </span>
         </label>
 
         <label class="field full check-field">

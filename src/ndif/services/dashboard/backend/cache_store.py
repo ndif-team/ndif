@@ -137,6 +137,7 @@ def add_from_deploy_result(
         extract_repo_id_from_model_key,
         extract_task_from_model_key,
     )
+    from ....common.types import key_field
 
     specs_by_checkpoint: dict = {}
     for s in specs:
@@ -146,12 +147,15 @@ def add_from_deploy_result(
         candidates = specs_by_checkpoint.get(d.get("checkpoint")) or []
         if len(candidates) == 1:
             return candidates[0]
-        minted = extract_task_from_model_key(d.get("model_key") or "")
+        # Task and trust_remote_code are both in the key, so match on both.
+        model_key = d.get("model_key") or ""
+        minted_task = extract_task_from_model_key(model_key)
+        minted_trust = bool(key_field(model_key, "trust_remote_code"))
         for s in candidates:
-            if s.get("task") == minted:
+            if s.get("task") == minted_task and bool(s.get("trust_remote_code")) == minted_trust:
                 return s
         for s in candidates:
-            if s.get("task") is None:
+            if s.get("task") is None and bool(s.get("trust_remote_code")) == minted_trust:
                 return s
         return {}
 

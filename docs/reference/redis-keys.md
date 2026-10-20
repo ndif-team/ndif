@@ -65,7 +65,7 @@ Constants in `src/ndif/common/redis/events.py`.
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
 | `dispatcher:events` | Stream | The CLI — `xadd(..., maxlen=64, approximate=True)`: `ndif queue` and `ndif kill` (`src/ndif/cli/lib/events.py` `_request`), and `notify_reconcile` after `ndif deploy` / `ndif evict` | `Dispatcher.events_worker` — `xread(block=0, count=1)` from `$` | ~64 entries, no time TTL | `event_type` plus per-type fields |
-| `ndif:cli:{event_type}:{pid}:{time_ns}` | List | `Dispatcher._respond` — `lpush` of the JSON reply, then `expire` | The CLI process that minted it (`_request`) — `brpop`, default timeout 5 s | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded | One JSON reply |
+| `ndif:cli:{event_type}:{pid}:{time_ns}` | List | `Dispatcher._respond` — `lpush` of the JSON reply, then `expire` | The CLI process that minted it (`_request`) — `brpop`, default timeout 5 s (15 s for `kill`) | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded | One JSON reply |
 
 The response key is minted per call from the PID and `time.time_ns()`, so it is
 never reused. Event types on `dispatcher:events`:
@@ -73,7 +73,7 @@ never reused. Event types on `dispatcher:events`:
 | `event_type` | Fields | Dispatcher does |
 |---|---|---|
 | `queue_state_request` | `response_key` | Replies `{"processors": {model_key: snapshot}}` (`Dispatcher._handle_queue_state`) |
-| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one has its dispatch-side replica worker cancelled, which errors the request; the model actor's execution is not interrupted. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
+| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one is errored and cancelled on the model actor (`Replica.cancel`), and its replica worker is cancelled only if the actor does not finish it within a few seconds. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
 | `reconcile_model` | `model_key` | Re-syncs that Processor's replica pool. Fire-and-forget, no reply (`Dispatcher._handle_reconcile`) |
 
 ## Response channels

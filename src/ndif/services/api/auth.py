@@ -39,14 +39,6 @@ from ndif.common.schema.request import BackendRequestModel
 
 logger = logging.getLogger("ndif.api")
 
-# A key granted this user_tag may run its request without sandbox isolation (and
-# deploy the model with trust_remote_code); see Identity.trusted.
-TRUSTED_TAG = "trusted"
-
-# A key granted this user_tag sorts ahead of all normal traffic and stays FIFO
-# among its peers (RequestQueue.rank); see Identity.priority.
-PRIORITY_TAG = "priority"
-
 # One row per user_tag granted to the key; no rows means the key doesn't exist.
 # The LEFT JOINs mean a key with no tag assignments still returns a single row
 # (with tag = NULL), distinguishing "known key, no tags" from "unknown key".
@@ -70,16 +62,6 @@ class Identity:
     user_id: str
     email: Optional[str] = None
     user_tags: List[str] = field(default_factory=list)
-
-    @property
-    def trusted(self) -> bool:
-        """Whether this key carries the ``trusted`` user_tag."""
-        return TRUSTED_TAG in self.user_tags
-
-    @property
-    def priority(self) -> bool:
-        """Whether this key carries the ``priority`` user_tag."""
-        return PRIORITY_TAG in self.user_tags
 
 
 async def verify_api_key(api_key: Optional[str]) -> Optional[Identity]:
@@ -147,15 +129,15 @@ async def validate_request(
     bad envelope), carries the ``ndif-api-key`` header onto it (the client sends
     the key there, not in the JSON), verifies it against the Postgres keys DB
     (raising 401/400/403/503 on failure, short-circuiting before enqueue), and
-    stamps the caller's ``email``, ``trusted``, and ``priority`` flags onto the
-    request so they travel with it through the queue.
+    stamps the caller's ``email`` and ``tags`` onto the request so they travel
+    with it through the queue (``request.trusted`` / ``trust_remote_code`` /
+    ``priority`` read the tags).
 
-    ``trusted`` and ``priority`` come from the key's ``trusted`` / ``priority``
-    user_tags. With auth off (no Postgres configured) the deployment is assumed to
-    sit on a trusted network: a client-supplied ``trusted`` is honored (so a caller
-    can opt into the sandbox path with ``trusted=False``), and when the client
-    leaves it unspecified it defaults to True. ``email`` and ``priority`` from the
-    client are left as sent in that mode.
+    With auth on the tags are the key's user_tags and a client value is
+    overwritten. With auth off (no Postgres configured) the deployment is assumed
+    to sit on a trusted network: client-supplied ``tags`` are honored (so a
+    caller can opt into the sandbox path with ``tags: []``) and unspecified ones
+    default to ``{"trusted"}``; ``email`` is left as sent.
     """
     try:
         request = BackendRequestModel.model_validate_json(data)
@@ -164,23 +146,16 @@ async def validate_request(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
 
-    # Whether the client put ``trusted`` in the envelope, distinguished from the
-    # field's default so the auth-off branch can tell "unspecified" from an
-    # explicit ``trusted=False``.
-    client_set_trusted = "trusted" in request.model_fields_set
-
     if api_key:
         request.api_key = api_key
 
     identity = await verify_api_key(request.api_key)
     if identity is not None:
         request.email = identity.email
-        request.trusted = identity.trusted
-        request.priority = identity.priority
-    elif not client_set_trusted:
+        request.tags = set(identity.user_tags)
+    elif "tags" not in request.model_fields_set:
         # Auth is off (NDIF_POSTGRES_URL unset): a trusted-network / dev mode.
-        # Default to trusted when the client didn't ask; an explicit request
-        # value (True or False) is left untouched.
-        request.trusted = True
+        # Trusted when the client didn't say; explicit tags are left untouched.
+        request.tags = {"trusted"}
 
     return request

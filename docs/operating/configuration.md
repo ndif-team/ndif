@@ -83,7 +83,7 @@ actors placed on any node.
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | The endpoint the *server* uploads through. Empty means real AWS S3 for `NDIF_OBJECT_STORE_REGION`. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
 | `NDIF_OBJECT_STORE_ACCESS_KEY` / `_SECRET_KEY` | `rustfsadmin` / `rustfsadmin` | Real credentials, or both empty to use boto3's own chain (on AWS, the instance/task role). |
-| `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth: a client-supplied `trusted` is honored and an unspecified one defaults to trusted. See below. |
+| `NDIF_POSTGRES_URL` | *(empty)* | Empty ⇒ no auth: client-supplied `tags` are honored and unspecified ones default to `{"trusted"}`. See below. |
 | `NDIF_MODEL_IMPORT_PATH` | in-process `ModelActor` in code; compose sets `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to `SandboxModelActor` | Decides whether an untrusted request gets a separate runner process at all. See below. |
 | `NDIF_API_URL` | `http://localhost:8001` | Where the CLI (`env`, `doctor`, `info`) and the dashboard's report cron reach the API. Compose sets `http://api:8001` on `dashboard`. |
 | `NDIF_DASHBOARD_DEV_MODE` | `false` in code, **`true` in compose** | `true` disables the dashboard login entirely. |
@@ -102,11 +102,11 @@ behavior outside compose, set it. See
 [Going to Production](production.md#the-sandboxed-actor-class).
 
 **An empty `NDIF_POSTGRES_URL`.** `verify_api_key` returns `None`, and
-`validate_request` keeps a `trusted` the client sent and sets it to true when
+`validate_request` keeps `tags` the client sent and sets them to `{"trusted"}` when
 the client sent none (`src/ndif/services/api/auth.py` `validate_request`). The
 nnsight client sends none, so its requests run trusted: the traced block runs
-in-process in the model actor, and the flag becomes `trust_remote_code=` when a
-model loads. [Auth and Limits](../concepts/auth-and-limits.md) and
+in-process in the model actor, and it may provision a model whose key carries
+`trust_remote_code`. [Auth and Limits](../concepts/auth-and-limits.md) and
 [Enable auth](../runbooks/enable-auth.md) cover turning it on.
 
 ## The fail-open switches
@@ -158,7 +158,7 @@ pyyaml, boto3); each role's dependencies are an extra in `pyproject.toml`:
 |---|---|
 | `api` | `ndif start api` — the HTTP surface and the queue dispatcher. |
 | `ray` | A Ray node and the model actors: transformers, accelerate, zstandard for compressed payloads, peft for per-request adapters. |
-| `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` / `torchvision`. |
+| `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` (in `ray`) and `torchvision`, which the Dockerfile installs with torch. |
 | `metrics` | Loki and InfluxDB shipping. Without it both providers fail open. |
 | `postgres` | API-key auth (`asyncpg`). |
 | `ext` | Packages a user's traced block may import (datasets, einops, pillow, ...). Not used by NDIF itself. |

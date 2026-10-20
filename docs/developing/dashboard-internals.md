@@ -70,7 +70,7 @@ the cache would show the previous level for up to `NDIF_STATUS_TTL_S`. It then:
 2. **Aggregates replicas.** `_aggregate_by_model_key` collapses one-entry-per-replica
    into one card per `model_key` with a `replicas` array; card fields take the best
    value across siblings (`HOT > WARM > COLD`, `RUNNING > DEPLOYING > NOT_STARTED >
-   UNHEALTHY`, `pinned`/`trusted` OR'd). COLD entries pass through keyed by app name.
+   UNHEALTHY`, `pinned` OR'd). COLD entries pass through keyed by app name.
 3. **Tags pinned.** `pinned` is OR'd with "this `model_key` matches an active
    schedule event", using the key stamped on the event at write time.
 
@@ -83,18 +83,21 @@ the cache would show the previous level for up to `NDIF_STATUS_TTL_S`. It then:
 transcript and per-model failures, since the deploy lib returns 200 even when
 individual models fail.
 
-### Dashboard deploys are deployment-trusted
+### `trust_remote_code` on dashboard deploys
 
-`DeployRequest.trusted` defaults to `True`, and `_spec_from_event`
-(`src/ndif/services/dashboard/jobs/reconcile.py`) hardcodes it for scheduled
-deploys. It becomes `DeploymentConfig.trusted` and then `trust_remote_code=` for both
-the controller's size estimate and the actor's model load — so a checkpoint with
-custom modeling code runs that code in the model actor.
+`DeployRequest.trust_remote_code`
+(`src/ndif/services/dashboard/backend/routers/deployments.py`) and
+`ScheduleEventIn.trust_remote_code`
+(`src/ndif/services/dashboard/backend/schedule_store.py`), both default `False`,
+go into the minted model key: `_canonicalize`
+(`src/ndif/services/dashboard/backend/routers/schedule.py`) passes the schedule
+entry's value to `canonicalize_checkpoint`, and `_spec_from_event`
+(`src/ndif/services/dashboard/jobs/reconcile.py`) passes it on every scheduled
+deploy. The dashboard does not check who asks. The field itself is defined in
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
 
-A *different* flag shares the name: `BackendRequestModel.trusted` decides whether a
-request's block runs in-process or in a runner, and is set per request at ingress
-(see [Auth and limits](../concepts/auth-and-limits.md)) — never from the dashboard's
-deploy flag.
+`BackendRequestModel.trusted`, the per-request sandbox flag, is set at ingress
+([Auth and limits](../concepts/auth-and-limits.md)), never from the dashboard.
 
 ## Config and auth
 
@@ -238,7 +241,7 @@ deploy raises after a successful evict, so the next tick doesn't re-evict. Per-e
 `last_status`/`last_error` come from the deploy result matched by `checkpoint`;
 failures go to Discord via the `schedule_failed` template; successful specs are
 mirrored into the autocomplete cache. `_spec_from_event` holds the schedule's policy:
-`pinned=True`, `trusted=True`.
+`pinned=True`, plus the entry's `trust_remote_code`.
 
 `_trigger_reconcile` (`src/ndif/services/dashboard/backend/routers/schedule.py`)
 imports `reconcile_once` lazily (it pulls in Ray and nnsight) and swallows every
@@ -247,7 +250,7 @@ successful schedule write into a 500, and the cron retries.
 
 ## jobs/report.py
 
-A daily digest posted to Discord (cron default `0 0 * * *`). Uptime comes from the
+A daily digest posted to Discord (cron default `0 0 * * *`), to `discord_report_webhook` when set and to `discord_webhook` otherwise. Uptime comes from the
 monitor's `connected_*.log`, so it cannot disagree with the alerts already sent; usage
 (request counts, outcomes, users, models, latency percentiles, bytes) comes from
 InfluxDB. If InfluxDB is unreachable the usage block is reported unavailable and the
@@ -259,8 +262,9 @@ The `dashboard` extra is web-app only (`fastapi`, `uvicorn[standard]`,
 `pydantic-settings`, `itsdangerous`, `bcrypt`, `python-multipart`, `requests`). The
 crons need more: reconcile drives `cli/lib`, so it needs the `ray` extra (Ray pinned
 in `requirements.txt` to match the ray service); the monitor's probe needs nnsight
-plus `peft` / `torchvision` for PEFT and VLM checkpoints; the report reads InfluxDB.
-The image installs every extra, so the container has all of it.
+plus `peft` (in `ray`) and `torchvision` for PEFT and VLM checkpoints; the report
+reads InfluxDB. The image installs every extra, and `docker/Dockerfile` installs
+`torchvision` alongside torch from the PyTorch index, so the container has all of it.
 
 ## Related
 

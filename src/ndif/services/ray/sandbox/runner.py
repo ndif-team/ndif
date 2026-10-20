@@ -139,7 +139,6 @@ class Runner:
         path: str,
         peers: int = 1,
         model_key: "str | None" = None,
-        trust_remote_code: bool = False,
     ):
         self.path = path
         self.peers = peers
@@ -147,7 +146,7 @@ class Runner:
             os.unlink(path)
         if model_key is not None:
             try:
-                nns.load_meta_model(model_key, trust_remote_code=trust_remote_code)
+                nns.load_meta_model(model_key)
             except Exception as error:
                 print(
                     f"runner: no meta model for {model_key!r} ({error!r}); "
@@ -210,10 +209,4 @@ if __name__ == "__main__":
     die_with_parent()
     peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     model_key = sys.argv[3] if len(sys.argv) > 3 else None
-    trust_remote_code = len(sys.argv) > 4 and sys.argv[4] == "1"
-    Runner(
-        sys.argv[1],
-        peers=peers,
-        model_key=model_key,
-        trust_remote_code=trust_remote_code,
-    ).serve()
+    Runner(sys.argv[1], peers=peers, model_key=model_key).serve()

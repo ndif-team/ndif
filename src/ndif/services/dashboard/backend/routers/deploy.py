@@ -118,7 +118,8 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
         - deployment_level: HOT > WARM > COLD
         - application_state: RUNNING > DEPLOYING > NOT_STARTED > UNHEALTHY
         - pinned: True if any replica is pinned
-        - trusted: True if any replica is trusted
+        - trust_remote_code: whether the key asks for the repo's own code (uniform
+          across siblings, since it is part of the key)
         - schedule: from any pinned replica that carries one
     """
     out: dict = {}
@@ -136,7 +137,6 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
             "deployment_level": entry.get("deployment_level"),
             "application_state": entry.get("application_state"),
             "pinned": bool(entry.get("pinned", False)),
-            "trusted": bool(entry.get("trusted", False)),
         }
 
         card = out.get(mk)
@@ -147,6 +147,7 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
                 "model_key": mk,
                 "repo_id": entry.get("repo_id"),
                 "task": entry.get("task"),
+                "trust_remote_code": bool(entry.get("trust_remote_code", False)),
                 "revision": entry.get("revision"),
                 "n_params": entry.get("n_params"),
                 "size_bytes": entry.get("size_bytes"),
@@ -155,7 +156,6 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
                 "deployment_level": entry.get("deployment_level"),
                 "application_state": entry.get("application_state"),
                 "pinned": bool(entry.get("pinned", False)),
-                "trusted": bool(entry.get("trusted", False)),
                 "schedule": entry.get("schedule"),
                 "replicas": [],
             }
@@ -182,9 +182,6 @@ def _aggregate_by_model_key(deployments: dict) -> dict:
             card["pinned"] = True
             if entry.get("schedule") and not card.get("schedule"):
                 card["schedule"] = entry["schedule"]
-
-        if entry.get("trusted"):
-            card["trusted"] = True
 
         card["replicas"].append(replica_record)
 

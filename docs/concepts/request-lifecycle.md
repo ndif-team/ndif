@@ -29,7 +29,7 @@ Three facts frame the whole design:
    blocks run *in the model actor process*, next to the weights, and untrusted
    blocks run in a separate runner process driven over a Unix socket; the
    default `ModelActor` class runs every block in-process. **With auth off — no
-   `NDIF_POSTGRES_URL` — an unspecified `trusted` defaults to `True`.** The full
+   `NDIF_POSTGRES_URL` — unspecified `tags` default to `{"trusted"}`.** The full
    story is in [Auth and Limits](auth-and-limits.md).
 
 ## The path
@@ -56,7 +56,9 @@ sequenceDiagram
     D->>D: Processor(model_key).enqueue(...)
     alt no replica yet (cold start)
         D->>R: PUBLISH <session_id> PROVISIONING
-        D->>K: get_deployment(model_key), else scale(model_key, 1, DeploymentConfig(trusted=...))
+        D->>K: get_deployment(model_key)
+        D->>D: key has trust_remote_code and no queued request may deploy it? DeploymentError
+        D->>K: else scale(model_key, 1, DeploymentConfig())
         K->>M: create actor, load weights onto assigned GPUs
         D->>R: PUBLISH DEPLOYING
         D->>M: __ray_ready__ (poll until up)
@@ -105,8 +107,9 @@ envelope as the `data` form field and the block as the `blob` file.
 **3. API ingress.** `POST /request` (`src/ndif/services/api/app.py`
 `create_request`) runs three gates before it does any work:
 `require_ray_connection` (503 if the `ray:connected` Redis flag is absent),
-`validate_request` (parse the envelope, verify the API key, stamp `email` /
-`trusted` / `priority` onto the request), and `validate_client_versions`. Then
+`validate_request` (parse the envelope, verify the API key, stamp `email` and
+`tags` onto the request), and
+`validate_client_versions`. Then
 it reads the blob into `request.payload`, advances the request to `RECEIVED`,
 and `LPUSH`es the *pickled* request onto the Redis list named by
 `NDIF_QUEUE_KEY` (default `queue`). The `RECEIVED` response is what the HTTP call
@@ -129,8 +132,9 @@ and replies. With a replica serving, the reply is `QUEUED` with the position
 the queue reports. On a cold start `ensure_started` has already set the
 processor to provisioning, so the first reply is `PROVISIONING`, not `QUEUED`;
 `start()` then asks the controller for existing replicas and adopts them, or
-asks `controller.scale` for one more, and broadcasts `DEPLOYING`, then `QUEUED`
-with positions once the pool is ready.
+asks `controller.scale` for one more (refused for an untagged caller when the
+key carries `trust_remote_code`; [Auth and Limits](auth-and-limits.md#trust_remote_code)),
+and broadcasts `DEPLOYING`, then `QUEUED` with positions once the pool is ready.
 
 **6. Controller places a replica.** `scale` sizes the model from its
 checkpoint's metadata, picks the best node/GPUs, evicts if it must, and creates a detached Ray actor

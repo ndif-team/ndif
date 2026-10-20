@@ -35,8 +35,8 @@ message payloads; this page adds the request-level context and the lifecycle.
 
 ## The first branch: trusted vs untrusted
 
-`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`, default
-`False`) decides whether the sandbox runs at all:
+`BackendRequestModel.trusted` (`src/ndif/common/schema/request.py`; `"trusted"
+in request.tags`) decides whether the sandbox runs at all:
 
 | `request.trusted` | Path | Where the block runs |
 |---|---|---|
@@ -45,12 +45,12 @@ message payloads; this page adds the request-level context and the lifecycle.
 
 `SandboxHost.execution_scope` forks the same way: trusted reuses the base's
 stdout/stderr capture, untrusted gets a `nullcontext` because its output arrives as
-`PRINT` messages. How the flag is stamped (the key's `trusted` tag with auth on; a
-client-supplied value honored and an unspecified one defaulting to `True` with
-auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
+`PRINT` messages. How the tags are stamped (the key's user_tags with auth on;
+client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
+with auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 
 > **Gotcha:** a plain local `just up` has no Postgres, so a request is trusted by
-> default and the sandbox path doesn't run. Send `trusted: false` in the request to
+> default and the sandbox path doesn't run. Send `tags: []` in the request to
 > force it — no Postgres needed. The design intent is that both paths produce the
 > same results for the same request, which is why the sandbox reuses nnsight's own
 > `Mediator.handle`, `Batcher` and `Cache` rather than reimplementing them;
@@ -113,7 +113,7 @@ drained by `settle_control` before `handle` sees them, and are answered in the n
 builds the runner's environment from the `RUNNER_ENV` allowlist via `runner_env`,
 prepends the repo root to `PYTHONPATH`, sets `PYTHONHASHSEED=0`, launches
 `ndif.services.ray.sandbox.runner` with the socket path, `peers`, and — when the
-pool has one — the model key and its `trust_remote_code` flag, then polls until
+pool has one — the model key, then polls until
 the socket accepts (30s), raising if the process dies first. The runner's stderr
 is never discarded: it is the only report of a request the runner could not
 finish.
@@ -141,9 +141,9 @@ or core-tight node.
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers`, the model key and `trust_remote_code`, and calls
-`nns.load_meta_model(model_key, trust_remote_code=...)` **before binding**, so a
-host that can connect is a host whose runner is warm. A failed build is printed to
+path, `peers` and the model key, and calls `nns.load_meta_model(model_key)`
+**before binding**, so a host that can connect is a host whose runner is warm.
+A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
 `None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
 `getppid` once a second and `os._exit(1)`s when the runner is reparented — the
@@ -315,7 +315,7 @@ reasoning; the mechanics in brief:
 | Dangling worker | worker still parked after the forward | `check_dangling` classifies the park as nnsight's `dangling_unwind` does and sends `THROW`: `OUT_OF_ORDER` raises `OutOfOrderError`, `ITER` warns that a `tracer.iter` loop outran the model, `BARRIER` raises the base `ValueError`. A fatal kind makes the runner report `EXCEPTION` and exit, so the `THROW` loop and the `DONE` send tolerate `OSError` and let `pump` read the buffered `EXCEPTION` |
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
 | Host error | the forward raises on the host (a swapped value the next layer can't use, a widen that can't splice an edit) | the host's own exception propagates to the base `format_error` as itself; the runner's recv fails and its noise stays in the runner's stderr |
-| Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, whatever the thread is running by then. The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
+| Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, and the thread is the request's own (`run_on_own_thread`). The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
 | Always | after every request | `cleanup` → `discard_sandbox` stops the request's runner; `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
 
 `next_event` services `PRINT` throughout — it echoes the line as a `Status.LOG`

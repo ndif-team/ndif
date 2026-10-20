@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Set
 from uuid import uuid4
 
 from nnsight.intervention.serialization import UnknownPersistentIdError
@@ -62,16 +62,9 @@ class BackendRequestModel(RequestModel):
     # user (the "if exists" case).
     email: Optional[str] = None
 
-    # Whether this request's code may run without sandbox isolation. When True the
-    # sandbox deployment executes it in-process (the base, unsandboxed path) rather
-    # than shipping it to a runner. Default False: sandbox everything. (How trust is
-    # decided at ingress is set elsewhere.)
-    trusted: bool = False
-
-    # Whether this request jumps the queue. When True it's prepended to the front
-    # of its model's queue at enqueue rather than appended. Default False. (Set at
-    # ingress from the api key's ``priority`` tag.)
-    priority: bool = False
+    # The caller's user_tags, set at ingress from the API key (with auth off: as
+    # sent, defaulting to {"trusted"}). The properties below read them.
+    tags: Set[str] = Field(default_factory=set)
 
     payload: Optional[bytes] = None
     enqueued_at: Optional[float] = None
@@ -83,6 +76,21 @@ class BackendRequestModel(RequestModel):
     # seeded at ingress (RECEIVED), so it doubles as the request's received time.
     last_status: Optional[Status] = None
     last_status_time: Optional[float] = None
+
+    @property
+    def trusted(self) -> bool:
+        """Runs in-process, next to the weights, instead of in a sandbox runner."""
+        return "trusted" in self.tags
+
+    @property
+    def trust_remote_code(self) -> bool:
+        """May deploy a model whose key asks for trust_remote_code (Processor.start)."""
+        return "trust_remote_code" in self.tags or self.trusted
+
+    @property
+    def priority(self) -> bool:
+        """Sorts ahead of untagged traffic in its model's queue (RequestQueue.rank)."""
+        return "priority" in self.tags
 
     @staticmethod
     def deserialize(*args: Any, **kwargs: Any) -> Any:

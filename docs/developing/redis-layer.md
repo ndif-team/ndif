@@ -129,7 +129,7 @@ Everything rides `dispatcher:events` (`EVENTS_STREAM`), with the entry's
 | `event_type` | Constant | Extra fields | Semantics |
 |---|---|---|---|
 | `queue_state_request` | `EVENT_QUEUE_STATE` | `response_key` | Request/response — snapshot of every Processor |
-| `kill_request` | `EVENT_KILL` | `response_key`, `request_id` | Request/response — a queued request is removed and errored; an executing one has its dispatch cancelled and is errored to the client, while the model actor runs the block to completion |
+| `kill_request` | `EVENT_KILL` | `response_key`, `request_id` | Request/response — a queued request is removed and errored; an executing one is errored to the client and cancelled on the model actor, with the dispatch cancelled only if the actor does not finish it within a few seconds |
 | `reconcile_model` | `EVENT_RECONCILE` | `model_key` | Fire-and-forget — re-sync one Processor's replica pool |
 
 The request/response ones do their own tiny RPC: the caller mints a unique

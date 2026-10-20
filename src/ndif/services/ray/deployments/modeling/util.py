@@ -4,9 +4,11 @@
 support the model actor when it loads weights onto its assigned GPUs.
 """
 
+import asyncio
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+import threading
+from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple
 
 if TYPE_CHECKING:
     from .....common.schema.request import BackendRequestModel
@@ -76,7 +78,6 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     once control returns to Python. No-op if the thread isn't running.
     """
     import ctypes
-    import threading
 
     if ident is None or ident not in {t.ident for t in threading.enumerate()}:
         return
@@ -87,6 +88,41 @@ def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
     if res > 1:
         # Somehow targeted more than one thread; undo to avoid collateral damage.
         ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(ident), None)
+
+
+def run_on_own_thread(fn: Callable[[], Any], name: str) -> "asyncio.Future":
+    """Run ``fn`` on a new thread of its own; the returned future gets its result.
+
+    Use it for any work ``kill_thread`` may target. Cancelling the future
+    abandons the thread; it does not stop it.
+
+    An injected exception can land after ``fn`` has returned (a sandboxed
+    interrupt unblocks the host thread before injecting). On a pooled thread
+    (``asyncio.to_thread``) it would fire in the next request's work item,
+    outside its ``try``, killing the thread and leaving that request's future
+    unresolved, which wedges the replica (#284). On a thread of its own it lands
+    inside ``fn`` or, once the thread has exited, nowhere.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def resolve(result: Any, error: "BaseException | None") -> None:
+        if future.cancelled():
+            return
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(result)
+
+    def body() -> None:
+        try:
+            result, error = fn(), None
+        except BaseException as exception:
+            result, error = None, exception
+        loop.call_soon_threadsafe(resolve, result, error)
+
+    threading.Thread(target=body, name=name, daemon=True).start()
+    return future
 
 
 def set_default_gpu(gpu_mem_bytes_by_id: Dict[int, int]) -> None:
@@ -104,17 +140,42 @@ def set_default_gpu(gpu_mem_bytes_by_id: Dict[int, int]) -> None:
     torch.cuda.set_device(next(iter(gpu_mem_bytes_by_id)))
 
 
-def remove_accelerate_hooks(module) -> None:
-    """Strip accelerate's dispatch hooks from ``module`` and its submodules.
+def redispatch(module, device_map: Dict[str, Any]) -> None:
+    """Move an already-dispatched module onto ``device_map``, keeping nnsight's
+    forwards.
 
-    Dispatching an already-dispatched module (e.g. restoring from cache) would
-    otherwise stack hooks on top of the existing ones.
+    nnsight's controller lives in each module's instance ``forward``, the slot
+    accelerate's wrapper also uses (``run_body`` calls the ``_hf_hook`` itself).
+    Both steps of a re-dispatch overwrite it: ``remove_hook_from_module`` writes
+    ``_old_forward`` back, and ``dispatch_model`` wraps that. Left like that, the
+    model runs uninstrumented and every trace raises ``OutOfOrderError`` (#339).
+    So the slots are saved first and written back after the new hooks are on;
+    restoring before ``dispatch_model`` would have accelerate wrap the controller
+    and run its hook twice. By value rather than by nnsight type, so it holds for
+    whatever nnsight puts in the slot. The old hooks still have to come off, or
+    ``dispatch_model`` stacks a second set on them. ``skip_keys`` is what
+    transformers passes on the initial load: a kwarg the hook must not move.
     """
+    from accelerate import dispatch_model
     from accelerate.hooks import remove_hook_from_module
 
-    for _, submodule in module.named_modules():
+    forwards = {
+        submodule: submodule.__dict__["forward"]
+        for submodule in module.modules()
+        if "forward" in submodule.__dict__
+    }
+    for submodule in module.modules():
         if getattr(submodule, "_hf_hook", None) is not None:
             remove_hook_from_module(submodule)
+
+    dispatch_model(
+        module,
+        device_map=device_map,
+        skip_keys=getattr(module, "_skip_keys_device_placement", None),
+    )
+
+    for submodule, forward in forwards.items():
+        submodule.__dict__["forward"] = forward
 
 
 def set_process_limits(gpu_mem_bytes_by_id: Dict[int, int]) -> None:

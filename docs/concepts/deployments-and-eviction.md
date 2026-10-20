@@ -75,10 +75,9 @@ constant underestimates for a large one. There is no per-request memory
 reservation beyond this padding. Both are overridable per deploy, and
 `DeploymentConfig.size_bytes` replaces the estimate outright.
 
-The estimate depends on `dtype` and `trust_remote_code` (repo code can build a
-different architecture), so the controller pins each config's dtype to a
-concrete value before evaluating: the number that places the replica must be the
-number the actor loads with. Sizing in practice — which knob to turn, and what
+The estimate depends on `dtype` and on the key's `trust_remote_code`, so the
+controller pins each config's dtype to a concrete value before evaluating: the
+number that places the replica must be the number the actor loads with. Sizing in practice — which knob to turn, and what
 the ledger cannot see — is in
 [Model OOM on deploy](../runbooks/model-oom-on-deploy.md).
 
@@ -107,12 +106,13 @@ error is `CANT_ACCOMMODATE`.
 `DeploymentConfig.replicas` is **additive**: deploying a model that already has
 two replicas with `replicas=1` gives you three. Shrinking is `evict`'s job.
 
-### `trusted` follows the deployment
+### `trust_remote_code` is in the key
 
-The request that first provisions a model fixes its `trust_remote_code` for the
-life of the deployment; each request still forks on its own `request.trusted` for
-where its block runs. The mechanism is in
-[API Service](../developing/api-service.md#trusted-through-the-queue-and-into-the-model-load).
+Whether a model runs its own repo code is a field of its model key, so every
+replica of a deployment loads the same way; see
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
+Who may deploy such a key is in
+[Auth and Limits](auth-and-limits.md#trust_remote_code).
 
 ## Eviction
 
@@ -178,9 +178,9 @@ deployment is exempt from eviction and is reported without the
 `schedule.end_time` that non-pinned deployments carry in `status()`.
 
 Replicas the *queue* provisions are never pinned — `Replica.provision` asks
-`controller.scale` with a `DeploymentConfig` that sets only `trusted`, and
-`scale` copies a live replica's class, dtype and GPU count but not `pinned` — so
-autoscaled capacity is always reclaimable.
+`controller.scale` with a bare `DeploymentConfig()`, and `scale` copies a live
+replica's class, dtype and GPU count but not `pinned` — so autoscaled capacity
+is always reclaimable.
 
 ## Related
 

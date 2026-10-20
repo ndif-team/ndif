@@ -1,10 +1,15 @@
 """Unit tests for `services/ray/deployments/modeling/util.py`.
 
-Pure functions over synthetic numbers — no GPU, no Ray, no server — unlike the
-rest of the suite. One class per helper; add a class alongside as helpers grow.
+Pure functions over synthetic numbers, plus one thread helper driven by a
+socket pair — no GPU, no Ray, no server — unlike the rest of the suite. One
+class per helper; add a class alongside as helpers grow.
 """
 
 from __future__ import annotations
+
+import asyncio
+import socket
+import threading
 
 import pytest
 
@@ -18,8 +23,11 @@ from ndif.common.schema.response import Status
 from ndif.services.ray.deployments.modeling.util import (
     alloc_shortfall,
     is_oom,
+    kill_thread,
     request_meta,
+    run_on_own_thread,
 )
+from ndif.services.ray.sandbox.protocol import recvn
 
 
 def message_error(message: str) -> BaseException:
@@ -323,3 +331,35 @@ class TestIsOom:
 
     def test_an_ordinary_failure_is_not_an_oom(self):
         assert not is_oom(ValueError("shape mismatch"))
+
+
+class TestRunOnOwnThread:
+    """A ``kill_thread`` that lands after the block has finished fails no later work.
+
+    Replays an untrusted timeout (EOF ends the block, then the injection) and
+    checks the next ``asyncio.to_thread`` call still completes.
+    """
+
+    def test_a_late_interrupt_fails_only_its_own_request(self):
+        async def scenario():
+            # The host end of a runner's socket: the block parks in recv on it,
+            # as the sandboxed host thread does.
+            host, runner = socket.socketpair()
+            idents = []
+
+            def block():
+                idents.append(threading.get_ident())
+                return recvn(host, 1)
+
+            job = run_on_own_thread(block, name="execute-a")
+            runner.close()  # Sandbox.stop(): EOF ends the block
+            with pytest.raises(ConnectionError):
+                await job
+
+            kill_thread(idents[0])  # the interrupt that arrives after it
+            # The next request's work on this loop's pooled threads completes.
+            assert await asyncio.to_thread(lambda: "next request") == "next request"
+            host.close()
+
+        # Bounded, so a regression fails here rather than hanging the suite.
+        asyncio.run(asyncio.wait_for(scenario(), timeout=5))

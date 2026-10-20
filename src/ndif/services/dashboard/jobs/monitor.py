@@ -234,8 +234,8 @@ def run_model_traces(hot_models: list[dict], api_key: str, timeout_s: int, api_h
         # Surface the human-readable repo_id in logs/notifications, with the
         # task when the entry carries one — two tasks of a repo are two
         # deployments and their alerts must not read identically.
-        task = m.get("task")
-        result["model"] = f"{repo_id} ({task})" if task else repo_id
+        fields = [f for f in (m.get("task"), "trust_remote_code" if m.get("trust_remote_code") else None) if f]
+        result["model"] = f"{repo_id} ({', '.join(fields)})" if fields else repo_id
         results.append(result)
         print(f"  {result['status']} ({result.get('latency_s', 'N/A')}s)")
     return results

@@ -156,7 +156,7 @@ the `NDIF_VERSION` build arg.
 The root [CONTRIBUTING.md](../../CONTRIBUTING.md#tests) has the test commands; beyond
 those:
 
-1. If you touched execution, also run the live suite with `trusted=False` forced
+1. If you touched execution, also run the live suite with `tags: []` forced
    ([Testing](testing.md#testing-the-untrusted--sandbox-path)) — local dev is
    trusted by default, so the sandbox path is otherwise never exercised.
 2. `ruff check src/` with the `dev` extra; nothing enforces it.

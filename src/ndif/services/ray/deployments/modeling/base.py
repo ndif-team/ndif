@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import ray
 import torch
 import zstandard
-from accelerate import dispatch_model
 from pydantic import BaseModel, ConfigDict
 from transformers.integrations.accelerate import _get_device_map
 
@@ -48,10 +47,11 @@ from .util import (
     gpu_baselines,
     gpu_peaks,
     kill_thread,
-    remove_accelerate_hooks,
+    redispatch,
     request_meta,
     reset_process_limits,
     resolve_dtype,
+    run_on_own_thread,
     set_default_gpu,
     set_process_limits,
     verify_device_placement,
@@ -98,10 +98,6 @@ class BaseModelDeploymentArgs(BaseModel):
     # torch dtype name (e.g. "bfloat16"). Must match the dtype the controller's
     # evaluator estimated this model's size with, or GPU accounting is wrong.
     dtype: str = "bfloat16"
-    # Whether the model may run its own repo code at load (HF trust_remote_code).
-    # Set from the trusted flag of the request that deployed it; forwarded through
-    # the actor's **kwargs into from_model_key. Must match what the evaluator sized.
-    trust_remote_code: bool = False
 
 
 class BaseModelDeployment:
@@ -286,10 +282,7 @@ class BaseModelDeployment:
         module = self.model._module
 
         device_map = _get_device_map(module, "balanced", max_memory, None)
-        # Drop the previous dispatch's hooks before re-dispatching, or accelerate
-        # stacks a second set on top of the existing ones.
-        remove_accelerate_hooks(module)
-        dispatch_model(module, device_map=device_map)
+        redispatch(module, device_map)
 
         torch.cuda.synchronize()
         gc.collect()
@@ -359,9 +352,12 @@ class BaseModelDeployment:
             # format_error, rather than the queue's generic submission error.
             await asyncio.to_thread(self.model._remoteable_set_env, request.env)
 
-            # Run the block on a worker thread, raced against the timeout and the
-            # cancel signal. execute() returns (result_blob, deserialize_ms).
-            job = asyncio.create_task(asyncio.to_thread(self.execute, request))
+            # Run the block on a thread of its own (why: run_on_own_thread), raced
+            # against the timeout and the cancel signal. execute() returns
+            # (result_blob, deserialize_ms).
+            job = run_on_own_thread(
+                lambda: self.execute(request), name=f"execute-{request.id}"
+            )
             kill = asyncio.create_task(self.kill_switch.wait())
             with self.execution_scope(request):
                 done, pending = await asyncio.wait(

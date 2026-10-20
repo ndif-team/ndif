@@ -22,11 +22,12 @@ each step. Three facts shape the procedure:
    (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
    `Cluster.deploy`). `ndif deploy gpt2` three times gives three replicas. Only
    `ndif deploy -f models.yaml --sync` reconciles to a count.
-3. **The model key includes the pipeline task.** A client's key is
-   `TransformersModel:{"repo_id": …, "revision": …, "task": …}`, with the task
-   always resolved. A deployment serves only requests whose key matches exactly, so
-   a model deployed under another task — or under a key with no task — is a
-   separate deployment that no default client request reaches.
+3. **The model key includes the pipeline task and `trust_remote_code`.** A
+   client's key is `TransformersModel:{"repo_id": …, "revision": …, "task": …}`,
+   plus `"trust_remote_code": true` when the client set it, with the task always
+   resolved. A deployment serves only requests whose key matches exactly, so a
+   model deployed under another task or trust value — or under a key with no task
+   — is a separate deployment that no default client request reaches.
 
 `ndif` commands run wherever the CLI reaches `NDIF_RAY_ADDRESS`. On the compose
 stack, run them in the `ray` container:
@@ -70,20 +71,17 @@ What happened (`src/ndif/cli/lib/deploy.py` `deploy`):
    failed deploy exits non-zero.
 
 Useful flags (full list in [The ndif CLI](../operating/cli.md)): `--task`,
-`--replicas N`, `--revision`, `--pinned`, `--trusted`, `--dtype`,
+`--replicas N`, `--revision`, `--pinned`, `--trust-remote-code`, `--dtype`,
 `--actor-class`, `-f models.yaml`.
 
 **`--task`** deploys a non-default task. Clients must then load with the same
 task (`TransformersModel(repo, task="…")`), or their requests provision a second,
 default-task deployment.
 
-**`--trusted`** loads the model with `trust_remote_code=True` (needed for repos
-that ship their own modelling code) and marks the deployment trusted; a plain
-`ndif deploy` is untrusted. Dashboard deploys default to trusted and take
-`"trusted": false` per request
-(`src/ndif/services/dashboard/backend/routers/deployments.py` `DeployRequest`);
-scheduled ones are always trusted. What "trusted" means beyond loading is in
-[Auth and limits](../concepts/auth-and-limits.md).
+**`--trust-remote-code`** lets the checkpoint's own modelling code run at load.
+Like `--task` it is part of the model key, so clients must load with
+`trust_remote_code=True` too; see
+[Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key).
 
 ## 2. Confirm it is serving
 
@@ -108,7 +106,7 @@ Per replica:
 
 ```bash
 ndif status --json-output | jq '.deployments[] | select(.deployment_level=="HOT") |
-  {repo_id, task, replica_id, state: .application_state, pinned, trusted, dtype}'
+  {repo_id, task, replica_id, state: .application_state, pinned, trust_remote_code, dtype}'
 ```
 
 **The real proof is a request.** Nothing above runs a forward pass:
@@ -220,8 +218,8 @@ the Hub and stores the resulting model key, returning **400** if it can't
 The reconcile job (`src/ndif/services/dashboard/jobs/reconcile.py`) runs from cron
 every `NDIF_DASHBOARD_RECONCILE_CRON` (default `*/2 * * * *`) and right after any
 schedule write. It deploys every active entry that is new or no longer HOT,
-pinned and trusted, and evicts model keys that were active on the previous pass
-and no longer are.
+pinned, and evicts model keys
+that were active on the previous pass and no longer are.
 
 Run a pass by hand:
 

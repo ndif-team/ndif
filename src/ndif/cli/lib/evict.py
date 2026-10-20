@@ -18,6 +18,7 @@ def evict(
     *,
     checkpoints: Optional[list[tuple[str, Optional[str]]]] = None,
     task: Optional[str] = None,
+    trust_remote_code: bool = False,
     model_keys: Optional[list[str]] = None,
     evict_all: bool = False,
     replica: Optional[str] = None,
@@ -62,7 +63,7 @@ def evict(
     elif checkpoints:
         target_keys = []
         for cp, rev in checkpoints:
-            mk = get_model_key(cp, rev, task=task)
+            mk = get_model_key(cp, rev, task=task, trust_remote_code=trust_remote_code)
             target_keys.append(mk)
             emit(on_message, f"  Model key for {cp}: {mk}")
             if task is None:

@@ -98,7 +98,7 @@ def _aggregate_by_model_key(replicas: list[dict]) -> list[dict]:
                 "revision": r.get("revision"),
                 "pinned": bool(r.get("pinned", False)),
                 "actor_class": r.get("actor_class"),
-                "trusted": bool(r.get("trusted", False)),
+                "trust_remote_code": bool(r.get("trust_remote_code", False)),
                 "dtype": r.get("dtype"),
                 "execution_timeout_seconds": r.get("execution_timeout_seconds"),
                 "gpus": r.get("gpus"),

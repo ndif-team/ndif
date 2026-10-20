@@ -61,7 +61,7 @@ def _trusted(value: bool):
 
     def metadata(self):
         body = json.loads(original(self))
-        body["trusted"] = value
+        body["tags"] = ["trusted"] if value else []
         return json.dumps(body)
 
     RequestModel.metadata = metadata

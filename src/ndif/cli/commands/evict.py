@@ -10,12 +10,16 @@ from ..lib.evict import NDIFConnectivityError, evict as evict_lib
 @click.option("--revision", default=None, help="Model revision/branch.")
 @click.option("--task", default=None,
               help="Pipeline task of the deployment to evict (inferred when unset).")
+@click.option("--trust-remote-code", "trust_remote_code", is_flag=True,
+              help="The deployment was made with its own modelling code allowed (HF "
+                   "trust_remote_code); part of the key, so needed to name it.")
 @click.option("--replica", default=None,
               help="Target a single replica by id (requires exactly one checkpoint).")
 @click.option("--all", "evict_all", is_flag=True, help="Evict every HOT deployment.")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
 @click.option("--redis-url", default=None, help="Redis URL for dispatcher reconcile (default: NDIF_REDIS_URL).")
-def evict(checkpoints, revision, task, replica, evict_all, ray_address, redis_url):
+def evict(checkpoints, revision, task, trust_remote_code, replica, evict_all,
+          ray_address, redis_url):
     """Evict (remove) replicas of one or more model deployments.
 
     CHECKPOINTS: model checkpoints (optional if using --all).
@@ -50,6 +54,7 @@ def evict(checkpoints, revision, task, replica, evict_all, ray_address, redis_ur
             result = evict_lib(
                 checkpoints=[(cp, revision) for cp in checkpoints],
                 task=task,
+                trust_remote_code=trust_remote_code,
                 replica=replica,
                 ray_address=ray_address,
                 redis_url=redis_url,

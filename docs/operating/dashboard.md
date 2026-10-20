@@ -1,6 +1,6 @@
 ---
 title: Admin Dashboard
-one_liner: Running the NDIF admin dashboard — bringing it up, auth, the views, deploy-time trust, the schedule model, and the monitor + reconcile + report crons.
+one_liner: Running the NDIF admin dashboard — bringing it up, auth, the views, `trust_remote_code` on a deploy, the schedule model, and the monitor + reconcile + report crons.
 tags: [operating, dashboard, gotchas]
 related: [docs/developing/dashboard-internals.md, docs/developing/dashboard-frontend.md, docs/operating/compose-stack.md, docs/operating/models-and-deployment.md, docs/operating/cli.md, docs/operating/observability.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/concepts/sandbox-execution.md]
 sources: [src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/backend/routers/deploy.py, src/ndif/services/dashboard/backend/routers/schedule.py, src/ndif/services/dashboard/backend/schedule_store.py, src/ndif/services/dashboard/jobs/monitor.py, src/ndif/services/dashboard/jobs/reconcile.py, src/ndif/services/dashboard/jobs/report.py, src/ndif/services/dashboard/jobs/util.py, docker/docker-compose.yml, src/ndif/cli/service.py]
@@ -123,7 +123,7 @@ card refreshes accurately right after you act on it. It collapses per-replica
 entries into one card per `model_key`, and tags a card `pinned` if the
 controller says so *or* an active schedule event names that key. Per card you
 get Deploy, Add Replica, Restart and Evict, and expanding a card gives the same
-actions per replica. A COLD card opens the deploy modal (`task`, `actor_class`,
+actions per replica. A COLD card opens the deploy modal (`task`, `trust_remote_code`, `actor_class`,
 `envoy_class`, `padding_factor`, `execution_timeout_seconds`, pinned); a WARM
 card redeploys the existing `model_key` with no modal.
 
@@ -132,25 +132,16 @@ to create or edit one; each entry shows its most recent reconcile status.
 
 **Login** (`/login`). In dev mode the router never sends you here.
 
-### Dashboard deploys are trusted
+### `trust_remote_code` on dashboard deploys
 
-A deployment's `trusted` flag becomes `trust_remote_code=` when the controller
-sizes and loads the model, so a checkpoint shipping custom modeling code runs
-that code inside the model actor. From the dashboard:
-
-- **Deploy and Add Replica** send `trusted: true` — the default of the
-  `DeployRequest` model (`src/ndif/services/dashboard/backend/routers/deployments.py`),
-  which the UI never changes. A caller of the HTTP API can send
-  `trusted: false`.
-- **Scheduled models** are always trusted and pinned: reconcile builds each spec
-  with both hard-coded (`src/ndif/services/dashboard/jobs/reconcile.py`
-  `_spec_from_event`).
-
-Deploy from the dashboard only what you'd deploy with `ndif deploy --trusted`.
-This is deploy-time trust; it does not decide where a *request's* code runs —
-that is the request's own `trusted`, stamped by the API. See
-[Models and Deployment](models-and-deployment.md#trusted-at-deploy-time) and
-[Sandbox Execution](../concepts/sandbox-execution.md).
+The Deploy and Schedule modals have a `trust_remote_code` checkbox (default off)
+that sets `DeployRequest.trust_remote_code` or `ScheduleEventIn.trust_remote_code`
+and goes into the minted model key; a card whose key carries it shows a
+`trust_remote_code` pill. A WARM card's redeploy reuses its existing key. The
+dashboard does not check who asks. The field is defined in
+[Models and Deployment](models-and-deployment.md#trust_remote_code-in-the-model-key);
+it does not decide where a request's code runs
+([Sandbox Execution](../concepts/sandbox-execution.md)).
 
 ### Scripting the dashboard API
 
@@ -162,7 +153,7 @@ D=http://localhost:8081
 curl -s -c jar -H 'content-type: application/json' \
   -d '{"username":"admin","password":"<password>"}' $D/api/auth/login
 curl -s -b jar -H 'content-type: application/json' $D/api/deployments/deploy \
-  -d '{"checkpoint":"openai-community/gpt2","trusted":false}'
+  -d '{"checkpoint":"openai-community/gpt2","pinned":true}'
 curl -s -b jar -H 'content-type: application/json' $D/api/deployments/evict \
   -d '{"model_key":"<model_key>","replica":"<replica_id>"}'
 ```
@@ -170,10 +161,10 @@ curl -s -b jar -H 'content-type: application/json' $D/api/deployments/evict \
 | Endpoint | Body (`src/ndif/services/dashboard/backend/routers/`) |
 |---|---|
 | `POST /api/auth/login` | `{username, password}`; sets the HttpOnly session cookie |
-| `POST /api/deployments/deploy` | `DeployRequest`: `checkpoint` (required), optional `model_key` (used verbatim), `trusted` (default `true`), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`, `pinned`, `replicas` |
+| `POST /api/deployments/deploy` | `DeployRequest`: `checkpoint` (required), optional `model_key` (used verbatim), `trust_remote_code` (default `false`; part of the minted key), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`, `pinned`, `replicas` |
 | `POST /api/deployments/evict` | `EvictRequest`: `model_key`, optional `replica` |
 | `POST /api/deployments/restart` | `RestartRequest`: `model_key`, optional `replica` |
-| `POST /api/schedule` | `ScheduleEventIn`: `title`, `checkpoint`, `start`, optional `end` (open-ended when absent), `revision`, `task`, `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`; `model_key` is recomputed server-side |
+| `POST /api/schedule` | `ScheduleEventIn`: `title`, `checkpoint`, `start`, optional `end` (open-ended when absent), `revision`, `task`, `trust_remote_code` (default `false`; part of the key), `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`; `model_key` is recomputed server-side |
 
 ## The schedule model
 
@@ -181,12 +172,12 @@ A schedule event is *one model, pinned, over a time window*. It is not a
 deployment topology and not a replica count.
 
 - **One model per event.** Want three models scheduled? Three events.
-- **Always pinned** (and trusted). `pinned` means only "the controller must not
-  evict this".
+- **Always pinned.** `pinned` means only "the controller must not evict this".
 - **Active window is `[start, end)`.** `end: null` is open-ended — active forever
   after `start` — which is how the UI expresses "just keep this pinned".
 - **Per-event fields mirror the deployment config**: `revision`, `task`,
-  `actor_class`, `envoy_class`, `padding_factor`, `execution_timeout_seconds`.
+  `trust_remote_code`, `actor_class`, `envoy_class`, `padding_factor`,
+  `execution_timeout_seconds`.
 - **`model_key` is server-set.** Every write resolves the checkpoint against
   HuggingFace and stamps the canonical checkpoint, revision and `model_key` onto
   the event. A typo'd repo fails the write with a 400 instead of silently failing
@@ -270,15 +261,20 @@ Failures are counted against *received*, not against executed, because a
 request that dies before reaching a replica never emits an `execution_time`
 point. Requests with no `email` tag — all of them when auth is off — are reported
 as `unattributed`. If InfluxDB is unreachable you still get an uptime-only
-report. Run it by hand with `--dry-run` to print instead of posting. Top-list
-size (`report.top_n`) and the message template (`messages.daily_report`, with
-`{window}`, `{uptime}`, `{requests}`, `{users}`, `{models}`, `{latency}`,
-`{data}`) live in `config.json`.
+report. Run it by hand with `--dry-run` to print instead of posting. The
+top-list size is `report.top_n` in `config.json`. The
+`messages.daily_report` template overrides the layout; it takes `{window}`,
+`{uptime}` and `{usage}`, and a template naming any other placeholder is ignored
+in favour of the built-in one.
 
 Discord alerts are off unless `discord_webhook` is set in
 `<data_dir>/config.json`, which `start.sh` seeds from `config.example.json` on
-first run: webhook, optional role id to `@`-mention, and message templates for
+first run: webhooks, optional role id to `@`-mention, and message templates for
 down / still-down / back-up / models-failed / schedule-failed / daily report.
+Status alerts (down, still-down, back-up, models-failed, schedule-failed) post to
+`discord_webhook`; the daily report posts to `discord_report_webhook`, or to
+`discord_webhook` when that is empty. The jobs read `config.json` on every run,
+so a webhook change needs no restart.
 
 ## State on disk
 
@@ -289,7 +285,7 @@ Everything is under `NDIF_DASHBOARD_DATA_DIR` (`/var/lib/dashboard` in compose):
 | `schedule.json` | schedule router | The events; the source of truth for reconcile |
 | `.reconcile.state.json` | reconcile | `prev_model_keys`, `active_count`, `last_run` |
 | `cache/values.json` | deploy + reconcile | MRU autocomplete lists (`repo_id`, `task`, `actor_class`, `envoy_class`) |
-| `config.json` | you (seeded from the example) | Discord webhook, role id, message templates |
+| `config.json` | you (seeded from the example) | Discord webhooks (status, report), role id, message templates |
 | `logs/connected_*.log` | monitor | One JSON object per tick: timestamp + ok/reason |
 | `logs/models_*.log` | monitor | One object per trace pass: per-model status, latency, error |
 | `logs/cluster_*.log` | monitor | Node/GPU/memory snapshot per tick |

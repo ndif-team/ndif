@@ -27,15 +27,15 @@ publish ports.
 
 **None of the three routes sets `NDIF_POSTGRES_URL`, so none of them has
 authentication.** With auth off, `verify_api_key` returns `None` and
-`validate_request` honors a client-supplied `trusted` and defaults an
-unspecified one to true (both in `src/ndif/services/api/auth.py`). A default
+`validate_request` honors client-supplied `tags` and defaults unspecified
+ones to `{"trusted"}` (both in `src/ndif/services/api/auth.py`). A default
 nnsight client sends none, so in practice every request runs trusted:
 
 - The traced block runs **in-process inside the model actor**, next to the
   weights, with the actor's privileges — not in a separate runner process.
-- The flag becomes `trust_remote_code=` when a model is sized and loaded, so a
-  request naming an arbitrary Hugging Face repo can run that repo's code on your
-  GPU node.
+- A trusted request may provision a model whose key carries
+  `trust_remote_code`, so a request naming an arbitrary Hugging Face repo can
+  run that repo's code on your GPU node.
 
 That is the intended default for an NDIF only you can reach, and the wrong one
 the moment anyone else can. Two more things are open by default:

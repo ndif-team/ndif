@@ -52,7 +52,9 @@ def fetch_queue_state(redis_url: Optional[str] = None, timeout: int = 5) -> dict
     return _request(EVENT_QUEUE_STATE, redis_url, timeout)
 
 
-def kill_request(request_id: str, redis_url: Optional[str] = None, timeout: int = 5) -> dict:
+# Longer than the others: an executing request's kill waits up to ~10 s for the
+# actor to stop it (Replica.cancel).
+def kill_request(request_id: str, redis_url: Optional[str] = None, timeout: int = 15) -> dict:
     return _request(EVENT_KILL, redis_url, timeout, request_id=request_id)
 
 

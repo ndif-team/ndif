@@ -134,9 +134,9 @@ hop by hop without extra instrumentation.
 `cancelled` or `preempted` (`BaseModelDeployment.report` in
 `src/ndif/services/ray/deployments/modeling/base.py`). `preempted` means the
 replica was parked mid-run and the request went back on the queue, so that
-request has a second point for its re-run. A request stopped with `ndif kill` is
-not marked here: the kill stops the dispatch, the actor finishes the block, and
-the point carries the block's own outcome. Count user-visible failures from
+request has a second point for its re-run. A request stopped with `ndif kill`
+is marked `cancelled`; if the kill fell back to cancelling the dispatch, the
+point carries the block's own outcome. Count user-visible failures from
 the `ndif.request` lifecycle events (`stage` = `error`), not from this tag.
 
 ## Ray metrics — Prometheus
