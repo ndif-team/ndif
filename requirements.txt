@@ -84,3 +84,9 @@ pydantic-settings==2.14.2
 itsdangerous==2.2.0
 bcrypt==5.0.0
 requests==2.34.2
+
+# CA bundle for Python HTTPS clients (requests, httpx, huggingface_hub). Floor,
+# not a pin: 2026.10.19 drops emSign ECC Root CA - G3, whose intermediates had
+# weak, recoverable keys (eMudhra incident, Oct 2026). Raise it whenever a
+# certifi release distrusts another CA.
+certifi>=2026.10.19

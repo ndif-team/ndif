@@ -41,8 +41,11 @@ WORKDIR /app
 # when nnsight installs from an sdist (it mounts `.save()` on objects; without a
 # compiler setuptools skips it and `value.save()` breaks on the server). git:
 # lets requirements.txt point at a git ref when a fix hasn't reached PyPI.
+# ca-certificates: already in the base image; naming it upgrades it to the
+# current Debian release, so the system trust store doesn't lag the base tag
+# (20250419+deb13u1 removes the compromised eMudhra root).
 RUN apt-get update -y \
-    && apt-get install -y --no-install-recommends cron gcc libc6-dev git redis-server \
+    && apt-get install -y --no-install-recommends ca-certificates cron gcc libc6-dev git redis-server \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=rustfs /usr/bin/rustfs /usr/local/bin/rustfs
