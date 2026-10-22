@@ -6,6 +6,7 @@ per request (which the caller then ``stop()``s), so nothing leaks between
 requests while acquiring one still avoids the python-startup cost.
 """
 
+import json
 import os
 import queue
 import socket
@@ -72,6 +73,22 @@ def runner_env() -> dict:
     """The environment a runner starts with: `RUNNER_ENV`, and nothing else."""
     return {
         name: os.environ[name] for name in RUNNER_ENV if name in os.environ
+    }
+
+
+def placement(module) -> dict:
+    """Where the host's model holds each tensor: ``{name: [device, dtype]}``.
+
+    A runner's meta model is built from the model key alone, so without this its
+    weights read as float32 on ``meta`` -- and a block that does
+    ``v.to(model.dtype)`` or ``.to(weight.device)`` computes something different
+    sandboxed than in-process. Every parameter and buffer is listed, aliases
+    included, so the runner can find a tied weight under either name.
+    """
+    return {
+        name: [str(tensor.device), str(tensor.dtype).removeprefix("torch.")]
+        for named in (module.named_parameters, module.named_buffers)
+        for name, tensor in named(remove_duplicate=False)
     }
 
 
@@ -151,6 +168,7 @@ def spawn(
     timeout: float = 30.0,
     peers: int = 1,
     model_key: Optional[str] = None,
+    placement_path: Optional[str] = None,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -166,6 +184,10 @@ def spawn(
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
     behaviour before meta models, and what a standalone runner gets. Whether
     the checkpoint's own code may run during that build is in the key.
+
+    ``placement_path`` is a JSON file of the host model's `placement`, which the
+    runner applies to that meta model. A file rather than an argument because
+    Linux caps one argument at 128 KB, and an MoE model's map is larger.
     """
     path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
     env = runner_env()
@@ -186,6 +208,8 @@ def spawn(
     argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
     if model_key is not None:
         argv.append(model_key)
+        if placement_path is not None:
+            argv.append(placement_path)
     process = subprocess.Popen(
         argv,
         env=env,
@@ -229,12 +253,19 @@ class Pool:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
+        placement: Optional[dict] = None,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
         self.model_key = model_key
+        # Written once and shared by every runner this pool spawns.
+        self.placement_path = None
+        if placement is not None:
+            self.placement_path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.placement.json"
+            with open(self.placement_path, "w") as file:
+                json.dump(placement, file)
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -249,6 +280,7 @@ class Pool:
             quiet=self.quiet,
             peers=self.peers,
             model_key=self.model_key,
+            placement_path=self.placement_path,
         )
 
     def refill(self) -> None:
@@ -290,3 +322,8 @@ class Pool:
                 self.ready.get_nowait().stop()
             except queue.Empty:
                 break
+        if self.placement_path is not None:
+            try:
+                os.remove(self.placement_path)
+            except FileNotFoundError:
+                pass
