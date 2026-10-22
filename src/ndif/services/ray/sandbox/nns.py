@@ -39,6 +39,7 @@ import warnings
 
 import torch
 from greenlet import getcurrent
+from torch._subclasses.fake_tensor import FakeTensorMode
 
 from nnsight.intervention.barrier import Barrier
 from nnsight.intervention.cache import Cache
@@ -499,7 +500,7 @@ META_MODEL = None
 PERSISTENT_OBJECTS = {}
 
 
-def load_meta_model(model_key: str) -> None:
+def load_meta_model(model_key: str, placement: "dict | None" = None) -> None:
     """Build this runner's meta model and register its persistent-id map.
 
     Called once at runner start (``Runner.__init__``, before the socket binds), so
@@ -520,6 +521,9 @@ def load_meta_model(model_key: str) -> None:
     and huggingface_hub serves a cached file even when its HEAD call fails — which
     is what happens here for a gated repo, since a runner deliberately inherits no
     `HF_TOKEN`.
+
+    ``placement`` is the host model's ``{name: [device, dtype]}``
+    (``host.placement``); see :func:`place`.
     """
     global META_MODEL
 
@@ -527,7 +531,37 @@ def load_meta_model(model_key: str) -> None:
     # the same build the actor does (base.py) minus the weights -- and it is right
     # for a non-HuggingFace wrapper too.
     META_MODEL = Remotable.from_model_key(model_key)
+    if placement is not None:
+        place(META_MODEL._module, placement)
     PERSISTENT_OBJECTS.update(META_MODEL._remoteable_persistent_objects())
+
+
+def place(module: torch.nn.Module, placement: dict) -> None:
+    """Give each meta tensor in ``module`` the host's device and dtype.
+
+    The key carries neither, so the meta build is float32 on ``meta``, and a block
+    reading ``weight.dtype``, ``model.device`` or anything derived from them saw
+    something the in-process path never does. A tensor's ``device`` cannot be
+    assigned, so each one becomes a ``FakeTensor``: still weightless, with the
+    host's dtype and a ``fake_device``. Mixing one with a real tensor raises, as
+    meta did. Tensors are swapped by identity so a tied weight stays tied.
+    """
+    mode = FakeTensorMode()
+    fakes = {}
+    for prefix, owner in module.named_modules(remove_duplicate=False):
+        for slots in (owner._parameters, owner._buffers):
+            for name, tensor in list(slots.items()):
+                where = placement.get(f"{prefix}.{name}" if prefix else name)
+                if tensor is None or where is None:
+                    continue
+                if id(tensor) not in fakes:
+                    device, dtype = where
+                    fake = mode.from_tensor(tensor.detach().to(getattr(torch, dtype)))
+                    fake.fake_device = torch.device(device)
+                    if isinstance(tensor, torch.nn.Parameter):
+                        fake = torch.nn.Parameter(fake, tensor.requires_grad)
+                    fakes[id(tensor)] = fake
+                slots[name] = fakes[id(tensor)]
 
 
 def set_env(env: "dict | None") -> None:

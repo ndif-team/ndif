@@ -8,10 +8,11 @@ patches. The process is not hardened (no namespaces, seccomp, rlimits, or
 filesystem jail); what it provides is separation from the model actor and a fresh
 process per request.
 
-Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1]
+Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [placement.json]
 """
 
 import contextlib
+import json
 import os
 import socket
 import sys
@@ -139,6 +140,7 @@ class Runner:
         path: str,
         peers: int = 1,
         model_key: "str | None" = None,
+        placement: "dict | None" = None,
     ):
         self.path = path
         self.peers = peers
@@ -146,7 +148,7 @@ class Runner:
             os.unlink(path)
         if model_key is not None:
             try:
-                nns.load_meta_model(model_key)
+                nns.load_meta_model(model_key, placement)
             except Exception as error:
                 print(
                     f"runner: no meta model for {model_key!r} ({error!r}); "
@@ -209,4 +211,8 @@ if __name__ == "__main__":
     die_with_parent()
     peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
     model_key = sys.argv[3] if len(sys.argv) > 3 else None
-    Runner(sys.argv[1], peers=peers, model_key=model_key).serve()
+    placement = None
+    if len(sys.argv) > 4:
+        with open(sys.argv[4]) as file:
+            placement = json.load(file)
+    Runner(sys.argv[1], peers=peers, model_key=model_key, placement=placement).serve()
