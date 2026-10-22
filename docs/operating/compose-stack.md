@@ -88,7 +88,7 @@ python, since the image has no curl.
 `ndif` CLI with `start --foreground` as its command, and with no argument
 `ndif start` resolves its targets from `$NDIF_SERVICE` (`src/ndif/cli/service.py`
 `env_services`), which the image defaults to `all`. A single target is `exec`'d
-so it becomes PID 1 and gets signals directly. `NDIF_SERVICE` accepts a
+so it gets signals directly. `NDIF_SERVICE` accepts a
 space/comma list and `resolve_targets` expands `all` in place, so
 `"all dashboard"` is the core stack plus the admin UI.
 
@@ -188,6 +188,12 @@ Every recipe is a thin wrapper over `docker compose -f docker/docker-compose.yml
 | `just logs [services...]` | `compose logs -f` | Follow; Ctrl-C detaches without stopping anything |
 | `just ps` | `compose ps` | Container status and health |
 | `just nnsight` | — | Which nnsight, if any, would be bind-mounted |
+
+`just down` and `just restart` send SIGTERM and wait for each container to
+exit. The `api` and `ray` services set `stop_grace_period: 60s` in
+`docker/docker-compose.yml`, past Docker's 10-second default: gunicorn drains
+in-flight requests, and `src/ndif/services/ray/start.sh` runs `ray stop`, before
+they exit.
 
 `just ta` exists because the source is **baked into the image** — there is no
 bind mount of `src/` — so `just restart` or `just up` after editing code runs the
