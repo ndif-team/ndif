@@ -270,8 +270,9 @@ services:
       # ray:// client address and no longer affects head/worker.
       # Pin models on startup with NDIF_DEPLOYMENTS ("|"-separated model keys).
     # Share the host's Hugging Face cache so downloaded weights persist across
-    # `just down` and are reused rather than re-fetched. Container runs as root,
-    # so its default HF_HOME is /root/.cache/huggingface.
+    # `just down` and are reused rather than re-fetched.
+    # Root by default; `NDIF_USER=$(id -u):$(id -g) just up` runs as you.
+    user: "${NDIF_USER:-0:0}"
     volumes:
       - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     depends_on:
