@@ -157,6 +157,7 @@ written by `jobs/monitor.py`:
 ```jsonc
 // connected_*.log — one per tick; status is "ok" or the reason
 {"timestamp": "2026-07-22T18:00:00+00:00", "status": "ok"}
+{"timestamp": "...", "status": "/status failed: ReadTimeout: HTTPConnectionPool(host='localhost', port=8001): Read timed out. (read timeout=60)"}
 // models_*.log — one per trace pass; "degraded" if any failed
 {"timestamp": "...", "status": "ok", "ok": 3, "total": 4,
  "results": [{"model": "openai-community/gpt2", "status": "ok", "latency_s": 1.23},
@@ -187,9 +188,13 @@ A one-shot script. `main()` arms a `SIGALRM` for `SCRIPT_TIMEOUT` (480 s) that
 `os._exit(2)`s a wedged run, then takes a non-blocking flock on `logs/.monitor.lock`
 and exits if held (`acquire_lock`) — a slow tick skips rather than overlaps.
 `probe_health` does `GET /connected` then `GET /status`, calling the deployment down
-for an unreachable API, a failed `/connected`, an unreachable `/status`, **or zero
+for an unreachable API, a failed `/connected`, a failed `/status`, **or zero
 HOT models** — `/connected` alone is too shallow, since the Ray client can be alive
-while the controller is wedged. A cluster snapshot is written whenever `/status`
+while the controller is wedged. Both requests time out after `TIMEOUT` (60 s, in
+`jobs/util.py`). When a request raises, `describe_failure` puts the exception type
+and message in the reason, plus the response body for an HTTP error, so the log
+and the ping say whether it was a timeout, a refused connection or the API
+answering 503/504. A cluster snapshot is written whenever `/status`
 answered. If healthy and `model_check_due` (first run, recovery, or
 `--model-interval`, default 7200 s, elapsed), it runs one remote trace per HOT model.
 Then it writes the connectivity datapoint, applies the up/down transition

@@ -79,6 +79,20 @@ def get_status(base_url: str) -> dict:
     return resp.json()
 
 
+def describe_failure(e: Exception) -> str:
+    """One line on why a probe request failed, for the log and the Discord ping.
+
+    The exception type separates the cases (``ReadTimeout``, ``ConnectionError``,
+    ``HTTPError``, ``JSONDecodeError``). An HTTP error also carries the response
+    body, since the API's ``detail`` says why it refused: 503 while the backend
+    reconnects, 504 when the status refresh timed out.
+    """
+    reason = f"{type(e).__name__}: {summarize_error(e)}"
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        reason += f" {' '.join(e.response.text.split())[:200]}"
+    return reason
+
+
 def extract_hot_models(status: dict) -> list[dict]:
     deployments = status.get("deployments", {})
     return [m for m in deployments.values() if m.get("deployment_level") == "HOT"]
@@ -137,15 +151,15 @@ def probe_health(base_url: str) -> tuple[bool, str, dict | None]:
     """
     try:
         ok, reason = check_connected(base_url)
-    except requests.RequestException:
-        return False, "API unreachable", None
+    except requests.RequestException as e:
+        return False, f"API unreachable: {describe_failure(e)}", None
     if not ok:
         return False, reason, None
 
     try:
         status_data = get_status(base_url)
-    except Exception:
-        return False, "/status unreachable", None
+    except Exception as e:
+        return False, f"/status failed: {describe_failure(e)}", None
 
     if not extract_hot_models(status_data):
         return False, "no HOT models deployed", status_data
