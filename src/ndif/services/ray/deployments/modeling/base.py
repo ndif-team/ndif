@@ -475,6 +475,11 @@ class BaseModelDeployment:
             # nothing it registered outlives it, then reclaim per-request state — or
             # restart on a fatal, CUDA-context-corrupting error.
             scope.__exit__(None, None, None)
+            # A failed block's exception lives on in `job` (and `done`), and its
+            # traceback holds the block's frames and their tensors. Drop them, or
+            # cleanup cannot collect them and the next request starts with that
+            # memory still allocated.
+            job = done = pending = None
             if fatal:
                 self.restart()
             else:
@@ -696,7 +701,11 @@ class BaseModelDeployment:
         self.execution_ident = None
         self.model.interleaver.cancel()
 
-        torch.cuda.synchronize()
+        # Every card, not just the current one: a block that fails while a later
+        # card still has kernels queued would otherwise have their memory freed
+        # under them, an illegal memory access that fails the next request.
+        for gpu_id in self.gpu_mem_bytes_by_id:
+            torch.cuda.synchronize(gpu_id)
         gc.collect()
         torch.cuda.empty_cache()
 

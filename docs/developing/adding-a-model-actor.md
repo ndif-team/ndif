@@ -81,7 +81,7 @@ needs to change is in the methods it calls:
 | `interrupt()` | `kill_thread(self.execution_ident)` — inject `SystemExit` into the execution thread | there is something else to stop: a subprocess, a socket, an engine request |
 | `format_error(exc) -> (str, bool)` | strip nnsight and actor frames; flag unrecoverable CUDA errors as fatal | your errors arrive pre-formatted, or a different failure is fatal |
 | `error_name(exc) -> str` | the exception's class name, recorded as telemetry `error_type` | your failures arrive wrapped and you can name the real cause |
-| `cleanup()` | clear the kill switch, `kill_reason` and `execution_ident`, cancel the interleaver, `synchronize`/`gc`/`empty_cache` | you hold per-request resources; call `super().cleanup()` |
+| `cleanup()` | clear the kill switch, `kill_reason` and `execution_ident`, cancel the interleaver, `synchronize` every assigned card, then `gc`/`empty_cache` | you hold per-request resources; call `super().cleanup()` |
 | `restart()` | `ray.kill(..., no_restart=False)` for a fresh CUDA context | you hold resources that would outlive the actor; release them, then `super().restart()` |
 | `commit()` | nothing | something must happen exactly between "the block built" and "the block runs" — `TPModelDeployment.commit` releases the other ranks there |
 
