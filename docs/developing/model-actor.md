@@ -298,7 +298,10 @@ sandbox actor reports the runner-side cause instead of its `RunnerError` wrapper
 `linecache.cache` and nnsight's process-global `SOURCES`/`BLOCKS` memos from the
 snapshots taken on entry — they're keyed by `(filename, line)` and never
 re-validated, so a later request reusing the same trace-site would otherwise run
-*this* request's stale compiled block. Then `restart()` on a fatal error, else
+*this* request's stale compiled block. It then drops `run`'s own references to the
+block's future: a failed block's exception lives on in it, and through its traceback
+so do the block's frames and every tensor they hold, which cleanup's collection
+could not otherwise reach. Then `restart()` on a fatal error, else
 `BaseModelDeployment.cleanup`: clear the kill switch and `kill_reason`, drop
 `execution_ident`, `model.interleaver.cancel()`, and `synchronize` + `gc.collect` +
 `empty_cache`.

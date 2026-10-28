@@ -475,6 +475,11 @@ class BaseModelDeployment:
             # nothing it registered outlives it, then reclaim per-request state — or
             # restart on a fatal, CUDA-context-corrupting error.
             scope.__exit__(None, None, None)
+            # A failed block's exception lives on in `job` (and `done`), and its
+            # traceback holds the block's frames and their tensors. Drop them, or
+            # cleanup cannot collect them and the next request starts with that
+            # memory still allocated.
+            job = done = pending = None
             if fatal:
                 self.restart()
             else:
