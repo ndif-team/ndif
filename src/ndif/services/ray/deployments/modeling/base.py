@@ -701,7 +701,11 @@ class BaseModelDeployment:
         self.execution_ident = None
         self.model.interleaver.cancel()
 
-        torch.cuda.synchronize()
+        # Every card, not just the current one: a block that fails while a later
+        # card still has kernels queued would otherwise have their memory freed
+        # under them, an illegal memory access that fails the next request.
+        for gpu_id in self.gpu_mem_bytes_by_id:
+            torch.cuda.synchronize(gpu_id)
         gc.collect()
         torch.cuda.empty_cache()
 
