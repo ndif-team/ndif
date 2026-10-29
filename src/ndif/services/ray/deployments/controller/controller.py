@@ -552,7 +552,13 @@ class _ControllerActor:
 
     def status(self):
         """Dashboard view: per-deployment health + cluster resources + COLD models."""
-        ray_status = list_actors(address=ray.get_runtime_context().gcs_address)
+        # Ray returns 100 actors unless asked for more, and the list carries a DEAD
+        # record for every actor ever run. Past 100 a live replica drops off it and
+        # vanishes from status, so the dashboard's reconcile re-deploys pinned
+        # models it can no longer see.
+        ray_status = list_actors(
+            address=ray.get_runtime_context().gcs_address, limit=2000
+        )
 
         status = {}
 
