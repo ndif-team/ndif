@@ -96,21 +96,26 @@ class Cluster:
         # this loop kept re-registering them for the length of the outage:
         # placement saw phantom capacity and returned CANT_ACCOMMODATE, and
         # /status kept reporting a full cluster, so the down alert never
-        # fired. Filtering server-side also keeps the result well inside
-        # ``list_nodes``' default limit of 100, which accumulated dead
-        # records would otherwise creep towards on a long-lived head.
+        # fired.
+        #
+        # Filtered below rather than with ``filters=``: Ray counts nodes a
+        # server-side filter removes as truncated output, so the strict default
+        # raises for as long as any DEAD record exists. That ended ``check_nodes``
+        # on 2026-10-30. Strict stays on: a list that really is incomplete has
+        # to raise, or a live node missing from it would be purged. The limit
+        # leaves room for dead records accumulating on a long-lived head.
         # The state API does not reuse this process's connection; given no
         # address it guesses from RAY_ADDRESS, the default temp dir or the
         # host's process list, and raises if it sees more than one cluster.
         nodes = list_nodes(
             address=ray.get_runtime_context().gcs_address,
             detail=True,
-            filters=[("state", "=", "ALIVE")],
+            limit=2000,
         )
         current_nodes = set()
 
         for node in nodes:
-            if "GPU" not in node.resources_total:
+            if node.state != "ALIVE" or "GPU" not in node.resources_total:
                 continue
 
             id = node.node_id

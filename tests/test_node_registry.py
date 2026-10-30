@@ -30,12 +30,13 @@ def no_ray(monkeypatch):
     )
 
 
-def _node(ip, gpus=4):
+def _node(ip, gpus=4, state="ALIVE"):
     """A NodeState stand-in. Ray reports DEAD nodes with resources intact, so
     these deliberately carry full ``resources_total`` regardless of state."""
     return SimpleNamespace(
         node_id=f"id-{ip}",
         node_name=ip,
+        state=state,
         labels={"ray.io/accelerator-type": "A40"},
         resources_total={
             "GPU": float(gpus),
@@ -45,26 +46,30 @@ def _node(ip, gpus=4):
     )
 
 
-def test_update_nodes_requests_alive_nodes_only(monkeypatch):
-    """The ALIVE filter must be pushed to Ray, not applied after the fact.
+def test_dead_node_record_is_purged_without_failing_the_sync(monkeypatch):
+    """A node going DEAD stays in ``list_nodes``, with ``"GPU"`` still in its
+    ``resources_total``. It must be dropped, and the listing must not raise.
 
-    Ray's ``list_nodes`` returns DEAD nodes with ``"GPU"`` still in
-    ``resources_total``, so any client-side filter on resources re-registers
-    them forever.
+    The stand-in behaves as Ray does: a ``state`` filter counts the nodes it
+    removes as truncated output, and the strict default raises on that for as
+    long as any DEAD record exists.
     """
-    seen = {}
+    records = [_node("10.0.0.1"), _node("10.0.0.2")]
 
     def fake_list_nodes(**kwargs):
-        seen.update(kwargs)
-        return [_node("10.0.0.1")]
+        if kwargs.get("filters") and any(n.state != "ALIVE" for n in records):
+            raise RuntimeError("Failed to retrieve all nodes: data truncation")
+        return list(records)
 
     monkeypatch.setattr(cluster_mod, "list_nodes", fake_list_nodes)
-    Cluster().update_nodes()
 
-    assert ("state", "=", "ALIVE") in seen.get("filters", []), (
-        "update_nodes must ask the GCS for ALIVE nodes; it got "
-        f"filters={seen.get('filters')!r}"
-    )
+    c = Cluster()
+    c.update_nodes()
+    assert len(c.nodes) == 2
+
+    records[1].state = "DEAD"
+    c.update_nodes()
+    assert [n.name for n in c.nodes.values()] == ["10.0.0.1"]
 
 
 def test_departed_node_is_purged(monkeypatch):

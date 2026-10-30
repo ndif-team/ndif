@@ -203,8 +203,7 @@ flowchart TB
 Separately, `_ControllerActor.check_nodes` loops forever calling `Cluster.update_nodes()` every
 `NDIF_CONTROLLER_SYNC_INTERVAL_S` seconds (default 30): it adds newly-joined GPU nodes and, for a
 node that is no longer `ALIVE` in Ray, pops it and calls `Node.purge()`, killing every actor on it.
-A sync that raises, as Ray's state API does when a node doesn't answer, is logged and retried on the
-next tick. It never calls `apply()`, refreshes an existing node's capacity, or checks the model actors
+A sync that raises is logged and retried on the next tick. It never calls `apply()`, refreshes an existing node's capacity, or checks the model actors
 themselves.
 
 ## build() and apply()

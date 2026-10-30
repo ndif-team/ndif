@@ -163,9 +163,8 @@ class _ControllerActor:
                 self.cluster.update_nodes()
             except Exception:
                 # Nothing awaits this task, so an uncaught error would end node
-                # syncing for the life of the controller, silently. Ray's state
-                # API raises when a node doesn't answer, which is exactly when
-                # the sync is needed. Retry on the next tick.
+                # syncing for the life of the controller, silently. Retry on
+                # the next tick.
                 logger.exception("Failed to update nodes")
             await asyncio.sleep(
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
