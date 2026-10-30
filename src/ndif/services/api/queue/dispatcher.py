@@ -48,6 +48,10 @@ from ....common.telemetry import error_type_name
 from .config import CONFIG
 from .processor import Processor
 
+# Pause after a failed pass through a worker loop. While Redis is down every read
+# fails at once, so without this each loop retries thousands of times a second.
+ERROR_BACKOFF_S = 1
+
 logger = logging.getLogger("ndif.queue.dispatcher")
 
 
@@ -264,11 +268,14 @@ class Dispatcher:
             except Exception as e:
                 logger.exception("status_worker: failed to refresh status")
                 self.error_queue.put_nowait(("status_worker", e))
-                await client.delete(STATUS_REQUESTED_KEY)
-                await client.publish(STATUS_READY_CHANNEL, "error")
-                # Yield so a tight failure loop (e.g. controller down) doesn't
-                # peg the event loop before the trigger stream refills.
-                await asyncio.sleep(0)
+                try:
+                    await client.delete(STATUS_REQUESTED_KEY)
+                    await client.publish(STATUS_READY_CHANNEL, "error")
+                except Exception:
+                    # Redis is what failed. Escaping here would end this task,
+                    # which nothing restarts.
+                    logger.exception("status_worker: failed to report the error")
+                await asyncio.sleep(ERROR_BACKOFF_S)
 
     async def env_worker(self) -> None:
         """Serve coalesced cluster-env refreshes for the API's /env.
@@ -301,11 +308,13 @@ class Dispatcher:
             except Exception as e:
                 logger.exception("env_worker: failed to refresh env")
                 self.error_queue.put_nowait(("env_worker", e))
-                await client.delete(ENV_REQUESTED_KEY)
-                await client.publish(ENV_READY_CHANNEL, "error")
-                # Yield so a tight failure loop (e.g. controller down) doesn't
-                # peg the event loop before the trigger stream refills.
-                await asyncio.sleep(0)
+                try:
+                    await client.delete(ENV_REQUESTED_KEY)
+                    await client.publish(ENV_READY_CHANNEL, "error")
+                except Exception:
+                    # As in status_worker: this must not end the task.
+                    logger.exception("env_worker: failed to report the error")
+                await asyncio.sleep(ERROR_BACKOFF_S)
 
     async def events_worker(self) -> None:
         """Serve CLI operational events: queue introspection, kill, reconcile.
@@ -339,7 +348,7 @@ class Dispatcher:
                         logger.exception(f"events_worker: handler failed for {fields}")
             except Exception:
                 logger.exception("events_worker: error reading events stream")
-                await asyncio.sleep(0)
+                await asyncio.sleep(ERROR_BACKOFF_S)
 
     async def _respond(self, response_key: str, payload: dict) -> None:
         """Push a JSON reply to the caller's response_key (brpop'd by the CLI)."""
@@ -402,7 +411,7 @@ class Dispatcher:
                 await self.handle_errors()
             except Exception:
                 logger.exception("Error in dispatch worker")
-                continue
+                await asyncio.sleep(ERROR_BACKOFF_S)
 
 
 if __name__ == "__main__":
