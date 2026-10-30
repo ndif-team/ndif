@@ -22,6 +22,8 @@ Pure unit tests over fakes: no Ray cluster, no server, so they run anywhere.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("ray", reason="the exception classes under test are Ray's")
@@ -80,8 +82,7 @@ def wait(monkeypatch):
     `ray.get` is the identity: the fake raises from `remote()` instead, which
     puts the exception on the same side of the call the real one does. A
     `ValueError` in the script is raised from the *lookup* rather than the
-    readiness call, because that is where the real one comes from — the actor's
-    name has not resolved yet.
+    readiness call, because that is where the real one comes from.
     """
     import ray
 
@@ -116,25 +117,13 @@ def wait(monkeypatch):
 
 
 class TestStillLoading:
-    """The two failures that mean "not yet" have to be polled through."""
+    """The one failure that means "not yet" has to be polled through."""
 
     def test_an_unavailable_actor_is_polled_through(self, wait):
         handle, slept = wait([unavailable(), None])
 
         assert handle.calls == 2, "gave up while the actor was still restarting"
         assert slept, "spun without sleeping between polls"
-
-    def test_a_lookup_that_has_not_resolved_is_polled_through(self, wait):
-        # The controller creates the actor asynchronously after deploy returns.
-        handle, _ = wait([ValueError("actor not registered"), None])
-
-        assert handle.calls == 2
-
-    def test_the_two_transient_states_interleave(self, wait):
-        # The real sequence: not registered, then registered but restarting.
-        handle, _ = wait([ValueError("nope"), unavailable(), None])
-
-        assert handle.calls == 3
 
     def test_it_waits_as_long_as_it_takes(self, wait):
         # No deadline: a large model across many GPUs has no sensible upper
@@ -180,7 +169,13 @@ class TestNeverLoading:
         # The ordinary shape of a real failure: it looks like it is coming up,
         # and then it dies.
         with pytest.raises(ActorDiedError, match="cannot be split"):
-            wait([unavailable(), ValueError("nope"), died()])
+            wait([unavailable(), died()])
+
+    def test_a_missing_actor_is_not_polled(self, wait):
+        # A name is registered when the actor is created, before deploy returns,
+        # and stays registered through restarts. Not finding it means it's gone.
+        with pytest.raises(ValueError, match="not registered"):
+            wait([ValueError("actor not registered"), None])
 
 
 class TestTheDistinctionIsLoadBearing:
@@ -197,12 +192,11 @@ class TestTheDistinctionIsLoadBearing:
         from ndif.cli.lib.models import wait_for_replica_ready
 
         source = inspect.getsource(wait_for_replica_ready)
-        # "except (" rather than "except": the docstring explains the bug, and
-        # the word "exception's" in it is a prefix match that lands the slice in
-        # the prose -- where the class name legitimately appears.
-        caught = source[source.index("except (") :]
+        # The code, not the docstring, which explains the bug and legitimately
+        # names the class.
+        body = source[source.rindex('"""') :]
 
-        assert "RayActorError" not in caught, (
+        assert "RayActorError" not in body, (
             "catching RayActorError swallows ActorDiedError, which is the whole "
             "bug: a model that refused to load looks like one that is slow"
         )
@@ -224,38 +218,45 @@ class TestTheDistinctionIsLoadBearing:
         assert "cannot be split tensor-parallel" in str(died())
 
 
-def test_queue_wait_gives_up_once_the_controller_drops_the_replica(monkeypatch):
-    """``ValueError`` means "not yet" only while the controller lists the replica.
-
-    The queue's wait has no deadline, so a replica purged with its node would
-    otherwise be polled forever, holding its slot in the pool.
-    """
-    import asyncio
-    from types import SimpleNamespace
-
+@pytest.fixture
+def queue_replica(monkeypatch):
+    """The API queue's ``Replica``, with Ray's lookup and the sleep replaced."""
     from ndif.services.api.queue import replica as replica_module
-
-    lookups = []
-    listed = [["replica"], ["replica"], []]
-
-    def lookup(model_key, replica_id):
-        lookups.append(replica_id)
-        raise ValueError("actor not registered")
-
-    async def get_deployment(model_key, replica_id):
-        return SimpleNamespace(replicas=listed.pop(0))
 
     async def no_sleep(seconds):
         pass
 
-    controller = SimpleNamespace(get_deployment=SimpleNamespace(remote=get_deployment))
-    monkeypatch.setattr(replica_module, "get_model_actor_handle", lookup)
-    monkeypatch.setattr(replica_module, "controller_handle", lambda: controller)
     monkeypatch.setattr(replica_module.asyncio, "sleep", no_sleep)
 
-    replica = replica_module.Replica.__new__(replica_module.Replica)
-    replica.model_key, replica.replica_id = "model", "replica"
+    def build(lookup):
+        monkeypatch.setattr(replica_module, "get_model_actor_handle", lookup)
+        replica = replica_module.Replica.__new__(replica_module.Replica)
+        replica.model_key, replica.replica_id = "model", "replica"
+        return replica
+
+    return build
+
+
+def test_queue_wait_does_not_poll_a_missing_actor(queue_replica):
+    """The queue's wait has no deadline, so treating a failed lookup as "not yet"
+    polls a replica purged with its node forever, holding its slot in the pool."""
+    lookups = []
+
+    def lookup(model_key, replica_id):
+        lookups.append(replica_id)
+        # Fails the test rather than hanging it if the wait polls this again.
+        assert len(lookups) == 1, "polled an actor that does not exist"
+        raise ValueError("actor not registered")
 
     with pytest.raises(ValueError):
-        asyncio.run(replica.wait())
-    assert len(lookups) == 3, "stopped before the controller dropped the replica"
+        asyncio.run(queue_replica(lookup).wait())
+
+
+def test_queue_wait_polls_a_restarting_actor(queue_replica):
+    async def ready():
+        pass
+
+    handle = FakeHandle([unavailable(), ready()])
+
+    asyncio.run(queue_replica(lambda model_key, replica_id: handle).wait())
+    assert handle.calls == 2

@@ -93,13 +93,13 @@ def get_current_deployments(level: str | None = "HOT") -> list[dict]:
 def wait_for_replica_ready(model_key: str, replica_id: str) -> None:
     """Block until a replica's actor is ready to serve.
 
-    Two failures mean "not yet" and are polled through:
+    One failure means "not yet" and is polled through:
+    ``ActorUnavailableError``, the actor is restarting.
 
-      - ``ValueError``: the controller creates the actor asynchronously after
-        ``deploy`` returns, so the lookup hasn't resolved yet.
-      - ``ActorUnavailableError``: the actor exists but is restarting.
-
-    **Anything else propagates**, which is the whole point. ``ActorDiedError``
+    **Anything else propagates**, which is the whole point. ``ValueError`` from
+    the lookup means there is no such actor: a name is registered when the actor
+    is created, before ``deploy`` returns, and stays registered through restarts.
+    ``ActorDiedError``
     is what a constructor that raised looks like from here, and it carries that
     exception's traceback — so letting it out is how the caller learns a model
     refused to load rather than merely being slow. Catching its parent
@@ -125,5 +125,5 @@ def wait_for_replica_ready(model_key: str, replica_id: str) -> None:
             handle = get_model_actor_handle(model_key, replica_id)
             ray.get(handle.__ray_ready__.remote())
             return
-        except (ActorUnavailableError, ValueError):
+        except ActorUnavailableError:
             time.sleep(2)
