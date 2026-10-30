@@ -103,7 +103,12 @@ class _ControllerActor:
         # controller restart but aren't re-adopted here — the rebuilt cluster
         # starts empty and can re-place onto GPUs those orphans still hold,
         # over-committing memory. Reconcile against live ModelActors on startup.
-        self.cluster.update_nodes()
+        try:
+            self.cluster.update_nodes()
+        except Exception:
+            # Ray doesn't retry a failed __init__, even with max_restarts=-1, so
+            # raising would leave no controller. check_nodes retries.
+            logger.exception("Failed to update nodes")
 
         if deployments and deployments != [""]:
             self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
@@ -132,11 +137,10 @@ class _ControllerActor:
         # awaits the initial deploy future, so once a deployment succeeds
         # nothing looks at it again; the record (and its GPU reservation)
         # survives the actor. `get_deployment` then keeps handing that dead
-        # replica id to the queue, `Processor.start` adopts it and awaits
-        # `Replica.wait`, and that wait neither returns nor raises — so the
-        # healthy replicas behind it in the list are never started, the purge
-        # that would error the queued users is never reached, and every request
-        # for the model hangs with no error and no timeout. Observed: a
+        # replica id to the queue, `Processor.start` adopts it, and `Replica.wait`
+        # raises because the name no longer resolves — so the healthy replicas
+        # behind it in the list are never started and requests for the model
+        # keep erroring. Observed: a
         # `ray.kill(no_restart=True)` on an 8B replica left the model
         # permanently unusable, with the controller reporting 29.0/47.4 GB free
         # against 620 MiB actually in use. Neither a redeploy nor an API restart
@@ -148,18 +152,17 @@ class _ControllerActor:
         # the node's gpu/cpu resources. Two things to get right:
         #   - key off Ray's actor state, not a name lookup failing. A recoverable
         #     restart reports RESTARTING (never DEAD) and its record must be left
-        #     alone or the dispatch-side restart wait breaks; a name that doesn't
-        #     resolve is also the normal PENDING_CREATION window.
+        #     alone or the dispatch-side restart wait breaks.
         #   - drop only, and let demand re-provision. Re-provisioning from a
         #     heartbeat turns a model that reliably OOMs on load into a flap loop.
-        #
-        # This prevents the wedge but cannot cure one: `Replica.wait` is pinned
-        # to a replica id, so forgetting the record here won't wake a Processor
-        # already stuck on it. That needs a bound on the adoption wait in
-        # `Processor.start` — deliberately unlike the dispatch-side wait, which
-        # is unbounded because there the actor is known to be coming back.
         while True:
-            self.cluster.update_nodes()
+            try:
+                self.cluster.update_nodes()
+            except Exception:
+                # Nothing awaits this task, so an uncaught error would end node
+                # syncing for the life of the controller, silently. Retry on
+                # the next tick.
+                logger.exception("Failed to update nodes")
             await asyncio.sleep(
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
@@ -552,19 +555,17 @@ class _ControllerActor:
 
     def status(self):
         """Dashboard view: per-deployment health + cluster resources + COLD models."""
-        # Ray returns 100 actors unless asked for more, and the list carries a DEAD
-        # record for every actor ever run. Past 100 a live replica drops off it and
-        # vanishes from status, so the dashboard's reconcile re-deploys pinned
-        # models it can no longer see.
+        # Without the filter, DEAD records count against the limit. Ray keeps one
+        # for every actor it has run and cuts the list silently, so past the limit
+        # a live replica vanishes from status and the dashboard's reconcile
+        # re-deploys a pinned model it can no longer see.
         ray_status = list_actors(
-            address=ray.get_runtime_context().gcs_address, limit=2000
+            address=ray.get_runtime_context().gcs_address,
+            filters=[("state", "!=", "DEAD")],
+            limit=2000,
         )
 
         status = {}
-
-        # One ModelActor name can have multiple Ray entries (restarts leave DEAD
-        # records beside the ALIVE one). Collapse to the healthiest state.
-        STATE_PRIORITY = {"RUNNING": 0, "DEPLOYING": 1, "UNHEALTHY": 2}
 
         for actor_state in ray_status:
             if (
@@ -572,35 +573,23 @@ class _ControllerActor:
                 and not actor_state.name.startswith("ModelActor:")
             ):
                 continue
-            if actor_state.state in {
-                "DEPENDENCIES_UNREADY",
-                "PENDING_CREATION",
-                "RESTARTING",
-            }:
-                application_state = "DEPLOYING"
-            elif actor_state.state == "ALIVE":
-                application_state = "RUNNING"
-            elif actor_state.state == "DEAD":
-                application_state = "UNHEALTHY"
-            else:
-                continue
-
-            existing = status.get(actor_state.name, {}).get("application_state")
-            if (
-                existing is None
-                or STATE_PRIORITY[application_state] < STATE_PRIORITY[existing]
-            ):
-                status[actor_state.name] = {"application_state": application_state}
+            status[actor_state.name] = {
+                "application_state": (
+                    "RUNNING" if actor_state.state == "ALIVE" else "DEPLOYING"
+                )
+            }
 
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
             for _, _, deployment in node.iter_deployments():
                 application_name = deployment.name
-                if application_name not in status:
-                    continue
                 if deployment.model_key not in self.cluster.evaluator.cache:
                     continue
+
+                # Tracked with no live actor: the controller believes a replica
+                # is deployed while its actor is gone, which is worth surfacing.
+                status.setdefault(application_name, {"application_state": "UNHEALTHY"})
 
                 entry = self.cluster.evaluator.cache[deployment.model_key]
 
@@ -654,8 +643,6 @@ class _ControllerActor:
 
             for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
-                if application_name not in status:
-                    continue
                 if cached_deployment.model_key not in self.cluster.evaluator.cache:
                     continue
 
@@ -678,28 +665,6 @@ class _ControllerActor:
                 }
 
                 existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
-
-        # Drop orphaned dead actors. Ray keeps a DEAD record for every actor it
-        # has ever run, so each evict/restart leaves one behind forever; the
-        # loops above only enrich names the controller still tracks, so an
-        # orphan stays a bare {"application_state": "UNHEALTHY"} with no
-        # repo_id. Left in, they accumulate monotonically — one per teardown,
-        # never reaped — and on a cluster that swaps models routinely they come
-        # to outnumber the real entries (9 ghosts to 4 real ones after a single
-        # day of testing), breaking any consumer that reads `deployments` and
-        # expects a repo_id.
-        #
-        # Only *orphans* are dropped. A dead actor the controller still tracks
-        # did get enriched, and is worth surfacing: it means the controller
-        # believes a replica is deployed while its actor is gone.
-        status = {
-            name: entry
-            for name, entry in status.items()
-            if not (
-                entry.get("application_state") == "UNHEALTHY"
-                and entry.get("model_key") is None
-            )
-        }
 
         for repo_id in get_downloaded_models():
             if repo_id not in existing_repo_ids:

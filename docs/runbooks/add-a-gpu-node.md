@@ -170,15 +170,19 @@ the Actors page lists the controller and each replica as
 There is no drain. Stopping Ray on a worker kills the model actors on it; the
 controller notices on its next sync and drops the node and every deployment it
 held (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
-`Cluster.update_nodes`). A request that was running on one of those actors gets
-`ActorDiedError`, which the queue treats as an eviction: the request goes back to
-the front of its model's queue and runs again from the start on another replica
-(`src/ndif/services/api/queue/replica.py` `Replica.dispatch`). The user sees a
-second `QUEUED`, not an error.
+`Cluster.update_nodes`). A request that was running on one of those actors usually
+fails with "Error submitting request to model deployment": the worker sees
+`ActorUnavailableError`, the same as a restart, and waits for the replica to come
+back (`src/ndif/services/api/queue/replica.py` `Replica.dispatch`). If the sync lands
+first, the request gets `ActorDiedError` instead, which the queue treats as an
+eviction: it goes back to the front of its model's queue and runs again from the
+start on another replica.
 
-Until that sync, the controller still lists the node's replicas, and a model that
-loses its last replica in that window can provision against a dead one and wait on
-it indefinitely. So for a planned removal, take the node's replicas off first:
+Until that sync, the controller still lists the node's replicas. When it drops them,
+the waiting worker exits and any requests queued behind it move to another replica
+or a new one. A request that arrives in that window for a model with no other
+replica waits, then gets an error. So for a planned removal, take the node's
+replicas off first:
 
 ```bash
 # which replicas are on the node?

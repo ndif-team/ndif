@@ -203,7 +203,7 @@ flowchart TB
 Separately, `_ControllerActor.check_nodes` loops forever calling `Cluster.update_nodes()` every
 `NDIF_CONTROLLER_SYNC_INTERVAL_S` seconds (default 30): it adds newly-joined GPU nodes and, for a
 node that is no longer `ALIVE` in Ray, pops it and calls `Node.purge()`, killing every actor on it.
-It never calls `apply()`, refreshes an existing node's capacity, or checks the model actors
+A sync that raises is logged and retried on the next tick. It never calls `apply()`, refreshes an existing node's capacity, or checks the model actors
 themselves.
 
 ## build() and apply()
@@ -244,11 +244,10 @@ memory.
 
 Schemas live in `src/ndif/common/schema/controller.py` because both sides speak them
 ([Schemas](../reference/schemas.md)); `ModelDeployResult` guarantees exactly one of `replicas` /
-`error` is meaningful. `_ControllerActor.status` starts from Ray's `list_actors()`, asked for up to
-2,000 entries because the list holds a `DEAD` record for every actor Ray has run and a live replica
-past the limit would be missing from `status`. It collapses
-duplicate records for an actor name to the healthiest state (`RUNNING` < `DEPLOYING` < `UNHEALTHY`),
-then enriches each entry the controller tracks with its level, `pinned`, `trust_remote_code` (read
+`error` is meaningful. `_ControllerActor.status` starts from Ray's `list_actors()`, filtered to exclude
+`DEAD` because Ray keeps a record for every actor it has run and silently cuts the list at its limit,
+so dead records could push a live replica out of `status`. A replica the controller tracks with no
+live actor is reported as `UNHEALTHY`. It then enriches each entry the controller tracks with its level, `pinned`, `trust_remote_code` (read
 off the key), `dtype`,
 `execution_timeout_seconds`, `repo_id`, `task`, `revision`, `n_params`, `size_bytes`, `actor_class`
 and `gpus` count — so an actor Ray knows about but the controller doesn't ends up with **only**

@@ -21,7 +21,7 @@ The single entry point for "something broke". Find the row, follow it.
 | A new GPU node that doesn't show up | [Add a GPU node](../runbooks/add-a-gpu-node.md) |
 | A killed job's stored response later shows `COMPLETED` | [Trace a user's failed job → Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs) |
 | Requests fail right after a kill, with a greenlet `ValueError` (`Cannot switch to a different thread`) | [Debug a stuck request → step 8](../runbooks/debug-a-stuck-request.md#step-8--unstick-it): restart the replica |
-| An actor dead for good: `UNHEALTHY` persists and requests to it hang | [Debug a stuck request → step 4](../runbooks/debug-a-stuck-request.md#step-4--is-there-a-live-replica), the `HOT \| UNHEALTHY` row (not the load-OOM case below) |
+| An actor dead for good: `UNHEALTHY` persists and requests to it get an error | [Debug a stuck request → step 4](../runbooks/debug-a-stuck-request.md#step-4--is-there-a-live-replica), the `HOT \| UNHEALTHY` row (not the load-OOM case below) |
 | The first request after `just up ray` errors `Error starting model.` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md#right-sizing): the note after recreating `ray` |
 | The stack itself: a service down, everything hanging, no UI, no telemetry | the rest of this page |
 
