@@ -225,7 +225,13 @@ blocking because each schedule write queues its own background reconcile while t
 2-minute cron runs alongside, and unserialized passes would read the same stale
 `prev_model_keys` and leak deployments or drop evictions. The critical section spans
 read-diff-act-write including the deploy/evict RPCs, so it can be held for tens of
-seconds. The diff:
+seconds, and indefinitely when the Ray client has died under an RPC. So the cron
+entry `src/ndif/services/dashboard/start.sh` writes wraps the job in `flock -n` on
+`.reconcile.cron.lock`, so a tick that finds a run in progress exits instead of
+queueing a process behind the lock, and in `timeout -k 60 1800`, which ends a hung
+run so reconcile resumes. `start.sh` also sets `RAY_ENABLE_AUTO_CONNECT=0` for
+uvicorn and the crons; without it a Ray call made after the client dropped starts a
+local Ray cluster on the dashboard host. The diff:
 
 ```python
 new_keys = {e.model_key: e for e in filter_active(store.list())}

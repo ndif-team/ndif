@@ -208,6 +208,13 @@ and re-pushes every active entry.
 Schedule writes don't wait for the next tick: every create/update/delete queues a
 reconcile as a FastAPI background task.
 
+A deploy or evict over a Ray client that has died never returns, so the cron
+runs reconcile under `flock -n` (a tick that finds a run in progress exits) and
+`timeout -k 60 1800` (a hung run is killed after 30 minutes and the next tick
+starts fresh). `start.sh` also sets `RAY_ENABLE_AUTO_CONNECT=0`, so a Ray call
+made after the client dropped fails instead of starting a local Ray cluster on
+the dashboard host.
+
 ## The crons
 
 `start.sh` writes `/etc/cron.d/ndif-dashboard` and starts `cron`, but only if
