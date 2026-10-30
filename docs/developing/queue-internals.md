@@ -95,8 +95,8 @@ just logs them.
 reconcile event emitted after an out-of-band `ndif deploy` / `ndif evict`). Their
 streams, handlers and reply protocol are in
 [The Redis Layer](redis-layer.md#the-events-stream). Nothing restarts these tasks, so
-each one, like the main loop, catches every error, logs it and retries after
-`ERROR_BACKOFF_S`, which also carries them through a Redis outage. An `ndif kill` of an
+each one, like the main loop, catches every error, logs it and retries a second
+later, which also carries them through a Redis outage. An `ndif kill` of an
 executing request goes through `Replica.cancel(interrupt=True)`: the request is
 errored, the actor's `cancel()` is called, and the dispatch is given a few
 seconds to return on its own; only if it does not is the dispatch task

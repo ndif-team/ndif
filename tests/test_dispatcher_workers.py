@@ -65,7 +65,7 @@ def test_side_workers_survive_redis_going_away(dispatcher, monkeypatch, worker):
         asyncio.run(getattr(instance, worker)())
 
     assert redis.reads == 3, "the worker stopped retrying"
-    assert sleeps == [dispatcher_module.ERROR_BACKOFF_S] * 2, "retried with no pause"
+    assert sleeps == [1, 1], "retried with no pause"
 
 
 def test_main_loop_pauses_between_failures(dispatcher):
@@ -87,4 +87,4 @@ def test_main_loop_pauses_between_failures(dispatcher):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(instance.dispatch_worker())
 
-    assert sleeps == [dispatcher_module.ERROR_BACKOFF_S] * 2, "retried with no pause"
+    assert sleeps == [1, 1], "retried with no pause"

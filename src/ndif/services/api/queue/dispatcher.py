@@ -48,10 +48,6 @@ from ....common.telemetry import error_type_name
 from .config import CONFIG
 from .processor import Processor
 
-# Pause after a failed pass through a worker loop. While Redis is down every read
-# fails at once, so without this each loop retries thousands of times a second.
-ERROR_BACKOFF_S = 1
-
 logger = logging.getLogger("ndif.queue.dispatcher")
 
 
@@ -275,7 +271,8 @@ class Dispatcher:
                     # Redis is what failed. Escaping here would end this task,
                     # which nothing restarts.
                     logger.exception("status_worker: failed to report the error")
-                await asyncio.sleep(ERROR_BACKOFF_S)
+                # Don't spin: while Redis is down every read fails at once.
+                await asyncio.sleep(1)
 
     async def env_worker(self) -> None:
         """Serve coalesced cluster-env refreshes for the API's /env.
@@ -314,7 +311,7 @@ class Dispatcher:
                 except Exception:
                     # As in status_worker: this must not end the task.
                     logger.exception("env_worker: failed to report the error")
-                await asyncio.sleep(ERROR_BACKOFF_S)
+                await asyncio.sleep(1)
 
     async def events_worker(self) -> None:
         """Serve CLI operational events: queue introspection, kill, reconcile.
@@ -348,7 +345,7 @@ class Dispatcher:
                         logger.exception(f"events_worker: handler failed for {fields}")
             except Exception:
                 logger.exception("events_worker: error reading events stream")
-                await asyncio.sleep(ERROR_BACKOFF_S)
+                await asyncio.sleep(1)
 
     async def _respond(self, response_key: str, payload: dict) -> None:
         """Push a JSON reply to the caller's response_key (brpop'd by the CLI)."""
@@ -411,7 +408,8 @@ class Dispatcher:
                 await self.handle_errors()
             except Exception:
                 logger.exception("Error in dispatch worker")
-                await asyncio.sleep(ERROR_BACKOFF_S)
+                # Don't spin: while Redis is down every read fails at once.
+                await asyncio.sleep(1)
 
 
 if __name__ == "__main__":
