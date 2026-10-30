@@ -207,7 +207,7 @@ Requests it held in memory are dropped; the next request provisions afresh.
 - **The controller lives on the head.** If you run two heads you have two
   clusters.
 - **A node's capacity is read once**, when the controller first sees it: total RAM
-  × `NDIF_MODEL_CACHE_PERCENTAGE` (default 0.9) as the WARM budget, and
+  × `NDIF_MODEL_CACHE_PERCENTAGE` (default 0.7) as the WARM budget, and
   `cuda_memory_bytes` divided evenly across its GPUs. Mixed card sizes are
   mis-accounted; to change what a node advertises, take it out and rejoin it.
 - **A worker doesn't need `NDIF_REDIS_URL`, `NDIF_OBJECT_STORE_URL` or the

@@ -755,8 +755,12 @@ class ControllerDeploymentArgs(BaseModel):
     minimum_deployment_time_seconds: Optional[float] = float(
         os.environ.get("NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS", "3600")
     )
+    # The WARM budget counts only parked weights, so the rest of RAM has to cover
+    # HOT replicas, sandbox runners and model loads. Ray's memory monitor kills
+    # workers at 95% of RAM, and a WARM replica killed that way reloads onto the
+    # GPU without the controller knowing.
     model_cache_percentage: Optional[float] = float(
-        os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.9")
+        os.environ.get("NDIF_MODEL_CACHE_PERCENTAGE", "0.7")
     )
     default_padding_factor: Optional[float] = float(
         os.environ.get("NDIF_DEFAULT_PADDING_FACTOR", "0.15")
