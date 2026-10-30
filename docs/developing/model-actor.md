@@ -284,9 +284,9 @@ An exception out of the raced block is formatted by
 anything else goes through nnsight's `clean_traceback`, which drops nnsight
 internals, then `filter_traceback`, which drops this actor's wrapper frames, leaving
 the user's code with the line text the linecache registration supplied. It also
-returns a *fatal* flag — the two CUDA messages in `_UNRECOVERABLE_CUDA_ERRORS`
-("device-side assert triggered", "an illegal memory access was encountered") poison
-the process's CUDA context permanently, so `finally` calls
+returns a *fatal* flag — the CUDA messages in `_UNRECOVERABLE_CUDA_ERRORS`
+("device-side assert triggered", "an illegal memory access was encountered",
+"unspecified launch failure") poison the process's CUDA context permanently, so `finally` calls
 `BaseModelDeployment.restart`, i.e. `ray.kill(current_actor, no_restart=False)`, and
 `max_restarts=-1` brings the replica back. `BaseModelDeployment.error_name` names
 the failure for telemetry (`error_type`): the exception's class name here; the

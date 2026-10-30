@@ -74,6 +74,7 @@ KILL_REASON_PREEMPTED = "preempted"
 _UNRECOVERABLE_CUDA_ERRORS = (
     "device-side assert triggered",
     "an illegal memory access was encountered",
+    "unspecified launch failure",
 )
 
 
