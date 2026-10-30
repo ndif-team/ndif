@@ -8,6 +8,7 @@ out — the model-trace ping — said nothing but "Traceback (most recent call
 last):" for all 23 models.
 """
 
+import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ import pytest
 
 from ndif.services.ray.deployments.controller.cluster import cluster as cluster_mod
 from ndif.services.ray.deployments.controller.cluster.cluster import Cluster
+from ndif.services.ray.deployments.controller.controller import _ControllerActor
 from ndif.services.dashboard.jobs.util import summarize_error
 
 
@@ -77,6 +79,25 @@ def test_departed_node_is_purged(monkeypatch):
     live.pop()  # the walltime kill
     c.update_nodes()
     assert [n.name for n in c.nodes.values()] == ["10.0.0.1"]
+
+
+def test_check_nodes_survives_a_failed_sync(monkeypatch):
+    """A failed sync is retried. Nothing awaits this task, so an error that
+    escapes it ends node syncing for the life of the controller; on 2026-10-30
+    a network drop on two nodes did that through ``list_nodes``."""
+    monkeypatch.setenv("NDIF_CONTROLLER_SYNC_INTERVAL_S", "0")
+    calls = []
+
+    def update_nodes():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("Failed to retrieve all 9 nodes from the cluster")
+        raise asyncio.CancelledError  # ends the loop
+
+    controller = SimpleNamespace(cluster=SimpleNamespace(update_nodes=update_nodes))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_ControllerActor.check_nodes(controller))
+    assert len(calls) == 2
 
 
 def test_all_nodes_departing_empties_the_registry(monkeypatch):
