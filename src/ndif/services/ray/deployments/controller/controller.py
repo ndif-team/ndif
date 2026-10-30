@@ -555,19 +555,17 @@ class _ControllerActor:
 
     def status(self):
         """Dashboard view: per-deployment health + cluster resources + COLD models."""
-        # Ray returns 100 actors unless asked for more, and the list carries a DEAD
-        # record for every actor ever run. Past 100 a live replica drops off it and
-        # vanishes from status, so the dashboard's reconcile re-deploys pinned
-        # models it can no longer see.
+        # Without the filter, DEAD records count against the limit. Ray keeps one
+        # for every actor it has run and cuts the list silently, so past the limit
+        # a live replica vanishes from status and the dashboard's reconcile
+        # re-deploys a pinned model it can no longer see.
         ray_status = list_actors(
-            address=ray.get_runtime_context().gcs_address, limit=2000
+            address=ray.get_runtime_context().gcs_address,
+            filters=[("state", "!=", "DEAD")],
+            limit=2000,
         )
 
         status = {}
-
-        # One ModelActor name can have multiple Ray entries (restarts leave DEAD
-        # records beside the ALIVE one). Collapse to the healthiest state.
-        STATE_PRIORITY = {"RUNNING": 0, "DEPLOYING": 1, "UNHEALTHY": 2}
 
         for actor_state in ray_status:
             if (
@@ -575,35 +573,23 @@ class _ControllerActor:
                 and not actor_state.name.startswith("ModelActor:")
             ):
                 continue
-            if actor_state.state in {
-                "DEPENDENCIES_UNREADY",
-                "PENDING_CREATION",
-                "RESTARTING",
-            }:
-                application_state = "DEPLOYING"
-            elif actor_state.state == "ALIVE":
-                application_state = "RUNNING"
-            elif actor_state.state == "DEAD":
-                application_state = "UNHEALTHY"
-            else:
-                continue
-
-            existing = status.get(actor_state.name, {}).get("application_state")
-            if (
-                existing is None
-                or STATE_PRIORITY[application_state] < STATE_PRIORITY[existing]
-            ):
-                status[actor_state.name] = {"application_state": application_state}
+            status[actor_state.name] = {
+                "application_state": (
+                    "RUNNING" if actor_state.state == "ALIVE" else "DEPLOYING"
+                )
+            }
 
         existing_repo_ids = set()
 
         for node in self.cluster.nodes.values():
             for _, _, deployment in node.iter_deployments():
                 application_name = deployment.name
-                if application_name not in status:
-                    continue
                 if deployment.model_key not in self.cluster.evaluator.cache:
                     continue
+
+                # Tracked with no live actor: the controller believes a replica
+                # is deployed while its actor is gone, which is worth surfacing.
+                status.setdefault(application_name, {"application_state": "UNHEALTHY"})
 
                 entry = self.cluster.evaluator.cache[deployment.model_key]
 
@@ -657,8 +643,6 @@ class _ControllerActor:
 
             for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
-                if application_name not in status:
-                    continue
                 if cached_deployment.model_key not in self.cluster.evaluator.cache:
                     continue
 
@@ -681,28 +665,6 @@ class _ControllerActor:
                 }
 
                 existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
-
-        # Drop orphaned dead actors. Ray keeps a DEAD record for every actor it
-        # has ever run, so each evict/restart leaves one behind forever; the
-        # loops above only enrich names the controller still tracks, so an
-        # orphan stays a bare {"application_state": "UNHEALTHY"} with no
-        # repo_id. Left in, they accumulate monotonically — one per teardown,
-        # never reaped — and on a cluster that swaps models routinely they come
-        # to outnumber the real entries (9 ghosts to 4 real ones after a single
-        # day of testing), breaking any consumer that reads `deployments` and
-        # expects a repo_id.
-        #
-        # Only *orphans* are dropped. A dead actor the controller still tracks
-        # did get enriched, and is worth surfacing: it means the controller
-        # believes a replica is deployed while its actor is gone.
-        status = {
-            name: entry
-            for name, entry in status.items()
-            if not (
-                entry.get("application_state") == "UNHEALTHY"
-                and entry.get("model_key") is None
-            )
-        }
 
         for repo_id in get_downloaded_models():
             if repo_id not in existing_repo_ids:

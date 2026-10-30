@@ -153,6 +153,71 @@ def test_controller_starts_despite_a_failed_sync(monkeypatch):
     assert isinstance(asyncio.run(construct()), _ControllerActor)
 
 
+def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
+    """Ray keeps a DEAD record for every actor it has run and cuts the list at
+    ``limit`` silently. A live replica pushed off it vanishes from status, and
+    reconcile stacks a second copy of a pinned model it can no longer see."""
+    key = 'stub.Model:{"repo_id": "stub/m", "revision": null, "task": "text-generation"}'
+
+    def deployment(replica_id):
+        return SimpleNamespace(
+            name=f"{replica_id}:ModelActor:{key}",
+            model_key=key,
+            replica_id=replica_id,
+            deployment_level=SimpleNamespace(name="HOT"),
+            pinned=True,
+            dtype=None,
+            execution_timeout_seconds=None,
+            size_bytes=1,
+            actor_class=None,
+            gpus=None,
+        )
+
+    live, restarting, gone = deployment("zlive"), deployment("zrestart"), deployment("zgone")
+    records = [
+        SimpleNamespace(name=f"dead{i}:ModelActor:{key}", state="DEAD") for i in range(3000)
+    ]
+    records += [
+        SimpleNamespace(name=live.name, state="ALIVE"),
+        SimpleNamespace(name=restarting.name, state="RESTARTING"),
+        SimpleNamespace(name=gone.name, state="DEAD"),
+    ]
+
+    def fake_list_actors(address, limit, filters=()):
+        excluded = {value for key_, op, value in filters if key_ == "state" and op == "!="}
+        kept = [r for r in records if r.state not in excluded]
+        return sorted(kept, key=lambda r: r.name)[:limit]
+
+    monkeypatch.setattr(controller_mod, "list_actors", fake_list_actors)
+    monkeypatch.setattr(controller_mod, "get_downloaded_models", lambda: [])
+
+    node = SimpleNamespace(
+        iter_deployments=lambda: [(key, d.replica_id, d) for d in (live, restarting, gone)],
+        iter_cache=lambda: [],
+        gpu_resources=SimpleNamespace(gpus=[]),
+        deployments={},
+    )
+    entry = SimpleNamespace(
+        config=SimpleNamespace(to_json_string=lambda: "{}"), revision=None, n_params=1
+    )
+    controller = SimpleNamespace(
+        cluster=SimpleNamespace(
+            nodes={"id": node}, evaluator=SimpleNamespace(cache={key: entry})
+        ),
+        minimum_deployment_time_seconds=None,
+    )
+
+    deployments = _ControllerActor.status(controller)["deployments"]
+
+    assert deployments[live.name]["application_state"] == "RUNNING"
+    assert deployments[restarting.name]["application_state"] == "DEPLOYING"
+    # Tracked with no live actor: surfaced, not silently dropped.
+    assert deployments[gone.name]["application_state"] == "UNHEALTHY"
+    assert deployments[gone.name]["deployment_level"] == "HOT"
+    # Dead actors the controller no longer tracks don't show up at all.
+    assert len(deployments) == 3
+
+
 def test_all_nodes_departing_empties_the_registry(monkeypatch):
     """The outage shape: every GPU node dies at once, leaving a CPU-only head.
 

@@ -54,8 +54,6 @@ def test_status_lists_actors_of_own_cluster(monkeypatch):
         controller_mod._ControllerActor.status(SimpleNamespace())
 
     assert seen["address"] == OWN
-    # Past Ray's default of 100 entries (DEAD records included) live replicas
-    # drop out of status.
     assert seen["limit"] == 2000
 
 
