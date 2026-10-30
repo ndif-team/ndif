@@ -195,10 +195,14 @@ while the controller is wedged. Both requests time out after `TIMEOUT` (60 s, in
 and message in the reason, plus the response body for an HTTP error, so the log
 and the ping say whether it was a timeout, a refused connection or the API
 answering 503/504. A cluster snapshot is written whenever `/status`
-answered. If healthy and `model_check_due` (first run, recovery, or
-`--model-interval`, default 7200 s, elapsed), it runs one remote trace per HOT model.
-Then it writes the connectivity datapoint, applies the up/down transition
-(`record_status_transition`), saves `.state.json`, and rotates logs.
+answered. It then writes the connectivity datapoint, applies the up/down transition
+(`record_status_transition`) and saves `.state.json`, all before the model pass:
+right after a recovery the models are cold, the pass can run into the alarm, and the
+alarm exits without running anything after it. If healthy and `model_check_due`
+(first run, recovery, or `--model-interval`, default 7200 s, elapsed; decided before
+the transition overwrites `last_status`), it runs one remote trace per HOT model and
+only then records `last_model_check`, so a pass the alarm cuts off runs again once
+the interval has elapsed since the last complete one. Finally it rotates logs.
 
 `_run_trace` needs nnsight in the dashboard environment. It rebuilds the wrapper from
 the full `model_key` via `Remotable.from_model_key` (so VLM and PEFT deployments are

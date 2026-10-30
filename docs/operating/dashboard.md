@@ -242,9 +242,11 @@ connectivity datapoint plus one cluster snapshot. Every `--model-interval`
 a real nnsight remote trace of `"Hello"` against each HOT model, recording
 per-model status and latency. That pass needs nnsight and an `NDIF_API_KEY`, and
 is skipped with a warning without the key. Down/up transitions and changes in
-the set of failing models fire Discord notifications. A `flock` on
-`logs/.monitor.lock` makes a slow tick skip rather than overlap, and a 480 s
-`SIGALRM` force-exits a wedged run.
+the set of failing models fire Discord notifications. The connectivity datapoint
+and the down/up notification go out before the trace pass, so a pass that runs
+into the timeout still records the tick. A `flock` on `logs/.monitor.lock` makes
+a slow tick skip rather than overlap, and a 480 s `SIGALRM` force-exits a wedged
+run.
 
 Point `NDIF_DASHBOARD_MONITOR_URL` at your public API URL — the one your users
 hit — rather than an internal address, so the probe exercises DNS, TLS and the
