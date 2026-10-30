@@ -155,7 +155,8 @@ placing a replica; `DEPLOYING` is waiting for the replica's actor to be ready.
 `Processor.start` has **no timeout**: `Replica.wait` polls every second for as long
 as the actor lookup fails or the actor is restarting
 (`src/ndif/services/api/queue/replica.py` `Replica.wait`). A big model loading
-legitimately takes minutes; a replica whose actor is gone for good waits forever.
+legitimately takes minutes; a replica whose actor is gone for good, but which the
+controller still lists, waits forever.
 Go to step 4.
 
 **`READY`, the id is in `Queued:`.** The request is behind other work. Each model's
@@ -205,7 +206,8 @@ Ray dashboard (`http://<head>:8265` → Actors), filter for
 pid and logs. Programmatically:
 `ray.init(address="ray://<head>:10001", namespace="NDIF")`, then
 `ray.get_actor("<replica_id>:ModelActor:<model_key>")` — a `ValueError` means the
-actor doesn't exist, which is exactly what `Replica.wait` keeps retrying.
+actor doesn't exist, which `Replica.wait` keeps retrying for as long as the
+controller lists the replica.
 
 ## Step 5 — it is executing. Where?
 

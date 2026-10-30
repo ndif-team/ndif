@@ -154,7 +154,10 @@ class Replica:
         Two failures mean "not yet" and are polled through:
 
           - ``ValueError``: the controller creates the actor asynchronously
-            after ``deploy`` returns, so the lookup hasn't resolved yet.
+            after ``deploy`` returns, so the lookup hasn't resolved yet. If the
+            controller no longer lists the replica it is gone for good (purged
+            with its node, or evicted) and the error propagates: nothing would
+            ever end this wait.
           - ``ActorUnavailableError``: the actor exists but is restarting. Over
             Ray Client — how the dispatcher connects — ``__ray_ready__`` raises
             immediately rather than blocking through the restart the way it does
@@ -168,9 +171,15 @@ class Replica:
                 handle = get_model_actor_handle(self.model_key, self.replica_id)
                 await handle.__ray_ready__.remote()
                 return
-            except (ValueError, ActorUnavailableError):
-                await asyncio.sleep(1)
-                continue
+            except ActorUnavailableError:
+                pass
+            except ValueError:
+                listed = await controller_handle().get_deployment.remote(
+                    self.model_key, self.replica_id
+                )
+                if not listed.replicas:
+                    raise
+            await asyncio.sleep(1)
 
     def start(self) -> None:
         """Spawn the worker task pulling from the shared queue."""

@@ -283,7 +283,9 @@ setup failure. `Replica.wait` polls the actor's `__ray_ready__` every second,
 treating `ValueError` (the controller hasn't created the actor yet) and
 `ActorUnavailableError` (the actor exists but is restarting; over Ray Client
 `__ray_ready__` raises instead of blocking) as "not yet" and letting anything
-else propagate. **There is no timeout on this loop.**
+else propagate. A `ValueError` for a replica the controller no longer lists
+propagates too, because that replica was purged with its node or evicted. **There
+is no timeout on this loop.**
 
 `Replica.worker` loops `while not self.dropped`, awaiting `self.queue.get()` and
 dispatching. Its `finally` — which runs even under cancellation — pops this

@@ -222,3 +222,40 @@ class TestTheDistinctionIsLoadBearing:
         # stopped attaching the cause, propagating would buy nothing and this
         # would say so.
         assert "cannot be split tensor-parallel" in str(died())
+
+
+def test_queue_wait_gives_up_once_the_controller_drops_the_replica(monkeypatch):
+    """``ValueError`` means "not yet" only while the controller lists the replica.
+
+    The queue's wait has no deadline, so a replica purged with its node would
+    otherwise be polled forever, holding its slot in the pool.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from ndif.services.api.queue import replica as replica_module
+
+    lookups = []
+    listed = [["replica"], ["replica"], []]
+
+    def lookup(model_key, replica_id):
+        lookups.append(replica_id)
+        raise ValueError("actor not registered")
+
+    async def get_deployment(model_key, replica_id):
+        return SimpleNamespace(replicas=listed.pop(0))
+
+    async def no_sleep(seconds):
+        pass
+
+    controller = SimpleNamespace(get_deployment=SimpleNamespace(remote=get_deployment))
+    monkeypatch.setattr(replica_module, "get_model_actor_handle", lookup)
+    monkeypatch.setattr(replica_module, "controller_handle", lambda: controller)
+    monkeypatch.setattr(replica_module.asyncio, "sleep", no_sleep)
+
+    replica = replica_module.Replica.__new__(replica_module.Replica)
+    replica.model_key, replica.replica_id = "model", "replica"
+
+    with pytest.raises(ValueError):
+        asyncio.run(replica.wait())
+    assert len(lookups) == 3, "stopped before the controller dropped the replica"
