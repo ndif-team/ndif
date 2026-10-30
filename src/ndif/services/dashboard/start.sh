@@ -37,6 +37,12 @@ PORT="${NDIF_DASHBOARD_PORT:-8081}"
 DATA_DIR="${NDIF_DASHBOARD_DATA_DIR:-${HOME}/ndif_dashboard}"
 mkdir -p "$DATA_DIR/logs"
 
+# A Ray call made after the Ray client has dropped would otherwise start a local
+# Ray cluster on this host (Ray's auto-init): GCS, raylet, workers and an object
+# store sized to 30% of RAM, enough to stall a small dashboard host. With
+# auto-connect off the call raises and that pass fails until the next tick.
+export RAY_ENABLE_AUTO_CONNECT=0
+
 # Stage a default config.json on first run so the monitor cron's discord
 # template lookups don't blow up.
 CONFIG="$DATA_DIR/config.json"
@@ -57,6 +63,11 @@ if command -v cron >/dev/null 2>&1 && [ -w /etc/cron.d ]; then
     # vars below, reconcile + monitor lose HF_TOKEN and 401 on every gated
     # repo (Llama, etc.) → schedule never comes up. Pass the dashboard
     # container's HF auth + cache location through.
+    #
+    # reconcile holds a blocking lock across its deploy/evict RPCs, and an RPC
+    # on a dead Ray client never returns. `flock -n` makes a tick that finds a
+    # run in progress exit instead of queueing behind it, and `timeout` ends a
+    # hung run so reconcile resumes.
     cat > "$CRON_FILE" <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -72,9 +83,10 @@ NDIF_INFLUX_BUCKET=${NDIF_INFLUX_BUCKET:-}
 NDIF_ENVIRONMENT=${NDIF_ENVIRONMENT:-}
 HF_TOKEN=${HF_TOKEN:-}
 HF_HOME=${HF_HOME:-/root/.cache/huggingface}
+RAY_ENABLE_AUTO_CONNECT=0
 
 ${NDIF_DASHBOARD_MONITOR_CRON:-*/10 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.monitor --url ${NDIF_DASHBOARD_MONITOR_URL:-http://localhost:8001} --log-dir $LOG_DIR --config $CONFIG >> $LOG_DIR/monitor.cron.log 2>&1
-${NDIF_DASHBOARD_RECONCILE_CRON:-*/2 * * * *} root $PYTHON -m ndif.services.dashboard.jobs.reconcile >> $LOG_DIR/reconcile.cron.log 2>&1
+${NDIF_DASHBOARD_RECONCILE_CRON:-*/2 * * * *} root flock -n $DATA_DIR/.reconcile.cron.lock timeout -k 60 1800 $PYTHON -m ndif.services.dashboard.jobs.reconcile >> $LOG_DIR/reconcile.cron.log 2>&1
 ${NDIF_DASHBOARD_REPORT_CRON:-0 0 * * *} root $PYTHON -m ndif.services.dashboard.jobs.report --log-dir $LOG_DIR --config $CONFIG --window-hours ${NDIF_DASHBOARD_REPORT_WINDOW_HOURS:-24} >> $LOG_DIR/report.cron.log 2>&1
 EOF
     chmod 0644 "$CRON_FILE"

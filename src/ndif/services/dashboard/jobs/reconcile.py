@@ -153,8 +153,10 @@ def _reconcile_lock(state_path: Path):
     every-2-min cron can otherwise interleave: each reads stale state,
     computes its diff against it, and the last save wins — leaking models
     or losing evictions. A blocking exclusive lock around the whole
-    read-diff-act-write sequence makes them serialize cleanly. Each pass
-    is bounded by the deploy/evict it runs, typically <30s.
+    read-diff-act-write sequence makes them serialize cleanly. A pass lasts
+    as long as the deploy/evict it runs: typically <30s, but unbounded on a
+    dead Ray client, so the cron entry ``start.sh`` writes skips a tick that
+    finds a run in progress and bounds each run with ``timeout``.
     """
     state_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = state_path.with_suffix(state_path.suffix + ".lock")
