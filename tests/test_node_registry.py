@@ -16,6 +16,7 @@ import pytest
 
 from ndif.services.ray.deployments.controller.cluster import cluster as cluster_mod
 from ndif.services.ray.deployments.controller.cluster.cluster import Cluster
+from ndif.services.ray.deployments.controller import controller as controller_mod
 from ndif.services.ray.deployments.controller.controller import _ControllerActor
 from ndif.services.dashboard.jobs.util import summarize_error
 
@@ -103,6 +104,53 @@ def test_check_nodes_survives_a_failed_sync(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(_ControllerActor.check_nodes(controller))
     assert len(calls) == 2
+
+
+def test_departed_node_deletes_its_replicas(monkeypatch):
+    """Purging kills what ran on the node, HOT and cached alike."""
+    live = [_node("10.0.0.1")]
+    monkeypatch.setattr(cluster_mod, "list_nodes", lambda **kw: list(live))
+
+    c = Cluster()
+    c.update_nodes()
+    node = c.nodes["id-10.0.0.1"]
+    deleted = []
+    node.deployments["model"] = {"a": SimpleNamespace(delete=lambda: deleted.append("hot"))}
+    node.cache["model"] = {"b": SimpleNamespace(delete=lambda: deleted.append("cached"))}
+
+    live.clear()
+    c.update_nodes()
+
+    assert c.nodes == {}
+    assert deleted == ["hot", "cached"]
+
+
+def test_controller_starts_despite_a_failed_sync(monkeypatch):
+    """Ray doesn't retry a failed ``__init__``, even with ``max_restarts=-1``, so
+    letting this error out would leave no controller until the next redeploy."""
+
+    class FailingCluster:
+        def __init__(self, **kwargs):
+            pass
+
+        def update_nodes(self):
+            raise RuntimeError("the state API is unavailable")
+
+    monkeypatch.setattr(controller_mod, "Cluster", FailingCluster)
+
+    async def construct():
+        return _ControllerActor(
+            deployments=[],
+            model_import_path="model",
+            controller_import_path="controller",
+            default_execution_timeout_seconds=60,
+            model_cache_percentage=0.5,
+            minimum_deployment_time_seconds=0,
+            default_padding_factor=0.5,
+            default_padding_bias=0,
+        )
+
+    assert isinstance(asyncio.run(construct()), _ControllerActor)
 
 
 def test_all_nodes_departing_empties_the_registry(monkeypatch):

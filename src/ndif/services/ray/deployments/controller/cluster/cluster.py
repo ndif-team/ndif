@@ -98,12 +98,13 @@ class Cluster:
         # /status kept reporting a full cluster, so the down alert never
         # fired.
         #
-        # Filtered below rather than with ``filters=``: Ray counts nodes a
-        # server-side filter removes as truncated output, so the strict default
-        # raises for as long as any DEAD record exists. That ended ``check_nodes``
-        # on 2026-10-30. Strict stays on: a list that really is incomplete has
-        # to raise, or a live node missing from it would be purged. The limit
-        # leaves room for dead records accumulating on a long-lived head.
+        # Filtered below rather than with ``filters=``: Ray counts nodes that an
+        # ``=`` filter on state, node_id or node_name removes as truncated output,
+        # so ``raise_on_missing_output`` raises for as long as any DEAD record
+        # exists. That ended ``check_nodes`` on 2026-10-30. ``limit`` must stay
+        # above the record count: Ray applies it after that check, so going past
+        # it silently drops nodes, and a live node missing from this list gets
+        # purged. The GCS keeps at most 1000 DEAD records by default.
         # The state API does not reuse this process's connection; given no
         # address it guesses from RAY_ADDRESS, the default temp dir or the
         # host's process list, and raises if it sees more than one cluster.

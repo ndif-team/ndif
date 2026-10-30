@@ -103,7 +103,12 @@ class _ControllerActor:
         # controller restart but aren't re-adopted here — the rebuilt cluster
         # starts empty and can re-place onto GPUs those orphans still hold,
         # over-committing memory. Reconcile against live ModelActors on startup.
-        self.cluster.update_nodes()
+        try:
+            self.cluster.update_nodes()
+        except Exception:
+            # Ray doesn't retry a failed __init__, even with max_restarts=-1, so
+            # raising would leave no controller. check_nodes retries.
+            logger.exception("Failed to update nodes")
 
         if deployments and deployments != [""]:
             self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
@@ -153,11 +158,9 @@ class _ControllerActor:
         #   - drop only, and let demand re-provision. Re-provisioning from a
         #     heartbeat turns a model that reliably OOMs on load into a flap loop.
         #
-        # This prevents the wedge but cannot cure one: `Replica.wait` is pinned
-        # to a replica id, so forgetting the record here won't wake a Processor
-        # already stuck on it. That needs a bound on the adoption wait in
-        # `Processor.start` — deliberately unlike the dispatch-side wait, which
-        # is unbounded because there the actor is known to be coming back.
+        # This would cure a wedge as well as prevent one: `Replica.wait` gives up
+        # once the controller stops listing the replica, so forgetting the record
+        # here also wakes a Processor stuck on it.
         while True:
             try:
                 self.cluster.update_nodes()
