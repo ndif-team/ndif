@@ -109,6 +109,11 @@ negotiates "maintenance notifications" with Redis 8 and silently sets a 5 s sock
 timeout, shorter than the dispatcher's `brpop(..., timeout=10)`, so every idle
 dispatch iteration would raise a spurious `TimeoutError`.
 
+Only `sync_client` retries a dead connection, three times with backoff, because a model
+actor writes its result through it. The async clients stay without retries: a pubsub
+subscriber that reconnected silently would miss whatever was published meanwhile and wait
+forever, rather than fail.
+
 `RedisProvider.max_publish_bytes` is the inline-result cap — the largest payload
 safely published as one pubsub message. It is derived on first use from the server's
 `client-output-buffer-limit pubsub` (`CONFIG GET`) as `min(soft, hard // 2)`,
