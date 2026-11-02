@@ -55,10 +55,11 @@ from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.intervention.source import SourceEnvoy, SourceNotAvailable
 from nnsight.intervention.tracer import InterleavingTracer
 from nnsight.modeling.mixins.remotable import Remotable
+from nnsight.tracing.globals import block_scope
 
 from ....common.errors import RequestError
 from ....common.schema.request import BackendRequestModel
-from ..deployments.modeling.nns import block_scope, execute_traced_block
+from ..deployments.modeling.nns import execute_traced_block
 from ..deployments.modeling.util import cpu_pickle_module, resolve_dtype
 from .protocol import KEEP_PIN, SOURCE_ERROR
 
@@ -607,7 +608,7 @@ def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32",
     # The same per-request source-cache hygiene the model actor applies. A fresh
     # runner per request makes it redundant today; it is here so that stops being
     # load-bearing, because the failure it prevents is a block silently running
-    # the *previous* request's code (see nns.block_scope).
+    # the *previous* request's code (see nnsight's `block_scope`).
     with block_scope():
         _run(conn, blob, compress, dtype, seed, env)
 

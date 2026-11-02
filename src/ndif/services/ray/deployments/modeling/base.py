@@ -25,6 +25,7 @@ from transformers.integrations.accelerate import _get_device_map
 
 from nnsight.modeling.huggingface import HuggingFaceModel
 from nnsight.schema.response import Status
+from nnsight.tracing.globals import block_scope
 from nnsight.tracing.util import clean_traceback, filter_traceback
 
 from .....common.errors import RequestError
@@ -39,7 +40,7 @@ from .....common.providers.ray import CachedActorError
 from .....common.providers.redis import RedisProvider
 from .....common.telemetry import elapsed_ms, event
 from .....common.types import MODEL_KEY
-from .nns import block_scope, execute_traced_block, prepare_traced_block
+from .nns import execute_traced_block, prepare_traced_block
 from .util import (
     LogStream,
     build_max_memory,
@@ -325,7 +326,7 @@ class BaseModelDeployment:
         baselines = gpu_baselines(self.gpu_mem_bytes_by_id)
 
         # Confines this request's source-cache mutations to it; see
-        # `nns.block_scope` for what leaks without it. Entered here rather than
+        # nnsight's `block_scope` for what leaks without it. Entered here rather than
         # wrapping the body so the `finally` below stays the single exit point.
         # (A no-op for a subclass that deserializes out-of-process.)
         scope = block_scope()

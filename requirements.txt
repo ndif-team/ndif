@@ -11,18 +11,12 @@
 # The 2026-08-04 test image resolved torch 2.13.0, transformers 5.14.1,
 # numpy 2.5.1, accelerate 1.14.0.
 
-# The client library the server runs traced blocks for. 0.8 is a pre-release
-# on PyPI (0.8.0rc1), so the specifier names it explicitly: pip only considers
-# pre-releases when the specifier does, or with --pre. The wheels ship the
-# compiled `nnsight._c.py_mount` extension, so the server no longer needs a
-# compiler for `.save()` to work — but gcc stays in the image for the sdist
-# fallback.
-# To run the server against an unreleased nnsight fix, replace this line with a
-# git ref (`git+https://github.com/ndif-team/nnsight.git@<branch-or-sha>`; the
-# image has git for exactly this); for local development `just up` bind-mounts
-# your editable nnsight checkout over whichever copy the image holds (see the
-# justfile / docker-compose.nnsight.yml).
-nnsight>=0.8.0rc1,<0.9
+# The client library the server runs traced blocks for. To run the server
+# against an unreleased nnsight fix, replace this line with a git ref
+# (`git+https://github.com/ndif-team/nnsight.git@<branch-or-sha>`); for local
+# development `just up` bind-mounts your editable nnsight checkout over whichever
+# copy the image holds (see the justfile / docker-compose.nnsight.yml).
+nnsight
 
 # The one exception to leaving transformers unpinned, and it is a floor, not a
 # pin. Before 5.15 tensor parallelism does not shard a tied LM head's weight
