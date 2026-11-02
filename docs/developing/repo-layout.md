@@ -99,7 +99,7 @@ ray/
 │   │       └── evaluator.py   checkpoint size estimate and shardability, memoized
 │   └── modeling/
 │       ├── base.py     BaseModelDeployment (the run/execute template) + ModelActor
-│       ├── nns.py      rebuild and run a traced block; autocast region; block_scope
+│       ├── nns.py      rebuild and run a traced block; autocast region
 │       └── util.py     dtype resolution, device maps, CPU-relocating pickler, request meta
 ├── sandbox/
 │   ├── ARCHITECTURE.md the design of record for this subtree

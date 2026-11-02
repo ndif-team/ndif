@@ -110,12 +110,16 @@ and a map built from a meta model — see
 Inside, nnsight decompresses, unpickles, recompiles the source under the original
 filename, restores the captured scope onto the tracer's frame, and **registers the
 source in `linecache`** so a traceback can show the user's line. That write is why
-every request runs inside `block_scope()` (same module), entered in
-`BaseModelDeployment.run` and by the runner's `run`: it snapshots and restores
+every process that builds a block runs it inside nnsight's `block_scope()`
+(`nnsight.tracing.globals`): `BaseModelDeployment.run`, each tensor-parallel shard
+(`ray/tp/shard.py`) and the runner's `run`. It snapshots and restores
 `linecache.cache` and nnsight's `SOURCES` and `BLOCKS` memo tables, which are keyed
 by `(filename, line)` and never re-validated. Without the restore, a later request
 reusing the same trace-site coordinates would run the *previous* request's compiled
-block.
+block, and a second trace elsewhere in the same client file would parse the first
+one's fragment and raise `WithBlockNotFoundError`. On a tensor-parallel replica a
+shard that skips the scope fails that way alone, and rank 0 waits in a collective
+until the execution timeout.
 
 ## Running the block and collecting the saves
 
