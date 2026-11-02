@@ -157,6 +157,7 @@ written by `jobs/monitor.py`:
 ```jsonc
 // connected_*.log — one per tick; status is "ok" or the reason
 {"timestamp": "2026-07-22T18:00:00+00:00", "status": "ok"}
+{"timestamp": "...", "status": "/status failed: ReadTimeout: HTTPConnectionPool(host='localhost', port=8001): Read timed out. (read timeout=60)"}
 // models_*.log — one per trace pass; "degraded" if any failed
 {"timestamp": "...", "status": "ok", "ok": 3, "total": 4,
  "results": [{"model": "openai-community/gpt2", "status": "ok", "latency_s": 1.23},
@@ -187,13 +188,21 @@ A one-shot script. `main()` arms a `SIGALRM` for `SCRIPT_TIMEOUT` (480 s) that
 `os._exit(2)`s a wedged run, then takes a non-blocking flock on `logs/.monitor.lock`
 and exits if held (`acquire_lock`) — a slow tick skips rather than overlaps.
 `probe_health` does `GET /connected` then `GET /status`, calling the deployment down
-for an unreachable API, a failed `/connected`, an unreachable `/status`, **or zero
+for an unreachable API, a failed `/connected`, a failed `/status`, **or zero
 HOT models** — `/connected` alone is too shallow, since the Ray client can be alive
-while the controller is wedged. A cluster snapshot is written whenever `/status`
-answered. If healthy and `model_check_due` (first run, recovery, or
-`--model-interval`, default 7200 s, elapsed), it runs one remote trace per HOT model.
-Then it writes the connectivity datapoint, applies the up/down transition
-(`record_status_transition`), saves `.state.json`, and rotates logs.
+while the controller is wedged. Both requests time out after `TIMEOUT` (60 s, in
+`jobs/util.py`). When a request raises, `describe_failure` puts the exception type
+and message in the reason, plus the response body for an HTTP error, so the log
+and the ping say whether it was a timeout, a refused connection or the API
+answering 503/504. A cluster snapshot is written whenever `/status`
+answered. It then writes the connectivity datapoint, applies the up/down transition
+(`record_status_transition`) and saves `.state.json`, all before the model pass:
+right after a recovery the models are cold, the pass can run into the alarm, and the
+alarm exits without running anything after it. If healthy and `model_check_due`
+(first run, recovery, or `--model-interval`, default 7200 s, elapsed; decided before
+the transition overwrites `last_status`), it runs one remote trace per HOT model and
+only then records `last_model_check`, so a pass the alarm cuts off runs again once
+the interval has elapsed since the last complete one. Finally it rotates logs.
 
 `_run_trace` needs nnsight in the dashboard environment. It rebuilds the wrapper from
 the full `model_key` via `Remotable.from_model_key` (so VLM and PEFT deployments are
@@ -220,7 +229,13 @@ blocking because each schedule write queues its own background reconcile while t
 2-minute cron runs alongside, and unserialized passes would read the same stale
 `prev_model_keys` and leak deployments or drop evictions. The critical section spans
 read-diff-act-write including the deploy/evict RPCs, so it can be held for tens of
-seconds. The diff:
+seconds, and indefinitely when the Ray client has died under an RPC. So the cron
+entry `src/ndif/services/dashboard/start.sh` writes wraps the job in `flock -n` on
+`.reconcile.cron.lock`, so a tick that finds a run in progress exits instead of
+queueing a process behind the lock, and in `timeout -k 60 1800`, which ends a hung
+run so reconcile resumes. `start.sh` also sets `RAY_ENABLE_AUTO_CONNECT=0` for
+uvicorn and the crons; without it a Ray call made after the client dropped starts a
+local Ray cluster on the dashboard host. The diff:
 
 ```python
 new_keys = {e.model_key: e for e in filter_active(store.list())}

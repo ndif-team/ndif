@@ -8,12 +8,12 @@ Runs every few minutes from cron. Each tick:
    is too shallow — the Ray client can be alive while the Controller is
    wedged — so we always need both.
 2. Logs cluster snapshot to ``cluster_*.log`` whenever ``/status`` returns.
-3. Every ``--model-interval`` seconds (default 2h), or on recovery from
-   a down state, also runs a remote nnsight trace against each HOT model
-   and logs the result to ``models_*.log``.
-4. Writes one connectivity datapoint to ``connected_*.log`` and updates
-   ``.state.json`` with the down/up transition. Fires Discord notifications
-   on transitions and on newly-failed model sets.
+3. Writes one connectivity datapoint to ``connected_*.log``, updates
+   ``.state.json`` with the down/up transition and fires its Discord
+   notification — before step 4, which can run into the script timeout.
+4. Every ``--model-interval`` seconds (default 2h), or on recovery from
+   a down state, also runs a remote nnsight trace against each HOT model,
+   logs the result to ``models_*.log`` and notifies on newly-failed model sets.
 
 Invoked from cron as::
 
@@ -79,6 +79,20 @@ def get_status(base_url: str) -> dict:
     return resp.json()
 
 
+def describe_failure(e: Exception) -> str:
+    """One line on why a probe request failed, for the log and the Discord ping.
+
+    The exception type separates the cases (``ReadTimeout``, ``ConnectionError``,
+    ``HTTPError``, ``JSONDecodeError``). An HTTP error also carries the response
+    body, since the API's ``detail`` says why it refused: 503 while the backend
+    reconnects, 504 when the status refresh timed out.
+    """
+    reason = f"{type(e).__name__}: {summarize_error(e)}"
+    if isinstance(e, requests.HTTPError) and e.response is not None:
+        reason += f" {' '.join(e.response.text.split())[:200]}"
+    return reason
+
+
 def extract_hot_models(status: dict) -> list[dict]:
     deployments = status.get("deployments", {})
     return [m for m in deployments.values() if m.get("deployment_level") == "HOT"]
@@ -137,15 +151,15 @@ def probe_health(base_url: str) -> tuple[bool, str, dict | None]:
     """
     try:
         ok, reason = check_connected(base_url)
-    except requests.RequestException:
-        return False, "API unreachable", None
+    except requests.RequestException as e:
+        return False, f"API unreachable: {describe_failure(e)}", None
     if not ok:
         return False, reason, None
 
     try:
         status_data = get_status(base_url)
-    except Exception:
-        return False, "/status unreachable", None
+    except Exception as e:
+        return False, f"/status failed: {describe_failure(e)}", None
 
     if not extract_hot_models(status_data):
         return False, "no HOT models deployed", status_data
@@ -450,8 +464,18 @@ def main():
     if status_data is not None:
         write_cluster_log(log_dir, today, timestamp, status_data)
 
-    if is_ok and model_check_due(state, timestamp, args.model_interval):
-        state["last_model_check"] = timestamp
+    # Decided before the transition below overwrites last_status, which is
+    # what marks a recovery.
+    check_models = is_ok and model_check_due(state, timestamp, args.model_interval)
+
+    # Record the tick and send the up/down notification before the model pass:
+    # right after a recovery the models are cold, the pass can run into
+    # SCRIPT_TIMEOUT, and the alarm exits without running what follows it.
+    write_connected_log(log_dir, today, timestamp, is_ok, reason)
+    record_status_transition(config, state, is_ok, reason, timestamp)
+    save_state(log_dir, state)
+
+    if check_models:
         if api_key:
             results = run_model_traces(
                 extract_hot_models(status_data), api_key, args.model_timeout, api_host,
@@ -460,10 +484,10 @@ def main():
             notify_if_failures_changed(config, state, results)
         else:
             print("Warning: no API key set, skipping model traces")
-
-    write_connected_log(log_dir, today, timestamp, is_ok, reason)
-    record_status_transition(config, state, is_ok, reason, timestamp)
-    save_state(log_dir, state)
+        # Only a pass that finished counts: one the alarm cuts off runs again
+        # once --model-interval has elapsed since the last that did.
+        state["last_model_check"] = timestamp
+        save_state(log_dir, state)
 
     for pattern in ("connected_*.log", "models_*.log", "cluster_*.log"):
         rotate_logs(log_dir, pattern, args.max_days)

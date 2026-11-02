@@ -14,6 +14,8 @@ from typing import Optional, Tuple
 
 import redis
 import redis.asyncio as aioredis
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.retry import Retry
 
 from .base import Provider
 
@@ -59,9 +61,18 @@ class RedisProvider(Provider):
         the command returns — surfacing as spurious ``TimeoutError`` every time
         a blocking call out-waits 5s. Setting it explicitly restores the
         pre-8.0 behavior (no read timeout on blocking ops).
+
+        ``retry`` is explicit too: ``from_url`` doesn't get the retries that
+        ``redis.Redis()`` has by default, so without it one dead connection loses
+        the result of a request a model actor already finished. The async clients
+        stay without it. A pubsub subscriber that reconnected silently would miss
+        whatever was published meanwhile and wait forever, rather than fail.
         """
         cls.sync_client = redis.Redis.from_url(
-            cls.url, decode_responses=True, socket_timeout=None
+            cls.url,
+            decode_responses=True,
+            socket_timeout=None,
+            retry=Retry(ExponentialWithJitterBackoff(base=1, cap=10), 3),
         )
         cls.async_client = aioredis.Redis.from_url(
             cls.url, decode_responses=True, socket_timeout=None

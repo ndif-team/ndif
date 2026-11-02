@@ -137,7 +137,7 @@ An evicted `HOT` replica does not simply die. It releases its GPU reservation
 and, if its actor class is cacheable and the node's CPU cache can make room
 (dropping the smallest `WARM` entries if needed), is demoted to `WARM` keeping
 its `replica_id`; otherwise it is removed and the actor killed. The CPU cache
-budget is the node's RAM scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`).
+budget is the node's RAM scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.7`).
 
 > **Gotcha:** `NDIF_MODEL_CACHE_PERCENTAGE` budgets **CPU RAM** for the WARM
 > cache, not GPU memory. It is the wrong lever for a GPU OOM.

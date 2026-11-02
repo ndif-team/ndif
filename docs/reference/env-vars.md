@@ -123,7 +123,7 @@ Read by the controller launcher,
 | `NDIF_CONTROLLER_SYNC_INTERVAL_S` | `30` | Seconds between `Cluster.update_nodes` passes (read in `_ControllerActor.check_nodes`). |
 | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | unset (no cap) | Per-request execution cap handed to each model actor. Unset, a request runs until it finishes. Set it on anything shared: a runaway block otherwise holds its replica indefinitely. A per-model `execution_timeout_seconds` overrides it. |
 | `NDIF_MINIMUM_DEPLOYMENT_TIME_SECONDS` | `3600` | How long a replica is protected from eviction after it comes up. |
-| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.9` | **Scales CPU RAM, not GPU memory**: the WARM-cache budget is the node's advertised total RAM (`src/ndif/services/ray/resources.py` `get_total_cpu_memory_bytes`) times this, in `Cluster.update_nodes`. |
+| `NDIF_MODEL_CACHE_PERCENTAGE` | `0.7` | **Scales CPU RAM, not GPU memory**: the WARM-cache budget is the node's advertised total RAM (`src/ndif/services/ray/resources.py` `get_total_cpu_memory_bytes`) times this, in `Cluster.update_nodes`. |
 | `NDIF_DEFAULT_PADDING_FACTOR` | `0.15` | Multiplicative slack in the memory estimate used to place a replica. |
 | `NDIF_DEFAULT_PADDING_BIAS` | `524288000` (500 MiB) | Additive slack in the same estimate. |
 | `NDIF_DEFAULT_DTYPE` | `bfloat16` | Dtype a model loads in when its config names none. Pinned into the config before placement (`_ControllerActor._deploy`) so the size estimate and the load agree. |

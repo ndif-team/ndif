@@ -94,7 +94,9 @@ just logs them.
 `events_worker`, the CLI's control channel (`ndif queue`, `ndif kill`, and the
 reconcile event emitted after an out-of-band `ndif deploy` / `ndif evict`). Their
 streams, handlers and reply protocol are in
-[The Redis Layer](redis-layer.md#the-events-stream). An `ndif kill` of an
+[The Redis Layer](redis-layer.md#the-events-stream). Nothing restarts these tasks, so
+each one, like the main loop, catches every error, logs it and retries a second
+later, which also carries them through a Redis outage. An `ndif kill` of an
 executing request goes through `Replica.cancel(interrupt=True)`: the request is
 errored, the actor's `cancel()` is called, and the dispatch is given a few
 seconds to return on its own; only if it does not is the dispatch task
@@ -279,11 +281,12 @@ sharded model stays sharded); with nothing running it behaves as a bare deploy.
 `DeploymentConfig.replicas` is **additive** controller-side, so this always adds
 one more, and a controller-reported error raises `DeploymentError`.
 `Replica.deploy` is provision + register + wait + start, de-registering on a
-setup failure. `Replica.wait` polls the actor's `__ray_ready__` every second,
-treating `ValueError` (the controller hasn't created the actor yet) and
-`ActorUnavailableError` (the actor exists but is restarting; over Ray Client
-`__ray_ready__` raises instead of blocking) as "not yet" and letting anything
-else propagate. **There is no timeout on this loop.**
+setup failure. `Replica.wait` awaits the actor's `__ray_ready__`, polling every
+second on `ActorUnavailableError` (the actor is restarting; over Ray Client
+`__ray_ready__` raises instead of blocking) and letting anything else propagate.
+That includes `ValueError` from the lookup: a name is registered when the actor is
+created, before `deploy` returns, and stays registered through restarts, so a
+failed lookup means the replica is gone. **There is no timeout on this loop.**
 
 `Replica.worker` loops `while not self.dropped`, awaiting `self.queue.get()` and
 dispatching. Its `finally` — which runs even under cancellation — pops this

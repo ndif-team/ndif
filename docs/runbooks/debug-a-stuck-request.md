@@ -152,10 +152,10 @@ with this status mean provisioning failed and `purge` errored them — look for
 
 **`PROVISIONING` / `DEPLOYING` for a long time.** `PROVISIONING` is the controller
 placing a replica; `DEPLOYING` is waiting for the replica's actor to be ready.
-`Processor.start` has **no timeout**: `Replica.wait` polls every second for as long
-as the actor lookup fails or the actor is restarting
-(`src/ndif/services/api/queue/replica.py` `Replica.wait`). A big model loading
-legitimately takes minutes; a replica whose actor is gone for good waits forever.
+`Processor.start` has **no timeout**: `Replica.wait` waits for as long as the actor
+is loading or restarting (`src/ndif/services/api/queue/replica.py` `Replica.wait`).
+A big model loading legitimately takes minutes. A replica whose actor is gone fails
+the wait, and the queued requests get an error.
 Go to step 4.
 
 **`READY`, the id is in `Queued:`.** The request is behind other work. Each model's
@@ -186,8 +186,8 @@ ndif status --json-output | jq '.deployments[] |
   `WARM` holds weights in CPU RAM, `COLD` is only in the local HuggingFace cache.
 - `application_state` is the Ray actor's state from `list_actors()`: `ALIVE` →
   `RUNNING`; `PENDING_CREATION` / `RESTARTING` / `DEPENDENCIES_UNREADY` →
-  `DEPLOYING`; `DEAD` → `UNHEALTHY`. Ray keeps a dead record beside a restarted
-  actor; the healthiest state wins, so `UNHEALTHY` means no live actor at all
+  `DEPLOYING`. `UNHEALTHY` means the controller tracks the replica but Ray has no
+  live actor for it
   (`src/ndif/services/ray/deployments/controller/controller.py`
   `_ControllerActor.status`).
 
@@ -195,7 +195,7 @@ ndif status --json-output | jq '.deployments[] |
 |---|---|---|
 | HOT | RUNNING | Healthy. A request stuck here is stuck inside the actor — step 5. |
 | HOT | DEPLOYING | Weights loading, or Ray restarting the actor after a fatal CUDA error. Large models take minutes. |
-| HOT | UNHEALTHY | The actor is dead and Ray will not restart it, but the controller still holds the deployment and its GPU reservation, and keeps handing that replica to the queue, which waits on it forever. Redeploying doesn't help. Run `ndif evict <checkpoint> --replica <id>`, or evict by exact key ([step 8](#step-8--unstick-it)) when the key carries no task or another one. If `ndif queue` still shows the model `DEPLOYING` afterwards, the processor is already waiting on the dead id: `just restart api` clears it. The next request provisions a fresh replica. |
+| HOT | UNHEALTHY | The actor is dead and Ray will not restart it, but the controller still holds the deployment and its GPU reservation, and keeps handing that replica to the queue, so requests get an error. Redeploying doesn't help. Run `ndif evict <checkpoint> --replica <id>`, or evict by exact key ([step 8](#step-8--unstick-it)) when the key carries no task or another one. If `ndif queue` still shows the model `DEPLOYING` afterwards, the processor is already waiting on the dead id: `just restart api` clears it. The next request provisions a fresh replica. |
 | WARM | — | Weights on CPU. `run()` raises `CachedActorError`, the queue re-queues the request as an eviction, and the processor provisions a HOT replica. A model flapping HOT↔WARM makes requests loop without finishing. |
 | absent | — | The queue only sees HOT replicas (`_ControllerActor.get_deployment`); a model with only WARM replicas looks undeployed to it. |
 
@@ -205,7 +205,7 @@ Ray dashboard (`http://<head>:8265` → Actors), filter for
 pid and logs. Programmatically:
 `ray.init(address="ray://<head>:10001", namespace="NDIF")`, then
 `ray.get_actor("<replica_id>:ModelActor:<model_key>")` — a `ValueError` means the
-actor doesn't exist, which is exactly what `Replica.wait` keeps retrying.
+actor doesn't exist.
 
 ## Step 5 — it is executing. Where?
 

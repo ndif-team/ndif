@@ -222,10 +222,12 @@ node, not the dev defaults; the detail lives in the runbooks and
   `NDIF_DEFAULT_PADDING_FACTOR` / `NDIF_DEFAULT_PADDING_BIAS` set the global
   headroom, and a per-model `padding_factor` raises it for just the models that
   need it. See [Model OOM on deploy](../runbooks/model-oom-on-deploy.md).
-- **The WARM cache is CPU RAM.** `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.9`) is
+- **The WARM cache is CPU RAM.** `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.7`) is
   the fraction of the node's **total system RAM** the controller may use to hold
-  evicted models off-GPU — not a GPU setting. Lower it on a node that runs
-  anything else.
+  evicted models off-GPU — not a GPU setting. The budget counts only those weights,
+  and Ray's memory monitor kills workers at 95% of RAM by default, so the rest has
+  to cover HOT replicas, sandbox runners and model loads. Lower it on a node with
+  little RAM or that runs anything else.
 - **Replicas are the unit of concurrency.** A replica serves one request at a
   time; `NDIF_AUTOSCALING_MAX_REPLICAS` caps how many per model autoscaling adds.
 - **Disk.** The `ray` service needs a persistent Hugging Face cache and, for gated

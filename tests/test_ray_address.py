@@ -54,6 +54,7 @@ def test_status_lists_actors_of_own_cluster(monkeypatch):
         controller_mod._ControllerActor.status(SimpleNamespace())
 
     assert seen["address"] == OWN
+    assert seen["limit"] == 2000
 
 
 def test_cluster_state_connects_to_own_gcs(monkeypatch):

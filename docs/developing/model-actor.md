@@ -284,9 +284,9 @@ An exception out of the raced block is formatted by
 anything else goes through nnsight's `clean_traceback`, which drops nnsight
 internals, then `filter_traceback`, which drops this actor's wrapper frames, leaving
 the user's code with the line text the linecache registration supplied. It also
-returns a *fatal* flag — the two CUDA messages in `_UNRECOVERABLE_CUDA_ERRORS`
-("device-side assert triggered", "an illegal memory access was encountered") poison
-the process's CUDA context permanently, so `finally` calls
+returns a *fatal* flag — the CUDA messages in `_UNRECOVERABLE_CUDA_ERRORS`
+("device-side assert triggered", "an illegal memory access was encountered",
+"unspecified launch failure") poison the process's CUDA context permanently, so `finally` calls
 `BaseModelDeployment.restart`, i.e. `ray.kill(current_actor, no_restart=False)`, and
 `max_restarts=-1` brings the replica back. `BaseModelDeployment.error_name` names
 the failure for telemetry (`error_type`): the exception's class name here; the
@@ -298,10 +298,16 @@ sandbox actor reports the runner-side cause instead of its `RunnerError` wrapper
 `linecache.cache` and nnsight's process-global `SOURCES`/`BLOCKS` memos from the
 snapshots taken on entry — they're keyed by `(filename, line)` and never
 re-validated, so a later request reusing the same trace-site would otherwise run
-*this* request's stale compiled block. Then `restart()` on a fatal error, else
+*this* request's stale compiled block. It then drops `run`'s own references to the
+block's future: a failed block's exception lives on in it, and through its traceback
+so do the block's frames and every tensor they hold, which cleanup's collection
+could not otherwise reach. Then `restart()` on a fatal error, else
 `BaseModelDeployment.cleanup`: clear the kill switch and `kill_reason`, drop
-`execution_ident`, `model.interleaver.cancel()`, and `synchronize` + `gc.collect` +
-`empty_cache`.
+`execution_ident`, `model.interleaver.cancel()`, `synchronize` on **every** card in
+`gpu_mem_bytes_by_id`, then `gc.collect` + `empty_cache`. Every card, because a block
+that fails while the model is on a later card leaves that card's kernels queued, and
+freeing their memory under them is an illegal memory access that fails the next
+request.
 
 `BaseModelDeployment.prepare_result` zstd-compresses (level 3) when
 `request.compress` is set and meters the size. The blob then takes one of two routes

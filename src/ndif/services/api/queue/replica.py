@@ -46,8 +46,7 @@ logger = logging.getLogger("ndif.queue.replica")
 
 # Exceptions that all mean "this replica is no longer serving; treat as
 # evicted", detected by type rather than message string:
-#   - ValueError       : actor lookup failed (controller evicted it, or hasn't
-#                        created it yet).
+#   - ValueError       : actor lookup failed (there is no such actor).
 #   - ActorDiedError   : the actor process died / was killed.
 #   - CachedActorError : actor alive but moved to CPU cache (WARM).
 EVICTED_ERRORS = (ValueError, ActorDiedError, CachedActorError)
@@ -110,8 +109,8 @@ class Replica:
 
         ``DeploymentConfig.replicas`` is additive controller-side, so this adds
         one more replica for ``model_key`` and returns a Replica bound to its
-        id. Raises if the controller reports a deploy error; the actor itself
-        may not exist yet (``wait`` polls for it).
+        id. Raises if the controller reports a deploy error; the actor may
+        still be loading (``wait`` blocks on it).
         """
         # `scale`, not `deploy`: this call knows nothing about how the model is
         # served and has no business deciding. Adding capacity should add more of
@@ -149,28 +148,27 @@ class Replica:
         return replica
 
     async def wait(self) -> None:
-        """Block until the backing actor exists and is ready to serve.
+        """Block until the backing actor is ready to serve.
 
-        Two failures mean "not yet" and are polled through:
+        ``__ray_ready__`` returns once the constructor has finished, however long
+        that takes. The one failure that means "not yet" is
+        ``ActorUnavailableError``: the actor is restarting, and over Ray Client
+        — how the dispatcher connects — ``__ray_ready__`` raises immediately
+        rather than blocking through the restart the way it does for a
+        driver-mode caller, so it has to be polled.
 
-          - ``ValueError``: the controller creates the actor asynchronously
-            after ``deploy`` returns, so the lookup hasn't resolved yet.
-          - ``ActorUnavailableError``: the actor exists but is restarting. Over
-            Ray Client — how the dispatcher connects — ``__ray_ready__`` raises
-            immediately rather than blocking through the restart the way it does
-            for a driver-mode caller, so it has to be polled the same way.
-
-        Any other exception (most importantly a connection error) propagates to
-        the caller, which reports it.
+        Anything else propagates to the caller, which reports it. That includes
+        ``ValueError`` from the lookup: a name is registered when the actor is
+        created, before ``deploy`` returns, and stays registered through
+        restarts, so a failed lookup means the replica is gone for good.
         """
         while True:
             try:
                 handle = get_model_actor_handle(self.model_key, self.replica_id)
                 await handle.__ray_ready__.remote()
                 return
-            except (ValueError, ActorUnavailableError):
+            except ActorUnavailableError:
                 await asyncio.sleep(1)
-                continue
 
     def start(self) -> None:
         """Spawn the worker task pulling from the shared queue."""
