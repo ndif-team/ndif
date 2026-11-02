@@ -26,8 +26,7 @@ classifiers = [
 # up` bind-mounts it over the image's copy. torch, transformers, etc. are pulled
 # in transitively by nnsight and the ray extra.
 dependencies = [
-    # requirements.txt carries the same specifier for the pinned install.
-    "nnsight>=0.8.2,<0.9",
+    "nnsight",
     "pydantic",
     "redis",
     "click",

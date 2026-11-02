@@ -95,7 +95,7 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ steps.v.outputs.version }}
 
-      # No layer cache: requirements use ranges (nnsight>=…,<…), and a cached
+      # No layer cache: requirements are unpinned, and a cached
       # install layer keeps whatever resolved when it was built, so a release
       # image could ship older dependencies than `pip install ndif` resolves.
       - name: Build and push

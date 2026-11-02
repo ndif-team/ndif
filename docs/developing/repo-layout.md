@@ -168,9 +168,6 @@ editable nnsight is found. `just ta <svc>` tears the **whole** stack down and br
   dependency or shipping a non-Python file is
   [Adding a service](adding-a-service.md#dependencies-extras-and-the-image).
 - **The version is the git tag** (setuptools-scm, `dynamic = ["version"]`).
-- **nnsight is pinned to the 0.8 line** — see
-  [nnsight integration](nnsight-integration.md#what-this-covers) for why the
-  specifier names the pre-release.
 
 ## I want to change X, open Y
 

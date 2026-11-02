@@ -28,10 +28,6 @@ Two facts frame the design:
    recompiles it. Source is not tied to a CPython version, which is why a 3.11
    client can drive a 3.12 server.
 
-The server pins nnsight in both `pyproject.toml` and
-`requirements.txt`. The specifier names the pre-release explicitly because pip only
-considers pre-releases when the specifier does; a bare `nnsight` resolves to 0.7.
-
 ## The wire
 
 A remote run is one multipart `POST /request` plus, for a blocking run, one
