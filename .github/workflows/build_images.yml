@@ -77,7 +77,7 @@ jobs:
             type=sha
             type=raw,value=latest
 
-      # No layer cache: requirements use ranges (nnsight>=…,<…), and a cached
+      # No layer cache: requirements are unpinned, and a cached
       # install layer keeps whatever resolved when it was built.
       - name: Build and push
         id: build

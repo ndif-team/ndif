@@ -33,7 +33,7 @@ soon as the API is up; `curl localhost:8001/connected` answers
 server is ready. Until then the API answers 503 and logs
 `Error connecting to Ray` once a second — that is expected during boot.
 
-Then, on the client side, with `pip install nnsight` (0.8 or newer):
+Then, on the client side, with `pip install nnsight`:
 
 ```python
 import nnsight

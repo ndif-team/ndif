@@ -24,11 +24,9 @@ import socket
 import sys
 import traceback
 
-from ..deployments.modeling.nns import (
-    block_scope,
-    execute_traced_block,
-    prepare_traced_block,
-)
+from nnsight.tracing.globals import block_scope
+
+from ..deployments.modeling.nns import execute_traced_block, prepare_traced_block
 from ..deployments.modeling.util import resolve_dtype, set_process_limits
 from ..sandbox.driver import SandboxDriver
 from ..sandbox.host import FollowerConnection as RunnerConnection

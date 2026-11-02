@@ -294,7 +294,7 @@ sandbox actor reports the runner-side cause instead of its `RunnerError` wrapper
 
 ### The finally block, and the upload
 
-`finally` exits the `block_scope()` (`src/ndif/services/ray/deployments/modeling/nns.py`) entered before the try, restoring
+`finally` exits nnsight's `block_scope()` (`nnsight.tracing.globals`), entered before the try, restoring
 `linecache.cache` and nnsight's process-global `SOURCES`/`BLOCKS` memos from the
 snapshots taken on entry — they're keyed by `(filename, line)` and never
 re-validated, so a later request reusing the same trace-site would otherwise run
