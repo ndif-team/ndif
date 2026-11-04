@@ -6,6 +6,7 @@ support the model actor when it loads weights onto its assigned GPUs.
 
 import asyncio
 import logging
+import os
 import re
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, Tuple
@@ -44,29 +45,43 @@ class LogStream:
             self._buffer = ""
 
 
-def _downloaded(repo) -> bool:
+def _downloaded(repo_dir: str) -> bool:
     """Whether a HF cache repo has real weights (not just a stub .config)."""
-    for revision in repo.revisions:
-        for file in revision.files:
-            if not file.file_name.endswith(".config"):
-                return True
-    return False
+    snapshots = os.path.join(repo_dir, "snapshots")
+    try:
+        return any(
+            not name.endswith(".config")
+            for revision in os.listdir(snapshots)
+            for name in os.listdir(os.path.join(snapshots, revision))
+        )
+    except OSError:
+        return False
 
 
 def get_downloaded_models() -> list[str]:
     """Repo ids of models present in the local HuggingFace cache.
 
-    Best-effort: returns an empty list if huggingface_hub isn't available or
-    the cache can't be scanned, so status reporting never hard-fails on it.
+    Reads directory names only. ``Controller.status`` calls this on the
+    controller's event loop, and ``scan_cache_dir`` stats every file of every
+    revision: on a shared filesystem that takes tens of seconds, during which
+    deploys, node syncs and every other status call wait.
+
+    Best-effort: returns an empty list if the cache can't be read, so status
+    reporting never hard-fails on it.
     """
     try:
-        from huggingface_hub import scan_cache_dir
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-        info = scan_cache_dir()
-        return [repo.repo_id for repo in info.repos if _downloaded(repo)]
+        entries = list(os.scandir(HF_HUB_CACHE))
     except Exception:
-        logger.debug("Could not scan the HuggingFace cache", exc_info=True)
+        logger.debug("Could not read the HuggingFace cache", exc_info=True)
         return []
+    # The cache names a model repo "models--{org}--{name}".
+    return [
+        entry.name[len("models--") :].replace("--", "/")
+        for entry in entries
+        if entry.name.startswith("models--") and _downloaded(entry.path)
+    ]
 
 
 def kill_thread(ident: "int | None", exc_type: type = SystemExit) -> None:
