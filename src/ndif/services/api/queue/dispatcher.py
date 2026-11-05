@@ -122,7 +122,6 @@ class Dispatcher:
                 logger.exception("Error connecting to Ray")
                 # Synchronous on purpose: connect() runs before the event loop
                 # starts (from __init__), so this can't be an async sleep.
-                import time
 
                 time.sleep(1)
 
