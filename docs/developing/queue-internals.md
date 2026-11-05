@@ -346,7 +346,11 @@ heap.
 
 > **One event loop for all models.** The dispatcher is a single asyncio process,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
-> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Related:
+> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. The
+> actor-handle lookups (`get_model_actor_handle`, `controller_handle`) are the
+> exception: they run inline, bounded at 30 s, so a dead Ray connection stalls the
+> loop that long and then fails into a reconnect (see
+> [Providers](providers.md#rayprovider)). Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged
 > replica will not provision a second no matter how deep its queue gets —
 > autoscaling requires `READY`, `ensure_started` requires an empty pool.
