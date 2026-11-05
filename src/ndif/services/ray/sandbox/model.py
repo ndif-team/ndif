@@ -24,7 +24,7 @@ from nnsight.schema.response import Status
 
 from ..deployments.modeling.base import BaseModelDeployment
 from .driver import RunnerError, SandboxDriver
-from .host import Pool
+from .host import Pool, placement
 
 if TYPE_CHECKING:
     from ....common.schema.request import BackendRequestModel
@@ -88,6 +88,8 @@ class SandboxHost:
             # The key carries whether the checkpoint's own code may run, so the
             # runner's build is the actor's build by construction.
             model_key=self.model_key,
+            # The key has no devices or dtypes, so the runner takes this actor's.
+            placement=placement(self.model._module),
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.

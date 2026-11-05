@@ -45,6 +45,27 @@ class TestRemoteTrace:
         assert block_in.shape[-1] == HIDDEN
 
 
+class TestRemotePlacement:
+    """A block sees the served model's devices and dtypes on either path.
+
+    In-process that is trivially true. Sandboxed, the block reads the runner's
+    weightless copy, which knows them only because the host sends them.
+    """
+
+    def test_weights_match_the_activations(self, model):
+        with model.trace(PROMPT, remote=True):
+            hidden = model.transformer.h[0].output
+            weight = model.transformer.h[0].mlp.c_fc.weight
+            seen = {
+                "hidden": (str(hidden.dtype), str(hidden.device)),
+                "weight": (str(weight.dtype), str(weight.device)),
+                "model": (str(model.dtype), str(model.device)),
+                # Tied to the embedding, so it is reached under a second name.
+                "lm_head": (str(model.lm_head.weight.dtype), str(model.lm_head.weight.device)),
+            }.save()
+        assert seen["weight"] == seen["model"] == seen["lm_head"] == seen["hidden"]
+
+
 class TestRemoteIntervention:
     def test_zeroing_output(self, model):
         with model.trace(PROMPT, remote=True):
