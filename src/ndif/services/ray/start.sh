@@ -37,6 +37,11 @@ fi
 
 HEAD_ADDRESS="${NDIF_RAY_HEAD_ADDRESS:-}"
 
+# `ray start --block` (run in the background below) supervises this node's
+# daemons: it exits 1 when one dies, and on SIGTERM stops them and exits. This
+# script forwards SIGTERM/SIGINT to it and exits 0 once Ray has stopped.
+trap 'kill -TERM "${ray_pid:-}" 2>/dev/null || true; wait "${ray_pid:-}" 2>/dev/null || true; exit 0' TERM INT
+
 # Block until host:port accepts a TCP connection (or give up after N tries).
 wait_for_head() {
     local host="${1%%:*}"
@@ -47,6 +52,11 @@ wait_for_head() {
 
     echo "Waiting for Ray head at $host:$port..."
     until (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; do
+        # On the head, stop waiting if the `ray start` it waits for has died.
+        if [ -n "${ray_pid:-}" ] && ! kill -0 "$ray_pid" 2>/dev/null; then
+            echo "ERROR: ray start exited before $host:$port came up" >&2
+            exit 1
+        fi
         attempt=$((attempt + 1))
         if [ "$attempt" -ge "$retries" ]; then
             echo "ERROR: Ray head $host:$port not reachable after $attempt attempts" >&2
@@ -75,7 +85,10 @@ if [ -z "$HEAD_ADDRESS" ]; then
         --dashboard-port="${NDIF_RAY_DASHBOARD_PORT:-8265}" \
         --dashboard-agent-grpc-port="${NDIF_RAY_DASHBOARD_GRPC_PORT:-52366}" \
         --metrics-export-port="${NDIF_RAY_METRICS_PORT:-8080}" \
-        --temp-dir="$NDIF_RAY_TEMP_DIR"
+        --temp-dir="$NDIF_RAY_TEMP_DIR" \
+        --block &
+    ray_pid=$!
+    wait_for_head "127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}"
 
     echo "Starting NDIF controller..."
     # Name the head just started: given no address, ray.init(address="auto")
@@ -97,8 +110,11 @@ else
     ray start \
         --address="$HEAD_ADDRESS" \
         --resources="$resources" \
-        --temp-dir="$NDIF_RAY_TEMP_DIR"
+        --temp-dir="$NDIF_RAY_TEMP_DIR" \
+        --block &
+    ray_pid=$!
 fi
 
-# Keep the container in the foreground (ray start daemonizes).
-tail -f /dev/null
+# Exit with `ray start --block`: non-zero when a Ray daemon died, so the
+# container (or `ndif start --foreground`) goes down rather than looking healthy.
+wait "$ray_pid"

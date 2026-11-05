@@ -97,14 +97,22 @@ survives the CLI exiting and can be signalled as a unit. A detached service is
 given 2 seconds; one that has already exited is reported `✗ exited immediately`
 with its log path instead of getting a PID file.
 
-**As the container entrypoint.** The image's `ENTRYPOINT` is `["ndif"]` and its
-`CMD` is `["start", "--foreground"]`, with `NDIF_SERVICE=all` as the image
-default — so a bare `docker run ndif/ndif` brings up redis, rustfs, ray and api
-in one container, and `docker run ndif/ndif doctor` runs that command instead.
-Compose picks one role per container by setting `NDIF_SERVICE`. In foreground
-mode a **single** service replaces the CLI via `execvpe` (it becomes PID 1 and
-gets signals directly); **several** run as children with SIGTERM/SIGINT
-forwarding, and the first to exit tears the rest down and sets the exit code.
+**As the container entrypoint.** The image's `ENTRYPOINT` is
+`["tini", "-s", "--", "ndif"]` and its `CMD` is `["start", "--foreground"]`, with
+`NDIF_SERVICE=all` as the image default — so a bare `docker run ndif/ndif`
+brings up redis, rustfs, ray and api in one container, and `docker run
+ndif/ndif doctor` runs that command instead. `tini` is PID 1: it forwards
+signals to the CLI and reaps orphaned processes. Compose picks one
+role per container by setting `NDIF_SERVICE`. In foreground mode a **single**
+service replaces the CLI via `execvpe` and gets signals directly; **several**
+run as children, each in its own process group, so a terminal Ctrl-C reaches
+only the CLI. The first child to exit, or a SIGTERM/SIGINT, stops the rest in
+reverse dependency order (api, ray, rustfs, redis), each waited for before the
+next, all within 8 seconds (`src/ndif/cli/commands/start.py` `STOP_TIMEOUT_S`);
+a process group still running at the deadline is killed, so a `docker stop`
+fits inside Docker's 10-second grace period. The first child's exit code
+becomes the CLI's (128 + N for a child killed by signal N); a
+signal-initiated stop exits 0.
 `NDIF_SERVICE` is also the Loki `service=` label, so a multi-service value
 appears verbatim in your logs.
 

@@ -156,8 +156,8 @@ pytest tests/        # live-server tests skip unless the stack is up
 
 Every `just ta` starts with a bare `just down`: `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 
-The `ndif` CLI is the image entrypoint (`ENTRYPOINT ["ndif"]`, `CMD ["start",
-"--foreground"]`); `NDIF_SERVICE` selects which service(s) a container runs. It
+The `ndif` CLI is the image entrypoint (`ENTRYPOINT ["tini", "-s", "--", "ndif"]`,
+`CMD ["start", "--foreground"]`); `NDIF_SERVICE` selects which service(s) a container runs. It
 accepts a space/comma list, and `all` expands in place — `"all dashboard"` is the
 core stack plus the admin UI. Configuration is read from the environment (see the
 `environment:` blocks in the compose file).

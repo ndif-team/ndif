@@ -1,8 +1,8 @@
 """Gunicorn config for the NDIF API.
 
 Settings are env-overridable. ``on_starting`` launches the single queue
-dispatcher (as a *spawned* process); ``post_fork`` wires telemetry into each
-web worker.
+dispatcher (as a *spawned* process) and ``on_exit`` stops it; ``post_fork``
+wires telemetry into each web worker.
 
 Telemetry / fork note: the Loki + InfluxDB providers connect at import (each
 owns a background shipper thread). Threads don't survive ``fork()``, so a thread
@@ -58,9 +58,27 @@ def _run_dispatcher():
     Dispatcher.start()
 
 
+_dispatcher = None
+
+
 def on_starting(server):
     """Start the single queue dispatcher as a spawned (not forked) process."""
+    global _dispatcher
     ctx = get_context("spawn")
-    ctx.Process(
+    _dispatcher = ctx.Process(
         target=_run_dispatcher, daemon=False, name="DispatcherProcess"
-    ).start()
+    )
+    _dispatcher.start()
+
+
+def on_exit(server):
+    """Stop the dispatcher as the master exits.
+
+    Gunicorn signals only its workers, and the master's exit joins this
+    non-daemon process, so without this the master never exits on SIGTERM.
+    """
+    if _dispatcher is not None and _dispatcher.is_alive():
+        _dispatcher.terminate()
+        _dispatcher.join(timeout=3)
+        if _dispatcher.is_alive():
+            _dispatcher.kill()

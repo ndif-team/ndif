@@ -61,8 +61,17 @@ Only the head launches the controller. `python -m ...controller.controller`
 runs as a short-lived *driver*: it `ray.init(address="auto", namespace="NDIF")`
 against the head just started, which `start.sh` names in `RAY_ADDRESS` for that
 one command, then calls `app()` to schedule the detached actor (`get_if_exists=True`, so a relaunch
-reuses a live one), then exits. `start.sh` ends in `tail -f /dev/null` because
-`ray start` daemonizes and the container needs a foreground process.
+reuses a live one), then exits.
+
+`start.sh` runs `ray start --block` in the background, waits for the head's
+GCS port, launches the controller, then waits on `ray start`. With `--block`,
+Ray supervises this node's daemons itself: it checks them every second, and
+when one exits with an unexpected code (a crash, an OOM kill, SIGKILL) it kills
+the rest of this node and exits 1, which takes the container, or the `ndif
+start --foreground` that runs it, down rather than leaving it looking healthy.
+A daemon that exits on SIGTERM counts as a graceful exit and goes unreported.
+On SIGTERM or SIGINT `start.sh` passes SIGTERM to `ray start`, which stops this
+node's daemons only (not other Ray clusters on the host), and exits 0.
 
 **The controller names its own cluster to Ray.** Given no address, Ray's
 `ray.init(address="auto")`, its state API (`list_nodes`, `list_actors`) and its

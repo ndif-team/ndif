@@ -56,12 +56,18 @@ def _spawn(svc: Service, env: dict, state: State) -> None:
     click.echo(f"  ✓ {svc.name}: started (pid {proc.pid}) → {log_path}")
 
 
+# Docker SIGKILLs a container 10 s after `docker stop`; the ordered stop below
+# has to finish inside that.
+STOP_TIMEOUT_S = 8.0
+
+
 def _run_foreground(targets: list[Service], env: dict) -> None:
     """Run services in the foreground (for containers / process supervisors).
 
-    A single service replaces this process via ``exec`` so it becomes PID 1 and
-    receives signals directly. Multiple services run as children with signal
-    forwarding; the first to exit brings the rest down and sets the exit code.
+    A single service replaces this process via ``exec`` so it receives signals
+    directly. Multiple services run as children; the first to exit, or a
+    SIGTERM/SIGINT, stops them all, and that first exit sets the exit code (0
+    for a signal).
     """
     if len(targets) == 1:
         svc = targets[0]
@@ -73,40 +79,53 @@ def _run_foreground(targets: list[Service], env: dict) -> None:
             raise click.ClickException(f"{svc.name}: cannot run {command[0]!r}: {e}")
 
     procs: list[tuple[Service, subprocess.Popen]] = []
+    stopping = False
 
-    def _forward(signum, _frame):
-        for _, proc in procs:
-            proc.send_signal(signum)
+    def _request_stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
 
-    signal.signal(signal.SIGTERM, _forward)
-    signal.signal(signal.SIGINT, _forward)
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
 
     for svc in targets:
+        if stopping:
+            break
         command = svc.build_command(env)
         try:
-            proc = subprocess.Popen(command, env=_proc_env(svc, env))
+            # Own process group: a terminal Ctrl-C reaches only this CLI, which
+            # then stops the services in order.
+            proc = subprocess.Popen(command, env=_proc_env(svc, env), process_group=0)
         except FileNotFoundError as e:
             raise click.ClickException(f"{svc.name}: cannot run {command[0]!r}: {e}")
         procs.append((svc, proc))
         click.echo(f"  ▸ {svc.name}: started (pid {proc.pid})")
 
-    # Wait for the first service to exit, then tear the rest down.
-    while all(proc.poll() is None for _, proc in procs):
-        time.sleep(0.5)
     exit_code = 0
-    for svc, proc in procs:
-        rc = proc.poll()
-        if rc is not None:
+    while not stopping:
+        exited = [(svc, proc.returncode) for svc, proc in procs if proc.poll() is not None]
+        for svc, rc in exited:
             click.echo(f"  ▪ {svc.name}: exited ({rc})")
-            exit_code = rc or exit_code
-    for _, proc in procs:
-        if proc.poll() is None:
-            proc.terminate()
-    for _, proc in procs:
+            exit_code = exit_code or (128 - rc if rc < 0 else rc)
+        if exited:
+            break
+        time.sleep(0.5)
+
+    # Stop in reverse start order, so each service's dependencies outlive it
+    # (the API drains while Redis is still up), all within one deadline.
+    deadline = time.monotonic() + STOP_TIMEOUT_S
+    for svc, proc in reversed(procs):
+        if proc.poll() is not None:
+            continue
+        proc.terminate()
         try:
-            proc.wait(timeout=10)
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            click.echo(f"  ■ {svc.name}: stopped")
         except subprocess.TimeoutExpired:
-            proc.kill()
+            # The whole group, so whatever the service started goes too.
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            click.echo(f"  ✗ {svc.name}: killed")
     sys.exit(exit_code)
 
 

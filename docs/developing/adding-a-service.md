@@ -28,7 +28,7 @@ flowchart TB
     B --> C["env_services() reads NDIF_SERVICE"]
     C --> D["resolve_targets() maps name -> Service via SERVICE_MAP"]
     D --> E["_script_command builds ['bash', '<pkg>/services/myservice/start.sh']"]
-    E --> F["os.execvpe: start.sh replaces PID 1"]
+    E --> F["os.execvpe: start.sh replaces the CLI"]
     F --> G["start.sh execs your server process"]
 ```
 
@@ -77,8 +77,8 @@ exec python -m uvicorn ndif.services.myservice.app:app \
 All four conventions are load-bearing: `set -euo pipefail`; export `NDIF_SERVICE`
 first (`src/ndif/services/ray/start.sh` does it before `ray start` so every actor
 inherits the label); `exec` the final process, because in `--foreground` mode a
-single service is `execvpe`'d and `start.sh` *is* PID 1 — without `exec` your server
-never sees SIGTERM; and document the env vars with defaults in the header comment.
+single service is `execvpe`'d and `start.sh` *is* the process that receives SIGTERM —
+without `exec` your server never sees it; and document the env vars with defaults in the header comment.
 
 Anything that isn't the foreground process goes *before* the `exec`, guarded so a
 laptop run degrades instead of failing — `src/ndif/services/dashboard/start.sh`
@@ -177,7 +177,7 @@ differs only by env:
 ```
 
 No `command:` and no `entrypoint:` — `NDIF_SERVICE` is the whole selection
-mechanism, on top of the image's `ENTRYPOINT ["ndif"]` and
+mechanism, on top of the image's `ENTRYPOINT ["tini", "-s", "--", "ndif"]` and
 `CMD ["start", "--foreground"]`. The split is what lets `docker run ndif/ndif
 doctor` run any other CLI command against the same image.
 
