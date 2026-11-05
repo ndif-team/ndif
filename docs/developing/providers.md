@@ -155,6 +155,12 @@ a `ClientActorHandle` that skips stock Ray's first-access signature RPC — that
 unpickles annotations client-side and drags in `BackendRequestModel`, which breaks a
 slim `--no-deps` install.
 
+`get_named_actor` bounds every lookup, `RayProvider.connected`'s included, at
+`GET_ACTOR_TIMEOUT_S` (30 s) and raises `TimeoutError` past it. Over Ray Client a
+`ray.get_actor` in flight when the head dies never returns, so unbounded, one lookup
+on the dispatcher's event loop freezes the dispatcher, reconnect included. Bounded,
+a dead connection reads as not connected and the dispatcher reconnects.
+
 **Used by** `Dispatcher.connect` and the CLI's `ensure_ray_connected`
 (`src/ndif/cli/lib/_common.py`), which overwrites `RayProvider.ray_url` from
 `--ray-address` first.

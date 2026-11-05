@@ -8,6 +8,7 @@ namespace.
 """
 
 import logging
+import threading
 
 import ray
 from ray.util.client import ray as client_ray
@@ -101,7 +102,7 @@ class RayProvider(Provider):
 
         if connected:
             try:
-                ray.get_actor("Controller", namespace=NAMESPACE)
+                get_named_actor("Controller", namespace=NAMESPACE)
             except Exception:
                 return False
             else:
@@ -205,14 +206,44 @@ class NDIFActorHandle(ClientActorHandle):
         return NDIFClientRemoteMethod(self, key)
 
 
+# A healthy lookup takes milliseconds.
+GET_ACTOR_TIMEOUT_S = 30
+
+
 def get_named_actor(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
-    """Like ``ray.get_actor`` but returns an :class:`NDIFActorHandle`.
+    """Like ``ray.get_actor`` but bounded, and returns an :class:`NDIFActorHandle`.
+
+    Over Ray Client, ``ray.get_actor`` waits on a future with no timeout, and a
+    lookup in flight when the head dies never returns. The dispatcher calls
+    this on its event loop, so that one call froze the whole dispatcher — no
+    status refreshes, no error handling, no reconnect — while ``ray:connected``
+    still read 1. The lookup runs on a daemon thread instead, and one that
+    outlives ``GET_ACTOR_TIMEOUT_S`` raises ``TimeoutError`` and is abandoned.
 
     No-ops the class swap when not in Ray-client mode (native
     ``ray.actor.ActorHandle`` has no descriptor-prefetch behavior, so the
     standard ``remote()`` syntax already just works).
     """
-    handle = ray.get_actor(name, namespace=namespace)
+    outcome: list = []
+
+    def lookup() -> None:
+        try:
+            outcome.append(ray.get_actor(name, namespace=namespace))
+        except BaseException as e:
+            outcome.append(e)
+
+    thread = threading.Thread(target=lookup, daemon=True)
+    thread.start()
+    thread.join(GET_ACTOR_TIMEOUT_S)
+    if not outcome:
+        raise TimeoutError(
+            f"ray.get_actor({name!r}) did not return within "
+            f"{GET_ACTOR_TIMEOUT_S}s; the Ray connection is probably dead"
+        )
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+
+    handle = outcome[0]
     if isinstance(handle, ClientActorHandle):
         handle.__class__ = NDIFActorHandle
     return handle
