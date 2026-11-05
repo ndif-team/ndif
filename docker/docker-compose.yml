@@ -284,9 +284,10 @@ services:
     ports:
       - "8265:8265"    # Ray dashboard
       - "10001:10001"  # Ray client server (ray://) — how the api connects
-    # Ray's plasma object store lives in /dev/shm; the docker default (64MB) is
-    # far too small. Bump for real workloads.
-    shm_size: "4gb"
+    # Ray sizes its object store at 30 % of RAM capped at 10 GB and only keeps
+    # it in /dev/shm when /dev/shm is at least that big; smaller (and docker's
+    # 64 MB default) silently moves the store to the temp dir on disk.
+    shm_size: "16gb"
     deploy:
       resources:
         reservations:

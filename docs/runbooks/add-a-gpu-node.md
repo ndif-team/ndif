@@ -38,7 +38,7 @@ On the new machine:
 |---|---|---|
 | NVIDIA driver | `resources.py` sums each device's memory into `cuda_memory_bytes`; no CUDA → no GPU resource → the controller ignores the node | `nvidia-smi` |
 | NVIDIA container toolkit (containers only) | the worker container needs `--gpus all` | `docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi` |
-| `/dev/shm` of a few GB | Ray's object store lives there; Docker's 64 MB default is far too small | `df -h /dev/shm` |
+| `/dev/shm` of 16 GB | Ray keeps its object store (30 % of RAM, capped at 10 GB) there only when it fits; smaller silently moves it to disk | `df -h /dev/shm` |
 | The same NDIF, nnsight, torch and Python as the head | requests and models are unpickled on whichever node holds the replica; a version split surfaces as deserialization errors on that node only | `ndif version` on both; `ndif env` vs `ndif env --local` |
 | A HuggingFace cache, and `HF_TOKEN` for gated repos | the actor downloads weights on its own node. The controller passes its Redis, object-store and telemetry settings into each actor, but **not** `HF_TOKEN` / `HF_HOME` — those must be in the worker's own environment | `ls ~/.cache/huggingface/hub` |
 
@@ -84,7 +84,7 @@ the image compose built for the `ray` service; `docker images` lists it):
 
 ```bash
 docker run -d --name ndif-worker \
-  --gpus all --shm-size=4gb --network host \
+  --gpus all --shm-size=16g --network host \
   -e NDIF_SERVICE=ray \
   -e NDIF_RAY_HEAD_ADDRESS=10.0.0.5:6385 \
   -e HF_TOKEN="$HF_TOKEN" \

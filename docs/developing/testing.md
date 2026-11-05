@@ -188,8 +188,8 @@ docker compose -f docker/docker-compose.yml exec ray \
 - **The client's nnsight must match the server's.** A mismatch shows up as a
   deserialization error, not a version message, unless `NDIF_MIN_NNSIGHT_VERSION` is
   set — see [nnsight integration](nnsight-integration.md#when-client-and-server-versions-differ).
-- **`shm_size`.** Ray's object store lives in `/dev/shm`; compose sets `4gb` on the
-  `ray` service because Docker's 64 MB default is far too small.
+- **`shm_size`.** Ray's object store lives in `/dev/shm` only when it fits; compose
+  sets `16gb` on the `ray` service ([why](../operating/compose-stack.md#shm_size-16gb)).
 - **Coverage is uneven.** The dispatcher, the API app and the providers other than
   Redis's publish cap are exercised only through the live suite.
 
