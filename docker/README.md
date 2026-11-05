@@ -27,6 +27,12 @@ docker run -d --name ndif --gpus all --shm-size 4g \
     ndif/ndif
 ```
 
+To have the weights it downloads owned by you rather than root, add
+`--user $(id -u):$(id -g)`; the image runs as any uid. Create the cache first
+(`mkdir -p ~/.cache/huggingface`), or Docker creates it root-owned. A cache
+that root containers already wrote to needs this once:
+`sudo chown -R $(id -u):$(id -g) ~/.cache/huggingface`.
+
 Ray takes a minute to boot. `curl localhost:8001/ping` answers `"pong"` as
 soon as the API is up; `curl localhost:8001/connected` answers
 `{"status":"connected"}` once the API can reach Ray, and that is when the
@@ -145,7 +151,9 @@ docker run -d --name ndif --gpus all --shm-size 4g \
     ndif/ndif
 ```
 
-`NDIF_DASHBOARD_DEV_MODE=true` disables its login. For a dashboard other
+`NDIF_DASHBOARD_DEV_MODE=true` disables its login. The dashboard's scheduled
+jobs (monitor, reconcile, report) run from cron, which needs root; under
+`--user` the UI works and the schedules do not run. For a dashboard other
 people can reach, drop that and set `NDIF_DASHBOARD_USERNAME`, a bcrypt
 `NDIF_DASHBOARD_PASSWORD_HASH` and a random `NDIF_DASHBOARD_SESSION_SECRET`
 (see [docs/operating/dashboard.md](https://github.com/ndif-team/ndif/blob/main/docs/operating/dashboard.md)).

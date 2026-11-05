@@ -137,6 +137,11 @@ LABEL org.opencontainers.image.title="NDIF" \
 #   8265 Ray dashboard   10001 Ray client   6379 Redis
 EXPOSE 8001 9000 9001 8081 8265 10001 6379
 
+# Root by default, or any `--user` uid. Every uid shares HOME=/root, whose dirs
+# are world-writable, so HF_HOME, NDIF_HOME and library caches resolve the same.
+ENV HOME=/root
+RUN mkdir -p /root/.cache/huggingface && chmod 1777 /root /root/.cache /root/.cache/huggingface
+
 # Model weights go here (HF_HOME); mount the host cache so they persist.
 VOLUME ["/root/.cache/huggingface"]
 

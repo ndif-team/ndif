@@ -43,7 +43,9 @@ with no build step; rebuilding it after a frontend change is covered in
 **With compose**, the `dashboard` service runs the same image with
 `NDIF_SERVICE=dashboard`, whose default command runs `ndif start dashboard` →
 `src/ndif/services/dashboard/start.sh`. The image installs `cron`, so the
-container runs all three crons alongside uvicorn.
+container runs all three crons alongside uvicorn. Cron needs root (it writes
+`/etc/cron.d`), so a container started with `--user` serves the UI without
+the crons.
 
 ```bash
 just up dashboard          # or `just up` for the whole stack
