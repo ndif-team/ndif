@@ -112,6 +112,12 @@ class RayProvider(Provider):
 
     @classmethod
     def reset(cls):
+        # ray.shutdown() waits for the client's data thread before it closes the
+        # gRPC channel, and on a dead head that thread never finishes. Closing
+        # the channel first ends it.
+        worker = client_ray.get_context().client_worker
+        if worker is not None and worker.channel is not None:
+            worker.channel.close()
         ray.shutdown()
 
     # Error patterns that indicate a broken Ray connection.
@@ -173,7 +179,14 @@ class NDIFClientRemoteMethod:
         self._method_num_returns = 1
 
     def remote(self, *args, **kwargs):
-        return return_refs(client_ray.call_remote(self, *args, **kwargs))
+        # Awaiting a ref waits for its id with no timeout, on the caller's event
+        # loop. Wait for it here instead, bounded.
+        def call():
+            ref = return_refs(client_ray.call_remote(self, *args, **kwargs))
+            ref.binary()
+            return ref
+
+        return bounded(f"{self._method_name}.remote()", call)
 
     def _prepare_client_task(self):
         from ray.core.generated import ray_client_pb2
@@ -206,44 +219,51 @@ class NDIFActorHandle(ClientActorHandle):
         return NDIFClientRemoteMethod(self, key)
 
 
-# A healthy lookup takes milliseconds.
-GET_ACTOR_TIMEOUT_S = 30
+# A healthy Ray Client call takes milliseconds.
+RAY_CLIENT_TIMEOUT_S = 30
+
+
+def bounded(what: str, fn, *args, **kwargs):
+    """Call ``fn`` on a daemon thread; raise ``TimeoutError`` if it outlives
+    ``RAY_CLIENT_TIMEOUT_S``.
+
+    Over Ray Client, actor lookups and calls wait on futures with no timeout,
+    so one in flight when the head dies never returns, and the dispatcher makes
+    them on its event loop. A thread that times out is abandoned with whatever
+    it holds (a ref dropped on the loop would wait for its id too).
+    """
+    outcome: list = []
+
+    def run() -> None:
+        try:
+            outcome.append(fn(*args, **kwargs))
+        except BaseException as e:
+            outcome.append(e)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(RAY_CLIENT_TIMEOUT_S)
+    if not outcome:
+        raise TimeoutError(
+            f"{what} did not return within {RAY_CLIENT_TIMEOUT_S}s; "
+            "the Ray connection is probably dead"
+        )
+    if isinstance(outcome[0], BaseException):
+        raise outcome[0]
+    return outcome[0]
 
 
 def get_named_actor(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
-    """Like ``ray.get_actor`` but bounded, and returns an :class:`NDIFActorHandle`.
-
-    Over Ray Client, ``ray.get_actor`` waits on a future with no timeout, and a
-    lookup in flight when the head dies never returns. The dispatcher calls
-    this on its event loop, so that one call froze the whole dispatcher — no
-    status refreshes, no error handling, no reconnect — while ``ray:connected``
-    still read 1. The lookup runs on a daemon thread instead, and one that
-    outlives ``GET_ACTOR_TIMEOUT_S`` raises ``TimeoutError`` and is abandoned.
+    """Like ``ray.get_actor`` but bounded (see :func:`bounded`), and returns an
+    :class:`NDIFActorHandle`.
 
     No-ops the class swap when not in Ray-client mode (native
     ``ray.actor.ActorHandle`` has no descriptor-prefetch behavior, so the
     standard ``remote()`` syntax already just works).
     """
-    outcome: list = []
-
-    def lookup() -> None:
-        try:
-            outcome.append(ray.get_actor(name, namespace=namespace))
-        except BaseException as e:
-            outcome.append(e)
-
-    thread = threading.Thread(target=lookup, daemon=True)
-    thread.start()
-    thread.join(GET_ACTOR_TIMEOUT_S)
-    if not outcome:
-        raise TimeoutError(
-            f"ray.get_actor({name!r}) did not return within "
-            f"{GET_ACTOR_TIMEOUT_S}s; the Ray connection is probably dead"
-        )
-    if isinstance(outcome[0], BaseException):
-        raise outcome[0]
-
-    handle = outcome[0]
+    handle = bounded(
+        f"ray.get_actor({name!r})", ray.get_actor, name, namespace=namespace
+    )
     if isinstance(handle, ClientActorHandle):
         handle.__class__ = NDIFActorHandle
     return handle
