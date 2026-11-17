@@ -6,6 +6,7 @@ anything — a service being down is reported, not treated as a failure.
 """
 
 import importlib.metadata
+import os
 import platform
 import re
 import shutil
@@ -112,6 +113,17 @@ def _check_gpu() -> int:
     if usable:
         _ok(f"torch sees {torch.cuda.device_count()} GPU(s) (driver CUDA {driver_cuda or '?'}, torch CUDA {torch.version.cuda})")
         return 0
+    # Before blaming the wheel: a CUDA_VISIBLE_DEVICES that names no device on
+    # this machine leaves torch with nothing too, whatever the driver. torch
+    # counts devices through NVML, applying the variable itself, so the count
+    # is zero here and still positive when the wheel is what is wrong.
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None and torch.cuda.device_count() == 0:
+        _bad(
+            f"torch sees no GPU: CUDA_VISIBLE_DEVICES={visible!r} hides every device (nvidia-smi lists {len(lines)})",
+            "unset CUDA_VISIBLE_DEVICES, or set it to devices this machine has",
+        )
+        return 1
     _bad(
         f"torch cannot use the GPU (driver CUDA {driver_cuda or '?'}, torch built for CUDA {torch.version.cuda})",
         "the torch wheel is newer than the driver supports: use the image tag / --index-url "

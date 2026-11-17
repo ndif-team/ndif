@@ -176,7 +176,7 @@ To confirm which path a request took, look for a runner process per request:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec ray \
-    pgrep -af 'ndif.services.ray.sandbox.runner'
+    sh -c 'grep -l "sandbox[.]runner" /proc/[0-9]*/cmdline'
 ```
 
 ## Gotchas

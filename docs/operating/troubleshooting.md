@@ -118,8 +118,9 @@ The `ray` service reserves GPUs with a `deploy.resources.reservations.devices`
 block — the compose equivalent of `docker run --gpus all` — which requires the
 **NVIDIA container toolkit** on the host. Without it the container fails to
 create outright. `nvidia-smi` working inside the container but
-`cuda_memory_bytes: 0` means torch can't use the driver: a torch wheel built for
-a newer CUDA line than the driver supports, which `ndif doctor` names.
+`cuda_memory_bytes: 0` means torch sees no GPU: a torch wheel built for a newer
+CUDA line than the driver supports, or a `CUDA_VISIBLE_DEVICES` that names no
+device in the container. `ndif doctor` says which.
 
 `shm_size: "16gb"` on the `ray` service is not optional either: Ray's plasma
 store lives in `/dev/shm`, and Docker's 64 MB default makes Ray spill to disk or

@@ -144,7 +144,7 @@ endpoint (`src/ndif/cli/lib/checks.py`): Redis gets a real `PING`, the API
 |---|---|---|
 | Environment | Python ≥ 3.12; `ndif` and `nnsight` installed; then `torch` (with its CUDA build), `transformers` and `ray` | Python/ndif/nnsight yes; torch/transformers/ray **no** — reported, not required |
 | Binaries | `ray`, `redis-server`, `rustfs` on `PATH` | yes |
-| Compute | `nvidia-smi` returns ≥1 GPU, **and** `torch.cuda.is_available()` is true. The second catches a torch wheel built for a newer CUDA line than the driver supports: nvidia-smi lists the card, torch quietly sees nothing, and Ray would advertise `cuda_memory_bytes: 0` | yes |
+| Compute | `nvidia-smi` returns ≥1 GPU, **and** `torch.cuda.is_available()` is true. The second catches a torch wheel built for a newer CUDA line than the driver supports, and a `CUDA_VISIBLE_DEVICES` that names no device on this machine: nvidia-smi lists the card, torch quietly sees nothing, and Ray would advertise `cuda_memory_bytes: 0`. The failure line says which of the two it is | yes |
 | Connectivity | redis / rustfs / api / ray at their `NDIF_*` URLs | **no** — a stopped service is a normal answer |
 
 Exit code is 1 if any of the first three sections failed. Reach for it first
