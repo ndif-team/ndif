@@ -62,6 +62,9 @@ ray = [
     # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
     # dependency the server install must provide.
     "peft",
+    # The quantized deploy dtypes (`--dtype nf4`, `fp4`, `int8`) load through
+    # bitsandbytes, which nnsight uses but does not depend on.
+    "bitsandbytes",
 ]
 # Packages user-submitted traced blocks may import. Not dependencies of NDIF —
 # nothing here is imported by ndif's own code — but the server has to provide

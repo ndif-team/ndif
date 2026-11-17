@@ -39,6 +39,9 @@ pydantic==2.13.4
 # _remoteable_set_env (nnsight TransformersModel); peft is an optional nnsight
 # dependency the server install must provide.
 peft==0.19.1
+# The quantized deploy dtypes (`ndif deploy --dtype nf4`, `fp4`, `int8`) load
+# through bitsandbytes, which nnsight uses but does not depend on.
+bitsandbytes==0.50.2
 cloudpickle==3.1.2
 click==8.1.8
 # The CLI layers ./.env (and an explicit --env-file) over the environment.
