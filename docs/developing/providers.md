@@ -145,7 +145,11 @@ TCP connect to the address (`src/ndif/common/providers/util.py`
 `verify_connection`, 2 s) **and** that the `Controller` actor exists in the `NDIF`
 namespace, so the dispatcher's connect loop waits for a serving control plane.
 `RayProvider.is_connection_error` string-matches an exception against
-`CONNECTION_ERROR_PATTERNS`; a match makes the dispatcher purge and reconnect.
+`CONNECTION_ERROR_PATTERNS`; a match makes the dispatcher purge and reconnect
+unless `RayProvider.connected(call=True)` holds. `call=True` also waits for a call
+to the Controller (`__ray_ready__`) to return. An error from a connection the
+dispatcher has already replaced matches the patterns too, and arrives after the
+reconnect; the call is what tells it from a failure of the current connection.
 
 The module also holds `get_named_actor`, `get_controller_actor_handle` and
 `get_model_actor_handle` (actors `"Controller"` and
@@ -162,6 +166,11 @@ these wait with no timeout when the head dies, so unbounded, one of them on the
 dispatcher's event loop freezes the dispatcher, reconnect included. `reset()` closes
 the gRPC channel before `ray.shutdown()`, which would otherwise wait on the dead head
 too. Bounded, a dead connection reads as not connected and the dispatcher reconnects.
+
+The API's `src/ndif/services/api/start.sh` sets `RAY_ENABLE_AUTO_CONNECT=0`. Ray
+Client drops a session it cannot recover, and the next Ray call in that process
+would otherwise start a local Ray cluster in the API container. With auto-connect
+off the call raises.
 
 **Used by** `Dispatcher.connect` and the CLI's `ensure_ray_connected`
 (`src/ndif/cli/lib/_common.py`), which overwrites `RayProvider.ray_url` from

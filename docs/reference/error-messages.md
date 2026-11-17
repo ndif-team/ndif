@@ -167,8 +167,10 @@ activations didn't. The user gets a CUDA traceback, the replica stays healthy, a
 the fix is their batch, sequence length or saved activations — or more padding.
 
 The dispatcher's error queue makes one decision: a connection-level failure
-(`src/ndif/common/providers/ray.py` `RayProvider.is_connection_error`, or
-`RayProvider.connected()` turning false) purges every queue and reconnects.
+purges every queue and reconnects. That is an error matching
+`src/ndif/common/providers/ray.py` `RayProvider.is_connection_error` while a call
+to the Controller does not return (`RayProvider.connected` with `call=True`), or
+`RayProvider.connected()` turning false.
 Everything else is logged and dropped, because the replica already told the user —
 an isolated `request errored during execution` needs no action.
 

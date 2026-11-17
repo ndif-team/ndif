@@ -11,6 +11,7 @@ No Ray: the client calls are fakes that block until the test releases them.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from types import SimpleNamespace
@@ -83,6 +84,63 @@ def test_call_returns_ref_with_its_id(monkeypatch):
     monkeypatch.setattr(ray_provider, "return_refs", lambda refs: refs)
 
     assert ray_provider.NDIFClientRemoteMethod(None, "status").remote() is ref
+
+
+def controller(monkeypatch, ready):
+    """A connected provider whose Controller's ``__ray_ready__`` result is ``ready``."""
+    ref = SimpleNamespace(future=lambda: SimpleNamespace(result=ready))
+    handle = SimpleNamespace(__ray_ready__=SimpleNamespace(remote=lambda: ref))
+    monkeypatch.setattr(ray_provider, "get_named_actor", lambda *a, **k: handle)
+    monkeypatch.setattr(ray_provider.ray, "is_initialized", lambda: True)
+    monkeypatch.setattr(ray_provider.RayProvider, "is_listening", lambda: True)
+
+
+def test_connected_with_call_needs_the_call_to_return(monkeypatch):
+    def never(timeout):
+        raise TimeoutError
+
+    controller(monkeypatch, never)
+    assert ray_provider.RayProvider.connected() is True
+    assert ray_provider.RayProvider.connected(call=True) is False
+
+
+def test_connected_with_call_when_the_call_returns(monkeypatch):
+    controller(monkeypatch, lambda timeout: True)
+
+    assert ray_provider.RayProvider.connected(call=True) is True
+
+
+@pytest.mark.parametrize(
+    "error, answers, reconnects",
+    [
+        # From a connection that was since replaced: the current one answers.
+        (ConnectionError("Failed during this or a previous request."), True, False),
+        (ConnectionError("Failed during this or a previous request."), False, True),
+        (ValueError("not a connection error"), True, False),
+    ],
+)
+def test_connection_error_reconnects_unless_a_call_returns(
+    monkeypatch, error, answers, reconnects
+):
+    from ndif.services.api.queue import dispatcher as dispatcher_module
+
+    asked, connects = [], []
+
+    def connected(call=False):
+        asked.append(call)
+        return answers
+
+    monkeypatch.setattr(ray_provider.RayProvider, "connected", connected)
+    dispatcher = dispatcher_module.Dispatcher.__new__(dispatcher_module.Dispatcher)
+    dispatcher.processors = {}
+    dispatcher.error_queue = asyncio.Queue()
+    dispatcher.error_queue.put_nowait(("m", error))
+    dispatcher.connect = lambda: connects.append(1)
+
+    asyncio.run(dispatcher.handle_errors())
+
+    assert asked == [ray_provider.RayProvider.is_connection_error(error)]
+    assert bool(connects) is reconnects
 
 
 def test_reset_closes_the_channel_before_shutdown(monkeypatch):

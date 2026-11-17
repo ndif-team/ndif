@@ -97,12 +97,20 @@ class RayProvider(Provider):
         ray.init(logging_level="error", address=cls.ray_url, namespace=NAMESPACE)
 
     @classmethod
-    def connected(cls) -> bool:
+    def connected(cls, call: bool = False) -> bool:
+        """Whether the cluster is reachable and the Controller actor exists.
+
+        ``call`` also waits for a call to the Controller to return, over the
+        lookup, ``.remote()`` and result path a request takes.
+        """
         connected = ray.is_initialized() and cls.is_listening()
 
         if connected:
             try:
-                get_named_actor("Controller", namespace=NAMESPACE)
+                handle = get_named_actor("Controller", namespace=NAMESPACE)
+                if call:
+                    ready = handle.__ray_ready__.remote()
+                    ready.future().result(RAY_CLIENT_TIMEOUT_S)
             except Exception:
                 return False
             else:
