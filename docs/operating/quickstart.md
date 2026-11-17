@@ -81,7 +81,7 @@ the image, which resolves to the core stack — **redis, rustfs, ray, api**
 (`OPTIONAL_SERVICES`); `NDIF_SERVICE="all dashboard"` adds it.
 
 ```bash
-docker run -d --name ndif --gpus all --shm-size 4g \
+docker run -d --name ndif --gpus all --shm-size 16g \
   -p 127.0.0.1:8001:8001 -p 127.0.0.1:9000:9000 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -e HF_TOKEN \
@@ -89,7 +89,7 @@ docker run -d --name ndif --gpus all --shm-size 4g \
 docker logs -f ndif
 ```
 
-- **`--shm-size 4g`**: Ray's object store lives in `/dev/shm`, and Docker's
+- **`--shm-size 16g`**: Ray's object store lives in `/dev/shm`, and Docker's
   64 MB default is far too small.
 - **8001** is the API — the only port a client posts to.
 - **9000** is RustFS's S3 API. Publish it: a result too large to inline comes
