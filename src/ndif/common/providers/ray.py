@@ -134,9 +134,11 @@ class RayProvider(Provider):
     def reset(cls):
         # ray.shutdown() waits for the client's data thread before it closes the
         # gRPC channel, and on a dead head that thread never finishes. Closing
-        # the channel first ends it.
+        # the channel first ends it. Marked as shutting down before that, or
+        # Ray's threads take the closed channel for a fault and try to reconnect.
         worker = client_ray.get_context().client_worker
         if worker is not None and worker.channel is not None:
+            worker._in_shutdown = True
             worker.channel.close()
         ray.shutdown()
 

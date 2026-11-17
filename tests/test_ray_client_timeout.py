@@ -249,8 +249,11 @@ def test_connection_error_reconnects_unless_a_call_returns(
 
 def test_reset_closes_the_channel_before_shutdown(monkeypatch):
     calls = []
-    channel = SimpleNamespace(close=lambda: calls.append("close"))
-    worker = SimpleNamespace(channel=channel)
+    # Shutting down by the time the channel closes, or Ray tries to reconnect it.
+    worker = SimpleNamespace(_in_shutdown=False)
+    worker.channel = SimpleNamespace(
+        close=lambda: calls.append("close" if worker._in_shutdown else "close early")
+    )
     monkeypatch.setattr(
         ray_provider,
         "client_ray",
