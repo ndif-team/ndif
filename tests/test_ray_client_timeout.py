@@ -6,7 +6,11 @@ bound one froze the dispatcher until the API restarted. ``RayProvider.connected`
 has to report False in the same situation, and ``reset`` has to return, or the
 dispatcher never reconnects.
 
-No Ray: the client calls are fakes that block until the test releases them.
+A wait that was cancelled must not keep Ray from telling the other waiters that
+the connection closed, or they wait forever.
+
+No Ray cluster: the client calls are fakes that block until the test releases
+them.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
@@ -67,9 +72,9 @@ def test_lookup_returns_handle(monkeypatch):
 def test_hung_call_times_out(release, monkeypatch):
     ref = SimpleNamespace(binary=release.wait)
     monkeypatch.setattr(
-        ray_provider, "client_ray", SimpleNamespace(call_remote=lambda *a, **k: ref)
+        ray_provider, "client_ray", SimpleNamespace(call_remote=lambda *a, **k: [ref])
     )
-    monkeypatch.setattr(ray_provider, "return_refs", lambda refs: refs)
+    monkeypatch.setattr(ray_provider, "NDIFObjectRef", lambda ref: ref)
 
     method = ray_provider.NDIFClientRemoteMethod(None, "status")
     with pytest.raises(TimeoutError, match=r"status\.remote\(\)"):
@@ -79,11 +84,43 @@ def test_hung_call_times_out(release, monkeypatch):
 def test_call_returns_ref_with_its_id(monkeypatch):
     ref = SimpleNamespace(binary=lambda: b"id")
     monkeypatch.setattr(
-        ray_provider, "client_ray", SimpleNamespace(call_remote=lambda *a, **k: ref)
+        ray_provider, "client_ray", SimpleNamespace(call_remote=lambda *a, **k: [ref])
     )
-    monkeypatch.setattr(ray_provider, "return_refs", lambda refs: refs)
+    monkeypatch.setattr(ray_provider, "NDIFObjectRef", lambda ref: ref)
 
     assert ray_provider.NDIFClientRemoteMethod(None, "status").remote() is ref
+
+
+def test_cancelled_wait_does_not_keep_ray_from_telling_the_rest(monkeypatch):
+    """Ray's own shutdown loop, over a cancelled waiter and one registered after it."""
+    from ray.util.client.dataclient import DataClient
+
+    data_client = DataClient.__new__(DataClient)
+    data_client.lock = threading.Lock()
+    data_client.cv = threading.Condition(data_client.lock)
+    data_client._last_exception = None
+    data_client.asyncio_waiting_data = {}
+
+    def register_callback(ref, callback):
+        waiting = data_client.asyncio_waiting_data
+        waiting[len(waiting)] = callback
+
+    worker = SimpleNamespace(
+        register_callback=register_callback, is_connected=lambda: False
+    )
+    monkeypatch.setattr(
+        ray_provider.client_ray,
+        "get_context",
+        lambda: SimpleNamespace(client_worker=worker),
+    )
+
+    cancelled = ray_provider.NDIFObjectRef(Future()).future()
+    waiting = ray_provider.NDIFObjectRef(Future()).future()
+    cancelled.cancel()
+
+    data_client._shutdown()
+
+    assert isinstance(waiting.exception(timeout=1), ConnectionError)
 
 
 def controller(monkeypatch, ready):

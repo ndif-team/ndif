@@ -9,10 +9,11 @@ namespace.
 
 import logging
 import threading
+from concurrent.futures import InvalidStateError
 
 import ray
 from ray.util.client import ray as client_ray
-from ray.util.client.common import ClientActorHandle, return_refs
+from ray.util.client.common import ClientActorHandle, ClientObjectRef
 
 from ..types import MODEL_KEY, REPLICA_ID
 from .base import Provider
@@ -190,7 +191,8 @@ class NDIFClientRemoteMethod:
         # Awaiting a ref waits for its id with no timeout, on the caller's event
         # loop. Wait for it here instead, bounded.
         def call():
-            ref = return_refs(client_ray.call_remote(self, *args, **kwargs))
+            (id_future,) = client_ray.call_remote(self, *args, **kwargs)
+            ref = NDIFObjectRef(id_future)
             ref.binary()
             return ref
 
@@ -207,6 +209,28 @@ class NDIFClientRemoteMethod:
 
     def _num_returns(self) -> int:
         return 1
+
+
+class NDIFObjectRef(ClientObjectRef):
+    """Ray ``ClientObjectRef`` that tolerates a wait on it having been cancelled.
+
+    Ray gives a waiter its result, or the error that the connection closed, by
+    setting it on the waiter's future, and that raises when the wait was
+    cancelled (a ``wait_for`` timeout, a cancelled task). Raised from a result,
+    it leaves the waiter registered with Ray for the life of the connection.
+    Raised when the connection closes, it ends Ray's loop over the waiters
+    (``DataClient._shutdown``), and those registered after the cancelled one are
+    never told: they wait forever.
+    """
+
+    def _on_completed(self, py_callback):
+        def deliver(data):
+            try:
+                py_callback(data)
+            except InvalidStateError:
+                pass
+
+        super()._on_completed(deliver)
 
 
 class NDIFActorHandle(ClientActorHandle):

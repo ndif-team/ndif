@@ -167,6 +167,14 @@ dispatcher's event loop freezes the dispatcher, reconnect included. `reset()` cl
 the gRPC channel before `ray.shutdown()`, which would otherwise wait on the dead head
 too. Bounded, a dead connection reads as not connected and the dispatcher reconnects.
 
+A call's ref is an `NDIFObjectRef`, a `ClientObjectRef` that tolerates a cancelled
+wait. When a connection closes, Ray tells each call still waiting on it. Stock Ray
+stops at the first one whose wait was cancelled (a `wait_for` timeout, a cancelled
+task), and the calls registered after it are never told: they wait forever. With
+`NDIFObjectRef` each of them raises the connection error, so a `Processor.start`, an
+autoscaler adding a replica and the events worker's reconcile all return when the
+connection is lost, and not only the request workers the purge cancels.
+
 The API's `src/ndif/services/api/start.sh` sets `RAY_ENABLE_AUTO_CONNECT=0`. Ray
 Client drops a session it cannot recover, and the next Ray call in that process
 would otherwise start a local Ray cluster in the API container. With auto-connect
