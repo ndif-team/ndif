@@ -159,7 +159,7 @@ a `ClientActorHandle` that skips stock Ray's first-access signature RPC — that
 unpickles annotations client-side and drags in `BackendRequestModel`, which breaks a
 slim `--no-deps` install.
 
-Every Ray Client call the queue makes is bounded at `RAY_CLIENT_TIMEOUT_S` (30 s)
+Every Ray Client call the queue makes is bounded at `RAY_CLIENT_TIMEOUT_S` (120 s)
 and raises `TimeoutError` past it: actor lookups (`get_named_actor`,
 `RayProvider.connected`'s included) and `handle.method.remote()`. Over Ray Client
 these wait with no timeout when the head dies, so unbounded, one of them on the

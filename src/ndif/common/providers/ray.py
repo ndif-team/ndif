@@ -227,8 +227,9 @@ class NDIFActorHandle(ClientActorHandle):
         return NDIFClientRemoteMethod(self, key)
 
 
-# A healthy Ray Client call takes milliseconds.
-RAY_CLIENT_TIMEOUT_S = 30
+# Most calls return in milliseconds. The first lookup of an actor class on a new
+# connection takes seconds: Ray's per-client server imports the class.
+RAY_CLIENT_TIMEOUT_S = 120
 
 
 def bounded(what: str, fn, *args, **kwargs):
