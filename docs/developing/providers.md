@@ -151,21 +151,34 @@ to the Controller (`__ray_ready__`) to return. An error from a connection the
 dispatcher has already replaced matches the patterns too, and arrives after the
 reconnect; the call is what tells it from a failure of the current connection.
 
-The module also holds `get_named_actor`, `get_controller_actor_handle` and
-`get_model_actor_handle` (actors `"Controller"` and
-`"{replica_id}:ModelActor:{model_key}"` in namespace `NDIF`); `CachedActorError`,
-raised when a dispatch lands on an actor moved to CPU (WARM); and `NDIFActorHandle`,
-a `ClientActorHandle` that skips stock Ray's first-access signature RPC — that RPC
-unpickles annotations client-side and drags in `BackendRequestModel`, which breaks a
-slim `--no-deps` install.
+The module also holds `CachedActorError`, raised when a dispatch lands on an actor
+moved to CPU (WARM), and two kinds of handle to the actors `"Controller"` and
+`"{replica_id}:ModelActor:{model_key}"` in namespace `NDIF`:
 
-Every Ray Client call the queue makes is bounded at `RAY_CLIENT_TIMEOUT_S` (120 s)
-and raises `TimeoutError` past it: actor lookups (`get_named_actor`,
-`RayProvider.connected`'s included) and `handle.method.remote()`. Over Ray Client
-these wait with no timeout when the head dies, so unbounded, one of them on the
-dispatcher's event loop freezes the dispatcher, reconnect included. `reset()` closes
-the gRPC channel before `ray.shutdown()`, which would otherwise wait on the dead head
-too. Bounded, a dead connection reads as not connected and the dispatcher reconnects.
+- `get_named_actor`, `get_controller_actor_handle` and `get_model_actor_handle`
+  return an `NDIFActorHandle`, a `ClientActorHandle` that skips stock Ray's
+  first-access signature RPC — that RPC unpickles annotations client-side and drags in
+  `BackendRequestModel`, which breaks a slim `--no-deps` install. These block their
+  caller, and are what the CLI uses.
+- `controller_handle` and `model_handle` return a `LoopActorHandle`, for the queue's
+  event loop. `await handle.method.remote(...)` looks the actor up and makes the call
+  on a thread, then awaits the result. Nothing reaches Ray before the `await`, so a
+  missing actor raises there and not where the handle is made.
+
+Every Ray Client call is bounded at `RAY_CLIENT_TIMEOUT_S` (120 s) and raises
+`TimeoutError` past it. Over Ray Client an actor lookup and the id of a call wait
+with no timeout when the head dies, so each runs on a thread that can be given up on
+(`on_thread`). The blocking handles wait for that thread where they are called
+(`bounded`): the lookup and each `.remote()` have the limit each. A `LoopActorHandle`
+waits for it without holding the event loop (`abounded`): the lookup and the call
+share one limit, and every other model's queue keeps moving meanwhile. The result of
+a call has no limit either way, since a request runs for as long as it runs.
+`RayProvider.aconnected` is `connected` for the event loop, within one limit in all.
+
+Connecting is the one thing the dispatcher still does on its event loop:
+`Dispatcher.connect` blocks until Ray is back, which keeps every other task off Ray
+while the connection is replaced. `reset()` closes the gRPC channel before
+`ray.shutdown()`, which would otherwise wait on the dead head too.
 
 A call's ref is an `NDIFObjectRef`, a `ClientObjectRef` that tolerates a cancelled
 wait. When a connection closes, Ray tells each call still waiting on it. Stock Ray

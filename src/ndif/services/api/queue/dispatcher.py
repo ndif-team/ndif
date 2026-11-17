@@ -202,7 +202,7 @@ class Dispatcher:
         # A connection error forces a reconnect unless a call on the current
         # connection returns: an error from a connection that has since been
         # replaced still arrives here, after the reconnect.
-        if not RayProvider.connected(call=has_connection_error):
+        if not await RayProvider.aconnected(call=has_connection_error):
             logger.warning(
                 f"Connection error detected "
                 f"(has_connection_error={has_connection_error}); reconnecting...",

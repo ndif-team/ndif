@@ -270,7 +270,7 @@ A `Replica` (`src/ndif/services/api/queue/replica.py`) is a
 `(model_key, replica_id)` pair plus one `asyncio.Task` pulling from the
 Processor's queue. The actor it addresses is named
 `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace, looked up through
-`get_model_actor_handle` (`src/ndif/common/providers/ray.py`). The Replica holds
+`model_handle` (`src/ndif/common/providers/ray.py`). The Replica holds
 no readiness state beyond its task: `dropped` is
 `task is None or task.done()`.
 
@@ -346,10 +346,12 @@ heap.
 
 > **One event loop for all models.** The dispatcher is a single asyncio process,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
-> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. The Ray
-> Client calls (actor lookups and `.remote()`) are the exception: they run inline,
-> bounded at 120 s each, so a dead Ray connection stalls the loop that long per call
-> and then fails into a reconnect (see [Providers](providers.md#rayprovider)). Related:
+> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray Client
+> calls block with no timeout when the head dies, so the queue makes them through
+> `controller_handle()` and `model_handle()`, which run the lookup and the call on a
+> thread and give up at 120 s (see [Providers](providers.md#rayprovider)). The one
+> blocking stretch left is `Dispatcher.connect`, on purpose: nothing else touches Ray
+> while the connection is replaced. Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged
 > replica will not provision a second no matter how deep its queue gets —
 > autoscaling requires `READY`, `ensure_started` requires an empty pool.

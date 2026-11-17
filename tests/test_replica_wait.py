@@ -229,7 +229,7 @@ def queue_replica(monkeypatch):
     monkeypatch.setattr(replica_module.asyncio, "sleep", no_sleep)
 
     def build(lookup):
-        monkeypatch.setattr(replica_module, "get_model_actor_handle", lookup)
+        monkeypatch.setattr(replica_module, "model_handle", lookup)
         replica = replica_module.Replica.__new__(replica_module.Replica)
         replica.model_key, replica.replica_id = "model", "replica"
         return replica

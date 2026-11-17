@@ -61,7 +61,7 @@ sinks installed on the driver don't exist here. Their config arrives via the act
 `RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1` — that last one matters, because the
 actor sees *every* GPU on the node and targets the assigned ones itself. The actor
 registers as `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace
-(`Deployment.name`), which is what the queue looks up (`get_model_actor_handle` in
+(`Deployment.name`), which is what the queue looks up (`model_handle` in
 `src/ndif/common/providers/ray.py`).
 
 ## Loading the model

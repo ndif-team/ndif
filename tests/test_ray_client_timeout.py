@@ -6,6 +6,9 @@ bound one froze the dispatcher until the API restarted. ``RayProvider.connected`
 has to report False in the same situation, and ``reset`` has to return, or the
 dispatcher never reconnects.
 
+The queue makes its calls from one event loop, which has to keep running while
+a call waits out the limit.
+
 A wait that was cancelled must not keep Ray from telling the other waiters that
 the connection closed, or they wait forever.
 
@@ -91,6 +94,62 @@ def test_call_returns_ref_with_its_id(monkeypatch):
     assert ray_provider.NDIFClientRemoteMethod(None, "status").remote() is ref
 
 
+def test_hung_call_on_an_event_loop_times_out_while_the_loop_runs(release, monkeypatch):
+    # Returns in the end, so that a missing limit fails this test and not hangs it.
+    monkeypatch.setattr(ray_provider.ray, "get_actor", lambda *a, **k: release.wait(10))
+
+    async def main():
+        turns = 0
+
+        async def count():
+            nonlocal turns
+            while True:
+                await asyncio.sleep(0.01)
+                turns += 1
+
+        counting = asyncio.create_task(count())
+        with pytest.raises(TimeoutError, match=r"Controller\.status\.remote\(\)"):
+            await ray_provider.controller_handle().status.remote()
+        counting.cancel()
+        return turns
+
+    assert asyncio.run(main()) > 0, "the event loop did not run during the call"
+
+
+@pytest.mark.parametrize("ray_client", [True, False])
+def test_call_on_an_event_loop_returns_its_result(monkeypatch, ray_client):
+    result = Future()
+    result.set_result("status")
+
+    def send(*args):
+        assert args == ("argument",)
+        return SimpleNamespace(future=lambda: result)
+
+    # Over Ray Client the method is NDIF's, whose ``remote`` would block again.
+    method = (
+        SimpleNamespace(send=send, remote=lambda *a: pytest.fail("blocking remote()"))
+        if ray_client
+        else SimpleNamespace(remote=send)
+    )
+    monkeypatch.setattr(
+        ray_provider.ray, "get_actor", lambda *a, **k: SimpleNamespace(status=method)
+    )
+
+    call = ray_provider.controller_handle().status.remote("argument")
+    assert asyncio.run(call) == "status"
+
+
+def test_lookup_error_on_an_event_loop_is_raised_by_the_call(monkeypatch):
+    def missing(name, namespace):
+        raise ValueError(f"Failed to look up actor with name '{name}'")
+
+    monkeypatch.setattr(ray_provider.ray, "get_actor", missing)
+    handle = ray_provider.model_handle("model", "gone")
+
+    with pytest.raises(ValueError, match="gone:ModelActor:model"):
+        asyncio.run(handle.run.remote())
+
+
 def test_cancelled_wait_does_not_keep_ray_from_telling_the_rest(monkeypatch):
     """Ray's own shutdown loop, over a cancelled waiter and one registered after it."""
     from ray.util.client.dataclient import DataClient
@@ -145,6 +204,14 @@ def test_connected_with_call_when_the_call_returns(monkeypatch):
     controller(monkeypatch, lambda timeout: True)
 
     assert ray_provider.RayProvider.connected(call=True) is True
+
+
+def test_connection_check_on_an_event_loop_gives_up_at_the_limit(release, monkeypatch):
+    monkeypatch.setattr(
+        ray_provider.RayProvider, "connected", lambda call=False: release.wait(10)
+    )
+
+    assert asyncio.run(ray_provider.RayProvider.aconnected()) is False
 
 
 @pytest.mark.parametrize(
