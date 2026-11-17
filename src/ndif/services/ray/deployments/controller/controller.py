@@ -32,6 +32,30 @@ def _import_from_path(path: str):
     return getattr(importlib.import_module(module_path), attr)
 
 
+def _checkpoint_fields(cache: dict, model_key: MODEL_KEY) -> dict:
+    """The part of a status row that describes the checkpoint itself.
+
+    From the evaluator's description when it has one. A model that names its
+    own ``size_bytes`` is placed even when the checkpoint could not be described
+    (the Hub was unreachable), so it has none: its row still stands, with the
+    repo id and revision off the key and no config or parameter count.
+    """
+    entry = cache.get(model_key)
+    if entry is None:
+        return {
+            "repo_id": key_field(model_key, "repo_id"),
+            "revision": key_field(model_key, "revision"),
+            "config": None,
+            "n_params": None,
+        }
+    return {
+        "repo_id": getattr(entry.config, "_name_or_path", None),
+        "revision": entry.revision,
+        "config": entry.config.to_json_string() if entry.config is not None else None,
+        "n_params": entry.n_params,
+    }
+
+
 @dataclass
 class DeploymentDelta:
     deployments_to_cache: List["Deployment"]
@@ -584,14 +608,14 @@ class _ControllerActor:
         for node in self.cluster.nodes.values():
             for _, _, deployment in node.iter_deployments():
                 application_name = deployment.name
-                if deployment.model_key not in self.cluster.evaluator.cache:
-                    continue
 
                 # Tracked with no live actor: the controller believes a replica
                 # is deployed while its actor is gone, which is worth surfacing.
                 status.setdefault(application_name, {"application_state": "UNHEALTHY"})
 
-                entry = self.cluster.evaluator.cache[deployment.model_key]
+                checkpoint = _checkpoint_fields(
+                    self.cluster.evaluator.cache, deployment.model_key
+                )
 
                 if deployment.actor_class is None:
                     actor_class_repr = None
@@ -611,16 +635,9 @@ class _ControllerActor:
                     "execution_timeout_seconds": deployment.execution_timeout_seconds,
                     "model_key": deployment.model_key,
                     "replica_id": deployment.replica_id,
-                    "repo_id": getattr(entry.config, "_name_or_path", None),
+                    **checkpoint,
                     "task": key_field(deployment.model_key, "task"),
                     "trust_remote_code": bool(key_field(deployment.model_key, "trust_remote_code")),
-                    "revision": entry.revision,
-                    "config": (
-                        entry.config.to_json_string()
-                        if entry.config is not None
-                        else None
-                    ),
-                    "n_params": entry.n_params,
                     "size_bytes": deployment.size_bytes,
                     "actor_class": actor_class_repr,
                     # How many GPUs this replica spans (the deploy-time `gpus`
@@ -639,32 +656,24 @@ class _ControllerActor:
                         ),
                     }
 
-                existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
+                existing_repo_ids.add(checkpoint["repo_id"])
 
             for _, _, cached_deployment in node.iter_cache():
                 application_name = cached_deployment.name
-                if cached_deployment.model_key not in self.cluster.evaluator.cache:
-                    continue
-
-                entry = self.cluster.evaluator.cache[cached_deployment.model_key]
+                checkpoint = _checkpoint_fields(
+                    self.cluster.evaluator.cache, cached_deployment.model_key
+                )
 
                 status[application_name] = {
                     "deployment_level": DeploymentLevel.WARM.name,
                     "model_key": cached_deployment.model_key,
                     "replica_id": cached_deployment.replica_id,
-                    "repo_id": getattr(entry.config, "_name_or_path", None),
+                    **checkpoint,
                     "task": key_field(cached_deployment.model_key, "task"),
                     "trust_remote_code": bool(key_field(cached_deployment.model_key, "trust_remote_code")),
-                    "revision": entry.revision,
-                    "config": (
-                        entry.config.to_json_string()
-                        if entry.config is not None
-                        else None
-                    ),
-                    "n_params": entry.n_params,
                 }
 
-                existing_repo_ids.add(getattr(entry.config, "_name_or_path", None))
+                existing_repo_ids.add(checkpoint["repo_id"])
 
         for repo_id in get_downloaded_models():
             if repo_id not in existing_repo_ids:

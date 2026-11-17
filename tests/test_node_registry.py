@@ -218,6 +218,62 @@ def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
     assert len(deployments) == 3
 
 
+def test_status_lists_a_replica_the_evaluator_could_not_describe(monkeypatch):
+    """A model that names its own ``size_bytes`` is placed with the Hub
+    unreachable, and the evaluator has nothing cached for it. It serves, so it
+    has a row: without one it reads as not deployed, and as COLD besides."""
+    key = 'stub.Model:{"repo_id": "stub/m", "revision": "abc", "task": "text-generation"}'
+    hot = SimpleNamespace(
+        name=f"zhot:ModelActor:{key}",
+        model_key=key,
+        replica_id="zhot",
+        deployment_level=SimpleNamespace(name="HOT"),
+        pinned=True,
+        dtype=None,
+        execution_timeout_seconds=None,
+        size_bytes=7,
+        actor_class=None,
+        gpus=None,
+    )
+    warm = SimpleNamespace(name=f"zwarm:ModelActor:{key}", model_key=key, replica_id="zwarm")
+
+    monkeypatch.setattr(
+        controller_mod,
+        "list_actors",
+        lambda address, limit, filters=(): [SimpleNamespace(name=hot.name, state="ALIVE")],
+    )
+    monkeypatch.setattr(controller_mod, "get_downloaded_models", lambda: ["stub/m", "other/m"])
+
+    node = SimpleNamespace(
+        iter_deployments=lambda: [(key, hot.replica_id, hot)],
+        iter_cache=lambda: [(key, warm.replica_id, warm)],
+        gpu_resources=SimpleNamespace(gpus=[]),
+        deployments={},
+    )
+    controller = SimpleNamespace(
+        cluster=SimpleNamespace(nodes={"id": node}, evaluator=SimpleNamespace(cache={})),
+        minimum_deployment_time_seconds=None,
+    )
+
+    deployments = _ControllerActor.status(controller)["deployments"]
+
+    row = deployments[hot.name]
+    assert row["application_state"] == "RUNNING"
+    assert row["deployment_level"] == "HOT"
+    assert row["model_key"] == key
+    assert row["size_bytes"] == 7
+    # Off the key, since there is no description to read them from.
+    assert (row["repo_id"], row["revision"]) == ("stub/m", "abc")
+    assert (row["config"], row["n_params"]) == (None, None)
+
+    assert deployments[warm.name]["deployment_level"] == "WARM"
+    assert deployments[warm.name]["repo_id"] == "stub/m"
+
+    # Deployed, so not also listed as a COLD checkpoint in the cache.
+    assert "stub/m" not in deployments
+    assert deployments["other/m"]["deployment_level"] == "COLD"
+
+
 def test_all_nodes_departing_empties_the_registry(monkeypatch):
     """The outage shape: every GPU node dies at once, leaving a CPU-only head.
 
