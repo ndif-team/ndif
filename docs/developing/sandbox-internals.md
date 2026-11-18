@@ -133,6 +133,22 @@ tokenizer, meta pipeline) and refills contend for the node's CPU, so the sandbox
 path scales worse with replicas than the in-process one. Turn it down on a memory-
 or core-tight node.
 
+With `NDIF_SANDBOX_FORK=1` the pool forks instead of spawning. `Pool.__init__`
+starts one `Zygote`: a runner process in `--zygote` mode (`runner.py` `zygote`)
+that does the imports and the meta-model build once and never touches CUDA. Each
+`_spawn` asks it over a control socket to fork a child bound to a new socket path;
+the child runs `_after_fork` (starts `die_with_parent`, reseeds `random`, torch and
+numpy from `os.urandom`, and creates its CUDA context) and then serves as a spawned
+runner does. Readiness is the same socket wait, about 0.5 s instead of about 4 s.
+The children are not the actor's children, so the host tracks them by pidfd
+(`ForkedProcess`). The zygote exits when its `getppid` stops being the actor pid
+it was given, and its children follow through their own `die_with_parent`. If the
+zygote is dead or the fork fails, `_spawn` prints the error and spawns. Because
+the CUDA context is created at fork time, each ready runner holds about 0.5 GiB of
+GPU memory while it waits; a pool of 7 holds about 3.5 GiB per actor. Context
+creation is largely serialized across processes, which caps throughput at about
+1.5 req/s at concurrency 4 on one GPU (Qwen3-8B, measured).
+
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and
 > lands in the Ray worker's `.err` file, never the actor's log. The visible symptom
@@ -141,16 +157,21 @@ or core-tight node.
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers` and the model key, and calls `nns.load_meta_model(model_key)`
-**before binding**, so a host that can connect is a host whose runner is warm.
-A failed build is printed to
-stderr and ignored: the map is an optimization, and without it ids resolve to
-`None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
-`getppid` once a second and `os._exit(1)`s when the runner is reparented — the
-actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
+path, `peers`, the model key and the actor's `task`, and calls
+`nns.load_meta_model(model_key, task=...)` **before binding**, so a host that can
+connect is a host whose runner is warm. A failed build is printed to stderr and
+ignored: the map is an optimization, and without it ids resolve to `None`. It then
+calls `torch.cuda.is_available()`, which the first request would otherwise pay
+for (about 170 ms in a fresh process) when `request_dtype` asks; it initializes
+the driver and creates no context. `__main__` first calls `die_with_parent` with the actor pid that `spawn` passes
+in argv, and exits at once if that is already not its parent. It then starts a
+daemon thread that polls `getppid` once a second and `os._exit(1)`s when the
+runner is reparented — the actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
 cleanup ran. It polls rather than using `PR_SET_PDEATHSIG` because that signal
 fires when the parent *thread* exits, and runners are spawned from short-lived
-threads.
+threads. The parent pid is passed in because the runner reaches this point only
+after about 2 s of imports: reading `getppid` then would record init for an actor
+that died in that window, and that runner would never exit.
 
 `Runner.serve` accepts `peers` connections (dropping `spawn`'s readiness probe via
 `_hung_up`), handles the exchange, and loops forever; a failing exchange goes to
@@ -180,7 +201,13 @@ round trip; anything else resolves to `None` rather than raising.
 
 `load_meta_model` builds the map once per runner from
 `Remotable.from_model_key(...)._remoteable_persistent_objects()` — the map the
-in-process actor builds from its real model, so the keys line up. `set_env`
+in-process actor builds from its real model, so the keys line up. Given the
+task the actor's model resolved to (`SandboxHost.open_pool` passes
+`self.model.task` when the wrapper has one; the key carries a task only when the
+client named one), the build runs with `huggingface_hub`'s `HF_HUB_OFFLINE`
+switched on for its duration and falls back to the online build if that fails.
+Online, each build makes about six unauthenticated Hub requests, and one runner
+per untrusted request exhausts the anonymous rate limit (429). `set_env`
 rebuilds it per request from the payload's `env`, because an env can reshape the
 tree (a PEFT adapter prefixes every path with `base_model.model`). Both are
 best-effort: a diverged tree degrades to ids resolving to `None`, since every
@@ -316,7 +343,7 @@ reasoning; the mechanics in brief:
 | Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
 | Host error | the forward raises on the host (a swapped value the next layer can't use, a widen that can't splice an edit) | the host's own exception propagates to the base `format_error` as itself; the runner's recv fails and its noise stays in the runner's stderr |
 | Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, and the thread is the request's own (`run_on_own_thread`). The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
-| Always | after every request | `cleanup` → `discard_sandbox` stops the request's runner; `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
+| Always | after every request | `cleanup` → `discard_sandbox` sends the request's runner SIGTERM and waits for it to exit on a background thread, so the replica is not held for the CUDA teardown (about 160 to 260 ms); `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
 
 `next_event` services `PRINT` throughout — it echoes the line as a `Status.LOG`
 response and keeps reading — so a caller waiting for a specific reply never sees
