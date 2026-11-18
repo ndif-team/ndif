@@ -1382,7 +1382,37 @@ class TestValuesFromTheRunnerLandOnThisHost:
         from ndif.services.ray.sandbox.driver import SandboxDriver
 
         source = inspect.getsource(SandboxDriver.pump)
-        assert "connection.map_location = self.model.device" in source
+        assert "connection.map_location = landing(self.model)" in source
+
+    def test_a_tensor_from_another_card_lands_on_this_host(self):
+        # The tensor-parallel case: a rank holds one card, and a value labelled
+        # with rank 0's card is rebuilt on its own. CPU-only, so the host is the
+        # CPU here.
+        import types
+
+        import torch
+
+        from ndif.services.ray.sandbox.driver import landing
+
+        host = types.SimpleNamespace(devices={torch.device("cpu")}, device=torch.device("cpu"))
+        storage = landing(host)(torch.ones(4).untyped_storage(), "cuda:1")
+
+        assert storage.device.type == "cpu"
+
+    def test_a_tensor_from_one_of_the_models_cards_stays_there(self):
+        # The device-map case: a KV cache layer from cuda:1 goes back to cuda:1,
+        # because accelerate never moves past_key_values. None is torch's "rebuild
+        # it where it was saved from", so this needs no GPU.
+        import types
+
+        import torch
+
+        from ndif.services.ray.sandbox.driver import landing
+
+        cards = {torch.device("cuda", 0), torch.device("cuda", 1)}
+        host = types.SimpleNamespace(devices=cards, device=torch.device("cuda", 0))
+
+        assert landing(host)(torch.ones(4).untyped_storage(), "cuda:1") is None
 
     def test_it_is_set_before_anything_is_read(self):
         import inspect
