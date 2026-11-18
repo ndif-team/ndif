@@ -493,6 +493,38 @@ def ipc_cache(self, *args, **kwargs):
 _original_cache = InterleavingTracer.cache
 InterleavingTracer.cache = ipc_cache
 
+
+# No backward passes on the untrusted path. The model's forward, and the graph a
+# backward would walk, run on the host, and a value read from the model arrives
+# here as a fresh leaf, so a backward gets no gradients from the model. Left to
+# itself it fails opaquely (`with loss.backward(): act.grad` dangles into an
+# OutOfOrderError naming a tensor id) or not at all (a bare `loss.backward()`
+# leaves every `.grad` None). Refuse it at the call and say why.
+NO_BACKWARD = (
+    "Backward passes need trusted access. This request is untrusted, so it ran "
+    "in a sandbox without the model's computation graph, where gradients do not "
+    "flow back into the model. To run backward passes, ask the maintainers of "
+    "this NDIF server for trusted access."
+)
+
+
+def refusal():
+    # A new function per name, not one shared: torch._dynamo keys its rules by
+    # object, gives `torch.autograd.backward` and `torch.autograd.grad` different
+    # ones, and asserts when one object turns up under both. transformers imports
+    # dynamo mid-request.
+    def refuse_backward(*args, **kwargs):
+        raise NotImplementedError(NO_BACKWARD)
+
+    return refuse_backward
+
+
+# `Tensor.backward` is where nnsight's `with loss.backward():` starts too, so this
+# replaces nnsight's patch as well; the other two are torch's direct entry points.
+torch.Tensor.backward = refusal()
+torch.autograd.backward = refusal()
+torch.autograd.grad = refusal()
+
 # This runner's weightless model, and the persistent-id map built from it. The
 # map is what `IPCCloudUnpickler` resolves a payload's ids against; the model is
 # kept because it is the thing that produced the map.

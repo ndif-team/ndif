@@ -349,9 +349,10 @@ These are deliberately deferred (correctness-first, optimize later):
 - **Device placement is host-side only** — assembled inputs and ad-hoc `CALL` args
   are moved onto the model's device on the host; activations otherwise cross as-is,
   which assumes the runner shares the host's GPU (true on a single box).
-- **Gradients** — `.grad` locations raise `OutOfOrderError` over IPC: the backward
-  runs on the host after the forward, and the runner's worker is parked on a
-  location the model has already gone past. `TestRemoteGradients` fails under
+- **Gradients** — the runner refuses every backward pass (`Tensor.backward`,
+  `torch.autograd.backward`, `torch.autograd.grad`) with `nns.NO_BACKWARD`,
+  pointing the user to trusted access: the model's graph is on the host, so a
+  backward here gets no gradients from it. `TestRemoteGradients` fails under
   `-p conftest_untrusted`; it is the only part of the suite that does.
 - **exec_ms spans the whole run** — `ExecutionTimeMetric` / `GPUMemMetric` /
   `RequestResponseSizeMetric`, the structured `event()` logs, and the

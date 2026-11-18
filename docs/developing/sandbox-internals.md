@@ -192,7 +192,10 @@ and the host never does: `Mediator.event` → `ipc_event` (park untagged);
 `Barrier.__call__` → `ipc_barrier`; every callable on `IPCEnvoy` grafted onto
 `Envoy` itself (the tracer's root is a model-wrapper subclass that *inherits*
 `interleave`); `Envoy.source` → `ipc_module_source` and `SourceEnvoy.source` →
-`ipc_recursive_source`; and `InterleavingTracer.cache` → `ipc_cache`.
+`ipc_recursive_source`; `InterleavingTracer.cache` → `ipc_cache`; and
+`Tensor.backward`, `torch.autograd.backward` and `torch.autograd.grad` → a
+`refusal()` each (no backward passes, see
+[below](#what-the-untrusted-path-cannot-do)).
 
 ### The actor's seams
 
@@ -358,9 +361,14 @@ runs on the host after the forward. So on the untrusted path today:
 - **Weight writes** land on the meta copy and are a no-op on the host's model.
 - **Training loops** over parameters (an optimizer stepping `model.parameters()`)
   update meta tensors and are a no-op.
-- **Gradients** (`.grad` inside `with loss.backward():`) are unsupported: the
-  runner's worker is parked on a location the model has already passed, and the
-  request fails with `OutOfOrderError`.
+- **Backward passes** are refused. A value read from the model arrives in the
+  runner as a fresh leaf, so a backward gets no gradients from the model: left
+  alone, `with loss.backward(): act.grad` dangles into an `OutOfOrderError`, and
+  a bare `loss.backward()` finishes with `.grad` `None`. So the runner replaces
+  `Tensor.backward`, `torch.autograd.backward` and `torch.autograd.grad` with a
+  function that raises `NotImplementedError(NO_BACKWARD)`
+  (`src/ndif/services/ray/sandbox/nns.py`), which tells the user to ask for
+  trusted access. That includes a backward that never touches the model.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
   mediator in the runner, whose `handle` never runs, so only the generic writeback
   of the raw value reaches the host.
