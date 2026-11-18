@@ -165,7 +165,7 @@ moved to CPU (WARM), and two kinds of handle to the actors `"Controller"` and
   on a thread, then awaits the result. Nothing reaches Ray before the `await`, so a
   missing actor raises there and not where the handle is made.
 
-Every Ray Client call is bounded at `RAY_CLIENT_TIMEOUT_S` (120 s) and raises
+Every Ray Client call is bounded at `RAY_CLIENT_TIMEOUT_S` (60 s) and raises
 `TimeoutError` past it. Over Ray Client an actor lookup and the id of a call wait
 with no timeout when the head dies, so each runs on a thread that can be given up on
 (`on_thread`). The blocking handles wait for that thread where they are called

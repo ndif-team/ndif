@@ -349,7 +349,7 @@ heap.
 > queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray Client
 > calls block with no timeout when the head dies, so the queue makes them through
 > `controller_handle()` and `model_handle()`, which run the lookup and the call on a
-> thread and give up at 120 s (see [Providers](providers.md#rayprovider)). The one
+> thread and give up at 60 s (see [Providers](providers.md#rayprovider)). The one
 > blocking stretch left is `Dispatcher.connect`, on purpose: nothing else touches Ray
 > while the connection is replaced. Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged

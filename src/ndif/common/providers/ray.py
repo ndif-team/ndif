@@ -269,7 +269,7 @@ class NDIFActorHandle(ClientActorHandle):
 
 # Most calls return in milliseconds. The first lookup of an actor class on a new
 # connection takes seconds: Ray's per-client server imports the class.
-RAY_CLIENT_TIMEOUT_S = 120
+RAY_CLIENT_TIMEOUT_S = 60
 
 
 def on_thread(fn, *args, **kwargs) -> Future:
