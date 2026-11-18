@@ -22,6 +22,7 @@ from ndif.common.schema.request import BackendRequestModel
 from ndif.common.schema.response import Status
 from ndif.services.ray.deployments.modeling.util import (
     alloc_shortfall,
+    get_downloaded_models,
     is_oom,
     kill_thread,
     request_meta,
@@ -314,6 +315,46 @@ class TestAllocShortfall:
             message_error("Tried to allocate 2.00 GiB. GPU 7 has ..."),
             {0: self.GB},
         ) is None
+
+
+class TestGetDownloadedModels:
+    """Which HF cache entries show up as COLD models."""
+
+    @pytest.fixture
+    def cache(self, tmp_path, monkeypatch):
+        import huggingface_hub.constants
+
+        monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+        return tmp_path
+
+    @staticmethod
+    def add(cache, name, *files):
+        snapshot = cache / name / "snapshots" / "abc123"
+        snapshot.mkdir(parents=True)
+        for file in files:
+            (snapshot / file).touch()
+
+    def test_lists_models_with_weights(self, cache):
+        self.add(cache, "models--meta-llama--Llama-3.1-8B", "model.safetensors")
+        self.add(cache, "models--openai-community--gpt2", "model.safetensors")
+
+        assert sorted(get_downloaded_models()) == [
+            "meta-llama/Llama-3.1-8B",
+            "openai-community/gpt2",
+        ]
+
+    def test_skips_stubs_datasets_and_repos_without_snapshots(self, cache):
+        self.add(cache, "models--org--stub", "tokenizer.config")
+        self.add(cache, "datasets--mib-bench--ioi", "data.parquet")
+        (cache / "models--org--partial" / "blobs").mkdir(parents=True)
+        (cache / ".locks").mkdir()
+
+        assert get_downloaded_models() == []
+
+    def test_a_missing_cache_lists_nothing(self, cache):
+        cache.rmdir()
+
+        assert get_downloaded_models() == []
 
 
 class TestIsOom:

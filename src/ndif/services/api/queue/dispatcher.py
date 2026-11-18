@@ -114,17 +114,20 @@ class Dispatcher:
             STATUS_KEY, STATUS_REQUESTED_KEY, ENV_KEY, ENV_REQUESTED_KEY
         )
 
-        while not RayProvider.connected():
+        # Reset before the first check. This runs at startup, where there is no
+        # connection, and after handle_errors has found the connection dead,
+        # where checking it again would wait out the limit a second time.
+        while True:
             try:
                 RayProvider.reset()
                 RayProvider.connect()
+                if RayProvider.connected():
+                    break
             except Exception:
                 logger.exception("Error connecting to Ray")
-                # Synchronous on purpose: connect() runs before the event loop
-                # starts (from __init__), so this can't be an async sleep.
-                import time
-
-                time.sleep(1)
+            # Synchronous on purpose: connect() runs before the event loop
+            # starts (from __init__), so this can't be an async sleep.
+            time.sleep(1)
 
         RedisProvider.sync_client.set("ray:connected", "1")
         logger.info("Connected to Ray")
@@ -181,7 +184,7 @@ class Dispatcher:
                 )
 
     async def handle_errors(self) -> None:
-        """Drain the error queue; on a connection error, purge and reconnect.
+        """Drain the error queue; if the Ray connection is gone, purge and reconnect.
 
         With per-replica workers, individual request errors are already
         surfaced to the user and drift is recovered inside the worker; the
@@ -191,21 +194,17 @@ class Dispatcher:
             return
 
         errors: list[tuple[str, Exception]] = []
-        has_connection_error = False
-
         while not self.error_queue.empty():
-            name, error = self.error_queue.get_nowait()
-            errors.append((name, error))
-            if RayProvider.is_connection_error(error):
-                has_connection_error = True
+            errors.append(self.error_queue.get_nowait())
 
-        if has_connection_error or not RayProvider.connected():
+        # Whatever the error says, the connection is judged by a lookup on it:
+        # an error from a connection that has since been replaced still arrives
+        # here, after the reconnect.
+        if not await RayProvider.aconnected():
             logger.warning(
-                f"Connection error detected "
-                f"(has_connection_error={has_connection_error}); reconnecting...",
+                "Connection error detected; reconnecting...",
                 extra={
                     "event": "ray_reconnect",
-                    "has_connection_error": has_connection_error,
                     "purged_processors": len(self.processors),
                 },
             )
@@ -224,7 +223,6 @@ class Dispatcher:
                 extra={
                     "component_name": name,
                     "error_type": error_type_name(error),
-                    "is_connection_error": RayProvider.is_connection_error(error),
                 },
             )
 

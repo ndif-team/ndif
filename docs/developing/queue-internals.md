@@ -80,10 +80,9 @@ sleeping autoscaling task.
 
 `Dispatcher.handle_errors` drains the shared `asyncio.Queue` of
 `(name, exception)` tuples that Processors and Replicas push onto. Its only real
-decision is connection-level: if any error matches
-`RayProvider.is_connection_error` (a substring match against
-`CONNECTION_ERROR_PATTERNS`) *or* `RayProvider.connected()` is now False, it
-purges every Processor with a user-facing message and reconnects. Per-request
+decision is connection-level: when an error arrives it checks the connection
+(`RayProvider.aconnected`), and if the check fails it purges every Processor with
+a user-facing message and reconnects. Per-request
 errors have already been reported to their users by the Replica; the dispatcher
 just logs them.
 
@@ -270,7 +269,7 @@ A `Replica` (`src/ndif/services/api/queue/replica.py`) is a
 `(model_key, replica_id)` pair plus one `asyncio.Task` pulling from the
 Processor's queue. The actor it addresses is named
 `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace, looked up through
-`get_model_actor_handle` (`src/ndif/common/providers/ray.py`). The Replica holds
+`model_handle` (`src/ndif/common/providers/ray.py`). The Replica holds
 no readiness state beyond its task: `dropped` is
 `task is None or task.done()`.
 
@@ -346,7 +345,12 @@ heap.
 
 > **One event loop for all models.** The dispatcher is a single asyncio process,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
-> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Related:
+> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray Client
+> calls block with no timeout when the head dies, so the queue makes them through
+> `controller_handle()` and `model_handle()`, which run the lookup and the call on a
+> thread and give up at 60 s (see [Providers](providers.md#rayprovider)). The one
+> blocking stretch left is `Dispatcher.connect`, on purpose: no task starts a Ray
+> call while the connection is replaced. It has no time limit of its own. Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged
 > replica will not provision a second no matter how deep its queue gets —
 > autoscaling requires `READY`, `ensure_started` requires an empty pool.

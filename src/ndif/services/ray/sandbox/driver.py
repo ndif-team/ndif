@@ -56,6 +56,35 @@ class RunnerError(Exception):
         self.cause_type = cause_type
 
 
+def landing(model) -> Callable:
+    """``torch.load``'s ``map_location`` for what a runner sends this host.
+
+    A tensor sent from a GPU this model's weights are on is rebuilt on that GPU.
+    Anything else (a CPU tensor the block made, another rank's card) is rebuilt on
+    ``model.device``.
+
+    The first half matters for a model a device map spreads over several cards.
+    Every value a block reads is written back to the host, and a read of
+    ``model.output`` carries the whole KV cache. Accelerate's hooks move an
+    activation back to the card of the module that takes it next, but they never
+    move a cache. So a cache rebuilt on ``model.device`` stays there, and the next
+    forward's ``torch.cat`` in the first layer on another card fails with "Expected
+    all tensors to be on the same device".
+
+    On a host with one card, which is every tensor-parallel rank, both halves
+    rebuild on ``model.device``.
+    """
+    cards = {str(device) for device in model.devices if device.type == "cuda"}
+    home = str(model.device)
+
+    def land(storage, location):
+        if location in cards:
+            return None  # torch then rebuilds it where it was saved from
+        return torch.serialization.default_restore_location(storage, home)
+
+    return land
+
+
 def describe(compiled) -> dict:
     """The picklable description of a ``Compiled``: the operation names, each
     one's line, and the forward's source text — what a runner builds an
@@ -312,12 +341,12 @@ class SandboxDriver:
                 formatted (tracebacks don't survive serialization).
         """
         # Set once, here, because this is where a host takes charge of a runner:
-        # every tensor the runner sends is then rebuilt straight onto this host's
-        # card. It matters because the processes on this socket do not share a
-        # device -- one runner serves a whole tensor-parallel group, so a tensor
-        # rebuilt from its bytes would otherwise arrive on the sender's card and be
-        # mixed into a different rank's forward.
-        connection.map_location = self.model.device
+        # every tensor the runner sends is then rebuilt straight onto one of this
+        # host's cards (`landing` says which). It matters because the processes on
+        # this socket do not share a device -- one runner serves a whole
+        # tensor-parallel group, so a tensor rebuilt from its bytes would otherwise
+        # arrive on the sender's card and be mixed into a different rank's forward.
+        connection.map_location = landing(self.model)
         while True:
             name, rest, kwargs = self.next_event(connection)
             if name == "INTERLEAVE":
@@ -336,7 +365,7 @@ class SandboxDriver:
         untangle stdout the user code emitted mid-run. An EXCEPTION carries the
         runner's already-formatted traceback text.
 
-        Tensors arrive already on this host's device: `pump` sets the connection's
+        Tensors arrive already on this host's cards: `pump` sets the connection's
         ``map_location``, so they are rebuilt there rather than relocated after the
         fact. That is worth doing in the deserializer instead of here — a walk over
         the message afterwards allocates on the sender's card first, which under

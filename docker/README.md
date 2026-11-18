@@ -20,7 +20,7 @@ You need an NVIDIA GPU, a driver that supports CUDA 12.6 or newer, and the
 (`docker run --gpus all` has to work).
 
 ```bash
-docker run -d --name ndif --gpus all --shm-size 4g \
+docker run -d --name ndif --gpus all --shm-size 16g \
     -p 8001:8001 -p 9000:9000 \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
     -e HF_TOKEN \
@@ -129,7 +129,7 @@ some. NDIF sizes placement from each GPU's total memory, so on a shared machine
 give it cards nobody else is using.
 
 Shared memory: Ray's object store lives in `/dev/shm`. Docker's default 64 MB
-is far too small; `--shm-size 4g` is a floor, go higher for large models.
+is far too small; use `--shm-size 16g`.
 
 The full variable list, with the file that reads each one, is
 [docs/reference/env-vars.md](https://github.com/ndif-team/ndif/blob/main/docs/reference/env-vars.md).
@@ -137,7 +137,7 @@ The full variable list, with the file that reads each one, is
 ## Running the admin dashboard
 
 ```bash
-docker run -d --name ndif --gpus all --shm-size 4g \
+docker run -d --name ndif --gpus all --shm-size 16g \
     -p 8001:8001 -p 9000:9000 -p 8081:8081 \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
     -e NDIF_SERVICE="all dashboard" \
