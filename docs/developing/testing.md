@@ -33,6 +33,7 @@ over the socket, compared against the local run; no Ray:
 | `test_sandbox_error_masking.py` | errors crossing the sandbox as themselves (`OutOfOrderError`, the host's own exception — never `BrokenPipeError`), and telemetry's `error_type` naming the real type on both paths (the `report`-wiring tests also need `ray` importable) |
 | `test_sandbox_recursive_source.py` | recursive `.source` over the socket, against the local run |
 | `test_sandbox_adhoc_calls.py` | an ad-hoc module call (`hook=False` and `hook=True`) leaving the module's real occurrence alone |
+| `test_sandbox_gradients.py` | every form of backward pass refused with the trusted-access message |
 
 **Offline** — no model, no server, no GPU:
 
