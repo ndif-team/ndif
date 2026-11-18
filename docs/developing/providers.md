@@ -144,12 +144,12 @@ to 6379 with a warning (`RayProvider.get_host_port`).
 TCP connect to the address (`src/ndif/common/providers/util.py`
 `verify_connection`, 2 s) **and** that the `Controller` actor exists in the `NDIF`
 namespace, so the dispatcher's connect loop waits for a serving control plane.
-`RayProvider.is_connection_error` string-matches an exception against
-`CONNECTION_ERROR_PATTERNS`; a match makes the dispatcher purge and reconnect
-unless `RayProvider.connected(call=True)` holds. `call=True` also waits for a call
-to the Controller (`__ray_ready__`) to return. An error from a connection the
-dispatcher has already replaced matches the patterns too, and arrives after the
-reconnect; the call is what tells it from a failure of the current connection.
+Any error in the dispatcher's queue makes it run this check, and it purges and
+reconnects only if the check fails. The check does not read the error: one from a
+connection the dispatcher has already replaced arrives after the reconnect, and the
+lookup then succeeds on the new connection. Nor does it call the Controller, which
+is busiest just after a head is replaced: the lookup goes to the head over the
+channel every call uses, and is answered without it.
 
 The module also holds `CachedActorError`, raised when a dispatch lands on an actor
 moved to CPU (WARM), and two kinds of handle to the actors `"Controller"` and
@@ -165,8 +165,8 @@ moved to CPU (WARM), and two kinds of handle to the actors `"Controller"` and
   on a thread, then awaits the result. Nothing reaches Ray before the `await`, so a
   missing actor raises there and not where the handle is made.
 
-Every Ray Client call is bounded at `RAY_CLIENT_TIMEOUT_S` (60 s) and raises
-`TimeoutError` past it. Over Ray Client an actor lookup and the id of a call wait
+Every lookup and call through these handles is bounded at `RAY_CLIENT_TIMEOUT_S`
+(60 s) and raises `TimeoutError` past it. Over Ray Client an actor lookup and the id of a call wait
 with no timeout when the head dies, so each runs on a thread that can be given up on
 (`on_thread`). The blocking handles wait for that thread where they are called
 (`bounded`): the lookup and each `.remote()` have the limit each. A `LoopActorHandle`
@@ -176,17 +176,20 @@ a call has no limit either way, since a request runs for as long as it runs.
 `RayProvider.aconnected` is `connected` for the event loop, within one limit in all.
 
 Connecting is the one thing the dispatcher still does on its event loop:
-`Dispatcher.connect` blocks until Ray is back, which keeps every other task off Ray
-while the connection is replaced. `reset()` closes the gRPC channel before
-`ray.shutdown()`, which would otherwise wait on the dead head too.
+`Dispatcher.connect` blocks until Ray is back, so no task starts a Ray call while
+the connection is replaced. `ray.init` has no limit: a head that accepts the
+connection and then stalls holds the dispatcher there until that head goes.
+`reset()` closes the gRPC channel before `ray.shutdown()`, which would otherwise
+wait on the dead head too; the head is then not told to drop the session, and keeps
+its per-client server for Ray's 30 s grace period.
 
 A call's ref is an `NDIFObjectRef`, a `ClientObjectRef` that tolerates a cancelled
 wait. When a connection closes, Ray tells each call still waiting on it. Stock Ray
 stops at the first one whose wait was cancelled (a `wait_for` timeout, a cancelled
 task), and the calls registered after it are never told: they wait forever. With
-`NDIFObjectRef` each of them raises the connection error, so a `Processor.start`, an
-autoscaler adding a replica and the events worker's reconcile all return when the
-connection is lost, and not only the request workers the purge cancels.
+`NDIFObjectRef` each of them raises the connection error, so an autoscaler adding a
+replica and the events worker's reconcile return when the connection is lost. The
+purge itself cancels the request workers and a `Processor.start` under way.
 
 The API's `src/ndif/services/api/start.sh` sets `RAY_ENABLE_AUTO_CONNECT=0`. Ray
 Client drops a session it cannot recover, and the next Ray call in that process

@@ -166,11 +166,9 @@ An OOM *during* a request is a different case: the weights fit and the
 activations didn't. The user gets a CUDA traceback, the replica stays healthy, and
 the fix is their batch, sequence length or saved activations — or more padding.
 
-The dispatcher's error queue makes one decision: a connection-level failure
-purges every queue and reconnects. That is an error matching
-`src/ndif/common/providers/ray.py` `RayProvider.is_connection_error` while a call
-to the Controller does not return (`RayProvider.connected` with `call=True`), or
-`RayProvider.connected()` turning false.
+The dispatcher's error queue makes one decision: when an error arrives it checks
+the Ray connection (`src/ndif/common/providers/ray.py` `RayProvider.connected`),
+and a failed check purges every queue and reconnects.
 Everything else is logged and dropped, because the replica already told the user —
 an isolated `request errored during execution` needs no action.
 

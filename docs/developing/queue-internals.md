@@ -80,10 +80,9 @@ sleeping autoscaling task.
 
 `Dispatcher.handle_errors` drains the shared `asyncio.Queue` of
 `(name, exception)` tuples that Processors and Replicas push onto. Its only real
-decision is connection-level: if any error matches
-`RayProvider.is_connection_error` (a substring match against
-`CONNECTION_ERROR_PATTERNS`) *or* `RayProvider.connected()` is now False, it
-purges every Processor with a user-facing message and reconnects. Per-request
+decision is connection-level: when an error arrives it checks the connection
+(`RayProvider.aconnected`), and if the check fails it purges every Processor with
+a user-facing message and reconnects. Per-request
 errors have already been reported to their users by the Replica; the dispatcher
 just logs them.
 
@@ -350,8 +349,8 @@ heap.
 > calls block with no timeout when the head dies, so the queue makes them through
 > `controller_handle()` and `model_handle()`, which run the lookup and the call on a
 > thread and give up at 60 s (see [Providers](providers.md#rayprovider)). The one
-> blocking stretch left is `Dispatcher.connect`, on purpose: nothing else touches Ray
-> while the connection is replaced. Related:
+> blocking stretch left is `Dispatcher.connect`, on purpose: no task starts a Ray
+> call while the connection is replaced. It has no time limit of its own. Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged
 > replica will not provision a second no matter how deep its queue gets —
 > autoscaling requires `READY`, `ensure_started` requires an empty pool.

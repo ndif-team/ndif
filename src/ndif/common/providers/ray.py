@@ -101,68 +101,41 @@ class RayProvider(Provider):
         ray.init(logging_level="error", address=cls.ray_url, namespace=NAMESPACE)
 
     @classmethod
-    def connected(cls, call: bool = False) -> bool:
+    def connected(cls) -> bool:
         """Whether the cluster is reachable and the Controller actor exists.
 
-        ``call`` also waits for a call to the Controller to return, over the
-        lookup, ``.remote()`` and result path a request takes.
+        The lookup goes to the head over the channel every call uses, and does
+        not wait on the Controller itself, which may be busy.
         """
-        connected = ray.is_initialized() and cls.is_listening()
-
-        if connected:
-            try:
-                handle = get_named_actor("Controller", namespace=NAMESPACE)
-                if call:
-                    ready = handle.__ray_ready__.remote()
-                    ready.future().result(RAY_CLIENT_TIMEOUT_S)
-            except Exception:
+        try:
+            # On a new connection ray.is_initialized() asks the head, and raises
+            # if the head has gone.
+            if not (ray.is_initialized() and cls.is_listening()):
                 return False
-            else:
-                return True
-
-        return False
+            get_named_actor("Controller", namespace=NAMESPACE)
+        except Exception:
+            return False
+        return True
 
     @classmethod
-    async def aconnected(cls, call: bool = False) -> bool:
+    async def aconnected(cls) -> bool:
         """``connected``, off the event loop and within one limit in all."""
         try:
-            return await abounded("the connection check", cls.connected, call)
+            return await abounded("the connection check", cls.connected)
         except TimeoutError:
             return False
 
     @classmethod
     def reset(cls):
         # ray.shutdown() waits for the client's data thread before it closes the
-        # gRPC channel, and on a dead head that thread never finishes. Closing
-        # the channel first ends it. Marked as shutting down before that, or
+        # gRPC channel, and on a dead head that thread can take minutes to give
+        # up. Closing the channel first ends it. Marked as shutting down before that, or
         # Ray's threads take the closed channel for a fault and try to reconnect.
         worker = client_ray.get_context().client_worker
         if worker is not None and worker.channel is not None:
             worker._in_shutdown = True
             worker.channel.close()
         ray.shutdown()
-
-    # Error patterns that indicate a broken Ray connection.
-    CONNECTION_ERROR_PATTERNS = (
-        "Ray client has already been disconnected",
-        "Unrecoverable error in data channel",
-        "_MultiThreadedRendezvous",
-        "Failed to reconnect",
-        "session that has already been cleaned up",
-        "Channel for client",
-        "grpc._channel",
-        "Failed during this or a previous request",
-    )
-
-    @classmethod
-    def is_connection_error(cls, error: Exception) -> bool:
-        """Whether ``error`` indicates the Ray connection itself is broken.
-
-        Used reactively: when an error occurs, the dispatcher checks this and
-        forces a reconnect if it matches.
-        """
-        error_str = str(error)
-        return any(pattern in error_str for pattern in cls.CONNECTION_ERROR_PATTERNS)
 
 
 RayProvider.from_env()
@@ -275,8 +248,9 @@ RAY_CLIENT_TIMEOUT_S = 60
 def on_thread(fn, *args, **kwargs) -> Future:
     """Run ``fn`` on a daemon thread.
 
-    Over Ray Client, actor lookups and calls wait on futures with no timeout,
-    so one in flight when the head dies never returns. On a thread of its own
+    Over Ray Client, actor lookups and calls wait on futures with no timeout:
+    one in flight when the head dies waits until Ray gives up on the
+    connection, and for good if Ray then fails to tell it. On a thread of its own
     it can be given up on: the thread is abandoned with whatever it holds (a
     ref dropped elsewhere would wait for its id too).
     """

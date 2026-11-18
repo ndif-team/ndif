@@ -83,6 +83,7 @@ class Processor:
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
+        self.start_task: Optional[asyncio.Task[None]] = None
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
             self.autoscaling_loop()
@@ -155,7 +156,7 @@ class Processor:
         if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
             return
         self.status = ProcessorStatus.PROVISIONING
-        asyncio.create_task(self.start())
+        self.start_task = asyncio.create_task(self.start())
 
     def mark_idle(self) -> None:
         """Drop back to UNINITIALIZED once the pool has drained to nothing.
@@ -493,6 +494,11 @@ class Processor:
                 "Critical server error occurred. "
                 "Please try again later. Sorry for the inconvenience."
             )
+
+        # A start() from before this purge would go on to register its replicas,
+        # or to purge again when it fails, under whatever starts next.
+        if self.start_task is not asyncio.current_task() and self.start_task:
+            self.start_task.cancel()
 
         await self.reply(description=message, status=Status.ERROR)
         self.queue.clear()
