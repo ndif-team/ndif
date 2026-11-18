@@ -30,7 +30,7 @@ from ray.exceptions import ActorDiedError, ActorUnavailableError
 from ....common.providers.ray import (
     CachedActorError,
     controller_handle,
-    get_model_actor_handle,
+    model_handle,
 )
 from ....common.schema import Status
 from ....common.schema.controller import DeployResponse, DeploymentConfig
@@ -164,7 +164,7 @@ class Replica:
         """
         while True:
             try:
-                handle = get_model_actor_handle(self.model_key, self.replica_id)
+                handle = model_handle(self.model_key, self.replica_id)
                 await handle.__ray_ready__.remote()
                 return
             except ActorUnavailableError:
@@ -219,7 +219,7 @@ class Replica:
         self.current_started_at = time.time()
 
         try:
-            handle = get_model_actor_handle(self.model_key, self.replica_id)
+            handle = model_handle(self.model_key, self.replica_id)
 
             await request.arespond(
                 Status.DISPATCHED,
@@ -377,7 +377,7 @@ class Replica:
             # cancel() is a no-op before the actor reaches execute(); the
             # worker cancel below covers that.
             try:
-                handle = get_model_actor_handle(self.model_key, self.replica_id)
+                handle = model_handle(self.model_key, self.replica_id)
                 await asyncio.wait_for(handle.cancel.remote(), 5)
             except Exception as e:
                 event(
