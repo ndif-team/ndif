@@ -522,7 +522,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "max by (model_key) (max_over_time({service=\"api\", logger=\"ndif.queue.processor\", environment=~\"${environment:regex}\", model_key=~\"${model_key:regex}\"} | json | stage=`queued` | unwrap queue_size [$__interval]))",
+          "expr": "max by (model_key) (max_over_time({service=\"dispatcher\", logger=\"ndif.queue.processor\", environment=~\"${environment:regex}\", model_key=~\"${model_key:regex}\"} | json | stage=`queued` | unwrap queue_size [$__interval]))",
           "queryType": "range",
           "legendFormat": "{{model_key}}",
           "refId": "A"

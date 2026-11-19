@@ -67,9 +67,14 @@ So when the controller creates a model actor it exports its own Redis,
 object-store, Loki and Influx settings into the actor's Ray `runtime_env`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
 `_provider_runtime_env`, applied in `Deployment.create`), plus
-`NDIF_SERVICE=model` so the actor's telemetry attributes correctly.
+`NDIF_SERVICE=model` so the actor's telemetry attributes correctly. The head's
+`start.sh` launches the dispatcher actor the same way, with
+`NDIF_SERVICE=dispatcher` (`src/ndif/services/ray/queue/dispatcher.py` `app`);
+its queue and autoscaling settings are not exported, so it reads them from the
+head node's own environment.
 
-**You configure model actors by configuring the `ray` service** on the head.
+**You configure model actors and the dispatcher by configuring the `ray`
+service** on the head.
 There is no separate actor environment, and a value set on the head reaches
 actors placed on any node.
 
@@ -78,7 +83,7 @@ actors placed on any node.
 | Variable | Dev default | Why it must change |
 |---|---|---|
 | `NDIF_REDIS_URL` | `redis://localhost:6379` | Must name the real Redis host from *every* service. Inside the `ray` container nothing listens on `localhost:6379`. |
-| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | The API/dashboard/CLI client address of the head node. |
+| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | The dashboard/CLI client address of the head node. |
 | `NDIF_RAY_HEAD_ADDRESS` | *(empty)* | Empty ⇒ this node starts a head. Every worker node sets it to the head's `HOST:6385`. |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | The endpoint the *server* uploads through. Empty means real AWS S3 for `NDIF_OBJECT_STORE_REGION`. |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | *(empty → the above)* | The endpoint presigned URLs are *signed* with. Must be reachable by clients. |
@@ -156,8 +161,8 @@ pyyaml, boto3); each role's dependencies are an extra in `pyproject.toml`:
 
 | Extra | Unlocks |
 |---|---|
-| `api` | `ndif start api` — the HTTP surface and the queue dispatcher. |
-| `ray` | A Ray node and the model actors: transformers, accelerate, zstandard for compressed payloads, peft for per-request adapters. |
+| `api` | `ndif start api` — the HTTP surface. |
+| `ray` | A Ray node, the queue dispatcher and the model actors: transformers, accelerate, zstandard for compressed payloads, peft for per-request adapters. |
 | `dashboard` | `ndif start dashboard`. Its reconcile cron also needs `ray`; the monitor's probes of PEFT/VLM checkpoints need `peft` (in `ray`) and `torchvision`, which the Dockerfile installs with torch. |
 | `metrics` | Loki and InfluxDB shipping. Without it both providers fail open. |
 | `postgres` | API-key auth (`asyncpg`). |

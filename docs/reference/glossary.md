@@ -52,10 +52,11 @@ replicas are returned by `get_deployment`. See
 
 ## Dispatcher
 
-The single process, spawned by the gunicorn master, that pops requests from the
+The single detached Ray actor, on the head node, that pops requests from the
 Redis queue and routes each to its model's **Processor**
-(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher`). It is the only API-side
-holder of a Ray client, which is why `/status` and `/env` go through Redis caches.
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher`). The API has no
+connection to Ray, which is why `/status` and `/env` go through Redis caches the
+dispatcher refreshes.
 See [queue-internals.md](../developing/queue-internals.md).
 
 ## Evaluator
@@ -152,8 +153,8 @@ memory, one per Processor. See
 
 ## Replica
 
-One serving instance of a model: on the Ray side a **Deployment** and its model
-actor; on the API side a `Replica` (`src/ndif/services/ray/queue/replica.py`
+One serving instance of a model: to the controller a **Deployment** and its model
+actor; to the queue a `Replica` (`src/ndif/services/ray/queue/replica.py`
 `Replica`) whose task dispatches to it. `DeploymentConfig.replicas` is additive.
 See [queue-internals.md](../developing/queue-internals.md).
 

@@ -1,18 +1,20 @@
-"""Ray control-plane provider for the queue.
+"""Ray control-plane provider.
 
-The queue touches Ray only through this module: the connection lifecycle
-(RayProvider) and lookups for the controller actor and per-replica model
-actors. Actor names mirror the controller's: the controller is ``Controller``
-and a replica is ``{replica_id}:ModelActor:{model_key}``, both in the ``NDIF``
-namespace.
+Lookups for the controller actor and per-replica model actors, for two kinds of
+caller. The queue runs inside the cluster, as the ``Dispatcher`` actor, and
+uses Ray's own handles (``controller_handle``, ``model_handle``). The CLI and
+the dashboard's reconcile job connect from outside over Ray Client
+(``ray://``), and get the connection lifecycle (``RayProvider``) and handles
+whose lookups and calls are bounded.
+
+Actor names mirror the controller's: the controller is ``Controller``, the
+dispatcher is ``Dispatcher`` and a replica is
+``{replica_id}:ModelActor:{model_key}``, all in the ``NDIF`` namespace.
 """
 
-import asyncio
-import functools
 import logging
 import threading
-from concurrent.futures import Future, InvalidStateError, wait
-from types import SimpleNamespace
+from concurrent.futures import Future, wait
 
 import ray
 from ray.util.client import ray as client_ray
@@ -33,28 +35,20 @@ class CachedActorError(Exception):
     The actor process is still alive, but it is no longer serving on GPU, so a
     dispatch must be treated the same as hitting an evicted/dead replica.
 
-    **Do not catch this by type on the caller's side.** Raised inside the actor,
-    it reaches the caller wrapped in a ``ray.exceptions.RayTaskError``, and the
-    dual RayTaskError-plus-cause class that would satisfy
-    ``isinstance(e, CachedActorError)`` is only built when Ray applies
-    ``as_instanceof_cause()`` — which it does not over Ray Client, the way the
-    dispatcher connects. The wrapper arrives plain and the cause has to be read
-    off ``.cause``; see the eviction check in ``queue.replica.Replica.dispatch``.
-
-    Getting this wrong is expensive and quiet: a bare ``except EVICTED_ERRORS``
-    matches nothing, and every HOT->WARM demotion errors the in-flight request
-    instead of re-queueing it, on a cluster that otherwise looks healthy.
+    Raised inside the actor, it reaches the dispatcher as a
+    ``RayTaskError(CachedActorError)``, which is an instance of both classes, so
+    ``isinstance(e, CachedActorError)`` holds there. Over Ray Client the wrapper
+    arrives plain and the cause has to be read off ``.cause``.
     """
 
     pass
 
 
 class RayProvider(Provider):
-    """Manages the process's Ray connection.
+    """Manages a Ray Client connection, for the CLI and the dashboard.
 
     ``connected()`` is true only once the cluster is reachable *and* the
-    Controller actor exists, so the dispatcher's connect loop won't proceed
-    until the control plane is actually serving.
+    Controller actor exists.
     """
 
     CONFIG = {"ray_url": ("NDIF_RAY_ADDRESS", "ray://localhost:10001", str)}
@@ -118,14 +112,6 @@ class RayProvider(Provider):
         return True
 
     @classmethod
-    async def aconnected(cls) -> bool:
-        """``connected``, off the event loop and within one limit in all."""
-        try:
-            return await abounded("the connection check", cls.connected)
-        except TimeoutError:
-            return False
-
-    @classmethod
     def reset(cls):
         # ray.shutdown() waits for the client's data thread before it closes the
         # gRPC channel, and on a dead head that thread can take minutes to give
@@ -176,14 +162,14 @@ class NDIFClientRemoteMethod:
     def remote(self, *args, **kwargs):
         return bounded(f"{self._method_name}.remote()", self.send, *args, **kwargs)
 
-    def send(self, *args, **kwargs) -> "NDIFObjectRef":
+    def send(self, *args, **kwargs) -> ClientObjectRef:
         """Make the call and wait for its id, with no time limit.
 
-        A ref that is awaited before its id arrives waits for it first, with no
-        timeout and on the caller's event loop, so it is waited for here.
+        A ref whose id has not arrived waits for it on first use, with no
+        timeout, so it is waited for here.
         """
         (id_future,) = client_ray.call_remote(self, *args, **kwargs)
-        ref = NDIFObjectRef(id_future)
+        ref = ClientObjectRef(id_future)
         ref.binary()
         return ref
 
@@ -198,28 +184,6 @@ class NDIFClientRemoteMethod:
 
     def _num_returns(self) -> int:
         return 1
-
-
-class NDIFObjectRef(ClientObjectRef):
-    """Ray ``ClientObjectRef`` that tolerates a wait on it having been cancelled.
-
-    Ray gives a waiter its result, or the error that the connection closed, by
-    setting it on the waiter's future, and that raises when the wait was
-    cancelled (a ``wait_for`` timeout, a cancelled task). Raised from a result,
-    it leaves the waiter registered with Ray for the life of the connection.
-    Raised when the connection closes, it ends Ray's loop over the waiters
-    (``DataClient._shutdown``), and those registered after the cancelled one are
-    never told: they wait forever.
-    """
-
-    def _on_completed(self, py_callback):
-        def deliver(data):
-            try:
-                py_callback(data)
-            except InvalidStateError:
-                pass
-
-        super()._on_completed(deliver)
 
 
 class NDIFActorHandle(ClientActorHandle):
@@ -280,26 +244,13 @@ def bounded(what: str, fn, *args, **kwargs):
     """Call ``fn`` on a thread (see :func:`on_thread`); raise ``TimeoutError``
     if it outlives ``RAY_CLIENT_TIMEOUT_S``.
 
-    Blocks the caller while it waits. Code on an event loop uses
-    :func:`abounded`.
+    Blocks the caller while it waits.
     """
     future = on_thread(fn, *args, **kwargs)
     wait([future], RAY_CLIENT_TIMEOUT_S)
     if not future.done():
         raise timed_out(what)
     return future.result()
-
-
-async def abounded(what: str, fn, *args, **kwargs):
-    """:func:`bounded` for an event loop: the loop keeps running while it waits."""
-    future = asyncio.wrap_future(on_thread(fn, *args, **kwargs))
-    try:
-        await asyncio.wait([future], timeout=RAY_CLIENT_TIMEOUT_S)
-        if not future.done():
-            raise timed_out(what)
-        return future.result()
-    finally:
-        future.cancel()
 
 
 def lookup(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
@@ -337,48 +288,20 @@ def get_model_actor_handle(
 
 
 # ===========================================================================
-# Handles for an event loop.
+# Handles inside the cluster.
 # ===========================================================================
 #
-# The handles above block their caller: the lookup and every ``.remote()`` wait
-# on the calling thread, up to the limit each. That suits the CLI. The queue
-# runs every model on one event loop, where a blocked call stops all of them.
+# The dispatcher is an actor, so it is already part of the cluster and Ray's own
+# handles do everything: ``await handle.method.remote(...)`` yields to the event
+# loop, a missing actor raises ``ValueError`` from the lookup, and a dead one
+# raises ``ActorDiedError`` from the call.
 
 
-class LoopActorHandle:
-    """An actor by name, for code on an event loop.
-
-    ``await handle.method.remote(...)`` looks the actor up, makes the call and
-    waits for its id on a thread, within ``RAY_CLIENT_TIMEOUT_S`` in all, while
-    the loop keeps running. It then awaits the result, with no limit. Nothing
-    reaches Ray before the ``await``, so a missing actor raises there and not
-    where the handle is made.
-    """
-
-    def __init__(self, name: str, namespace: str = NAMESPACE):
-        self._name = name
-        self._namespace = namespace
-
-    def __getattr__(self, method: str):
-        return SimpleNamespace(remote=functools.partial(self._call, method))
-
-    async def _call(self, method: str, *args, **kwargs):
-        def send() -> Future:
-            call = getattr(lookup(self._name, self._namespace), method)
-            # Not over Ray Client the handle is Ray's own, and its ``.remote()``
-            # returns without waiting.
-            ref = getattr(call, "send", call.remote)(*args, **kwargs)
-            return ref.future()
-
-        result = await abounded(f"{self._name}.{method}.remote()", send)
-        return await asyncio.wrap_future(result)
-
-
-def controller_handle() -> LoopActorHandle:
+def controller_handle() -> "ray.actor.ActorHandle":
     """The Controller actor, for the queue."""
-    return LoopActorHandle("Controller")
+    return ray.get_actor("Controller", namespace=NAMESPACE)
 
 
-def model_handle(model_key: MODEL_KEY, replica_id: REPLICA_ID) -> LoopActorHandle:
+def model_handle(model_key: MODEL_KEY, replica_id: REPLICA_ID) -> "ray.actor.ActorHandle":
     """One replica's model actor, for the queue."""
-    return LoopActorHandle(model_actor_name(model_key, replica_id))
+    return ray.get_actor(model_actor_name(model_key, replica_id), namespace=NAMESPACE)

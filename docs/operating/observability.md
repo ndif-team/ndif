@@ -55,7 +55,7 @@ label cardinality is what kills Loki:
 
 | Label | Source | Values |
 |---|---|---|
-| `service` | `NDIF_SERVICE` (default `unknown`) | `api`, `ray`, `dashboard`, **`model`** |
+| `service` | `NDIF_SERVICE` (default `unknown`) | `api`, `dispatcher`, `ray`, `dashboard`, **`model`** |
 | `environment` | `NDIF_ENVIRONMENT`, default `dev` | your choice |
 | `logger` | added by `logging_loki` | the `ndif.*` sub-logger |
 | `severity` | added by `logging_loki` | `info`, `warning`, `error`, … |
@@ -64,7 +64,9 @@ label cardinality is what kills Loki:
 **Model-actor logs are under `service="model"`, not `service="ray"`.** The
 controller injects `NDIF_SERVICE=model` into each model actor's Ray
 `runtime_env`, so a replica's logs and metrics attribute to the model rather
-than to the controller that spawned it. `{service="ray"}` carries only the Ray
+than to the controller that spawned it. The dispatcher actor is launched with
+`NDIF_SERVICE=dispatcher` the same way, so the queue's logs and metrics are
+under `service="dispatcher"`. `{service="ray"}` carries only the Ray
 node's own output (`ndif.controller`, raylet). Chasing a request through
 execution means `{service="model"}`, or dropping the label entirely.
 
@@ -78,10 +80,10 @@ purpose — they're unbounded.
 | Logger | `service` | Emits |
 |---|---|---|
 | `ndif.api` | `api` | HTTP ingress: rejections with `status_code`/`path`, unhandled 500s |
-| `ndif.request` | `api` **and** `model` | The lifecycle event on every status change, with `stage`, `prev_stage`, `prev_stage_ms` |
-| `ndif.queue.dispatcher` | `api` | Redis/Ray connection state, status workers |
-| `ndif.queue.processor` | `api` | Enqueue, provisioning, autoscaling |
-| `ndif.queue.replica` | `api` | Dispatch to an actor, replica loss |
+| `ndif.request` | `api`, `dispatcher` **and** `model` | The lifecycle event on every status change, with `stage`, `prev_stage`, `prev_stage_ms` |
+| `ndif.queue.dispatcher` | `dispatcher` | Startup waits on Redis and the Controller, dispatch-loop and status-worker errors |
+| `ndif.queue.processor` | `dispatcher` | Enqueue, provisioning, autoscaling |
+| `ndif.queue.replica` | `dispatcher` | Dispatch to an actor, replica loss |
 | `ndif.controller` | `ray` | Node updates, placement decisions, evictions |
 | `ndif.modeling` | `model` | Model load, execution errors, timeouts, preemptions |
 | `ndif.dashboard.reconcile` | `dashboard` | The schedule reconcile cron |

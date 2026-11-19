@@ -63,32 +63,29 @@ The console script `ndif = "ndif.cli:cli"`: a click group with one command per m
 | `metrics.py`, `telemetry.py`, `logging_setup.py` | metrics classes, `event()`, the console formatter ([Telemetry internals](telemetry-internals.md)) |
 | `types.py` | `MODEL_KEY`, `REPLICA_ID`, `NODE_ID` aliases |
 
-## `src/ndif/services/api/` — FastAPI ingress and the queue
+## `src/ndif/services/api/` — FastAPI ingress
 
 ```
 api/
 ├── start.sh            exec gunicorn with gunicorn_conf
-├── gunicorn_conf.py    binds the port; forks workers; spawns the dispatcher
+├── gunicorn_conf.py    binds the port; forks workers; connects telemetry per worker
 ├── app.py              every HTTP/WS endpoint
 ├── auth.py             API-key verification; stamps email and tags
-├── versioning.py       the client nnsight/python version gate
-└── queue/
-    ├── config.py         NDIF_QUEUE_* / NDIF_AUTOSCALING_* knobs
-    ├── dispatcher.py     pops the Redis queue, owns one Processor per model
-    ├── processor.py      per-model queue + replica pool + autoscaling loop
-    ├── request_queue.py  the per-model queue: FIFO within two priority groups
-    └── replica.py        one model actor; the task that dispatches to it
+└── versioning.py       the client nnsight/python version gate
 ```
 
-The dispatcher is not a separate container: `gunicorn_conf.py`'s `on_starting`
-**spawns** it from the gunicorn master ([why spawn](telemetry-internals.md#the-api-gunicorn)).
-
-## `src/ndif/services/ray/` — the GPU side
+## `src/ndif/services/ray/` — the GPU side and the queue
 
 ```
 ray/
-├── start.sh            ray start (head or worker), then launches the controller
+├── start.sh            ray start (head or worker), then launches the controller and the dispatcher
 ├── resources.py        prints this node's custom Ray resources as JSON
+├── queue/
+│   ├── config.py         NDIF_QUEUE_* / NDIF_AUTOSCALING_* knobs
+│   ├── dispatcher.py     the detached Dispatcher actor: pops the Redis queue, owns one Processor per model
+│   ├── processor.py      per-model queue + replica pool + autoscaling loop
+│   ├── request_queue.py  the per-model queue: FIFO within two priority groups
+│   └── replica.py        one model actor; the task that dispatches to it
 ├── deployments/
 │   ├── controller/
 │   │   ├── controller.py      the detached Controller actor
@@ -116,6 +113,9 @@ ray/
     ├── shard.py        a non-zero rank: holds a shard, runs what rank 0 runs
     └── common.py       what every rank must do identically
 ```
+
+The dispatcher is not a separate container: `start.sh` launches it on the head
+as a detached Ray actor ([Queue internals](queue-internals.md)).
 
 Whether a request's Python runs in the actor or in a runner is decided per request
 by `request.trusted`, not by which actor class is deployed — a trusted block runs

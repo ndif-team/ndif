@@ -1,9 +1,9 @@
 ---
 title: Queue Internals
-one_liner: The dispatcher process — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
+one_liner: The dispatcher actor — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
 tags: [internals, dev, queue, redis, ray]
 related: [docs/developing/api-service.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/redis-keys.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/start.sh, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
 ---
 
 # Queue Internals
@@ -11,17 +11,19 @@ sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dis
 ## What this covers
 
 `src/ndif/services/ray/queue/` — five modules that turn a flat Redis list of
-pickled requests into per-model queues serviced by Ray model actors. It lives
-under the API package but runs in its own process. The chain is
+pickled requests into per-model queues serviced by Ray model actors. It runs
+inside the Ray cluster, in one detached actor on the head node. The chain is
 `Redis queue -> Dispatcher -> Processor -> Replica -> model actor`.
 
 Three facts frame the design:
 
-1. **There is exactly one dispatcher.** It is spawned once by gunicorn's
-   `on_starting` hook (`src/ndif/services/api/gunicorn_conf.py`) regardless of
-   `NDIF_API_WORKERS`, because all queue state is in-process.
-2. **Only the dispatcher holds a Ray connection.** The API workers cannot reach
-   the controller or a model actor; the dispatcher is the bridge.
+1. **There is exactly one dispatcher.** It is the detached Ray actor
+   `Dispatcher` in the `NDIF` namespace, launched once on the head by
+   `src/ndif/services/ray/start.sh` regardless of `NDIF_API_WORKERS`, because all
+   queue state is in-process.
+2. **The API never touches Ray.** Its workers cannot reach the controller or a
+   model actor; the dispatcher is the bridge, and Redis is its only link to
+   them.
 3. **The per-model queues are in memory, not in Redis.** Redis holds one flat
    handoff list — the multi-producer/single-consumer boundary. The moment the
    dispatcher pops a request, that request exists only as a Python object in
@@ -36,55 +38,56 @@ import, so a typo fails the process rather than silently defaulting.
 | Field | Env var | Default | What it does |
 |---|---|---|---|
 | `queue_key` | `NDIF_QUEUE_KEY` | `queue` | The Redis list the API LPUSHes to and the dispatcher BRPOPs from |
-| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — bounds how long an idle loop waits before draining errors |
+| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`), the `ray:connected` expiry (`CONNECTED_TTL_S`, three times it) and the dispatcher's Redis reply timeout (it plus `REDIS_REPLY_GRACE_S`) derive from it |
 | `fetch_batch_max` | `NDIF_QUEUE_FETCH_BATCH_MAX` | 32 | Max requests drained per dispatch iteration |
 | `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its oldest queued request |
 | `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Oldest-request wait that triggers a scale-up |
 | `autoscaling_backoff_s` | `NDIF_AUTOSCALING_BACKOFF_S` | 120 | Pause after a scale-up before re-checking |
 | `autoscaling_max_replicas` | `NDIF_AUTOSCALING_MAX_REPLICAS` | 3 | Cap on replicas per model_key added by autoscaling |
 
-Redis and Ray connection settings come from `NDIF_REDIS_URL` and
-`NDIF_RAY_ADDRESS` via the providers.
+The Redis connection comes from `NDIF_REDIS_URL` via the provider. The
+dispatcher reads `CONFIG` in its own process, an actor's worker on the head, so
+these are set in the environment of the ray service's head node. The API reads
+only `queue_key`.
 
 ## The Dispatcher
 
-`Dispatcher.start` (`src/ndif/services/ray/queue/dispatcher.py`) constructs one
-and runs `dispatch_worker()` under `asyncio.run` forever. `__init__` calls
-`connect()` *before* the loop exists, so that method is deliberately
-synchronous. The module's `__main__` block runs it detached from gunicorn for
-debugging — `python -m ndif.services.ray.queue.dispatcher`, pointed at the stack
-with `NDIF_REDIS_URL` and `NDIF_RAY_ADDRESS`. Never run two: both `BRPOP` the
-same list, so each would hold half of every model's queue in its own memory.
+`DispatcherActor` (`src/ndif/services/ray/queue/dispatcher.py`) is the actor:
+named `Dispatcher`, pinned to the head by `resources={"head": 1}`, with
+`num_cpus=0` and `max_restarts=-1`. `app()` in that module launches it detached
+with `get_if_exists=True`, so a relaunch reuses a live one, and
+`src/ndif/services/ray/start.sh` runs
+`python -m ndif.services.ray.queue.dispatcher` on the head right after the
+Controller launch. Its `__init__` connects the telemetry sinks, puts a reply
+timeout on the async Redis clients ([Providers](providers.md#redisprovider)),
+and starts `Dispatcher.dispatch_worker` as a task, so when Ray restarts the
+actor the loop starts again, without the requests the previous one had popped.
+Never run two against one Redis: both `BRPOP` the same list, so each would hold
+half of every model's queue in its own memory.
 
-`Dispatcher.connect` is the reconnect primitive, used on boot and on every
-connection error; it maintains the `ray:connected` flag and clears the cached
-status/env (see [The Redis Layer](redis-layer.md#the-rayconnected-flag)).
-`RayProvider.connected` (`src/ndif/common/providers/ray.py`) is true only when
-the cluster is reachable *and* the `Controller` actor exists.
+The dispatcher has no connection to Ray to lose. It reaches the Controller and
+the model actors through Ray's own handles (`controller_handle`, `model_handle`
+in `src/ndif/common/providers/ray.py`), and a head that goes down takes it
+along. `Dispatcher.startup` runs once before the loop: it waits for Redis,
+deletes the cached status/env and their coalescing locks, then waits until the
+`Controller` actor can be looked up. `Dispatcher.beat` keeps the
+`ray:connected` key alive from then on (see
+[The Redis Layer](redis-layer.md#the-rayconnected-flag)).
 
 ### The dispatch loop
 
-Each iteration: `get()` a batch, `dispatch()` each request to its Processor,
-then `handle_errors()`, which on a connection error purges every Processor and
-reconnects.
+Each iteration: `beat()`, `get()` a batch, then `dispatch()` each request to its
+Processor. An error in the loop is logged and the loop goes on a second later.
 
 `Dispatcher.get` blocks on `brpop` for up to `fetch_timeout_s`, then
 non-blockingly `rpop`s until the batch is full or the list is empty. The blocking
-pop bounds idle latency so `handle_errors` still runs when nothing is arriving;
+pop bounds an idle pass so `beat` still runs when nothing is arriving;
 the batched pops amortize round-trips under load. Both use `async_bytes_client`
 because the values are pickles.
 
 `Dispatcher.dispatch` creates a `Processor` per `model_key` on first sight and
 never removes one — an idle Processor is a cheap object with an empty pool and a
 sleeping autoscaling task.
-
-`Dispatcher.handle_errors` drains the shared `asyncio.Queue` of
-`(name, exception)` tuples that Processors and Replicas push onto. Its only real
-decision is connection-level: when an error arrives it checks the connection
-(`RayProvider.aconnected`), and if the check fails it purges every Processor with
-a user-facing message and reconnects. Per-request
-errors have already been reported to their users by the Replica; the dispatcher
-just logs them.
 
 ### The side workers
 
@@ -95,7 +98,9 @@ reconcile event emitted after an out-of-band `ndif deploy` / `ndif evict`). Thei
 streams, handlers and reply protocol are in
 [The Redis Layer](redis-layer.md#the-events-stream). Nothing restarts these tasks, so
 each one, like the main loop, catches every error, logs it and retries a second
-later, which also carries them through a Redis outage. An `ndif kill` of an
+later, which also carries them through a Redis outage. Their stream reads block
+for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
+without closing times out and is retried. An `ndif kill` of an
 executing request goes through `Replica.cancel(interrupt=True)`: the request is
 errored, the actor's `cancel()` is called, and the dispatch is given a few
 seconds to return on its own; only if it does not is the dispatch task
@@ -180,8 +185,7 @@ raises `DeploymentError` ([API Service](api-service.md#who-may-deploy-a-trust_re
 status `READY`. `reply()` fires after each phase transition so queued clients
 see `PROVISIONING` / `DEPLOYING` / `QUEUED` in order.
 
-On any exception the phase-appropriate message is logged with a traceback,
-pushed to `error_queue` (so a connection error triggers a dispatcher reconnect),
+On any exception the phase-appropriate message is logged with a traceback
 and — if the Processor never reached READY — passed to `purge()`, which errors
 every queued user and clears the pool so nothing hangs. A `DeploymentError` (the
 controller refused and said why, or `start` refused the key) is forwarded to the user as
@@ -258,8 +262,8 @@ timeout — waiting inline would wedge that worker, and every later reconcile an
 `PROVISIONING`/`DEPLOYING`, because a `start()` already in flight adopts the same
 list and the two would race into two workers on one replica.
 
-`Processor.purge` errors every queued request, **clears the queue first**, then
-cancels every replica — otherwise the cancelled workers' `finally` blocks would
+`Processor.purge`, called only by `start` on a failed provision, errors every
+queued request, **clears the queue first**, then cancels every replica — otherwise the cancelled workers' `finally` blocks would
 re-provision against requests that were just errored. It ends with
 `replicas.clear()` and status `UNINITIALIZED`.
 
@@ -281,8 +285,9 @@ sharded model stays sharded); with nothing running it behaves as a bare deploy.
 one more, and a controller-reported error raises `DeploymentError`.
 `Replica.deploy` is provision + register + wait + start, de-registering on a
 setup failure. `Replica.wait` awaits the actor's `__ray_ready__`, polling every
-second on `ActorUnavailableError` (the actor is restarting; over Ray Client
-`__ray_ready__` raises instead of blocking) and letting anything else propagate.
+second on `ActorUnavailableError` (the actor is restarting, and a call made
+while it is can raise at once instead of waiting out the restart) and letting
+anything else propagate.
 That includes `ValueError` from the lookup: a name is registered when the actor is
 created, before `deploy` returns, and stays registered through restarts, so a
 failed lookup means the replica is gone. **There is no timeout on this loop.**
@@ -300,18 +305,15 @@ The failure split is the most consequential logic in this package:
 |---|---|---|
 | `asyncio.CancelledError` | Deliberate cancel — operator kill, or a purge | Error the user, then re-raise to exit the worker. `CancelledError` is a `BaseException`, so without this branch the user would sit on DISPATCHED forever |
 | `EVICTED_ERRORS` | `ValueError` (actor lookup failed) / `ActorDiedError` / `CachedActorError` (actor moved to CPU cache, WARM — including a preemption mid-run) | `self.task = None` drops this replica, the request goes back to the **front** of its group via `enqueue(prepend=True)`; the worker loop exits |
-| Any other `Exception` | Anything else | Error the user, push to `error_queue`, keep serving |
+| Any other `Exception` | Anything else | Error the user, log it, keep serving |
 | …which is an `ActorUnavailableError` | The actor killed itself to clear an unrecoverable CUDA fault (`BaseModelDeployment.restart`) and Ray is respawning the *same* replica (`max_restarts=-1`) | After the above, `await self.wait()` — the worker parks until the replica serves again instead of erroring every queued request for the length of the reload. Nothing is re-queued and the replica is not dropped |
 
-`EVICTED_ERRORS` is matched by type, but **not by a bare `isinstance`** — the
-check in `dispatch` also reads the wrapper's `.cause`. `CachedActorError` is
-raised inside the actor and arrives wrapped in a `ray.exceptions.RayTaskError`;
-the dual RayTaskError-plus-cause class that would satisfy `isinstance` is only
-built when `as_instanceof_cause()` is applied, and over Ray Client — how the
-dispatcher connects — it is not. A bare isinstance would turn every HOT→WARM
-demotion into a user-facing error; the symptom is an actor log showing
-`CachedActorError` raised while the dispatcher logs `error_type=RayTaskError`
-and takes the generic branch.
+`EVICTED_ERRORS` is matched by a plain `isinstance`. `CachedActorError` is
+raised inside the actor and reaches `dispatch` as
+`RayTaskError(CachedActorError)`, an instance of both classes, because the
+dispatcher is inside the cluster. Over Ray Client — the CLI and the dashboard —
+the wrapper arrives plain, `isinstance` against the original type matches
+nothing, and the cause has to be read off `.cause`.
 
 `Replica.cancel` errors the in-flight request *before* cancelling the task,
 because a teardown only notifies queued requests via `Processor.reply` — the
@@ -331,11 +333,13 @@ heap.
 
 > **A dispatcher restart loses every in-flight and queued request.** Once
 > popped, a request waits in a `Processor.queue` or sits in
-> `Replica.current_request` — both plain Python objects. Restarting the API
-> restarts the dispatcher with it (it is a child of the gunicorn master), so
-> `docker compose restart api` drops them all. A client on a blocking websocket
-> gets no further status at all — no ERROR, just silence. Only requests still in
-> the Redis `queue` list survive.
+> `Replica.current_request` — both plain Python objects in the actor's process.
+> If the actor alone dies, Ray restarts it (`max_restarts=-1`) and the new one
+> adopts the running replicas through `Processor.start` as requests arrive. If
+> the head goes down the dispatcher goes with it, until the next head starts
+> one. Either way nothing errors the requests it held: their users are not
+> told. Only requests still in the Redis `queue` list survive, and wait for the
+> next dispatcher. Restarting the API does not touch the dispatcher.
 
 > **`Replica.wait()` has no timeout.** If the controller reports a successful
 > deploy but the actor never becomes ready, `start()` is stuck awaiting it,
@@ -343,14 +347,13 @@ heap.
 > queue grows without bound. Check with `ndif queue`: a Processor at `deploying`
 > with a rising `queue_size` and no ready replicas.
 
-> **One event loop for all models.** The dispatcher is a single asyncio process,
+> **One event loop for all models.** The dispatcher is a single asyncio loop,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
-> queue. Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray Client
-> calls block with no timeout when the head dies, so the queue makes them through
-> `controller_handle()` and `model_handle()`, which run the lookup and the call on a
-> thread and give up at 60 s (see [Providers](providers.md#rayprovider)). The one
-> blocking stretch left is `Dispatcher.connect`, on purpose: no task starts a Ray
-> call while the connection is replaced. It has no time limit of its own. Related:
+> queue, and `beat` with it: `ray:connected` lapses and the API answers 503.
+> Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray calls go
+> through `controller_handle()` and `model_handle()`, Ray's own handles, whose
+> `await handle.method.remote(...)` yields to the loop (see
+> [Providers](providers.md#rayprovider)). Related:
 > `ensure_started` keys off the pool being empty, so a Processor with one wedged
 > replica will not provision a second no matter how deep its queue gets —
 > autoscaling requires `READY`, `ensure_started` requires an empty pool.

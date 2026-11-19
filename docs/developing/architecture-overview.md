@@ -23,10 +23,10 @@ Four facts frame the whole design:
    space/comma list, or the image's default `all` (redis, rustfs, ray, api) —
    selects which service(s) that container runs
    (`src/ndif/cli/service.py` `resolve_targets`). There is no per-service build.
-2. **The API process cannot talk to Ray.** Only the dispatcher — a *separate
-   process* spawned by gunicorn's `on_starting` hook — holds a Ray client. Every
-   API endpoint that appears to know about the cluster is really reading a
-   Redis-backed cache that the dispatcher refreshes.
+2. **The API process cannot talk to Ray.** The dispatcher is a detached actor
+   *inside the cluster*, on the head node, and Redis is its only link to the
+   API. Every API endpoint that appears to know about the cluster is really
+   reading a Redis-backed cache that the dispatcher refreshes.
 3. **Execution forks on one boolean.** `request.trusted` decides whether a user's
    traced block runs inside the model actor process or in a separate runner
    process driven over a Unix socket. With auth off client-supplied `tags`
@@ -34,7 +34,8 @@ Four facts frame the whole design:
    (`src/ndif/services/api/auth.py` `validate_request`).
 4. **Redis is the only durable handoff.** Once a request leaves the Redis list it
    is a Python object in the dispatcher's memory until it reaches a terminal
-   response. Nothing in between survives a restart.
+   response. Nothing in between survives a restart of the dispatcher or the
+   head.
 
 **There is no Ray Serve.** Model deployments are detached Ray actors named
 `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace, created and
@@ -46,19 +47,19 @@ autoscaling config) and APIs do not apply anywhere in this codebase.
 ```mermaid
 flowchart TB
   subgraph apic["api container — NDIF_SERVICE=api"]
-    GM["gunicorn master<br/>on_starting: spawn dispatcher"]
-    UW["uvicorn workers × NDIF_API_WORKERS<br/>FastAPI routes only<br/>no Ray client"]
-    DP["dispatcher process (child)<br/>single asyncio loop<br/>owns THE Ray client"]
+    GM["gunicorn master"]
+    UW["uvicorn workers × NDIF_API_WORKERS<br/>FastAPI routes only<br/>no Ray"]
     GM --> UW
-    GM --> DP
   end
 
   subgraph rayc["ray container — NDIF_SERVICE=ray (GPU)"]
     HEAD["ray head (or worker)<br/>start.sh + resources.py"]
     CTRL["Controller actor<br/>pinned to head via head=10 resource"]
+    DP["Dispatcher actor<br/>pinned to head the same way<br/>single asyncio loop"]
     MA["ModelActor replicas<br/>detached, namespace NDIF<br/>{replica_id}:ModelActor:{model_key}"]
     RUN["runner subprocess<br/>fresh per untrusted request"]
     HEAD --> CTRL
+    HEAD --> DP
     HEAD --> MA
     MA -. "unix socket, untrusted only" .- RUN
   end
@@ -86,9 +87,8 @@ flowchart TB
 ### 1. Ingress — the API service
 
 `src/ndif/services/api/`. `start.sh` execs gunicorn with uvicorn workers.
-`gunicorn_conf.py` does two things that matter more than the routes themselves:
-`on_starting` spawns the **dispatcher** as a child process, and `post_fork`
-connects the telemetry providers per worker (why: [Telemetry
+`gunicorn_conf.py` does one thing that matters more than the routes themselves:
+`post_fork` connects the telemetry providers per worker (why: [Telemetry
 Internals](telemetry-internals.md)).
 
 An API worker's job is narrow: authenticate, validate, stamp the request, and
@@ -96,8 +96,9 @@ An API worker's job is narrow: authenticate, validate, stamp the request, and
 
 ### 2. The queue — one process, one event loop
 
-`src/ndif/services/ray/queue/`. The dispatcher runs a single asyncio loop that
-owns everything downstream of the Redis list:
+`src/ndif/services/ray/queue/`. The dispatcher is a detached actor on the Ray
+head, launched by `start.sh` after the controller. It runs a single asyncio loop
+that owns everything downstream of the Redis list:
 
 - `Dispatcher` — `BRPOP`s the shared list, drains a batch, routes by `model_key`.
 - `Processor` — one per model. Holds that model's in-memory `RequestQueue` (an
@@ -158,7 +159,7 @@ Four concurrency mechanisms are in play at once:
 | Code | Runs in | Mechanism |
 |---|---|---|
 | FastAPI routes | uvicorn worker processes (× `NDIF_API_WORKERS`) | asyncio |
-| Dispatcher, Processor, Replica | one spawned child process | one asyncio loop |
+| Dispatcher, Processor, Replica | one Ray actor on the head node | one asyncio loop |
 | Controller | a Ray actor on the head node | Ray actor calls |
 | `run()` orchestration | model actor process, main thread | thread + timeout race |
 | `execute()` — the model forward | model actor process, worker thread | blocking Python/CUDA |
@@ -174,7 +175,7 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 | State | Lives in | Survives a restart? |
 |---|---|---|
 | Queued requests | Redis list (`NDIF_QUEUE_KEY`) | Yes — until popped |
-| In-flight requests | dispatcher process memory | **No** |
+| In-flight requests | dispatcher actor memory | **No** — lost with the dispatcher or the head; an API restart leaves them alone |
 | Status / env caches | Redis, TTL'd | Rebuilt on demand |
 | Live status updates | Redis pub/sub → websocket | Not stored at all |
 | Non-blocking responses | object store, latest only | Yes |
@@ -185,8 +186,8 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 
 ## Boundaries not to cross
 
-- **Never import Ray in an API worker.** The dispatcher owns the only client; the
-  endpoints read Redis caches instead.
+- **Never import Ray in an API worker.** The API has no connection to the
+  cluster; the endpoints read Redis caches the dispatcher refreshes.
 - **Never import `sandbox/nns.py` on the host.** Importing it installs
   process-wide nnsight patches that would redirect the real model's `interleave`
   to a socket. It is imported only inside the runner process.

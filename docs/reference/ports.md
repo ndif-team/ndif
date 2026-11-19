@@ -47,7 +47,7 @@ a worker joins with `ray start --address` and lets Ray choose the rest.
 | Port | Role | Protocol | Purpose | Env var | Host-published (dev compose) | Public in prod |
 |---|---|---|---|---|---|---|
 | 6385 | head | Ray GCS | The cluster's control plane. Workers join here — this is the `HOST:PORT` you put in `NDIF_RAY_HEAD_ADDRESS`. 6385 is the default from both the CLI's `DEFAULTS` (`src/ndif/cli/config.py` `DEFAULTS`) and `start.sh`'s own fallback. | `NDIF_RAY_HEAD_PORT` | no | no — cluster-internal, but must be reachable from every worker |
-| 10001 | head | Ray client (gRPC) | The `ray://` client server. This is what `NDIF_RAY_ADDRESS` points at, and how the API, dashboard and CLI drive the controller. **Not configurable through an NDIF variable** — `start.sh` never passes `--ray-client-server-port`, so it stays at Ray's own default. | none (address side: `NDIF_RAY_ADDRESS`) | yes — `10001:10001` (compose `ray` `ports`) | no — anyone who can reach it can run arbitrary code on the cluster |
+| 10001 | head | Ray client (gRPC) | The `ray://` client server. This is what `NDIF_RAY_ADDRESS` points at, and how the dashboard and CLI drive the controller. **Not configurable through an NDIF variable** — `start.sh` never passes `--ray-client-server-port`, so it stays at Ray's own default. | none (address side: `NDIF_RAY_ADDRESS`) | yes — `10001:10001` (compose `ray` `ports`) | no — anyone who can reach it can run arbitrary code on the cluster |
 | 8265 | head | HTTP | Ray dashboard, bound on `0.0.0.0` (`--dashboard-host`). | `NDIF_RAY_DASHBOARD_PORT` | yes — `8265:8265` (compose `ray` `ports`) | no |
 | 8080 | head | HTTP | **Ray metrics export** — the Prometheus scrape target. Passed as `--metrics-export-port`; Prometheus scrapes `ray:8080` over the compose network (`docker/prometheus/prometheus.yml`). This is not a Ray Serve port; NDIF does not use Serve. | `NDIF_RAY_METRICS_PORT` | no | no |
 | 8076 | head | Ray object manager | Plasma object transfer between nodes (`--object-manager-port`). | `NDIF_RAY_OBJECT_MANAGER_PORT` | no | no — cluster-internal, needs to be open between nodes |
@@ -114,8 +114,8 @@ the in-image copies never start there.
 
 Only ports listed under a service's `ports:` key are reachable from the host.
 Everything else is reachable *only* by container name on the compose network —
-which is why the API is configured with `redis://redis:6379` and
-`ray://ray:10001` rather than `localhost`. Prometheus scrapes `ray:8080` even
+which is why the API is configured with `redis://redis:6379` and the dashboard
+with `ray://ray:10001` rather than `localhost`. Prometheus scrapes `ray:8080` even
 though 8080 isn't published, for exactly this reason.
 
 The `api` service's healthcheck hits `/ping` on 8001 from inside the container
@@ -134,13 +134,14 @@ flowchart LR
 
   subgraph internal [private network]
     api -->|6379| redis[(redis)]
-    api -->|10001| rayhead[ray head]
+    rayhead[ray head] -->|6379| redis
     api -->|5432| pg[(postgres)]
     rayhead ---|6385, 8076| worker[ray worker]
     rayhead -->|9000| s3
     api & rayhead -->|3100 / 8086| tel[loki / influx]
     prom[prometheus] -->|8080| rayhead
   end
+  dash -->|10001| rayhead
 ```
 
 Two ports face users: the API (8001) and the object store's public endpoint.

@@ -64,21 +64,9 @@ class ProcessorStatus(Enum):
 class Processor:
     """Orchestrates per-model request queue, replicas, and dispatch."""
 
-    def __init__(
-        self,
-        model_key: MODEL_KEY,
-        error_queue: asyncio.Queue,
-    ) -> None:
-        """Initialize a Processor for one model.
-
-        Args:
-            model_key: The model this Processor serves.
-            error_queue: Shared queue for reporting errors to the dispatcher, as
-                ``(model_key, exception)`` tuples; a connection error there
-                triggers a Ray reconnect.
-        """
+    def __init__(self, model_key: MODEL_KEY) -> None:
+        """Initialize a Processor for the model ``model_key``."""
         self.model_key = model_key
-        self.error_queue = error_queue
 
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
@@ -173,11 +161,9 @@ class Processor:
 
         Queries the controller: if it already lists replicas, adopt all of them;
         otherwise deploy a fresh one. Each is registered, waited on, and given a
-        worker. On any failure (including a connection error) the phase-specific
-        ``error_message`` is logged with a traceback, reported to the error queue
-        (so the dispatcher reconnects on a connection error), and passed to
-        ``purge`` — which errors the queued users and clears the pool so nothing
-        hangs.
+        worker. On any failure the phase-specific ``error_message`` is logged
+        with a traceback and passed to ``purge`` — which errors the queued users
+        and clears the pool so nothing hangs.
         """
         error_message = (
             "Error starting model. Please try again later. Sorry for the inconvenience."
@@ -237,7 +223,6 @@ class Processor:
                 stage=self.status.value,
                 error_type=error_type_name(e),
             )
-            self.error_queue.put_nowait((self.model_key, e))
 
             # When the controller said *why* it refused, tell the caller that
             # instead of the canned line. These reasons are the actionable ones
@@ -326,7 +311,6 @@ class Processor:
             # worker starts, so it counts toward the pool while coming up.
             await Replica.deploy(self.model_key, self)
         except Exception as e:
-            self.error_queue.put_nowait((self.model_key, e))
             event(
                 logger,
                 f"Autoscaling {self.model_key} failed to add replica: {e}",
@@ -411,15 +395,20 @@ class Processor:
         until traffic exercises it. That is harmless — there is nothing to serve
         while the queue is empty — and self-corrects on the next request, which
         pays one wasted dispatch and is then re-queued and served.
-
-        A connection error is reported so the dispatcher can reconnect.
         """
         try:
             response: ReplicaStates = await controller_handle().get_deployment.remote(
                 self.model_key
             )
         except Exception as e:
-            self.error_queue.put_nowait((self.model_key, e))
+            event(
+                logger,
+                "reconcile could not ask the controller for its replicas",
+                level=logging.ERROR,
+                exc_info=True,
+                model_key=self.model_key,
+                error_type=error_type_name(e),
+            )
             return
 
         current = {state.replica_id for state in response.replicas}
@@ -467,7 +456,6 @@ class Processor:
                 replica_id=replica.replica_id,
                 error_type=error_type_name(e),
             )
-            self.error_queue.put_nowait((self.model_key, e))
             return
 
         replica.start()
@@ -481,25 +469,13 @@ class Processor:
         )
         await self.reply()
 
-    async def purge(self, message: Optional[str] = None) -> None:
+    async def purge(self, message: str) -> None:
         """Error every queued request and cancel all replica workers.
 
-        Called on a critical failure — the dispatcher on a Ray connection error,
-        or ``start`` on a failed provision. The queue is cleared before replicas
-        are cancelled so their exits don't re-provision against requests that
-        were just errored.
+        Called by ``start`` on a failed provision. The queue is cleared before
+        replicas are cancelled so their exits don't re-provision against
+        requests that were just errored.
         """
-        if message is None:
-            message = (
-                "Critical server error occurred. "
-                "Please try again later. Sorry for the inconvenience."
-            )
-
-        # A start() from before this purge would go on to register its replicas,
-        # or to purge again when it fails, under whatever starts next.
-        if self.start_task is not asyncio.current_task() and self.start_task:
-            self.start_task.cancel()
-
         await self.reply(description=message, status=Status.ERROR)
         self.queue.clear()
 

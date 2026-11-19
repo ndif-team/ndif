@@ -19,11 +19,11 @@ Three facts frame the whole design:
    meta device and ships a serialized *block* (source text plus the globals and
    locals it references) tagged with a `model_key`. The server holds the weights
    and runs the block against them. Nothing about the model is in the request.
-2. **The API process cannot talk to Ray.** Only the queue dispatcher holds a Ray
-   client connection. So the API's only job is to authenticate, validate, and
-   `LPUSH` — every subsequent hop is a handoff through Redis or through Ray, and
-   the client's status updates come back on a Redis pub/sub channel that the API
-   merely forwards.
+2. **The API process cannot talk to Ray.** The queue dispatcher runs inside the
+   Ray cluster and takes requests off Redis. So the API's only job is to
+   authenticate, validate, and `LPUSH` — every subsequent hop is a handoff
+   through Redis or through Ray, and the client's status updates come back on a
+   Redis pub/sub channel that the API merely forwards.
 3. **Where the user's block executes depends on one boolean.** `request.trusted`
    is stamped at ingress from the API key. On the sandbox actor classes, trusted
    blocks run *in the model actor process*, next to the weights, and untrusted
@@ -40,7 +40,7 @@ sequenceDiagram
     participant C as nnsight client
     participant A as API (gunicorn/FastAPI)
     participant R as Redis
-    participant D as Dispatcher (spawned proc)
+    participant D as Dispatcher (actor on the Ray head)
     participant K as Controller actor (Ray head)
     participant M as ModelActor replica (GPU)
     participant S as Object store (RustFS/S3)
@@ -115,9 +115,9 @@ and `LPUSH`es the *pickled* request onto the Redis list named by
 `NDIF_QUEUE_KEY` (default `queue`). The `RECEIVED` response is what the HTTP call
 returns; everything after this is asynchronous.
 
-**4. Dispatcher pops.** The dispatcher is a separate spawned process started by
-gunicorn's `on_starting` hook. Its loop `BRPOP`s the queue with a 10s timeout
-and then drains up to 31 more with non-blocking `RPOP`, a batch of at most
+**4. Dispatcher pops.** The dispatcher is a detached Ray actor on the head node,
+launched by the ray service's `start.sh`. Its loop `BRPOP`s the queue with a 10s
+timeout and then drains up to 31 more with non-blocking `RPOP`, a batch of at most
 `NDIF_QUEUE_FETCH_BATCH_MAX` (32) (`src/ndif/services/ray/queue/dispatcher.py`
 `Dispatcher.get`) — so the shared list is FIFO and one pop amortizes into a
 batch. Each request is routed by `model_key` to a lazily created `Processor`
@@ -226,10 +226,10 @@ the object store and polled via `GET /response/{id}` instead — see
 | Hop | Failure | What the user sees | Where to look |
 |---|---|---|---|
 | 2 | Websocket never connects | client hangs / connection error before any status | [Compose stack](../operating/compose-stack.md#service-names-not-localhost) |
-| 3 | Ray unreachable | `503` "compute backend is reconnecting" | [Services and Topology](services-and-topology.md) |
+| 3 | Ray head or dispatcher down | `503` "compute backend is reconnecting" | [Services and Topology](services-and-topology.md) |
 | 3 | Bad/missing API key | `401` / `400` / `403` from `POST /request` | [Auth and Limits](auth-and-limits.md) |
 | 3 | Client too old | `400` naming the minimum version | [Configuration](../operating/configuration.md#the-client-version-gate) |
-| 4 | Dispatcher process dead | request sits in Redis, no `QUEUED` ever arrives | [Queue internals](../developing/queue-internals.md) |
+| 4 | Dispatcher went down after the request was accepted | request sits in Redis, and no `QUEUED` arrives until the next dispatcher pops it | [Queue internals](../developing/queue-internals.md) |
 | 5 | Model never deploys | stuck on `PROVISIONING`/`DEPLOYING`, then `ERROR` | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
 | 6 | Won't fit on any node | `ERROR` "Could not deploy this model." with a node's stated reason, else `CANT_ACCOMMODATE` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | 7 | Replica evicted mid-flight | silently re-queued at the front (no error) | [Deployments and Eviction](deployments-and-eviction.md) |

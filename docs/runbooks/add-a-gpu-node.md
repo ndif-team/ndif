@@ -18,9 +18,9 @@ Three facts decide everything below:
 
 1. **One variable picks head or worker.** With `NDIF_RAY_HEAD_ADDRESS` unset,
    `src/ndif/services/ray/start.sh` runs `ray start --head` and then the NDIF
-   controller. Set to the head's `HOST:PORT`, it runs `ray start --address` and
-   nothing else. `NDIF_RAY_ADDRESS` is unrelated: it is the `ray://` client
-   address the API and CLI dial.
+   controller and dispatcher. Set to the head's `HOST:PORT`, it runs
+   `ray start --address` and nothing else. `NDIF_RAY_ADDRESS` is unrelated: it is
+   the `ray://` client address the CLI and dashboard dial.
 2. **A worker runs Ray and nothing else** — no API, Redis, RustFS or controller.
    `ndif start` with `NDIF_RAY_HEAD_ADDRESS` set starts only `ray`
    (`src/ndif/cli/commands/start.py` `start`), and the controller actor requires
@@ -199,7 +199,8 @@ check the per-node list once more just before stopping.
 
 After an unplanned loss, if a model's requests sit in `DEPLOYING` (`ndif queue`)
 once `ndif status` no longer lists the node, the queue is waiting on a replica
-that died with it: restart the API (`just restart api` on the compose stack).
+that died with it: only a new dispatcher process clears it
+([Debug a stuck request](debug-a-stuck-request.md#step-2--is-the-dispatcher-alive-and-draining)).
 Requests it held in memory are dropped; the next request provisions afresh.
 
 ## Gotchas

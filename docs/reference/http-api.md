@@ -246,7 +246,7 @@ not the per-request `trusted`.
 
 | Code | Cause |
 |---|---|
-| 503 | Ray not connected, or the dispatcher's refresh failed |
+| 503 | No dispatcher running (`ray:connected` absent), or the dispatcher's refresh failed |
 | 504 | No refresh arrived within `NDIF_STATUS_TIMEOUT_S` |
 
 The dashboard's `/api/status` does not use this endpoint: it asks the controller
@@ -268,8 +268,8 @@ local environment. Backs the CLI's `ndif env` (`src/ndif/cli/commands/env.py` `e
 Structurally identical to `/status`: cached at the `env` Redis key with
 `NDIF_ENV_TTL_S` (300s — the env only changes on a redeploy), refreshed by the
 dispatcher's `env_worker` from `_ControllerActor.env`, bounded
-by `NDIF_ENV_TIMEOUT_S` (60s). Same errors: 503 on a failed refresh or a
-disconnected Ray, 504 on timeout.
+by `NDIF_ENV_TIMEOUT_S` (60s). Same errors: 503 on a failed refresh or with no
+dispatcher running, 504 on timeout.
 
 **Response** — `200`, `application/json`. Keys of `packages` are *import* names
 where resolvable, falling back to the distribution name.
@@ -317,9 +317,10 @@ without a body.
 again in a few minutes."`
 
 > **Gotcha:** this reflects the `ray:connected` Redis flag, which the dispatcher
-> sets on connect and deletes while reconnecting — with no TTL. If the
-> dispatcher process dies outright the flag survives and this reports
-> "connected" while nothing is being dispatched.
+> renews on every pass of its dispatch loop with an expiry of three times
+> `NDIF_QUEUE_FETCH_TIMEOUT_S`, 30 s by default. For up to that long after the
+> dispatcher stops, this still reports "connected" while nothing is being
+> dispatched.
 
 ```bash
 curl -i http://localhost:8001/connected

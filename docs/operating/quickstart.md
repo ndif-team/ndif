@@ -184,13 +184,15 @@ Under compose you want `redis`, `rustfs`, `influxdb` and `postgres` reporting
 `api` `(healthy)` on its own `/ping` check, and the rest `running`.
 
 `/ping` only proves the web process is up. `/connected` is the readiness
-signal: it passes once the queue dispatcher has connected to Ray and set the
-`ray:connected` flag in Redis. Ray is the slow one — it boots CUDA, computes
-this node's resources, starts a head, and launches the controller. In its log
-(`just logs ray`, `docker logs ndif`, or `ndif logs ray`) look for
-`Starting Ray head node with resources: {"head": 10, "cuda_memory_bytes": ...}`
-then `Starting NDIF controller...`. A `cuda_memory_bytes` of `0` means torch
-can't see a GPU — under Docker, the container toolkit isn't wired up.
+signal: it passes once the queue dispatcher is running on the Ray head and has
+set the `ray:connected` key in Redis. Ray is the slow one — it boots CUDA,
+computes this node's resources, starts a head, and launches the controller and
+the dispatcher. In its log (`just logs ray`, `docker logs ndif`, or
+`ndif logs ray`) look for
+`Starting Ray head node with resources: {"head": 10, "cuda_memory_bytes": ...}`,
+then `Starting NDIF controller...` and `Starting NDIF dispatcher...`. A
+`cuda_memory_bytes` of `0` means torch can't see a GPU — under Docker, the
+container toolkit isn't wired up.
 
 The compose stack also publishes these (route 1 publishes only what you pass
 `-p` for):

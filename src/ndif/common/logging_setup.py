@@ -12,7 +12,7 @@ a record *means*:
 (``ts LEVEL [logger] message key=value … (file:line)``) with the traceback on
 following lines. :func:`configure_console` installs it on the ``ndif`` logger
 (idempotently) and stops propagation so records aren't *also* printed by a root
-handler (e.g. ``logging.basicConfig`` in the dispatcher, or gunicorn's).
+handler (e.g. gunicorn's).
 """
 
 import logging

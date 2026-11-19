@@ -75,7 +75,7 @@ class TestWhoMayProvisionIt:
         monkeypatch.setattr(replica_module.Replica, "start", lambda self: None)
 
         async def main():
-            processor = Processor(model_key, asyncio.Queue())
+            processor = Processor(model_key)
 
             async def reply(*args, **kwargs):
                 return None

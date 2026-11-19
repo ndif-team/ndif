@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# Start a Ray node for NDIF and (on the head) launch the controller.
+# Start a Ray node for NDIF and (on the head) launch the controller and the
+# dispatcher.
 #
 # Head vs worker is chosen by NDIF_RAY_HEAD_ADDRESS: unset -> head; set (to the
 # head's HOST:PORT) -> join that head as a worker. This is deliberately separate
@@ -16,8 +17,8 @@ set -euo pipefail
 # spawns (controller, model actors) — inherits it.
 export NDIF_SERVICE="${NDIF_SERVICE:-ray}"
 
-# Every `ray://` client connection (the API's dispatcher, `ndif status`, the
-# dashboard) makes the Ray client proxier fork a per-client server. With
+# Every `ray://` client connection (`ndif status`, the dashboard) makes the Ray
+# client proxier fork a per-client server. With
 # grpc's fork support on (its default here), the proxier's gRPC threads make
 # it skip its fork handlers and the child dies within 100 ms, silently, about
 # half the time in a container and one time in six on bare metal — the client
@@ -83,6 +84,10 @@ if [ -z "$HEAD_ADDRESS" ]; then
     # cluster's.
     RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
         python -m ndif.services.ray.deployments.controller.controller
+
+    echo "Starting NDIF dispatcher..."
+    RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
+        python -m ndif.services.ray.queue.dispatcher
 else
     # ---- Worker node ----
     # ray start --address wants the head's HOST:PORT; tolerate a ray:// prefix.

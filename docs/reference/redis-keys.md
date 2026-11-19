@@ -29,14 +29,14 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
 `brpop` gives FIFO. The pickles are not UTF-8, which is one reason
 `RedisProvider` keeps a separate non-decoding `async_bytes_client`. The blocking
-pop uses `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle dispatch loop still wakes to
-drain errors; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one drain.
+pop uses `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle dispatch loop still comes round
+to renew `ray:connected`; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one drain.
 
 ## Control-plane health
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `ray:connected` | String | `Dispatcher.connect` — deleted on entry, set to `"1"` once Ray *and* the Controller actor answer | `src/ndif/services/api/app.py` `require_ray_connection` | none — presence is the signal | `"1"` |
+| `ray:connected` | String | `Dispatcher.beat` — `set ... ex=CONNECTED_TTL_S` on every pass of the dispatch loop, the first once Redis *and* the Controller actor answer; never deleted | `src/ndif/services/api/app.py` `require_ray_connection` | `CONNECTED_TTL_S`: three times `NDIF_QUEUE_FETCH_TIMEOUT_S`, default **30s** | `"1"`. A heartbeat — presence is the signal |
 
 Guards `POST /request`, `GET /status`, `GET /env` and `/connected`; absence yields
 a 503 "compute backend is reconnecting".
@@ -52,10 +52,10 @@ rows are identical with `env` in the name and `NDIF_ENV_TTL_S` (default **300s**
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `status` | String | The worker — `set ... ex=STATUS_TTL_S`; deleted by `Dispatcher.connect` on (re)connect | `_coalesced_fetch` | `NDIF_STATUS_TTL_S`, default **60s** | The controller's `status()` dict, JSON |
+| `status` | String | The worker — `set ... ex=STATUS_TTL_S`; deleted by `Dispatcher.startup` when a dispatcher starts | `_coalesced_fetch` | `NDIF_STATUS_TTL_S`, default **60s** | The controller's `status()` dict, JSON |
 | `result:{request_id}` | String | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` with `pickled=True`, in one pipeline with the publish of its notice | The API's `/subscribe` (`src/ndif/services/api/app.py` `subscribe`): `getdel` on the notice | `RESULT_TTL_S`, **600s**; normally consumed within milliseconds, and deleted at once when the notice reached no subscriber | The COMPLETED response's `.pickle()` bytes (`torch.save`), result blob included |
-| `status:requested` | String | `_coalesced_fetch` — `SET NX EX timeout_s`; deleted by the worker on success and failure, and on reconnect | Nobody reads the value — only the `NX` result matters | `NDIF_STATUS_TIMEOUT_S`, default **60s** | `"1"`. Coalescing lock; the TTL is a dead-man's switch |
-| `status:trigger` | Stream | `_coalesced_fetch` — `xadd(..., maxlen=16, approximate=True)`, lock winner only | The worker — `xread(block=0, count=1)` from `$` | ~16 entries, no time TTL | `{"t": "1"}` — a doorbell; content unused |
+| `status:requested` | String | `_coalesced_fetch` — `SET NX EX timeout_s`; deleted by the worker on success and failure, and by `Dispatcher.startup` | Nobody reads the value — only the `NX` result matters | `NDIF_STATUS_TIMEOUT_S`, default **60s** | `"1"`. Coalescing lock; the TTL is a dead-man's switch |
+| `status:trigger` | Stream | `_coalesced_fetch` — `xadd(..., maxlen=16, approximate=True)`, lock winner only | The worker — `xread(block=STREAM_BLOCK_MS, count=1)`, from the stream's newest entry when the worker started (`stream_tail`) | ~16 entries, no time TTL | `{"t": "1"}` — a doorbell; content unused |
 | `status:ready` | Pub/sub channel | The worker — `"ok"` or `"error"` | Waiting `/status` requests | n/a | `"ok"` / `"error"` |
 
 ## Operational events (CLI → dispatcher)
@@ -64,7 +64,7 @@ Constants in `src/ndif/common/redis/events.py`.
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `dispatcher:events` | Stream | The CLI — `xadd(..., maxlen=64, approximate=True)`: `ndif queue` and `ndif kill` (`src/ndif/cli/lib/events.py` `_request`), and `notify_reconcile` after `ndif deploy` / `ndif evict` | `Dispatcher.events_worker` — `xread(block=0, count=1)` from `$` | ~64 entries, no time TTL | `event_type` plus per-type fields |
+| `dispatcher:events` | Stream | The CLI — `xadd(..., maxlen=64, approximate=True)`: `ndif queue` and `ndif kill` (`src/ndif/cli/lib/events.py` `_request`), and `notify_reconcile` after `ndif deploy` / `ndif evict` | `Dispatcher.events_worker` — `xread(block=STREAM_BLOCK_MS, count=1)`, from the stream's newest entry when the worker started | ~64 entries, no time TTL | `event_type` plus per-type fields |
 | `ndif:cli:{event_type}:{pid}:{time_ns}` | List | `Dispatcher._respond` — `lpush` of the JSON reply, then `expire` | The CLI process that minted it (`_request`) — `brpop`, default timeout 5 s (15 s for `kill`) | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded | One JSON reply |
 
 The response key is minted per call from the PID and `time.time_ns()`, so it is
@@ -114,7 +114,7 @@ Two object-store keys that look like they belong here:
 # Everything currently set (small enough to eyeball — NDIF uses ~10 keys)
 redis-cli -u "$NDIF_REDIS_URL" keys '*'
 
-# Queue depth, and whether the dispatcher thinks Ray is up
+# Queue depth, and whether a dispatcher is running its loop
 redis-cli -u "$NDIF_REDIS_URL" llen queue
 redis-cli -u "$NDIF_REDIS_URL" get ray:connected
 
@@ -136,7 +136,8 @@ touching Redis by hand, and `ndif info` / `ndif doctor` check that Redis answers
 
 > **Gotcha:** deleting `status:requested` by hand while a refresh is genuinely in
 > flight lets a second refresh start; deleting `ray:connected` makes every guarded
-> endpoint 503 until the dispatcher next completes `connect()`. Neither is
+> endpoint 503 until the dispatch loop's next pass sets it again, within
+> `NDIF_QUEUE_FETCH_TIMEOUT_S` on an idle queue. Neither is
 > corrupting, but both will confuse a debugging session.
 
 > **Gotcha:** these names are unprefixed, so two NDIF deployments pointed at one

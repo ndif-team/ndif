@@ -162,8 +162,8 @@ inherited and used by `respond(..., pickled=True)` for an inline result;
 
 ## Controller schemas
 
-`src/ndif/common/schema/controller.py`. Both sides speak them — the API-side queue
-calls, the Ray-side controller answers — as Ray call arguments and returns, not
+`src/ndif/common/schema/controller.py`. Both sides speak them — the queue
+calls, the controller answers — as Ray call arguments and returns, not
 JSON. `MODEL_KEY`, `REPLICA_ID` and `NODE_ID` are `str` aliases from
 `src/ndif/common/types.py`.
 

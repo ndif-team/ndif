@@ -11,7 +11,7 @@ sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/s
 ## What this covers
 
 The single actor that decides which model runs on which GPU. It answers `deploy` / `evict` /
-`get_deployment` for the API's queue and the `ndif` CLI, and turns its placement decisions into Ray
+`get_deployment` for the queue and the `ndif` CLI, and turns its placement decisions into Ray
 actor lifecycle operations. This page is the home of sizing, placement, the eviction policy and the
 `build()`/`apply()` diff; [Deployments and Eviction](../concepts/deployments-and-eviction.md) is the
 mental-model version. Three facts frame the design:

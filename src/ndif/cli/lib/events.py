@@ -41,7 +41,7 @@ def _request(event_type: str, redis_url: Optional[str], timeout: int, **fields) 
         result = client.brpop(response_key, timeout=timeout)
         if result is None:
             raise TimeoutError(
-                f"No response from the dispatcher for {event_type}. Is the API running?"
+                f"No response from the dispatcher for {event_type}. Is the Ray head running?"
             )
         return json.loads(result[1])
     finally:

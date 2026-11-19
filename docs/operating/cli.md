@@ -20,7 +20,7 @@ command belongs to is most of the battle:
 2. **Model control-plane ops** — `deploy`, `scale`, `evict`, `restart`, `status`,
    `export`. They talk to the Ray controller actor, from anywhere that can reach
    `NDIF_RAY_ADDRESS`.
-3. **Queue introspection** — `queue`, `kill`. These reach the API's dispatcher
+3. **Queue introspection** — `queue`, `kill`. These reach the dispatcher
    over a Redis stream, not HTTP.
 
 | Command | Purpose | Talks to |
@@ -386,9 +386,10 @@ What survives the round trip, and what does not (`padding_factor`,
 `queue` and `kill` do **not** use HTTP. They append an event to the Redis stream
 `dispatcher:events` carrying a unique `response_key`, then block on `BRPOP` for
 the dispatcher's JSON reply with a 5s timeout, 15s for a kill (`src/ndif/cli/lib/events.py`
-`_request`). The dispatcher runs as a child of the API's gunicorn master, so
-`No response from the dispatcher` means Redis is up but the **API** is not (or
-its dispatcher died) — not that Redis is down.
+`_request`). The dispatcher runs as an actor on the Ray head, so
+`No response from the dispatcher` means Redis is up but the **dispatcher** is not
+answering: the head is down or still starting, or the dispatcher stopped. It
+does not mean Redis is down.
 
 ### `ndif queue`
 

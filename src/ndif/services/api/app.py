@@ -107,10 +107,11 @@ async def log_unhandled_exception(
 async def require_ray_connection() -> None:
     """Reject requests when the compute backend (Ray) isn't reachable.
 
-    The dispatcher maintains the ``ray:connected`` Redis flag (set once
-    connected, deleted while reconnecting). Used as a route dependency to
-    short-circuit with 503 before doing any work, rather than enqueuing a
-    request the backend can't serve.
+    The dispatcher, which runs inside the Ray cluster, keeps the
+    ``ray:connected`` Redis key alive while its dispatch loop runs; the key
+    expires once it stops. Used as a route dependency to short-circuit with 503
+    before doing any work, rather than enqueuing a request the backend can't
+    serve.
     """
     if not await RedisProvider.async_client.get("ray:connected"):
         raise HTTPException(

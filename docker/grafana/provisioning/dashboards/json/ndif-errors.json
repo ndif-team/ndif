@@ -265,7 +265,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum(count_over_time({service=\"api\", environment=~\"${environment:regex}\"} | json | error_type=~`evicted.*` [$__range]))",
+          "expr": "sum(count_over_time({service=\"dispatcher\", environment=~\"${environment:regex}\"} | json | error_type=~`evicted.*` [$__range]))",
           "queryType": "instant",
           "legendFormat": "__auto",
           "refId": "A"
@@ -493,7 +493,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum(rate({service=\"api\", environment=~\"${environment:regex}\"} | json | error_type=~`evicted.*` [$__interval]))",
+          "expr": "sum(rate({service=\"dispatcher\", environment=~\"${environment:regex}\"} | json | error_type=~`evicted.*` [$__interval]))",
           "queryType": "range",
           "legendFormat": "evicted",
           "refId": "A"

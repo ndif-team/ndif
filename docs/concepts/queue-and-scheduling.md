@@ -3,7 +3,7 @@ title: Queue and Scheduling
 one_liner: One Redis list feeding per-model in-memory priority queues inside a single dispatcher process — how a request finds its model, when a second replica appears, and what "fair" does and doesn't mean here.
 tags: [concepts, queue, redis, api]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/deployments-and-eviction.md, docs/concepts/status-and-results.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/api/app.py, src/ndif/services/ray/start.sh]
 ---
 
 # Queue and Scheduling
@@ -44,10 +44,11 @@ api worker N ─┘                                            │
                                    ModelActor                 ModelActor
 ```
 
-The dispatcher is not a container — it is a process the API's gunicorn master
-spawns at startup (`src/ndif/services/api/gunicorn_conf.py` `on_starting`). It
-is *spawned*, not forked, so the telemetry providers' background threads are
-created fresh in it.
+The dispatcher is not a container — it is a detached Ray actor on the head
+node, launched by the ray service's `start.sh` right after the controller
+(`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`). It calls the
+controller and the model actors as one actor calls another, and its only link
+to the API is Redis.
 
 ## Enqueue and drain
 
@@ -57,12 +58,14 @@ the other end, which makes it FIFO, then drains up to
 `NDIF_QUEUE_FETCH_BATCH_MAX - 1` more with non-blocking `RPOP` to amortize
 round-trips (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`). The
 blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle loop still
-wakes to drain the error queue and notice a broken Ray connection.
+comes round to renew `ray:connected`, the key that tells the API a dispatcher
+is running.
 
 > **Gotcha:** once a request is popped it lives only in the dispatcher's memory.
-> Restart the API container and every queued-but-not-yet-running request is gone
-> — the client keeps waiting on a websocket that will never see another update.
-> Requests still sitting in the Redis list survive.
+> If the dispatcher goes down — with the Ray head, or alone, in which case Ray
+> restarts it — every request it held is gone, and the client keeps waiting on a
+> websocket that will never see another update. Requests still sitting in the
+> Redis list survive. An API restart does not touch the queue.
 
 ## How a request finds its model
 
@@ -127,8 +130,9 @@ cancellation, or a purge; the controller is what reclaims their GPU memory
 
 All queue and autoscaling settings, with defaults, are in
 [Environment variables](../reference/env-vars.md#queue-and-autoscaling). They
-are read once at import into a frozen `QueueConfig`, so changing one means
-restarting the API.
+are read once at import into a frozen `QueueConfig` by the dispatcher, so they
+are set in the environment of the ray service's head node, and changing one
+means restarting it.
 
 ## Requeue, cancel, purge
 
@@ -147,9 +151,8 @@ Three things can pull a request back out of flight:
   takes the next request; only if the actor has not finished it within a few
   seconds is the replica's worker task cancelled instead
   ([Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs)).
-- **Purge.** A Ray connection error makes the dispatcher error every queued
-  request for every model, clear the queues, cancel all replicas, and reconnect
-  (`Dispatcher.purge`).
+- **Purge.** A failed provision makes the Processor error every queued request
+  for its model, clear the queue and cancel its replicas (`Processor.purge`).
 
 ## What "fair" means here
 

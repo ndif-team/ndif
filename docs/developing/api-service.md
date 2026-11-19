@@ -17,10 +17,10 @@ and how the result gets back out.
 
 Three constraints shape the whole design:
 
-1. **The API process cannot talk to Ray.** Only the dispatcher holds a Ray
-   client connection. Everything the API needs from the cluster (status, env,
-   dispatch) goes through Redis, which is why `/status` and `/env` are
-   cache-and-wake-up dances rather than RPCs.
+1. **The API process cannot talk to Ray.** The dispatcher runs inside the Ray
+   cluster, and Redis is the only link between the two. Everything the API needs
+   from the cluster (status, env, dispatch) goes through Redis, which is why
+   `/status` and `/env` are cache-and-wake-up dances rather than RPCs.
 2. **The API forwards results but never produces them.** The model actor
    publishes a small result on the COMPLETED response and the `/subscribe`
    forwarder passes it to the client; a large one, or any non-blocking result,
@@ -42,22 +42,17 @@ python:ndif.services.api.gunicorn_conf ndif.services.api.app:app`.
 `src/ndif/services/api/gunicorn_conf.py` sets `bind` from `NDIF_API_PORT`
 (8001), `workers` from `NDIF_API_WORKERS` (1), `timeout` from
 `NDIF_API_TIMEOUT` (120), and `worker_class = "uvicorn.workers.UvicornWorker"`.
-Two hooks do the interesting work:
-
-- **`on_starting`** starts the queue dispatcher as a **spawned** (not forked)
-  process, exactly once, in the gunicorn master. Its target `_run_dispatcher`
-  imports the Influx and Loki providers and then `Dispatcher.start()`.
-- **`post_fork`** imports `ndif.common.providers.influx` and
-  `ndif.common.providers.loki` *in each worker*.
-
-Both exist because the telemetry providers must connect after the fork; the
-reasoning, and why `preload_app = True` breaks it, is in
+One hook does the interesting work: **`post_fork`** imports
+`ndif.common.providers.influx` and `ndif.common.providers.loki` *in each
+worker*. It exists because the telemetry providers must connect after the fork;
+the reasoning, and why `preload_app = True` breaks it, is in
 [Telemetry Internals](telemetry-internals.md).
 
-> **Gotcha:** the dispatcher lives in the *master's* child, not in a worker. Set
-> `NDIF_API_WORKERS=4` and you get four web workers and still exactly one
-> dispatcher — which is what you want, since the dispatcher holds all per-model
-> queue state in process memory. See [Queue Internals](queue-internals.md).
+> **Gotcha:** the dispatcher is not part of this service: it is an actor on the
+> Ray head. Set `NDIF_API_WORKERS=4` and you get four web workers and still
+> exactly one dispatcher — which is what you want, since the dispatcher holds all
+> per-model queue state in process memory. See
+> [Queue Internals](queue-internals.md).
 
 ## App-level middleware and handlers
 
@@ -74,7 +69,7 @@ key or an unreachable backend raises before any endpoint body runs.
 
 **`require_ray_connection`** (`src/ndif/services/api/app.py`) — an app-level
 route dependency, not a middleware. It reads the `ray:connected` Redis flag
-(written by `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.connect`) and
+(kept alive by `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.beat`) and
 raises 503 if absent. Applied to `/request`, `/status`, `/env`, and `/connected`.
 
 **`validate_request`** (`src/ndif/services/api/auth.py`) — the `/request` body
@@ -180,7 +175,7 @@ flowchart TB
     S["/subscribe websocket"]
   end
   R[("Redis")]
-  DP["Dispatcher process"]
+  DP["Dispatcher actor (Ray head)"]
   MA["model actor (Ray)"]
   OS[("Object store")]
 
@@ -266,7 +261,8 @@ There is almost none, which is why multiple workers are safe. Per worker: the
 version minimums read at import, the Redis client singletons, the boto3 clients
 and `_bucket_ready`, the Postgres pool, the Loki and Influx shipper threads
 created in `post_fork`, and any live websocket sessions. Queue / Processor /
-Replica state is **not** here at all — it belongs to the dispatcher process.
+Replica state is **not** here at all — it belongs to the dispatcher actor, on
+the Ray head.
 
 A client's `/subscribe` socket and its `POST /request` can land on different
 workers. That is fine: the only link between them is the `session_id` Redis
@@ -287,8 +283,9 @@ channel.
 > unknown key resolves to `{"email": null, "tags": []}`; with auth on, a malformed
 > one returns 400.
 
-> **`ray:connected` has no TTL.** If the dispatcher process dies outright, the
-> flag stays set and `require_ray_connection` keeps passing — see
+> **`ray:connected` outlives the dispatcher by its TTL.** For up to 30 s after
+> the dispatch loop stops, the flag is still set, `require_ray_connection` keeps
+> passing and requests go onto a list nothing is popping — see
 > [The Redis Layer](redis-layer.md#the-rayconnected-flag).
 
 > **No request size limit.** `await blob.read()` buffers the whole payload, then

@@ -45,6 +45,10 @@ class RedisProvider(Provider):
     async_client: aioredis.Redis
     async_bytes_client: aioredis.Redis
 
+    # Seconds an async client waits for a reply; None waits forever. Set, with
+    # another ``connect()``, by a process that makes no pubsub subscription.
+    async_socket_timeout: Optional[float] = None
+
     # Memoized max_publish_bytes, per process (None = not derived yet).
     _max_publish_bytes: Optional[int] = None
 
@@ -62,6 +66,11 @@ class RedisProvider(Provider):
         a blocking call out-waits 5s. Setting it explicitly restores the
         pre-8.0 behavior (no read timeout on blocking ops).
 
+        The async clients take ``async_socket_timeout`` instead, when a process
+        sets one. The dispatcher does, to a value above the block of its longest
+        blocking command: it can sit across a WAN from Redis, where a connection
+        can die without closing and a read with no timeout never returns.
+
         ``retry`` is explicit too: ``from_url`` doesn't get the retries that
         ``redis.Redis()`` has by default, so without it one dead connection loses
         the result of a request a model actor already finished. The async clients
@@ -75,10 +84,10 @@ class RedisProvider(Provider):
             retry=Retry(ExponentialWithJitterBackoff(base=1, cap=10), 3),
         )
         cls.async_client = aioredis.Redis.from_url(
-            cls.url, decode_responses=True, socket_timeout=None
+            cls.url, decode_responses=True, socket_timeout=cls.async_socket_timeout
         )
         cls.async_bytes_client = aioredis.Redis.from_url(
-            cls.url, socket_timeout=None
+            cls.url, socket_timeout=cls.async_socket_timeout
         )
         # A new connection may be a different server with different limits.
         cls._max_publish_bytes = None

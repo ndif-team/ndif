@@ -53,8 +53,8 @@ the provisioned Loki datasource puts on each `request_id`:
 ```
 
 Without Loki (`NDIF_LOKI_URL` unset) the same records are on each process's
-console: `just logs api` for the API and dispatcher, the Ray dashboard's
-per-actor log for the model actor.
+console: `just logs api` for the API, the Ray dashboard's per-actor log for the
+dispatcher and the model actor.
 
 ## Step 2 — read the lifecycle timeline
 
@@ -231,7 +231,7 @@ from(bucket: "metrics")
 | `Replica was evicted while processing your request.` with no kill | Server-side; retry. If it repeats, the model is being evicted under memory pressure — [Model OOM on deploy](model-oom-on-deploy.md). |
 | `Could not deploy this model. <reason>` | The controller refused the deploy and said why — a wrong or gated repo, or no room. Not retryable until that changes. |
 | `Error starting model.` / `Error provisioning model.` | The cluster couldn't place or start the model and gave no reason. Retry later; if it repeats, check `ndif.queue.processor` and [Model OOM on deploy](model-oom-on-deploy.md). |
-| `Critical server error occurred.` | The API lost Ray; everything queued at that moment was errored. Retry. |
+| No terminal status, and the dispatcher or the Ray head went down while the job was queued or running | The request was in the dispatcher's memory and went with it; nothing errored it. Ask them to resubmit. |
 | 401 / 403 at ingress | Their key. `/whoami` confirms what the server sees. |
 | 400 mentioning a version | The client version gate (`NDIF_MIN_NNSIGHT_VERSION` / `NDIF_MIN_PYTHON_VERSION`). Tell them the minimum; `ndif env` lists the cluster's versions. |
 | `COMPLETED` server-side, nothing client-side | Your object-store URL configuration, Step 5. Fix it and ask them to re-run. |

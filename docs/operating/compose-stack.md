@@ -65,14 +65,14 @@ python, since the image has no curl.
   Ray is up. Grafana runs with anonymous admin and provisioned datasources. Drop
   all four and NDIF runs identically; see [Observability](observability.md).
 - **api** — `NDIF_SERVICE=api` → `ndif start api` → gunicorn with uvicorn
-  workers serving `ndif.services.api.app:app`, plus the queue dispatcher spawned
-  once by the master.
+  workers serving `ndif.services.api.app:app`.
 - **ray** — `NDIF_SERVICE=ray` → `src/ndif/services/ray/start.sh`. With
   `NDIF_RAY_HEAD_ADDRESS` unset it starts a Ray **head** and launches the NDIF
-  controller. Model replicas are detached Ray actors in the `NDIF` namespace —
-  no Ray Serve. Publishes 8265 (Ray dashboard) and 10001 (the `ray://` client
-  server the API and CLI connect through); its metrics port 8080 and GCS port
-  stay internal. It sets `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to the sandbox actor,
+  controller and the queue dispatcher. Model replicas are detached Ray actors in
+  the `NDIF` namespace — no Ray Serve. Publishes 8265 (Ray dashboard) and 10001
+  (the `ray://` client server the CLI and dashboard connect through); its
+  metrics port 8080 and GCS port stay internal. It sets
+  `NDIF_DEFAULT_MODEL_ACTOR_CLASS` to the sandbox actor,
   which the image and a from-source install do not — see
   [Configuration](configuration.md#what-must-differ-from-the-dev-defaults).
 - **dashboard** — same image, `NDIF_SERVICE=dashboard` → uvicorn on 8081 plus a
@@ -141,7 +141,7 @@ service**; a service that misses one silently talks to itself.
 | Variable | Provider default | Compose sets | On |
 |---|---|---|---|
 | `NDIF_REDIS_URL` | `redis://localhost:6379` | `redis://redis:6379` | `api`, `ray`, `dashboard` |
-| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://ray:10001` | `api`, `dashboard` — not `ray`, which starts the cluster rather than dialing it |
+| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://ray:10001` | `dashboard` — not `api`, which has no connection to Ray, nor `ray`, which starts the cluster rather than dialing it |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `http://rustfs:9000` | `api`, `ray` |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | falls back to the above | `http://localhost:9000` | `api`, `ray` |
 | `NDIF_LOKI_URL` | unset (shipping off) | `http://loki:3100/loki/api/v1/push` | `api`, `ray` |
@@ -154,10 +154,9 @@ signs result URLs for the *client*, so `localhost:9000` works only for a client
 on this host. A colleague on your LAN needs an address they can resolve.
 
 The costly omission is `NDIF_REDIS_URL` on `ray`. It is not a startup crash: the
-controller and model actors come up, a request runs to completion on the GPU,
-and then the response cannot be published — the client sits at `DISPATCHED` or
-`RUNNING` while the job is already done. Model actors inherit the controller's
-provider config through their Ray `runtime_env`
+controller and the dispatcher come up, but the dispatcher cannot reach Redis, so
+it never sets `ray:connected` and every request gets a 503. The dispatcher and
+the model actors get their provider config through their Ray `runtime_env`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
 `_provider_runtime_env`), so setting it on `ray` fixes every actor, and missing
 it breaks every actor at once.
