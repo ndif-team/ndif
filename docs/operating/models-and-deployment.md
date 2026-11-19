@@ -3,7 +3,7 @@ title: Models and Deployment
 one_liner: Getting a model running on an NDIF — model keys, every way a deployment gets created, the per-model config fields, `trust_remote_code` in the key, how GPU memory is checked before a deploy is accepted, tensor parallelism, pinning, eviction, export, and PEFT adapters.
 tags: [operating, controller, cli, ray, runbook, gotchas]
 related: [docs/concepts/deployments-and-eviction.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/configuration.md, docs/operating/quickstart.md, docs/concepts/queue-and-scheduling.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/model-oom-on-deploy.md]
-sources: [src/ndif/common/types.py, src/ndif/services/api/auth.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/evict.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/scale.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/processor.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/jobs/reconcile.py]
+sources: [src/ndif/common/types.py, src/ndif/services/api/auth.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/evict.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/scale.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/jobs/reconcile.py]
 ---
 
 # Models and Deployment
@@ -77,7 +77,7 @@ with what nnsight computed locally.
 The implicit path matters most. When a request arrives for a model with no HOT
 replica, `Processor.start` asks the controller for replicas and, finding none,
 calls `Replica.provision`, which asks the controller to scale the model by one
-with a bare `DeploymentConfig()` (`src/ndif/services/api/queue/replica.py`).
+with a bare `DeploymentConfig()` (`src/ndif/services/ray/queue/replica.py`).
 **You do not have to pre-deploy anything** — a user's first `remote=True` trace
 pulls the model down and loads it. Pre-deploying and pinning control *which*
 models stay warm. The one check on this path is for a key carrying

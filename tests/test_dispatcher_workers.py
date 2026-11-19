@@ -19,7 +19,7 @@ pytest.importorskip("ray", reason="the dispatcher imports the Ray provider")
 
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from ndif.services.api.queue import dispatcher as dispatcher_module
+from ndif.services.ray.queue import dispatcher as dispatcher_module
 
 
 class RedisDown:

@@ -206,7 +206,7 @@ def test_connection_check_on_an_event_loop_gives_up_at_the_limit(release, monkey
 def test_an_error_reconnects_only_if_the_connection_check_fails(monkeypatch, answers):
     """An error from a connection that was since replaced arrives after the
     reconnect, and reads like any connection error."""
-    from ndif.services.api.queue import dispatcher as dispatcher_module
+    from ndif.services.ray.queue import dispatcher as dispatcher_module
 
     connects = []
     monkeypatch.setattr(ray_provider.RayProvider, "connected", lambda: answers)
@@ -227,7 +227,7 @@ def test_an_error_reconnects_only_if_the_connection_check_fails(monkeypatch, ans
 def test_connect_resets_before_it_checks(monkeypatch, answers):
     """It runs where the connection is absent or was just found dead, and a check
     of a dead connection waits out the limit."""
-    from ndif.services.api.queue import dispatcher as dispatcher_module
+    from ndif.services.ray.queue import dispatcher as dispatcher_module
 
     calls = []
     redis = SimpleNamespace(
@@ -256,7 +256,7 @@ def test_connect_resets_before_it_checks(monkeypatch, answers):
 def test_purge_cancels_a_start_still_under_way(monkeypatch):
     """A ``start()`` from before a purge fails once the new connection answers,
     and would then purge the requests that came after it."""
-    from ndif.services.api.queue import processor as processor_module
+    from ndif.services.ray.queue import processor as processor_module
 
     responses = []
 

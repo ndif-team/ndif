@@ -3,7 +3,7 @@ title: Architecture Overview
 one_liner: Top-down map of NDIF's processes — which code runs where, who owns which connection, and where state actually lives.
 tags: [internals, dev, api, ray, queue, sandbox]
 related: [docs/concepts/request-lifecycle.md, docs/developing/api-service.md, docs/developing/queue-internals.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/providers.md, docs/developing/repo-layout.md]
-sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/common/providers/base.py]
+sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/common/providers/base.py]
 ---
 
 # Architecture Overview
@@ -96,7 +96,7 @@ An API worker's job is narrow: authenticate, validate, stamp the request, and
 
 ### 2. The queue — one process, one event loop
 
-`src/ndif/services/api/queue/`. The dispatcher runs a single asyncio loop that
+`src/ndif/services/ray/queue/`. The dispatcher runs a single asyncio loop that
 owns everything downstream of the Redis list:
 
 - `Dispatcher` — `BRPOP`s the shared list, drains a batch, routes by `model_key`.

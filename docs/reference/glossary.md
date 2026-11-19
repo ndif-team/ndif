@@ -3,7 +3,7 @@ title: Glossary
 one_liner: Alphabetical index of NDIF-specific terms, plus the nnsight terms an NDIF reader needs.
 tags: [reference, dev]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/deployments-and-eviction.md, docs/concepts/queue-and-scheduling.md, docs/concepts/sandbox-execution.md, docs/developing/controller-internals.md, docs/developing/queue-internals.md, docs/developing/sandbox-internals.md, docs/developing/providers.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/reference/schemas.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/common/types.py, src/ndif/common/providers/base.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/cli/service.py]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/common/types.py, src/ndif/common/providers/base.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/cli/service.py]
 ---
 
 # Glossary
@@ -54,7 +54,7 @@ replicas are returned by `get_deployment`. See
 
 The single process, spawned by the gunicorn master, that pops requests from the
 Redis queue and routes each to its model's **Processor**
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher`). It is the only API-side
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher`). It is the only API-side
 holder of a Ray client, which is why `/status` and `/env` go through Redis caches.
 See [queue-internals.md](../developing/queue-internals.md).
 
@@ -132,7 +132,7 @@ the socket as a `PARK` message. See
 
 One per model key, owned by the dispatcher: an in-memory request queue, a pool of
 **Replica** workers draining it, and an autoscaling loop
-(`src/ndif/services/api/queue/processor.py` `Processor`). Provisions on first
+(`src/ndif/services/ray/queue/processor.py` `Processor`). Provisions on first
 request, re-provisions when a replica dies with work queued, never torn down. See
 [queue-internals.md](../developing/queue-internals.md).
 
@@ -153,7 +153,7 @@ memory, one per Processor. See
 ## Replica
 
 One serving instance of a model: on the Ray side a **Deployment** and its model
-actor; on the API side a `Replica` (`src/ndif/services/api/queue/replica.py`
+actor; on the API side a `Replica` (`src/ndif/services/ray/queue/replica.py`
 `Replica`) whose task dispatches to it. `DeploymentConfig.replicas` is additive.
 See [queue-internals.md](../developing/queue-internals.md).
 

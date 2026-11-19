@@ -10,7 +10,7 @@ the shared error queue between batches, purging everything and reconnecting on a
 connection error.
 
 Run as a standalone process:
-    python -m ndif.services.api.queue.dispatcher
+    python -m ndif.services.ray.queue.dispatcher
 """
 
 import asyncio

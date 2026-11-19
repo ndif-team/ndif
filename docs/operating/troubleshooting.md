@@ -3,7 +3,7 @@ title: Troubleshooting
 one_liner: The single "something broke" entry point — a route table to the runbooks and error lookup, the first commands to run, and a symptom → diagnosis → fix table for the stack as a whole.
 tags: [operating, runbook, gotchas, api, ray, redis, dashboard, telemetry]
 related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/observability.md, docs/operating/production.md, docs/concepts/services-and-topology.md, docs/reference/error-messages.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/add-a-gpu-node.md, docs/reference/ports.md, docs/reference/env-vars.md]
-sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
+sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
 ---
 
 # Troubleshooting
@@ -245,7 +245,7 @@ Model-actor logs are the ones people can't find: they are under
 | An HF "requires you to execute the code" error | The repo ships custom modeling code and the key lacks `trust_remote_code` | Deploy with `--trust-remote-code` ([the key field](models-and-deployment.md#trust_remote_code-in-the-model-key)) |
 | The `Could not deploy this model` refusal for `trust_remote_code` on a client's request | Nothing is running for that key and no queued request's API key has the tag ([Error Messages](../reference/error-messages.md#error-responses)) | Deploy it as an admin, or grant the key the `trust_remote_code` user_tag |
 | `ndif status` shows the actor `UNHEALTHY`, repeatedly | The actor dies during weight load and Ray restarts it | The actor's log in the Ray dashboard; usually a load-time OOM |
-| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/api/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
+| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/ray/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
 
 Raising `NDIF_MODEL_CACHE_PERCENTAGE` does **not** help a GPU shortage: it sizes
 the **CPU** RAM used as WARM cache. For GPU pressure: evict explicitly, lower

@@ -43,9 +43,9 @@ class TestWhoMayProvisionIt:
 
     @staticmethod
     def _run(monkeypatch, model_key, tags):
-        from ndif.services.api.queue import processor as processor_module
-        from ndif.services.api.queue import replica as replica_module
-        from ndif.services.api.queue.processor import Processor, ProcessorStatus
+        from ndif.services.ray.queue import processor as processor_module
+        from ndif.services.ray.queue import replica as replica_module
+        from ndif.services.ray.queue.processor import Processor, ProcessorStatus
 
         scaled = []
         purged = []

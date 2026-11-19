@@ -53,7 +53,7 @@ def _run_dispatcher():
     import ndif.common.providers.influx  # noqa: F401  (import connects it)
     import ndif.common.providers.loki  # noqa: F401  (import connects it)
 
-    from ndif.services.api.queue.dispatcher import Dispatcher
+    from ndif.services.ray.queue.dispatcher import Dispatcher
 
     Dispatcher.start()
 

@@ -221,7 +221,7 @@ class TestTheDistinctionIsLoadBearing:
 @pytest.fixture
 def queue_replica(monkeypatch):
     """The API queue's ``Replica``, with Ray's lookup and the sleep replaced."""
-    from ndif.services.api.queue import replica as replica_module
+    from ndif.services.ray.queue import replica as replica_module
 
     async def no_sleep(seconds):
         pass

@@ -74,7 +74,7 @@ key or an unreachable backend raises before any endpoint body runs.
 
 **`require_ray_connection`** (`src/ndif/services/api/app.py`) — an app-level
 route dependency, not a middleware. It reads the `ray:connected` Redis flag
-(written by `src/ndif/services/api/queue/dispatcher.py` `Dispatcher.connect`) and
+(written by `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.connect`) and
 raises 503 if absent. Applied to `/request`, `/status`, `/env`, and `/connected`.
 
 **`validate_request`** (`src/ndif/services/api/auth.py`) — the `/request` body
@@ -149,7 +149,7 @@ by sending `tags: []` without standing up Postgres.
 
 ### Who may deploy a `trust_remote_code` key
 
-`Processor.start` (`src/ndif/services/api/queue/processor.py`), when
+`Processor.start` (`src/ndif/services/ray/queue/processor.py`), when
 `get_deployment` reports no replicas, refuses a key whose `trust_remote_code`
 field is set (`src/ndif/common/types.py` `key_field`) unless some queued request
 has `trust_remote_code`, raising `DeploymentError` before `Replica.provision`.
@@ -275,7 +275,7 @@ channel.
 ## Gotchas
 
 > **Pickle on the wire.** `create_request` pickles a `BackendRequestModel` into a
-> Redis list and `Dispatcher.get` (`src/ndif/services/api/queue/dispatcher.py`)
+> Redis list and `Dispatcher.get` (`src/ndif/services/ray/queue/dispatcher.py`)
 > unpickles it. Anyone who can write to the `queue` key gets code execution in
 > the dispatcher process. Redis has no auth in the dev compose stack and its port
 > is published to the host (compose service `redis`, `ports`).

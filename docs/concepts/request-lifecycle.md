@@ -3,7 +3,7 @@ title: Request Lifecycle
 one_liner: One `model.trace(..., remote=True)` from the client's POST to the saved values landing back in the user's frame — every hop, and what breaks at each.
 tags: [concepts, api, queue, ray, redis]
 related: [docs/concepts/services-and-topology.md, docs/concepts/queue-and-scheduling.md, docs/concepts/status-and-results.md, docs/concepts/deployments-and-eviction.md, docs/concepts/sandbox-execution.md, docs/developing/queue-internals.md, docs/developing/model-actor.md, docs/developing/api-service.md, docs/reference/http-api.md]
-sources: [src/ndif/services/api/app.py, src/ndif/common/schema/request.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/common/providers/objectstore.py]
+sources: [src/ndif/services/api/app.py, src/ndif/common/schema/request.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/common/providers/objectstore.py]
 ---
 
 # Request Lifecycle
@@ -118,13 +118,13 @@ returns; everything after this is asynchronous.
 **4. Dispatcher pops.** The dispatcher is a separate spawned process started by
 gunicorn's `on_starting` hook. Its loop `BRPOP`s the queue with a 10s timeout
 and then drains up to 31 more with non-blocking `RPOP`, a batch of at most
-`NDIF_QUEUE_FETCH_BATCH_MAX` (32) (`src/ndif/services/api/queue/dispatcher.py`
+`NDIF_QUEUE_FETCH_BATCH_MAX` (32) (`src/ndif/services/ray/queue/dispatcher.py`
 `Dispatcher.get`) — so the shared list is FIFO and one pop amortizes into a
 batch. Each request is routed by `model_key` to a lazily created `Processor`
 (`Dispatcher.dispatch`).
 
 **5. Processor queues and provisions.** `Processor.enqueue`
-(`src/ndif/services/api/queue/processor.py`) hands the request to
+(`src/ndif/services/ray/queue/processor.py`) hands the request to
 `RequestQueue.put`, which stamps `enqueued_at` and orders by
 `(group, prepend, enqueued_at)` — so a `priority` request sorts ahead of normal
 traffic and stays FIFO against its peers. `enqueue` then calls `ensure_started`
@@ -144,7 +144,7 @@ named `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. See
 **7. Replica dispatches.** `Replica.wait` polls `__ray_ready__` until the actor
 answers, then a worker task pulls from the shared per-model queue. For each
 request it publishes `DISPATCHED` and makes the Ray call
-`handle.run.remote(request)` (`src/ndif/services/api/queue/replica.py`
+`handle.run.remote(request)` (`src/ndif/services/ray/queue/replica.py`
 `Replica.dispatch`).
 The pickled `BackendRequestModel` — payload and all — crosses the Ray boundary
 here.

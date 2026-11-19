@@ -36,7 +36,7 @@ every module takes a dotted child so records carry a meaningful `logger` label.
 | `ndif` | the providers (the object-store provider has no logger) |
 | `ndif.api` | `src/ndif/services/api/app.py`, `src/ndif/services/api/auth.py` |
 | `ndif.request` | request lifecycle transitions (`src/ndif/common/schema/request.py`) |
-| `ndif.queue.dispatcher` / `.processor` / `.replica` | the matching modules under `src/ndif/services/api/queue/` |
+| `ndif.queue.dispatcher` / `.processor` / `.replica` | the matching modules under `src/ndif/services/ray/queue/` |
 | `ndif.controller` | the controller and every `cluster/*.py` module |
 | `ndif.modeling` | the model actor, its helpers, and the tensor-parallel package |
 | `ndif.dashboard.reconcile` | the dashboard's reconcile job |

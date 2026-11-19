@@ -3,7 +3,7 @@ title: The Redis Layer
 one_liner: common/redis/* — the coalesced status/env caches, the CLI event stream, and response pub/sub, with the exact keys, TTLs and handshakes each one uses.
 tags: [internals, dev, redis, api, queue, cli]
 related: [docs/reference/redis-keys.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/developing/api-service.md, docs/concepts/status-and-results.md, docs/concepts/queue-and-scheduling.md, docs/reference/env-vars.md, docs/developing/cli-internals.md]
-sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py]
+sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py]
 ---
 
 # The Redis Layer
@@ -24,7 +24,7 @@ pub/sub, and the `ray:connected` flag.
 | Operational events | Stream + per-caller reply list | CLI → dispatcher → CLI |
 | Response publishing | Pub/sub channel per session | Anything that advances a request → the client's websocket |
 
-The queue itself is configured in `src/ndif/services/api/queue/config.py` and
+The queue itself is configured in `src/ndif/services/ray/queue/config.py` and
 covered in [Queue Internals](queue-internals.md). For the key-by-key table see
 [Redis Keys](../reference/redis-keys.md).
 
@@ -33,7 +33,7 @@ covered in [Queue Internals](queue-internals.md). For the key-by-key table see
 **Only the dispatcher process holds a Ray client.** API workers never call
 `ray.init()`; the dispatcher is a separate process spawned by gunicorn's
 `on_starting` and is the sole owner of the connection
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.connect`). So an
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.connect`). So an
 endpoint like `/status`, whose data lives on the controller actor, cannot fetch
 it directly. A per-worker RPC would also multiply a heavy controller call by
 worker count and request rate, and Redis is already a hard dependency, so the
@@ -79,7 +79,7 @@ Both endpoints call `_coalesced_fetch` (`src/ndif/services/api/app.py`):
 ### The refresh path
 
 `Dispatcher.status_worker` and `Dispatcher.env_worker`
-(`src/ndif/services/api/queue/dispatcher.py`) are structurally identical tasks
+(`src/ndif/services/ray/queue/dispatcher.py`) are structurally identical tasks
 started by `Dispatcher.dispatch_worker`. Each blocks on `xread` with
 `block=0, count=1`, so one refresh happens per trigger, not per waiting request:
 

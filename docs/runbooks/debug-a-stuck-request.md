@@ -3,7 +3,7 @@ title: Debug a Stuck Request
 one_liner: A user's remote trace is hung — walk the path from request id to root cause across the API, the dispatcher, the controller, the model actor and the logs, then unstick it.
 tags: [runbook, operating, queue, redis, ray, telemetry, errors]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/concepts/status-and-results.md, docs/developing/queue-internals.md, docs/developing/model-actor.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/reference/redis-keys.md, docs/runbooks/trace-a-users-failed-job.md, docs/runbooks/model-oom-on-deploy.md]
-sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/queue/config.py, src/ndif/common/schema/request.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/cli/commands/queue.py, src/ndif/cli/lib/events.py, src/ndif/cli/lib/restart.py, docker/grafana/provisioning/datasources/loki.yml]
+sources: [src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/queue/config.py, src/ndif/common/schema/request.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/cli/commands/queue.py, src/ndif/cli/lib/events.py, src/ndif/cli/lib/restart.py, docker/grafana/provisioning/datasources/loki.yml]
 ---
 
 # Debug a Stuck Request
@@ -80,7 +80,7 @@ rcli get ray:connected                                        # "1" while the di
 `/connected`, `/request`, `/status` and `/env` 503 unless `ray:connected` is set
 (`src/ndif/services/api/app.py` `require_ray_connection`). The dispatcher deletes
 the flag when it starts reconnecting and sets it once Ray answers
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.connect`).
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.connect`).
 
 **If the flag is missing**, the dispatcher is retrying Ray once a second, and it
 has already **purged every Processor**: every queued and executing request was
@@ -133,7 +133,7 @@ Use 'ndif queue --json-output' for raw data
 ```
 
 Everything here comes from `Processor.snapshot`
-(`src/ndif/services/api/queue/processor.py` `Processor.snapshot`). The status line
+(`src/ndif/services/ray/queue/processor.py` `Processor.snapshot`). The status line
 carries no duration; the executing line does. `Queued:` lists the first three ids
 in service order, then `... (+N more)`.
 
@@ -153,7 +153,7 @@ with this status mean provisioning failed and `purge` errored them — look for
 **`PROVISIONING` / `DEPLOYING` for a long time.** `PROVISIONING` is the controller
 placing a replica; `DEPLOYING` is waiting for the replica's actor to be ready.
 `Processor.start` has **no timeout**: `Replica.wait` waits for as long as the actor
-is loading or restarting (`src/ndif/services/api/queue/replica.py` `Replica.wait`).
+is loading or restarting (`src/ndif/services/ray/queue/replica.py` `Replica.wait`).
 A big model loading legitimately takes minutes. A replica whose actor is gone fails
 the wait, and the queued requests get an error.
 Go to step 4.
@@ -162,7 +162,7 @@ Go to step 4.
 queue is FIFO within two groups: requests from `priority`-tagged keys are served
 before everyone else, FIFO among themselves, and a request handed back by an
 evicted replica goes to the front of its own group
-(`src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`).
+(`src/ndif/services/ray/queue/request_queue.py` `RequestQueue.rank`).
 Autoscaling: every `NDIF_AUTOSCALING_INTERVAL_S` (5 s) the processor checks the
 longest-waiting queued request; past `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` (30 s) it
 adds a replica, up to `NDIF_AUTOSCALING_MAX_REPLICAS` (3), then waits
@@ -301,8 +301,8 @@ ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
 
 `ndif kill` errors the request to the user, then cancels it on the actor, which
 interrupts the block as the execution timeout does; the replica keeps serving
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`).
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher._kill`,
+`src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
 
 If the actor has not finished the request within a few seconds, the dispatcher
 cancels its wait instead and drops the replica from the pool, and

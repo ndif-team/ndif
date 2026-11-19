@@ -3,7 +3,7 @@ title: Redis Keys Reference
 one_liner: Every Redis key, channel and stream NDIF uses — type, writer, reader, TTL and the env var that controls it.
 tags: [reference, redis, api, queue, cli]
 related: [docs/developing/redis-layer.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/concepts/status-and-results.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/common/redis/__init__.py, src/ndif/services/api/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py, src/ndif/services/ray/sandbox/driver.py]
+sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/common/redis/__init__.py, src/ndif/services/ray/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py, src/ndif/services/ray/sandbox/driver.py]
 ---
 
 # Redis Keys Reference
@@ -15,7 +15,7 @@ subsystem. Names are literal unless shown with `{braces}`, which mark interpolat
 parts. All names are top-level in the database `NDIF_REDIS_URL` names — there is no prefix.
 
 The constants live in `src/ndif/common/redis/`, but not all of them: the queue key
-comes from `src/ndif/services/api/queue/config.py`, the `ray:connected` flag is an
+comes from `src/ndif/services/ray/queue/config.py`, the `ray:connected` flag is an
 inline literal in the dispatcher, and the response channels are named by a
 request's `session_id`. For *why* each mechanism is shaped the way it is, see
 [The Redis layer](../developing/redis-layer.md).
@@ -24,7 +24,7 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/api/queue/dispatcher.py` `Dispatcher.get` — `brpop`, then up to `fetch_batch_max - 1` `rpop`s | none | One pickled `BackendRequestModel` per element, payload blob included |
+| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get` — `brpop`, then up to `fetch_batch_max - 1` `rpop`s | none | One pickled `BackendRequestModel` per element, payload blob included |
 
 The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
 `brpop` gives FIFO. The pickles are not UTF-8, which is one reason

@@ -42,7 +42,7 @@ from ndif.common.redis import (
 
 from .auth import validate_request, verify_api_key
 from .versioning import validate_client_versions
-from .queue.config import CONFIG as QUEUE_CONFIG
+from ..ray.queue.config import CONFIG as QUEUE_CONFIG
 
 # Telemetry sinks (Loki/InfluxDB) are connected per worker in gunicorn's
 # post_fork hook (see gunicorn_conf), so this module doesn't touch them.

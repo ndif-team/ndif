@@ -3,14 +3,14 @@ title: Queue Internals
 one_liner: The dispatcher process — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
 tags: [internals, dev, queue, redis, ray]
 related: [docs/developing/api-service.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/redis-keys.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
 ---
 
 # Queue Internals
 
 ## What this covers
 
-`src/ndif/services/api/queue/` — five modules that turn a flat Redis list of
+`src/ndif/services/ray/queue/` — five modules that turn a flat Redis list of
 pickled requests into per-model queues serviced by Ray model actors. It lives
 under the API package but runs in its own process. The chain is
 `Redis queue -> Dispatcher -> Processor -> Replica -> model actor`.
@@ -29,7 +29,7 @@ Three facts frame the design:
 
 ## Configuration
 
-`src/ndif/services/api/queue/config.py` is a frozen dataclass, `QueueConfig`,
+`src/ndif/services/ray/queue/config.py` is a frozen dataclass, `QueueConfig`,
 loaded once at import into `CONFIG`. Non-integer or non-positive values raise at
 import, so a typo fails the process rather than silently defaulting.
 
@@ -48,11 +48,11 @@ Redis and Ray connection settings come from `NDIF_REDIS_URL` and
 
 ## The Dispatcher
 
-`Dispatcher.start` (`src/ndif/services/api/queue/dispatcher.py`) constructs one
+`Dispatcher.start` (`src/ndif/services/ray/queue/dispatcher.py`) constructs one
 and runs `dispatch_worker()` under `asyncio.run` forever. `__init__` calls
 `connect()` *before* the loop exists, so that method is deliberately
 synchronous. The module's `__main__` block runs it detached from gunicorn for
-debugging — `python -m ndif.services.api.queue.dispatcher`, pointed at the stack
+debugging — `python -m ndif.services.ray.queue.dispatcher`, pointed at the stack
 with `NDIF_REDIS_URL` and `NDIF_RAY_ADDRESS`. Never run two: both `BRPOP` the
 same list, so each would hold half of every model's queue in its own memory.
 
@@ -103,7 +103,7 @@ cancelled.
 
 ## The Processor
 
-One `Processor` per `model_key` (`src/ndif/services/api/queue/processor.py`),
+One `Processor` per `model_key` (`src/ndif/services/ray/queue/processor.py`),
 owning a `RequestQueue` (the per-model line), a `Dict[REPLICA_ID, Replica]` pool
 sharing it, an autoscaling task created in `__init__` and
 never cancelled, and a `status` (`ProcessorStatus`): `UNINITIALIZED` /
@@ -133,7 +133,7 @@ exit. Otherwise it flips to `PROVISIONING` and fires `start()` as a task.
 
 ### RequestQueue
 
-The per-model line (`src/ndif/services/api/queue/request_queue.py`). An
+The per-model line (`src/ndif/services/ray/queue/request_queue.py`). An
 `asyncio.PriorityQueue` keyed `(rank, enqueued_at, seq)`:
 
 ```
@@ -265,7 +265,7 @@ re-provision against requests that were just errored. It ends with
 
 ## The Replica
 
-A `Replica` (`src/ndif/services/api/queue/replica.py`) is a
+A `Replica` (`src/ndif/services/ray/queue/replica.py`) is a
 `(model_key, replica_id)` pair plus one `asyncio.Task` pulling from the
 Processor's queue. The actor it addresses is named
 `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace, looked up through

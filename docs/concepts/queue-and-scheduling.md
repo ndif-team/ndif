@@ -3,7 +3,7 @@ title: Queue and Scheduling
 one_liner: One Redis list feeding per-model in-memory priority queues inside a single dispatcher process — how a request finds its model, when a second replica appears, and what "fair" does and doesn't mean here.
 tags: [concepts, queue, redis, api]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/deployments-and-eviction.md, docs/concepts/status-and-results.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/api/queue/config.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/request_queue.py, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py]
 ---
 
 # Queue and Scheduling
@@ -55,7 +55,7 @@ The API pickles the whole `BackendRequestModel` — payload included — and
 `LPUSH`es it onto the list named by `NDIF_QUEUE_KEY`. The dispatcher `BRPOP`s
 the other end, which makes it FIFO, then drains up to
 `NDIF_QUEUE_FETCH_BATCH_MAX - 1` more with non-blocking `RPOP` to amortize
-round-trips (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.get`). The
+round-trips (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`). The
 blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle loop still
 wakes to drain the error queue and notice a broken Ray connection.
 
@@ -83,7 +83,7 @@ reused when the next request for that model arrives.
 ## Provisioning: the first replica
 
 `enqueue` calls `ensure_started`, which no-ops if a replica already exists or
-setup is already underway (`src/ndif/services/api/queue/processor.py`
+setup is already underway (`src/ndif/services/ray/queue/processor.py`
 `Processor.ensure_started`). Otherwise `start()` asks the controller for the
 model's current replicas; it adopts whatever is listed, or asks for one new one
 via `Replica.provision`. The client sees `PROVISIONING`, then `DEPLOYING`, then
@@ -104,7 +104,7 @@ replicas in advance.
 Each `Processor` owns one long-lived `Processor.autoscaling_loop`. Every
 `NDIF_AUTOSCALING_INTERVAL_S` seconds, *only while serving*, it takes
 `RequestQueue.oldest()` — the longest-waiting request across *both* priority
-groups (`src/ndif/services/api/queue/request_queue.py`) — and:
+groups (`src/ndif/services/ray/queue/request_queue.py`) — and:
 
 - if it has waited longer than `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` **and** the
   pool is smaller than `NDIF_AUTOSCALING_MAX_REPLICAS`, deploys one more replica,
@@ -137,7 +137,7 @@ Three things can pull a request back out of flight:
 - **Eviction.** If a dispatch fails with a lookup error, a dead actor, or
   `CachedActorError` (the actor's weights were moved to CPU), the replica drops
   itself and re-enqueues the in-flight request with `prepend=True`
-  (`src/ndif/services/api/queue/replica.py` `Replica.dispatch`), which puts it
+  (`src/ndif/services/ray/queue/replica.py` `Replica.dispatch`), which puts it
   at the front of *its own* priority group, not the whole queue. It keeps its
   original `enqueued_at`, so the autoscaler still sees its true wait. The user
   sees no error.

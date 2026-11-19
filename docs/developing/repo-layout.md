@@ -175,7 +175,7 @@ editable nnsight is found. `just ta <svc>` tears the **whole** stack down and br
 |---|---|
 | An HTTP endpoint, or what a request looks like at ingress | `src/ndif/services/api/app.py` |
 | Who is allowed in, or how `trusted` is decided | `src/ndif/services/api/auth.py` |
-| Queue behavior, priority, autoscaling triggers | `src/ndif/services/api/queue/` |
+| Queue behavior, priority, autoscaling triggers | `src/ndif/services/ray/queue/` |
 | Where replicas get placed, or eviction policy | `src/ndif/services/ray/deployments/controller/cluster/cluster.py`, `node.py` |
 | Size estimation and tensor-parallel shardability | `src/ndif/services/ray/deployments/controller/cluster/evaluator.py` |
 | Ray actor lifecycle (create / delete / HOT↔WARM) | `src/ndif/services/ray/deployments/controller/cluster/deployment.py` |
