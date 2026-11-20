@@ -27,7 +27,7 @@ nnsight
 # short of checking the shape catches it. nnsight refuses to shard below this
 # version (nnsight.modeling.tp.MINIMUM_TRANSFORMERS); the floor is here so the
 # image never gets built into that state in the first place.
-transformers>=5.15.0
+transformers @ git+https://github.com/huggingface/transformers.git@e3a65e2c21abb9c25a03704f2f25852f9ad03a18
 
 # torch is NOT here — the right wheel depends on the host's CUDA driver, which is
 # not a property of this repo. docker/Dockerfile installs it from a build arg.
