@@ -28,6 +28,8 @@ nnsight
 # version (nnsight.modeling.tp.MINIMUM_TRANSFORMERS); the floor is here so the
 # image never gets built into that state in the first place.
 transformers @ git+https://github.com/huggingface/transformers.git@e3a65e2c21abb9c25a03704f2f25852f9ad03a18
+# The branch's transformers needs huggingface-hub>=1.31, which needs click>=8.4.2.
+huggingface-hub==1.33.0
 
 # torch is NOT here — the right wheel depends on the host's CUDA driver, which is
 # not a property of this repo. docker/Dockerfile installs it from a build arg.
@@ -43,7 +45,7 @@ peft==0.19.1
 # through bitsandbytes, which nnsight uses but does not depend on.
 bitsandbytes==0.50.2
 cloudpickle==3.1.2
-click==8.1.8
+click==8.5.1
 # The CLI layers ./.env (and an explicit --env-file) over the environment.
 python-dotenv==1.0.1
 # The CLI reads/writes models.yaml deployment configs (deploy -f / export).
