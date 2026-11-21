@@ -577,26 +577,26 @@ class TestTheTwoExecutorsAreOne:
     def test_the_runner_calls_the_shared_executor(self):
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        source = inspect.getsource(nns)
+        source = inspect.getsource(execute)
         assert "execute_traced_block" in source
 
     def test_the_runner_does_not_reimplement_the_trace_scope(self):
         # inc()/dec() around tracer.execute is exactly what it used to duplicate.
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        source = inspect.getsource(nns._run)
+        source = inspect.getsource(execute._run)
         assert "inc()" not in source and "dec()" not in source
 
     def test_the_runner_applies_the_source_cache_scope(self):
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        assert "block_scope" in inspect.getsource(nns.run)
+        assert "block_scope" in inspect.getsource(execute.run)
 
     def test_the_host_brackets_the_forward_it_drives(self):
         # The half that is easy to miss: the runner brackets its own work, but
@@ -617,10 +617,9 @@ class TestTheTwoExecutorsAreOne:
         import inspect
 
         from ndif.services.ray.deployments.modeling import base, nns
-        from ndif.services.ray.sandbox import model
-        from ndif.services.ray.sandbox import nns as sandbox_nns
+        from ndif.services.ray.sandbox import adapters, driver, execute, model, worker
 
-        for module in (sandbox_nns, model, base):
+        for module in (execute, worker, adapters, driver, model, base):
             source = inspect.getsource(module)
             assert "torch.autocast" not in source, (
                 f"{module.__name__} builds its own autocast region instead of "
@@ -633,11 +632,9 @@ class TestTheTwoExecutorsAreOne:
         # `execute_traced_block` would autocast to the wrong thing, or nothing.
         import inspect
 
-        from ndif.services.ray.sandbox import model, runner
+        from ndif.services.ray.sandbox import execute, model, runner
 
-        assert "dtype" in inspect.signature(nns_run := __import__(
-            "ndif.services.ray.sandbox.nns", fromlist=["run"]
-        ).run).parameters
+        assert "dtype" in inspect.signature(execute.run).parameters
         assert "str(self.dtype)" in inspect.getsource(model.SandboxHost.run_in_runner)
         assert "dtype" in inspect.getsource(runner.Runner.handle)
 

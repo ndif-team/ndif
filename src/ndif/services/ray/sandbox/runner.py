@@ -1,12 +1,13 @@
 """The sandbox runner: a separate process that runs the user's traced block.
 
 Binds a Unix socket and serves: each connection delivers the request (a
-``Payload``); the runner deserializes and executes it with ``nns.run``, which
-drives the exchange with the messages in ``messages.py``. Importing
-``nns`` here — in the runner, never on the host — installs the IPC envoy/interleaver
-patches. The process is not hardened (no namespaces, seccomp, rlimits, or
-filesystem jail); what it provides is separation from the model actor and a fresh
-process per request.
+``Payload``); the runner deserializes and executes it with ``execute.run``, which
+drives the exchange with the messages in ``messages.py``. A `Runner` calls
+``adapters.install`` when it is built — in the runner, never on the host — which
+replaces the nnsight methods that assume the model is in this process. The
+process is not hardened (no namespaces, seccomp, rlimits, or filesystem jail);
+what it provides is separation from the model actor and a fresh process per
+request.
 
 Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1]
 """
@@ -18,7 +19,7 @@ import sys
 import threading
 import time
 
-from . import nns
+from . import adapters, execute, meta
 from .messages import Print
 from .protocol import Channel, Fanout
 
@@ -132,11 +133,14 @@ class Runner:
     ):
         self.path = path
         self.peers = peers
+        # Before anything else: from here on, a model call in this process goes
+        # to the host over the socket.
+        adapters.install()
         if os.path.exists(path):
             os.unlink(path)
         if model_key is not None:
             try:
-                nns.load_meta_model(model_key)
+                meta.load_meta_model(model_key)
             except Exception as error:
                 print(
                     f"runner: no meta model for {model_key!r} ({error!r}); "
@@ -182,7 +186,7 @@ class Runner:
         leader = channels[0]
         connection = Fanout(channels) if len(channels) > 1 else leader
         # The host sends the request (a `Payload`); deserialize and run it here
-        # (nns.run reports its own End or Failed). All stdout *and stderr* from the
+        # (execute.run reports its own End or Failed). All stdout *and stderr* from the
         # traced block is forwarded to the host as `Print` messages — stderr because
         # that is where `warnings.warn` goes, and a warning only the runner sees is
         # a warning nobody reads. Separate writers so their partial lines don't
@@ -190,7 +194,7 @@ class Runner:
         payload = leader.recv()
         with contextlib.redirect_stdout(Writer(connection)):
             with contextlib.redirect_stderr(Writer(connection)):
-                nns.run(
+                execute.run(
                     connection,
                     payload.blob,
                     payload.compress,

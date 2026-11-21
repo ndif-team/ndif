@@ -22,7 +22,7 @@ Two processes, three faults:
   ``...attn.source.attention_interface_1`` path at all.
 
 The fix splits the base property at the same seam as everything else: the
-runner's patched ``SourceEnvoy.source`` (``ipc_recursive_source``, nns.py) arms
+runner's patched ``SourceEnvoy.source`` (``adapters.ipc_recursive_source``) arms
 the host over a SOURCE control park carrying the op path, then parks on
 ``{path}.fn`` exactly as the base does; the host (``install_source`` +
 ``SandboxDriver.build_recursive_source``, driver.py) marks its own interleaver

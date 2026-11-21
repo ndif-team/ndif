@@ -6,8 +6,8 @@ loss.backward(): act.grad`` dangled into ``OutOfOrderError:
 '140075482858912.grad.i0' was requested but the model already ran past it``, and
 a bare ``loss.backward()`` finished with every ``.grad`` left ``None``. The runner
 now replaces ``Tensor.backward``, ``torch.autograd.backward`` and
-``torch.autograd.grad`` with ``nns.refuse_backward``, which raises
-``NotImplementedError(nns.NO_BACKWARD)``.
+``torch.autograd.grad`` with a function from ``adapters.refusal``, which raises
+``NotImplementedError(adapters.NO_BACKWARD)``.
 
 Same stack-free harness as ``test_sandbox_iter_pins``: a real gpt2 on CPU, a
 runner spawned over a Unix socket, a ``SandboxDriver`` pumping it.

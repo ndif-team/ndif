@@ -48,7 +48,7 @@ from .messages import (
 class RunnerError(Exception):
     """A failure raised by the user's block in the runner, carrying its already-
     formatted traceback (tracebacks don't survive cloudpickle, so the runner
-    formats the text and ships that; see ``nns.run``).
+    formats the text and ships that; see ``execute.run``).
 
     ``cause_type`` is the terminal exception's class name, shipped beside the
     text because the type survives the socket no better than the traceback
