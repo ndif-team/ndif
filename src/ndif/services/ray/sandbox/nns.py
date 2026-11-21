@@ -210,20 +210,23 @@ class IPCInterleaver(Interleaver):
                 self.caches[cache_id]._record(path, key, value)
 
     def writeback(self, mediator_id, read, value):
-        """Swap a read's (maybe-edited) value back at its location, then absorb the
-        host's resume for the worker's next park.
+        """Send a read's (maybe-edited) value back for the host to write into its
+        own, then absorb the host's reply.
 
         A read hands the worker a *copy* of the model's value (it crossed the
         socket), so an in-place edit — ``output[:] = 0`` — never reaches the host on
-        its own. The read left the host parked at that location, so swapping now
-        applies any edit to the batch before the model moves on. We always write
-        back (any object may have been edited, and we can't tell from here);
-        narrow/widen preserve the container type, so a read-only value is unchanged.
+        its own. The read left the host parked at that location, so writing back now
+        applies any edit before the model moves on. We always write back (any
+        tensor may have been edited, and we can't tell from here).
+
+        A WRITEBACK control park, not a SWAP: a swap replaces the host's objects
+        with these copies, and the forward's other references to the originals then
+        hold something else than the module ran on (see ``driver.write_back``).
         """
-        # TODO: only a value SWAP is sent back — eproperty write-back transforms
+        # TODO: only the value is sent back — eproperty write-back transforms
         # attached to the read are silently dropped on the sandbox path.
-        location, iteration = read
-        self.connection.send("PARK", mediator_id, (Event.SWAP, location, iteration, value))
+        location, _ = read
+        self.connection.send("PARK", mediator_id, ("WRITEBACK", location, None, value))
         self.connection.recv()
 
     def throw(self, mediator, requester, kind):
@@ -425,8 +428,8 @@ def ipc_recursive_source(self: SourceEnvoy) -> IPCSource:
     The description is memoized in ``sourced`` under the same per-run scope the
     base property uses (cleared on interleaver entry), so a later access this
     run — a ``tracer.iter`` step — doesn't park on an op that already fired.
-    The generic read writeback ships the description back as a SWAP; harmless,
-    since base ``run_op`` discards that handle's result.
+    The generic read writeback ships the description back too; harmless, since it
+    holds no tensors.
     """
     try:
         mediator = Mediator.current(f"{self.path}.source")

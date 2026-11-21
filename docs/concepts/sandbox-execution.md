@@ -106,9 +106,13 @@ location no worker is parked on costs nothing — it never crosses. If a trace i
 slower than expected, count its parks, not its lines.
 
 **Values you read are copies.** A tensor handed to your block was pickled out of
-the host process and rebuilt in the runner. In-place edits still work — the runner
-writes the value back at the same location before the model moves on — but object
-identity is not preserved: the forward continues with the copy that came back.
+the host process and rebuilt in the runner. In-place edits still work: the runner
+sends the copy back before the model moves on, and the host writes its tensors
+into the model's own, so the edit reaches everything the forward does with them.
+Two things do not cross: an in-place edit made after the block's next read of the
+model, and a different object put into a container you read
+(`kwargs["mask"] = None`). For the second, assign the location instead
+(`layer.inputs = ...`).
 
 **Everything you touch has to be picklable, both ways.** The block itself is
 serialized by nnsight's source-based pickler (see

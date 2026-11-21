@@ -163,6 +163,10 @@ host: forward pass reaches location L, value V
   value rides in `RESUME`. Locations no worker is parked on never cross.
 - A **swap** (`model.layer.output = x`) rides back in the worker's `PARK` (its
   pending event carries the replacement); the proxy substitutes it.
+- An **in-place edit** (`model.layer.output[:] = 0`) was made to the runner's copy.
+  After every read the runner sends its copy back as a `WRITEBACK` control park,
+  and the host writes the copy's tensors into the ones it served
+  (`driver.write_back`). Nothing is replaced, so the forward keeps its own objects.
 - `PARK(id, None)` means the worker finished.
 - After the run, `check_dangling` finds proxies still parked (workers that wanted
   something the run never delivered), classifies each as nnsight's
