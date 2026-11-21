@@ -41,7 +41,7 @@ them, so the interactive docs are live on any deployment.
 
 `/request`, `/status`, and `/env` carry the `require_ray_connection` dependency
 (`src/ndif/services/api/app.py` `require_ray_connection`) and return **503** whenever the `ray:connected` Redis flag is
-absent, before any other work; `/connected` is that dependency and nothing else.
+absent or Redis cannot be read, before any other work; `/connected` is that dependency and nothing else.
 Every error body is `{"detail": ...}` — a string, or pydantic's error list for a
 422.
 

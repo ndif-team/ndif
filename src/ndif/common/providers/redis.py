@@ -53,6 +53,10 @@ class RedisProvider(Provider):
         the result of a request a model actor already finished. The async clients
         stay without it. A pubsub subscriber that reconnected silently would miss
         whatever was published meanwhile and wait forever, rather than fail.
+
+        The async clients may hold 10,000 connections, the Redis server's default
+        ``maxclients``. redis-py's own limit is 100, and every open /subscribe
+        session holds one, so an API worker stopped at 98 sessions.
         """
         cls.sync_client = redis.Redis.from_url(
             cls.url,
@@ -61,10 +65,15 @@ class RedisProvider(Provider):
             retry=Retry(ExponentialWithJitterBackoff(base=1, cap=10), 3),
         )
         cls.async_client = aioredis.Redis.from_url(
-            cls.url, decode_responses=True, socket_timeout=cls.async_socket_timeout
+            cls.url,
+            decode_responses=True,
+            socket_timeout=cls.async_socket_timeout,
+            max_connections=10_000,
         )
         cls.async_bytes_client = aioredis.Redis.from_url(
-            cls.url, socket_timeout=cls.async_socket_timeout
+            cls.url,
+            socket_timeout=cls.async_socket_timeout,
+            max_connections=10_000,
         )
 
     @classmethod
