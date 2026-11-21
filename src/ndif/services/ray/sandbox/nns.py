@@ -183,6 +183,13 @@ class IPCInterleaver(Interleaver):
 
         ``reads`` tracks each worker's outstanding read (by mediator id), seeded from
         the parks already shipped in the `Interleave` message.
+
+        A worker that calls ``tracer.stop()`` is answered for with `Stop`, and the
+        stop is held until the host's `Done`. The host goes on serving the workers
+        parked on the same visit and then surfaces the ones left dangling, as
+        nnsight's own interleaver does, so this end has to keep answering. And a
+        `Done` left unread would be the first thing the session's next trace
+        read (#362).
         """
         # A location one of this run's caches wants can be reached on the host at
         # any point; record the (already filtered + moved-to-cpu) value wherever
@@ -193,9 +200,17 @@ class IPCInterleaver(Interleaver):
             for mediator_id, mediator in enumerate(self.mediators)
             if (read := read_of(mediator.pending)) is not None
         }
+        stopped = None
         while True:
             message = self.link.receive(Resume, Reply, Throw, Done)
             if isinstance(message, Done):
+                if stopped is not None:
+                    try:
+                        raise stopped
+                    finally:
+                        # The stop's traceback holds this frame; see the same
+                        # `del` in nnsight's `Interleaver.handle`.
+                        del stopped
                 return message.result
             mediator = self.mediators[message.worker]
             if isinstance(message, Throw):
@@ -213,11 +228,13 @@ class IPCInterleaver(Interleaver):
             read = reads.pop(message.worker, None)
             try:
                 park = mediator.switch(*message.args)
-            except EarlyStopException:
+            except EarlyStopException as stop:
                 # A worker halted the run (tracer.stop()); tell the host to
-                # unwind the model, then let the stop propagate as nnsight's does.
+                # unwind the model, and let the stop propagate, as nnsight's
+                # does, once the host has finished the run.
+                stopped = stop
                 self.link.send(Stop())
-                raise
+                continue
             if read is not None:
                 self.writeback(message.worker, read, message.args[0])
             if (new_read := read_of(park)) is not None:
