@@ -1,9 +1,9 @@
 ---
 title: Ray Service
-one_liner: The Ray node NDIF runs on — head vs worker selection, every port it binds, the custom resources it advertises, and how the API reaches it over ray://.
+one_liner: The Ray node NDIF runs on — head vs worker selection, every port it binds, the custom resources it advertises, and how the CLI and dashboard reach it over ray://.
 tags: [internals, dev, ray, operating]
 related: [docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/developing/providers.md, docs/concepts/services-and-topology.md, docs/operating/compose-stack.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/runbooks/add-a-gpu-node.md]
-sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/common/providers/ray.py, src/ndif/services/ray/deployments/controller/controller.py, docker/docker-compose.yml, docker/Dockerfile, docker/prometheus/prometheus.yml]
+sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/common/providers/ray.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/queue/dispatcher.py, docker/docker-compose.yml, docker/Dockerfile, docker/prometheus/prometheus.yml]
 ---
 
 # Ray Service
@@ -12,9 +12,11 @@ sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, sr
 
 The `ray` service is the compute half of NDIF: a Ray node (head or worker), the
 custom resources it advertises, and — on the head only — the NDIF controller
-that places model actors on it. This is the infrastructure view; what the
-controller does with the cluster is [Controller Internals](controller-internals.md),
-and what a model actor does once placed is [Model Actor](model-actor.md). Model
+that places model actors on it and the dispatcher that sends them requests.
+This is the infrastructure view; what the controller does with the cluster is
+[Controller Internals](controller-internals.md), what the dispatcher does is
+[Queue Internals](queue-internals.md), and what a model actor does once placed
+is [Model Actor](model-actor.md). Model
 deployments are plain detached Ray actors, not Ray Serve — see
 [Architecture Overview](architecture-overview.md).
 
@@ -35,6 +37,8 @@ if [ -z "$HEAD_ADDRESS" ]; then
     ray start --head --resources="$resources" ...
     RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
         python -m ndif.services.ray.deployments.controller.controller
+    RAY_ADDRESS="127.0.0.1:${NDIF_RAY_HEAD_PORT:-6385}" \
+        python -m ndif.services.ray.queue.dispatcher
 else
     # ---- Worker node ----
     HEAD_ADDRESS="${HEAD_ADDRESS#ray://}"
@@ -47,7 +51,7 @@ fi
 Three things to note:
 
 - **`NDIF_RAY_HEAD_ADDRESS` is not `NDIF_RAY_ADDRESS`.** The latter is the
-  `ray://` *client* address the API, dashboard and CLI dial in on; it says
+  `ray://` *client* address the dashboard and CLI dial in on; it says
   nothing about head/worker. Confusing the two is the most common way to end up
   with two disconnected single-node clusters.
 - The head runs `unset RAY_ADDRESS` first so Ray's own env var can't make
@@ -57,11 +61,12 @@ Three things to note:
   `NDIF_RAY_HEAD_WAIT_INTERVAL_S` (2) seconds apart, then exit 1 — so a worker
   container can start before the head.
 
-Only the head launches the controller. `python -m ...controller.controller`
-runs as a short-lived *driver*: it `ray.init(address="auto", namespace="NDIF")`
-against the head just started, which `start.sh` names in `RAY_ADDRESS` for that
-one command, then calls `app()` to schedule the detached actor (`get_if_exists=True`, so a relaunch
-reuses a live one), then exits. `start.sh` ends in `tail -f /dev/null` because
+Only the head launches the controller and, after it, the dispatcher. Each
+`python -m ...` runs as a short-lived *driver*: it
+`ray.init(address="auto", namespace="NDIF")` against the head just started,
+which `start.sh` names in `RAY_ADDRESS` for that one command, then calls `app()`
+to schedule the detached actor (`get_if_exists=True`, so a relaunch reuses a
+live one), then exits. `start.sh` ends in `tail -f /dev/null` because
 `ray start` daemonizes and the container needs a foreground process.
 
 **The controller names its own cluster to Ray.** Given no address, Ray's
@@ -124,11 +129,11 @@ resources["cpu_memory_bytes"] = get_total_cpu_memory_bytes()
 |---|---|---|
 | `cuda_memory_bytes` | `sum(torch.cuda.mem_get_info(d)[1])` over all devices | `Cluster.update_nodes` — divided by the node's `GPU` count to get per-GPU capacity |
 | `cpu_memory_bytes` | `psutil.virtual_memory().total` | `Cluster.update_nodes` — scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default 0.9) into the node's WARM-cache budget |
-| `head=10` | present on the head only | `@ray.remote(..., resources={"head": 1})` on `ControllerActor` — this is what pins the controller to the head |
+| `head=10` | present on the head only | `@ray.remote(..., resources={"head": 1})` on `ControllerActor` and `DispatcherActor` — this is what pins both to the head |
 
 (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
 `Cluster.update_nodes`; `src/ndif/services/ray/deployments/controller/controller.py`
-`ControllerActor`.)
+`ControllerActor`; `src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`.)
 
 These are two **separate budgets**: `cuda_memory_bytes` funds the GPU-resident
 (HOT) model, `cpu_memory_bytes` funds the CPU-resident WARM cache.
@@ -173,7 +178,6 @@ honours them itself.
 ```mermaid
 flowchart TB
   subgraph clients["Ray clients (ray://NDIF_RAY_ADDRESS)"]
-    API["api service<br/>queue dispatcher"]
     DASH["dashboard service<br/>+ reconcile cron"]
     CLI["ndif CLI<br/>deploy / evict / status"]
   end
@@ -184,6 +188,7 @@ flowchart TB
     DB["Ray dashboard :8265"]
     MX["metrics :8080"]
     CTRL["ControllerActor<br/>resources={head:1}"]
+    DISP["DispatcherActor<br/>resources={head:1}"]
     MA0["ModelActor replicas"]
   end
 
@@ -193,10 +198,12 @@ flowchart TB
     MA1["ModelActor replicas"]
   end
 
-  API -->|ray://| CS
   DASH -->|ray://| CS
   CLI -->|ray://| CS
   CS --> CTRL
+  DISP -->|"scale / get_deployment"| CTRL
+  DISP -->|run| MA0
+  DISP -->|run| MA1
   CTRL -->|"actor_class.options(resources={node:NAME})"| MA0
   CTRL --> MA1
   RL -->|join| GCS
@@ -206,9 +213,11 @@ flowchart TB
 
 ## How clients connect
 
-Everything outside the Ray cluster goes through `ray://`, wrapped by
-`RayProvider` (`src/ndif/common/providers/ray.py`), whose `CONFIG` reads
-`NDIF_RAY_ADDRESS` (default `ray://localhost:10001`).
+Everything outside the Ray cluster — the CLI and the dashboard — goes through
+`ray://`, wrapped by `RayProvider` (`src/ndif/common/providers/ray.py`), whose
+`CONFIG` reads `NDIF_RAY_ADDRESS` (default `ray://localhost:10001`). The
+dispatcher is inside the cluster and uses Ray's own handles; the API does not
+connect at all.
 
 Each `ray.init` against `ray://` makes the proxier on the head fork a per-client
 server process. `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` (unless the
@@ -220,8 +229,7 @@ environment, not the client's.
 `RayProvider.connect` verifies the host/port is listening before calling
 `ray.init`, and `RayProvider.connected` is deliberately stricter than "the
 cluster is up" — it also requires that `ray.get_actor("Controller",
-namespace="NDIF")` resolves. The dispatcher's connect loop therefore won't
-proceed until the control plane is actually serving.
+namespace="NDIF")` resolves.
 
 Actor handles come back as `NDIFActorHandle`
 (`src/ndif/common/providers/ray.py`), a `ClientActorHandle` subclass whose
@@ -232,12 +240,13 @@ imports into the caller's process. NDIF callers pass hardcoded method names with
 known shapes, so the descriptor prefetch and `signature.bind` are skipped.
 `handle.method.remote(...)` works unchanged.
 
-Named actors, both in namespace `NDIF`:
+Named actors, all in namespace `NDIF`:
 
 | Name | Created by | Looked up with |
 |---|---|---|
-| `Controller` | `app()` in `src/ndif/services/ray/deployments/controller/controller.py` | `get_controller_actor_handle()` |
-| `{replica_id}:ModelActor:{model_key}` | `Deployment.create` | `get_model_actor_handle(model_key, replica_id)` |
+| `Controller` | `app()` in `src/ndif/services/ray/deployments/controller/controller.py` | `get_controller_actor_handle()`; `controller_handle()` in the dispatcher |
+| `Dispatcher` | `app()` in `src/ndif/services/ray/queue/dispatcher.py` | nothing: it is reached through Redis |
+| `{replica_id}:ModelActor:{model_key}` | `Deployment.create` | `get_model_actor_handle(model_key, replica_id)`; `model_handle(model_key, replica_id)` in the dispatcher |
 
 ## Metrics
 
@@ -255,9 +264,10 @@ nodes join and leave.
 `start.sh` exports `NDIF_SERVICE=ray` *before* `ray start`, so the raylet and
 every actor process it later spawns inherit it and their Loki lines are labelled
 `service=ray`. Model actors override it to `model` in their `runtime_env`
-(`Deployment.create`) so their telemetry attributes separately. Provider
-configuration (Redis, object store, Loki, Influx) is likewise pushed into each
-actor's `runtime_env` by `_provider_runtime_env()`
+(`Deployment.create`), and the dispatcher to `dispatcher`, so their telemetry
+attributes separately. Provider configuration (Redis, object store, Loki,
+Influx) is likewise pushed into each model actor's `runtime_env` by
+`_provider_runtime_env()`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`) — a Ray
 worker inherits only its node's ambient environment, so anything the launcher
 configured must be forwarded explicitly.

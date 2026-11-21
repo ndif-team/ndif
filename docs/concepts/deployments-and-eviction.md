@@ -145,7 +145,7 @@ budget is the node's RAM scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.7`)
 **Both outcomes are transparent to an in-flight request.** A removed actor makes
 the queue's Ray call raise `ActorDiedError`; a demotion cancels the running
 request in `to_cache()` and raises `CachedActorError`. Both are in
-`EVICTED_ERRORS` (`src/ndif/services/api/queue/replica.py`), so the queue drops
+`EVICTED_ERRORS` (`src/ndif/services/ray/queue/replica.py`), so the queue drops
 the replica, puts the request back at the front of its priority group, and
 re-provisions if work remains. The user sees no error.
 

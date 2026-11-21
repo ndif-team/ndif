@@ -3,7 +3,7 @@ title: Going to Production
 one_liner: What has to change before an NDIF faces users — auth, the sandboxed actor class, dashboard credentials, object store, multi-node Ray, sizing, timeouts, retention — and what the code does not provide.
 tags: [operating, auth, ray, telemetry, gotchas]
 related: [docs/operating/quickstart.md, docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/runbooks/enable-auth.md, docs/runbooks/add-a-gpu-node.md, docs/runbooks/model-oom-on-deploy.md, docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/reference/env-vars.md, docs/reference/ports.md]
-sources: [docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/api/app.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/api/queue/config.py, src/ndif/common/providers/objectstore.py, src/ndif/services/dashboard/backend/config.py, docker/postgres/init.sql]
+sources: [docker/docker-compose.yml, src/ndif/services/api/auth.py, src/ndif/services/api/app.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/queue/config.py, src/ndif/common/providers/objectstore.py, src/ndif/services/dashboard/backend/config.py, docker/postgres/init.sql]
 ---
 
 # Going to Production
@@ -168,8 +168,8 @@ don't want the bucket to grow forever, add a lifecycle rule on the store itself.
 
 One variable decides a node's role. `src/ndif/services/ray/start.sh` reads
 `NDIF_RAY_HEAD_ADDRESS`: empty ⇒ this node runs `ray start --head` and then
-launches the NDIF controller; set ⇒ it waits for that `HOST:PORT` to accept TCP
-and joins as a worker.
+launches the NDIF controller and the queue dispatcher; set ⇒ it waits for that
+`HOST:PORT` to accept TCP and joins as a worker.
 
 ```bash
 # Head node
@@ -182,10 +182,11 @@ NDIF_REDIS_URL=redis://redis.internal:6379
 ```
 
 Both roles run the same image; only the environment differs. `NDIF_RAY_ADDRESS`
-is unrelated — it is the `ray://` *client* address the API, dashboard and CLI use
+is unrelated — it is the `ray://` *client* address the dashboard and CLI use
 to reach the head, and says nothing about head-vs-worker.
 
-The controller runs on the head and only the head: `ControllerActor` is declared
+The controller and the queue dispatcher run on the head and only the head:
+`ControllerActor` and `DispatcherActor` are declared
 with `resources={"head": 1}`, and `src/ndif/services/ray/resources.py` advertises
 `head=10` only when invoked with `--head`. Each node also advertises
 `cuda_memory_bytes` and `cpu_memory_bytes`, which the controller reads back for
@@ -200,8 +201,9 @@ placement. A node with no GPU is ignored entirely.
 | 52366 | `NDIF_RAY_DASHBOARD_GRPC_PORT` | Dashboard agent gRPC |
 
 Plus Ray's own node-manager and worker port ranges, which `start.sh` does not
-pin — consult Ray's port documentation rather than guessing. From the API and
-dashboard hosts, 10001 (`ray://` client) must reach the head. Nothing in this
+pin — consult Ray's port documentation rather than guessing. From the dashboard
+host, and wherever the CLI runs, 10001 (`ray://` client) must reach the head;
+the API host needs no route to it. Nothing in this
 list belongs on a public interface: anyone who can reach 10001 can run arbitrary
 code on the cluster. See [Ports](../reference/ports.md) and
 [Add a GPU node](../runbooks/add-a-gpu-node.md).
@@ -287,11 +289,11 @@ durable volumes and retention policy for anything it needs to keep. See
 - **No test CI and no compatibility guarantees.** `.github/workflows/` builds and
   publishes images and the PyPI package; none of them run tests. The test suite
   under `tests/` needs a live stack. There is no stable public API.
-- **No horizontal API tier.** `NDIF_API_WORKERS` scales gunicorn workers in one
-  process group, and the queue dispatcher is started exactly once by the gunicorn
-  master (`gunicorn_conf.py` `on_starting`). Running two API *containers*
-  against one Redis would run two dispatchers — not a configuration the code
-  anticipates.
+- **No horizontal queue tier.** `NDIF_API_WORKERS` scales gunicorn workers, which
+  only do ingress. Every request passes through one dispatcher, a single actor on
+  the Ray head (`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`).
+  Its queues are in its memory
+  ([Queue Internals](../developing/queue-internals.md#where-it-wedges)).
 
 ## Pre-flight checklist
 

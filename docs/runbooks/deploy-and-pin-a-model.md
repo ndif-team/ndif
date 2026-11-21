@@ -3,7 +3,7 @@ title: Deploy and Pin a Model
 one_liner: Put a model on the cluster under the model key clients will ask for, prove it serves, pin it without downtime, keep it coming back, and remove it.
 tags: [runbook, operating, controller, cli, dashboard]
 related: [docs/operating/models-and-deployment.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/developing/controller-internals.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/debug-a-stuck-request.md, docs/reference/env-vars.md]
-sources: [src/ndif/cli/commands/deploy.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/evict.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/api/queue/replica.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/backend/routers/schedule.py, src/ndif/services/dashboard/jobs/reconcile.py]
+sources: [src/ndif/cli/commands/deploy.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/evict.py, src/ndif/cli/commands/export.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/dashboard/backend/routers/deployments.py, src/ndif/services/dashboard/backend/routers/schedule.py, src/ndif/services/dashboard/jobs/reconcile.py]
 ---
 
 # Deploy and Pin a Model
@@ -15,7 +15,7 @@ each step. Three facts shape the procedure:
 
 1. **You usually don't have to deploy anything.** The first request for a model
    with no HOT replica makes the queue ask the controller for one
-   (`src/ndif/services/api/queue/replica.py` `Replica.provision`). Deploy
+   (`src/ndif/services/ray/queue/replica.py` `Replica.provision`). Deploy
    explicitly so the model is already loaded when the first user arrives, and so
    it can be pinned.
 2. **Deploy is additive.** `replicas` means "place this many *new* replicas"

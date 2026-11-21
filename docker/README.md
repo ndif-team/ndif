@@ -29,9 +29,9 @@ docker run -d --name ndif --gpus all --shm-size 16g \
 
 Ray takes a minute to boot. `curl localhost:8001/ping` answers `"pong"` as
 soon as the API is up; `curl localhost:8001/connected` answers
-`{"status":"connected"}` once the API can reach Ray, and that is when the
-server is ready. Until then the API answers 503 and logs
-`Error connecting to Ray` once a second — that is expected during boot.
+`{"status":"connected"}` once Ray is up and the request dispatcher is running on
+it, and that is when the server is ready. Until then the API answers 503 — that
+is expected during boot.
 
 Then, on the client side, with `pip install nnsight`:
 

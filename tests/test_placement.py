@@ -1771,7 +1771,7 @@ class TestScaleMatchesWhatIsRunning:
         # that is the call that grew a single-GPU replica for a sharded model.
         import inspect
 
-        from ndif.services.api.queue.replica import Replica
+        from ndif.services.ray.queue.replica import Replica
 
         source = inspect.getsource(Replica.provision)
         assert "controller_handle().scale.remote" in source

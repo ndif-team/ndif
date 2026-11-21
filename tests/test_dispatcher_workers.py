@@ -1,10 +1,10 @@
-"""The dispatcher's loops have to outlive a Redis outage.
+"""The dispatcher's loops have to outlive a Redis outage, and say they are alive.
 
 ``status_worker``, ``env_worker`` and ``events_worker`` are started once and
-nothing restarts them, so an error that escapes one ends it until the API
-restarts: ``/status`` and ``/env`` then stay broken after Redis comes back. While
-Redis is down every read also fails at once, so a loop with no pause between
-retries spins, measured at thousands of reads a second.
+nothing restarts them, so an error that escapes one ends it for the life of the
+dispatcher: ``/status`` and ``/env`` then stay broken after Redis comes back.
+While Redis is down every read also fails at once, so a loop with no pause
+between retries spins, measured at thousands of reads a second.
 
 Pure unit tests over fakes: no Redis, no Ray, no server.
 """
@@ -19,7 +19,7 @@ pytest.importorskip("ray", reason="the dispatcher imports the Ray provider")
 
 from redis.exceptions import ConnectionError as RedisConnectionError
 
-from ndif.services.api.queue import dispatcher as dispatcher_module
+from ndif.services.ray.queue import dispatcher as dispatcher_module
 
 
 class RedisDown:
@@ -27,9 +27,15 @@ class RedisDown:
 
     def __init__(self):
         self.reads = 0
+        self.blocks = []
 
-    async def xread(self, *args, **kwargs):
+    async def xrevrange(self, stream, count=None):
+        return []
+
+    async def xread(self, streams, block=None, **kwargs):
         self.reads += 1
+        self.blocks.append(block)
+        self.ids = list(streams.values())
         if self.reads == 3:
             raise asyncio.CancelledError
         raise RedisConnectionError("Redis went away")
@@ -50,9 +56,12 @@ def dispatcher(monkeypatch):
         sleeps.append(seconds)
 
     monkeypatch.setattr(dispatcher_module.asyncio, "sleep", record_sleep)
-    instance = dispatcher_module.Dispatcher.__new__(dispatcher_module.Dispatcher)
-    instance.error_queue = asyncio.Queue()
+    instance = dispatcher_module.Dispatcher()
     return instance, sleeps
+
+
+async def idle():
+    pass
 
 
 @pytest.mark.parametrize("worker", ["status_worker", "env_worker", "events_worker"])
@@ -66,6 +75,18 @@ def test_side_workers_survive_redis_going_away(dispatcher, monkeypatch, worker):
 
     assert redis.reads == 3, "the worker stopped retrying"
     assert sleeps == [1, 1], "retried with no pause"
+    assert all(block and block > 0 for block in redis.blocks), "a read with no limit"
+    # A bounded read is issued again and again, and from "$" each would miss
+    # what was added since the last one returned.
+    assert redis.ids == ["0-0"]
+
+
+def test_a_stream_is_read_on_from_its_newest_entry():
+    class Redis:
+        async def xrevrange(self, stream, count=None):
+            return [("1700000000000-3", {"event_type": "kill_request"})]
+
+    assert asyncio.run(dispatcher_module.stream_tail(Redis(), "s")) == "1700000000000-3"
 
 
 def test_main_loop_pauses_between_failures(dispatcher):
@@ -78,13 +99,53 @@ def test_main_loop_pauses_between_failures(dispatcher):
             raise asyncio.CancelledError
         raise RedisConnectionError("Redis went away")
 
-    async def idle():
-        pass
-
     instance.get = get
+    instance.startup = instance.heartbeat_worker = idle
     instance.status_worker = instance.env_worker = instance.events_worker = idle
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(instance.dispatch_worker())
 
     assert sleeps == [1, 1], "retried with no pause"
+
+
+def test_heartbeat_worker_renews_the_connected_key_before_it_expires(dispatcher, monkeypatch):
+    """The key is all the API has, and it must lapse when the dispatcher is gone."""
+    instance, sleeps = dispatcher
+    sets = []
+
+    class Redis:
+        async def set(self, key, value, ex=None):
+            sets.append((key, ex))
+            if len(sets) == 2:
+                raise RedisConnectionError("Redis went away")
+            if len(sets) == 4:
+                raise asyncio.CancelledError
+
+    monkeypatch.setattr(dispatcher_module.RedisProvider, "async_client", Redis(), raising=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(instance.heartbeat_worker())
+
+    ttl = dispatcher_module.CONNECTED_TTL_S
+    assert sets == [("ray:connected", ttl)] * 4
+    # Renewed well inside the expiry, and retried soon after a failure.
+    assert sleeps == [ttl / 3, 1, ttl / 3]
+
+
+def test_startup_waits_for_redis(dispatcher, monkeypatch):
+    instance, sleeps = dispatcher
+    deletes = []
+
+    class Redis:
+        async def delete(self, *keys):
+            deletes.append(keys)
+            if len(deletes) == 1:
+                raise RedisConnectionError("Redis is not up yet")
+
+    monkeypatch.setattr(dispatcher_module.RedisProvider, "async_client", Redis(), raising=False)
+
+    asyncio.run(instance.startup())
+
+    assert len(deletes) == 2
+    assert sleeps == [1]

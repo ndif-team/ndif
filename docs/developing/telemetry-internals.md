@@ -3,7 +3,7 @@ title: Telemetry Internals
 one_liner: How logging, structured events, and Influx metrics are wired — logger tree, the event() API, every metric class, the fail-open behavior of both sinks, and the fork-safe connect points.
 tags: [internals, dev, telemetry]
 related: [docs/operating/observability.md, docs/developing/providers.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/developing/api-service.md, docs/developing/model-actor.md, docs/runbooks/trace-a-users-failed-job.md]
-sources: [src/ndif/common/logging_setup.py, src/ndif/common/telemetry.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/app.py, src/ndif/common/schema/request.py]
+sources: [src/ndif/common/logging_setup.py, src/ndif/common/telemetry.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/api/app.py, src/ndif/common/schema/request.py]
 ---
 
 # Telemetry Internals
@@ -36,7 +36,7 @@ every module takes a dotted child so records carry a meaningful `logger` label.
 | `ndif` | the providers (the object-store provider has no logger) |
 | `ndif.api` | `src/ndif/services/api/app.py`, `src/ndif/services/api/auth.py` |
 | `ndif.request` | request lifecycle transitions (`src/ndif/common/schema/request.py`) |
-| `ndif.queue.dispatcher` / `.processor` / `.replica` | the matching modules under `src/ndif/services/api/queue/` |
+| `ndif.queue.dispatcher` / `.processor` / `.replica` | the matching modules under `src/ndif/services/ray/queue/` |
 | `ndif.controller` | the controller and every `cluster/*.py` module |
 | `ndif.modeling` | the model actor, its helpers, and the tensor-parallel package |
 | `ndif.dashboard.reconcile` | the dashboard's reconcile job |
@@ -47,7 +47,7 @@ every module takes a dotted child so records carry a meaningful `logger` label.
 and does three things:
 
 1. `propagate = False`, so records aren't also printed by a root handler
-   (gunicorn's, or the `basicConfig` the dispatcher's `__main__` installs).
+   (gunicorn's, for one).
 2. Applies `NDIF_LOG_LEVEL` (default `INFO`; unparseable → `INFO`) unless the
    logger is already lower, so a Loki handler that lowered it isn't undone.
 3. Installs a stdout `StreamHandler` with `ConsoleFormatter`, marked
@@ -119,8 +119,11 @@ them stable: `model_key`, `replica_id`, `request_id`, `session_id`, `api_key`,
 
 **`error_type` names the real cause.** Where an exception may have crossed the Ray
 boundary it is built by `error_type_name`, which reads a `RayTaskError`'s `.cause`
-and renders `RayTaskError[CachedActorError]` — query the bracketed part; a bare
-`RayTaskError` means the cause was absent. The model actor's `model execution
+and puts the cause's type in brackets:
+`RayTaskError(CachedActorError)[CachedActorError]` from the queue, where the
+wrapper is also an instance of the cause's class, and
+`RayTaskError[CachedActorError]` over Ray Client. Query the bracketed part; no
+brackets means the cause was absent. The model actor's `model execution
 errored` event goes through the deployment's `error_name` seam: a sandboxed failure
 arrives as a `RunnerError`, and `SandboxHost.error_name` records the type name the
 runner shipped, so a user mistake counts the same sandboxed or not.
@@ -226,26 +229,23 @@ emit.** A child would inherit a dead shipper.
 
 `src/ndif/services/api/gunicorn_conf.py` follows that rule:
 
-- The config module imports neither the providers nor the dispatcher at module
-  level (the dispatcher would pull them in transitively).
+- The config module imports no provider at module level.
 - `post_fork` imports `ndif.common.providers.influx` and `.loki` **in each worker**,
   after the fork, so every worker gets its own live threads.
-- `on_starting` launches the queue dispatcher with a **spawn** context; its target
-  `_run_dispatcher` imports everything inside the fresh interpreter.
 
 This assumes gunicorn's default `preload_app = False`; preloading would import the
-app and its providers into the master before the fork. Run standalone, the
-dispatcher's `__main__` does the same imports itself.
+app and its providers into the master before the fork.
 
 ### Ray
 
 `src/ndif/services/ray/start.sh` exports `NDIF_SERVICE=ray` (unless already set)
 before `ray start`, so the raylet and its actors inherit it. Each actor connects in
 its own `__init__`: the controller connects **Loki only** (it emits events, no
-metrics); `BaseModelDeployment.__init__` connects **both**. Ray workers inherit only
-the node's ambient environment, so the controller ships provider config into each
-model actor's `runtime_env` and overrides `NDIF_SERVICE` to `model` — see
-[Providers](providers.md#config-propagation).
+metrics); `BaseModelDeployment.__init__` and `DispatcherActor.__init__` connect
+**both**. Ray workers inherit only the node's ambient environment, so the
+controller ships provider config into each model actor's `runtime_env` and
+overrides `NDIF_SERVICE` to `model`; the dispatcher's launcher sets only
+`NDIF_SERVICE=dispatcher` — see [Providers](providers.md#config-propagation).
 
 ## Gotchas
 

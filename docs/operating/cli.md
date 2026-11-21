@@ -3,7 +3,7 @@ title: The ndif CLI
 one_liner: Every `ndif` command — service lifecycle, model deploy/scale/evict/restart/export, queue and cluster introspection — with options, defaults, and what each one touches.
 tags: [operating, cli, runbook]
 related: [docs/operating/models-and-deployment.md, docs/operating/configuration.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/dashboard.md, docs/developing/cli-internals.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/cli/commands/doctor.py, src/ndif/cli/commands/version.py, src/ndif/cli/commands/export.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/events.py, src/ndif/services/api/queue/dispatcher.py, docker/Dockerfile, justfile]
+sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/cli/commands/doctor.py, src/ndif/cli/commands/version.py, src/ndif/cli/commands/export.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/events.py, src/ndif/services/ray/queue/dispatcher.py, docker/Dockerfile, justfile]
 ---
 
 # The ndif CLI
@@ -20,7 +20,7 @@ command belongs to is most of the battle:
 2. **Model control-plane ops** — `deploy`, `scale`, `evict`, `restart`, `status`,
    `export`. They talk to the Ray controller actor, from anywhere that can reach
    `NDIF_RAY_ADDRESS`.
-3. **Queue introspection** — `queue`, `kill`. These reach the API's dispatcher
+3. **Queue introspection** — `queue`, `kill`. These reach the dispatcher
    over a Redis stream, not HTTP.
 
 | Command | Purpose | Talks to |
@@ -386,9 +386,10 @@ What survives the round trip, and what does not (`padding_factor`,
 `queue` and `kill` do **not** use HTTP. They append an event to the Redis stream
 `dispatcher:events` carrying a unique `response_key`, then block on `BRPOP` for
 the dispatcher's JSON reply with a 5s timeout, 15s for a kill (`src/ndif/cli/lib/events.py`
-`_request`). The dispatcher runs as a child of the API's gunicorn master, so
-`No response from the dispatcher` means Redis is up but the **API** is not (or
-its dispatcher died) — not that Redis is down.
+`_request`). The dispatcher runs as an actor on the Ray head, so
+`No response from the dispatcher` means Redis is up but the **dispatcher** is not
+answering: the head is down or still starting, or the dispatcher stopped. It
+does not mean Redis is down.
 
 ### `ndif queue`
 
@@ -422,8 +423,8 @@ the client `ERROR` / "Request cancelled by operator." Otherwise it finds the
 replica executing it: the client gets the same `ERROR`, and the model actor
 cancels the request, interrupting the block as the execution timeout does; the
 replica keeps serving
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`).
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher._kill`,
+`src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
 If the actor has not finished the request within a few seconds, the dispatcher
 cancels the **dispatch** instead and the block may run on; follow with
 `ndif restart <checkpoint> --replica <id>` (the replica id is in `ndif queue`).

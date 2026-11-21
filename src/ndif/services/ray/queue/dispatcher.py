@@ -4,24 +4,26 @@ Architecture:
     Redis queue -> Dispatcher -> Processor(s) -> Replica(s) -> model actor
 
 The Dispatcher pops requests from Redis, lazily creates a Processor per
-``model_key``, and hands the request off. Processors are self-healing — they
-provision and re-provision replicas on demand — so the Dispatcher only drains
-the shared error queue between batches, purging everything and reconnecting on a
-connection error.
+``model_key``, and hands the request off. Processors are self-healing: they
+provision and re-provision replicas on demand.
 
-Run as a standalone process:
-    python -m ndif.services.api.queue.dispatcher
+It runs inside the Ray cluster, as the detached ``Dispatcher`` actor on the head
+node (:class:`DispatcherActor`), and goes down and comes back with the head.
+Redis is its only link to the API, which reads the ``ray:connected`` key it
+renews to know it is alive.
+
+Launched by the ray service's ``start.sh``, after the Controller:
+    python -m ndif.services.ray.queue.dispatcher
 """
 
 import asyncio
 import json
 import logging
-import os
 import pickle
-import time
-import traceback
 
-from ....common.providers.ray import RayProvider, controller_handle
+import ray
+
+from ....common.providers.ray import NAMESPACE, controller_handle
 from ....common.providers.redis import RedisProvider
 from ....common.redis import (
     ENV_KEY,
@@ -44,11 +46,26 @@ from ....common.redis import (
 )
 from ....common.schema import Status
 from ....common.schema.request import BackendRequestModel
-from ....common.telemetry import error_type_name
 from .config import CONFIG
 from .processor import Processor
 
 logger = logging.getLogger("ndif.queue.dispatcher")
+
+
+# How long ``ray:connected`` outlives the dispatcher. Renewed three times within it.
+CONNECTED_TTL_S = 30
+
+STREAM_BLOCK_MS = CONFIG.fetch_timeout_s * 1000
+
+
+async def stream_tail(client, stream: str) -> str:
+    """The id a worker reads ``stream`` on from: that of its newest entry.
+
+    Not ``$``. A blocking read returns empty when its block runs out, and one
+    issued again from ``$`` misses whatever was added in between.
+    """
+    newest = await client.xrevrange(stream, count=1)
+    return newest[0][0] if newest else "0-0"
 
 
 class Dispatcher:
@@ -57,86 +74,25 @@ class Dispatcher:
     def __init__(self) -> None:
         self.processors: dict[str, Processor] = {}
 
-        # Processors report errors here; the dispatch loop drains them and, on a
-        # connection error, purges everything and reconnects to Ray.
-        self.error_queue: asyncio.Queue[tuple[str, Exception]] = asyncio.Queue()
+    async def startup(self) -> None:
+        """Clear the cached status and env, and their locks, once Redis answers.
 
-        self.connect()
-
-    @classmethod
-    def start(cls) -> None:
-        """Create a Dispatcher and run its dispatch loop forever (blocking).
-
-        Telemetry (Loki + InfluxDB) is connected by the caller's provider imports
-        — ``_run_dispatcher`` when spawned from gunicorn, or the ``__main__``
-        block when run standalone — so it's live in this process (it emits the
-        RECEIVED / QUEUED status-time points as requests move through the queue).
+        They describe whatever cluster ran before this one.
         """
-        dispatcher = cls()
-        logger.info(f"Starting dispatcher with PID {os.getpid()}")
-        asyncio.run(dispatcher.dispatch_worker())
-
-    def connect(self) -> None:
-        """Block until connected to Redis and then to Ray, retrying every second.
-
-        Maintains the ``ray:connected`` Redis flag so API endpoints can tell
-        whether the cluster is reachable. Also called during error recovery.
-        """
-        logger.info("Connecting to Ray")
-
-        # Wait for Redis before touching a key, the same way the Ray loop below
-        # waits for the cluster.
-        #
-        # This runs in a child of the gunicorn master that nothing restarts, so
-        # an exception here does not retry — it kills the dispatcher for the
-        # life of the container. Redis merely being slow to arrive is enough:
-        # on a cold deployment its service-discovery record can land a minute
-        # after this container does, and the DNS failure that follows used to
-        # end the process. The API then stayed up serving ``/ping`` from a
-        # process that no longer had a dispatcher, so its health check passed,
-        # its ECS service reached steady state, and every request path answered
-        # 503 "compute backend is reconnecting" until someone stopped the task
-        # by hand. Nothing was reconnecting.
-        while not RedisProvider.connected():
-            logger.info("Waiting for Redis")
-            RedisProvider.reset()
-            time.sleep(1)
-
-        RedisProvider.sync_client.delete("ray:connected")
-
-        # Drop every Redis key derived from the cluster so nothing stale is
-        # served across the reconnect gap. The cached status/env describe a
-        # cluster we're no longer attached to; clearing the coalescing locks
-        # too means the first request after reconnect triggers a fresh refresh
-        # instead of briefly serving stale data or waiting out a lock's TTL.
-        # (Called on first connect as well, where these keys are simply absent.)
-        RedisProvider.sync_client.delete(
-            STATUS_KEY, STATUS_REQUESTED_KEY, ENV_KEY, ENV_REQUESTED_KEY
-        )
-
-        # Reset before the first check. This runs at startup, where there is no
-        # connection, and after handle_errors has found the connection dead,
-        # where checking it again would wait out the limit a second time.
         while True:
             try:
-                RayProvider.reset()
-                RayProvider.connect()
-                if RayProvider.connected():
-                    break
+                await RedisProvider.async_client.delete(
+                    STATUS_KEY, STATUS_REQUESTED_KEY, ENV_KEY, ENV_REQUESTED_KEY
+                )
+                break
             except Exception:
-                logger.exception("Error connecting to Ray")
-            # Synchronous on purpose: connect() runs before the event loop
-            # starts (from __init__), so this can't be an async sleep.
-            time.sleep(1)
-
-        RedisProvider.sync_client.set("ray:connected", "1")
-        logger.info("Connected to Ray")
+                logger.exception("Waiting for Redis")
+                await asyncio.sleep(1)
 
     async def get(self) -> list[BackendRequestModel]:
         """Fetch pending requests from the Redis queue.
 
-        Blocking-pop one (bounded by ``fetch_timeout_s`` so the loop can
-        periodically drain evictions/errors when idle), then batch-pop up to
+        Blocking-pop one, for at most ``fetch_timeout_s``, then batch-pop up to
         ``fetch_batch_max`` more to amortize round-trips under load.
         """
         client = RedisProvider.async_bytes_client
@@ -163,68 +119,21 @@ class Dispatcher:
         spawn or tear down here.
         """
         if request.model_key not in self.processors:
-            self.processors[request.model_key] = Processor(
-                request.model_key, self.error_queue
-            )
+            self.processors[request.model_key] = Processor(request.model_key)
 
         await self.processors[request.model_key].enqueue(request)
 
-    async def purge(self, message: str) -> None:
-        """Error every queued user and drop every replica (critical failure).
+    async def heartbeat_worker(self) -> None:
+        """Renew ``ray:connected``, which tells the API the dispatcher is alive."""
+        client = RedisProvider.async_client
 
-        Processors are self-healing and re-used, so they're purged in place
-        rather than removed — the next request re-provisions them.
-        """
-        for processor in list(self.processors.values()):
+        while True:
             try:
-                await processor.purge(message)
+                await client.set("ray:connected", "1", ex=CONNECTED_TTL_S)
+                await asyncio.sleep(CONNECTED_TTL_S / 3)
             except Exception:
-                logger.exception(
-                    f"Error purging processor `{processor.model_key}`"
-                )
-
-    async def handle_errors(self) -> None:
-        """Drain the error queue; if the Ray connection is gone, purge and reconnect.
-
-        With per-replica workers, individual request errors are already
-        surfaced to the user and drift is recovered inside the worker; the
-        dispatcher only needs to handle connection-level purge/reconnect.
-        """
-        if self.error_queue.empty():
-            return
-
-        errors: list[tuple[str, Exception]] = []
-        while not self.error_queue.empty():
-            errors.append(self.error_queue.get_nowait())
-
-        # Whatever the error says, the connection is judged by a lookup on it:
-        # an error from a connection that has since been replaced still arrives
-        # here, after the reconnect.
-        if not await RayProvider.aconnected():
-            logger.warning(
-                "Connection error detected; reconnecting...",
-                extra={
-                    "event": "ray_reconnect",
-                    "purged_processors": len(self.processors),
-                },
-            )
-            await self.purge(
-                "Critical server error occurred. "
-                "Please try again later. Sorry for the inconvenience."
-            )
-            self.connect()
-
-        for name, error in errors:
-            tb_str = "".join(
-                traceback.format_exception(type(error), error, error.__traceback__)
-            )
-            logger.error(
-                f"Error in component {name}: {error}\n{tb_str}",
-                extra={
-                    "component_name": name,
-                    "error_type": error_type_name(error),
-                },
-            )
+                logger.exception("heartbeat_worker: failed to renew ray:connected")
+                await asyncio.sleep(1)
 
     async def status_worker(self) -> None:
         """Serve coalesced cluster-status refreshes for the API's /status.
@@ -232,17 +141,18 @@ class Dispatcher:
         Blocks on the status trigger stream (one refresh is triggered per
         coalescing window, so this fetches at most once per window). On each
         trigger, pulls the heavy status from the controller (time-bounded),
-        caches it, and wakes waiters. On failure it reports to the error queue
-        (so the dispatcher rechecks the Ray connection), clears the coalescing
-        lock, and wakes waiters with an error so they don't hang.
+        caches it, and wakes waiters. On failure it clears the coalescing lock
+        and wakes waiters with an error so they don't hang.
         """
         client = RedisProvider.async_client
-        last_id = "$"
+        last_id = None
 
         while True:
             try:
+                if last_id is None:
+                    last_id = await stream_tail(client, STATUS_TRIGGER_STREAM)
                 messages = await client.xread(
-                    {STATUS_TRIGGER_STREAM: last_id}, block=0, count=1
+                    {STATUS_TRIGGER_STREAM: last_id}, block=STREAM_BLOCK_MS, count=1
                 )
                 if not messages:
                     continue
@@ -259,9 +169,8 @@ class Dispatcher:
                 )
                 await client.delete(STATUS_REQUESTED_KEY)
                 await client.publish(STATUS_READY_CHANNEL, "ok")
-            except Exception as e:
+            except Exception:
                 logger.exception("status_worker: failed to refresh status")
-                self.error_queue.put_nowait(("status_worker", e))
                 try:
                     await client.delete(STATUS_REQUESTED_KEY)
                     await client.publish(STATUS_READY_CHANNEL, "error")
@@ -280,12 +189,14 @@ class Dispatcher:
         so it triggers a refresh here and waits on the ready channel.
         """
         client = RedisProvider.async_client
-        last_id = "$"
+        last_id = None
 
         while True:
             try:
+                if last_id is None:
+                    last_id = await stream_tail(client, ENV_TRIGGER_STREAM)
                 messages = await client.xread(
-                    {ENV_TRIGGER_STREAM: last_id}, block=0, count=1
+                    {ENV_TRIGGER_STREAM: last_id}, block=STREAM_BLOCK_MS, count=1
                 )
                 if not messages:
                     continue
@@ -300,9 +211,8 @@ class Dispatcher:
                 await client.set(ENV_KEY, json.dumps(env, default=str), ex=ENV_TTL_S)
                 await client.delete(ENV_REQUESTED_KEY)
                 await client.publish(ENV_READY_CHANNEL, "ok")
-            except Exception as e:
+            except Exception:
                 logger.exception("env_worker: failed to refresh env")
-                self.error_queue.put_nowait(("env_worker", e))
                 try:
                     await client.delete(ENV_REQUESTED_KEY)
                     await client.publish(ENV_READY_CHANNEL, "error")
@@ -319,7 +229,7 @@ class Dispatcher:
         take the worker down. See :mod:`ndif.common.redis.events`.
         """
         client = RedisProvider.async_client
-        last_id = "$"
+        last_id = None
         handlers = {
             EVENT_QUEUE_STATE: self._handle_queue_state,
             EVENT_KILL: self._handle_kill,
@@ -328,7 +238,11 @@ class Dispatcher:
 
         while True:
             try:
-                messages = await client.xread({EVENTS_STREAM: last_id}, block=0, count=1)
+                if last_id is None:
+                    last_id = await stream_tail(client, EVENTS_STREAM)
+                messages = await client.xread(
+                    {EVENTS_STREAM: last_id}, block=STREAM_BLOCK_MS, count=1
+                )
                 if not messages:
                     continue
                 _, entries = messages[0]
@@ -384,11 +298,14 @@ class Dispatcher:
             await processor.reconcile()
 
     async def dispatch_worker(self) -> None:
-        """Main loop: fetch requests, route them, drain evictions/errors.
+        """Main loop: fetch requests and route them.
 
         Runs indefinitely. Errors in the loop are logged but don't terminate
         the dispatcher.
         """
+        await self.startup()
+
+        asyncio.create_task(self.heartbeat_worker())
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.env_worker())
         asyncio.create_task(self.events_worker())
@@ -402,19 +319,59 @@ class Dispatcher:
                         await self.dispatch(request)
                     except Exception:
                         logger.exception(f"Error dispatching request {request.id}")
-
-                await self.handle_errors()
             except Exception:
                 logger.exception("Error in dispatch worker")
                 # Don't spin: while Redis is down every read fails at once.
                 await asyncio.sleep(1)
 
 
-if __name__ == "__main__":
-    # Importing the providers connects them in this process (Loki for logs,
-    # InfluxDB for metrics) before the dispatch loop starts.
-    import ndif.common.providers.influx  # noqa: F401  (import connects it)
-    import ndif.common.providers.loki  # noqa: F401  (import connects it)
+@ray.remote(num_cpus=0, num_gpus=0, max_restarts=-1, resources={"head": 1})
+class DispatcherActor(Dispatcher):
+    """The Dispatcher as a detached actor on the head node.
 
-    logging.basicConfig(level=logging.INFO)
-    Dispatcher.start()
+    The dispatch loop is a task started here and not a method somebody calls,
+    so a restart of the actor (``max_restarts=-1``) starts it again. Requests a
+    previous incarnation had popped are gone with it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        # Install the telemetry sinks in this actor's worker process: Loki for
+        # logs, InfluxDB for the RECEIVED / QUEUED status-time points.
+        from ....common.providers.influx import InfluxProvider
+        from ....common.providers.loki import LokiProvider
+
+        LokiProvider.connect()
+        InfluxProvider.connect()
+
+        # Redis can be across a WAN, where a connection can die without
+        # closing. Give replies 10 s beyond the longest blocking read.
+        RedisProvider.async_socket_timeout = CONFIG.fetch_timeout_s + 10
+        RedisProvider.connect()
+
+        self.task = asyncio.create_task(self.dispatch_worker())
+
+
+def app() -> None:
+    """Launch the detached Dispatcher actor in the NDIF namespace."""
+    # get_if_exists makes relaunch idempotent, as for the Controller.
+    DispatcherActor.options(
+        name="Dispatcher",
+        namespace=NAMESPACE,
+        lifetime="detached",
+        get_if_exists=True,
+        runtime_env={"env_vars": {"NDIF_SERVICE": "dispatcher"}},
+    ).remote()
+
+
+if __name__ == "__main__":
+    # Driver-side launch: attach to the running head and schedule the actor.
+    # The detached actor persists after this process exits.
+    #
+    # Through the module under its own name: an actor class defined in
+    # ``__main__`` is shipped to its worker as a copy of this file's state.
+    from ndif.services.ray.queue import dispatcher
+
+    ray.init(address="auto", namespace=NAMESPACE, logging_level="error")
+    dispatcher.app()

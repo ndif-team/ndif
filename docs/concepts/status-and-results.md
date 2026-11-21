@@ -3,7 +3,7 @@ title: Status and Results
 one_liner: The Status lifecycle as the client sees it, the two ways a response is delivered, and the two routes saved values take back to the client — inline under the cap, or behind a presigned URL.
 tags: [concepts, api, redis, queue]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/reference/schemas.md, docs/reference/redis-keys.md, docs/reference/http-api.md, docs/reference/error-messages.md, docs/developing/model-actor.md, docs/developing/redis-layer.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/redis.py]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/redis.py]
 ---
 
 # Status and Results

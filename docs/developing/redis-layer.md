@@ -3,7 +3,7 @@ title: The Redis Layer
 one_liner: common/redis/* — the coalesced status/env caches, the CLI event stream, and response pub/sub, with the exact keys, TTLs and handshakes each one uses.
 tags: [internals, dev, redis, api, queue, cli]
 related: [docs/reference/redis-keys.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/developing/api-service.md, docs/concepts/status-and-results.md, docs/concepts/queue-and-scheduling.md, docs/reference/env-vars.md, docs/developing/cli-internals.md]
-sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/services/api/app.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py]
+sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py]
 ---
 
 # The Redis Layer
@@ -24,18 +24,17 @@ pub/sub, and the `ray:connected` flag.
 | Operational events | Stream + per-caller reply list | CLI → dispatcher → CLI |
 | Response publishing | Pub/sub channel per session | Anything that advances a request → the client's websocket |
 
-The queue itself is configured in `src/ndif/services/api/queue/config.py` and
+The queue itself is configured in `src/ndif/services/ray/queue/config.py` and
 covered in [Queue Internals](queue-internals.md). For the key-by-key table see
 [Redis Keys](../reference/redis-keys.md).
 
 ## The constraint that shapes it
 
-**Only the dispatcher process holds a Ray client.** API workers never call
-`ray.init()`; the dispatcher is a separate process spawned by gunicorn's
-`on_starting` and is the sole owner of the connection
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher.connect`). So an
-endpoint like `/status`, whose data lives on the controller actor, cannot fetch
-it directly. A per-worker RPC would also multiply a heavy controller call by
+**API workers never touch Ray.** They never call `ray.init()`; the dispatcher
+is an actor inside the cluster
+(`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`), and Redis is
+the only link between the two. So an endpoint like `/status`, whose data lives
+on the controller actor, cannot fetch it directly. A per-worker RPC would also multiply a heavy controller call by
 worker count and request rate, and Redis is already a hard dependency, so the
 coordination runs over it.
 
@@ -79,12 +78,15 @@ Both endpoints call `_coalesced_fetch` (`src/ndif/services/api/app.py`):
 ### The refresh path
 
 `Dispatcher.status_worker` and `Dispatcher.env_worker`
-(`src/ndif/services/api/queue/dispatcher.py`) are structurally identical tasks
+(`src/ndif/services/ray/queue/dispatcher.py`) are structurally identical tasks
 started by `Dispatcher.dispatch_worker`. Each blocks on `xread` with
-`block=0, count=1`, so one refresh happens per trigger, not per waiting request:
+`block=STREAM_BLOCK_MS, count=1` — the fetch timeout, after which it reads
+again — so one refresh happens per trigger, not per waiting request:
 
 ```python
-messages = await client.xread({STATUS_TRIGGER_STREAM: last_id}, block=0, count=1)
+messages = await client.xread(
+    {STATUS_TRIGGER_STREAM: last_id}, block=STREAM_BLOCK_MS, count=1
+)
 ...
 handle = controller_handle()
 status = await asyncio.wait_for(handle.status.remote(), timeout=STATUS_TIMEOUT_S)
@@ -94,12 +96,9 @@ await client.delete(STATUS_REQUESTED_KEY)
 await client.publish(STATUS_READY_CHANNEL, "ok")
 ```
 
-On failure the worker logs, pushes the exception onto the dispatcher's
-`error_queue` — which makes the dispatcher recheck the Ray connection and
-possibly reconnect — **deletes the lock** so the next request can retry
+On failure the worker logs, **deletes the lock** so the next request can retry
 immediately, publishes `"error"` so waiters get a 503 instead of hanging, and
-yields with `asyncio.sleep(0)` so a persistently failing controller can't peg
-the event loop. A second API worker that misses during a refresh loses the
+sleeps a second so a persistently failing controller can't peg the event loop. A second API worker that misses during a refresh loses the
 `SET NX`, skips the `XADD`, and is woken by the same `PUBLISH`.
 
 ### Why a cache with a trigger stream instead of RPC
@@ -204,32 +203,33 @@ line — so a chatty block produces hundreds of publishes on one channel.
 
 ## The `ray:connected` flag
 
-A plain string key, no TTL, owned entirely by `Dispatcher.connect`. It waits for
-Redis, deletes the flag, deletes `status`, `status:requested`, `env` and
-`env:requested` (those describe a cluster the dispatcher is no longer attached
-to, and clearing the locks means the first request after a reconnect triggers a
-fresh refresh), loops until Ray is reachable *and* the Controller actor resolves,
-then sets the flag to `"1"`. The API uses it as a route dependency,
+A plain string key the dispatcher keeps alive as a heartbeat.
+`Dispatcher.heartbeat_worker` sets it to `"1"` every 10 s, with an expiry of
+`CONNECTED_TTL_S` (30 s). Nothing deletes it; it lapses when the dispatcher
+dies, with the head or alone. Before the worker starts, `Dispatcher.startup`
+waits for Redis and clears the status and env caches and their locks ([Queue Internals](queue-internals.md#the-dispatcher)). The API
+uses the key as a route dependency,
 `require_ray_connection`, to 503 early rather than enqueue work the backend
 can't serve — it guards `/request`, `/status`, `/env` and `/connected`.
 
-Because nothing expires it, the flag outlives a dispatcher that dies outright:
-`require_ray_connection` keeps passing, `GET /connected` still reports
-"connected", and requests accumulate in the Redis list unserved.
+A request accepted before the key lapsed stays in the Redis list until a
+dispatcher pops it.
 
 ## Gotchas
 
-> **The workers start at `$`.** Both cache workers and the events worker begin
-> with `last_id = "$"`, meaning "only entries added from now on". Triggers or CLI
-> events appended while the dispatcher was down are never seen. A waiting
+> **The workers start at the stream's tail.** Both cache workers and the events
+> worker begin from the id of the stream's newest entry (`stream_tail`), meaning
+> "only entries added from now on". Triggers or CLI events appended while the
+> dispatcher was down are never seen. A waiting
 > `/status` then 504s after `STATUS_TIMEOUT_S`, and the lock expires at the same
 > moment, so the *next* request retries cleanly. A `ndif queue` issued against a
-> dead dispatcher raises `TimeoutError` with "Is the API running?".
+> dead dispatcher raises `TimeoutError` with "Is the Ray head running?".
 
 > **Exactly one dispatcher is assumed.** `xread` is used, not consumer groups, so
 > every dispatcher reading `status:trigger` would refresh, and every one reading
-> `dispatcher:events` would handle the event and `lpush` a reply. Gunicorn starts
-> exactly one.
+> `dispatcher:events` would handle the event and `lpush` a reply. The ray
+> service's `start.sh` launches exactly one per cluster, under a fixed actor
+> name.
 
 > **Redis is not persisted in the dev stack.** The `redis` compose service mounts
 > no volume. A restart drops queued requests, both caches, and every in-flight
