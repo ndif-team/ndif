@@ -276,7 +276,7 @@ when the CUDA allocator refused an allocation, `alloc_shortfall_by_gpu`.
 The redirect is installed on the event-loop thread, since both streams are
 process-global and the restore must not run on the thread `interrupt()` kills. The
 sandbox actor uses it only for trusted requests; an untrusted runner forwards its
-output as `PRINT` events instead.
+output as `Print` messages instead.
 
 An exception out of the raced block is formatted by
 `BaseModelDeployment.format_error` and becomes the ERROR description verbatim: a

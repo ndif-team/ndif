@@ -3,7 +3,7 @@ title: Sandbox Execution
 one_liner: Why a request's traced block runs in a separate process from the model, how the two stay in lockstep over a socket, and what that means for your code.
 tags: [concepts, sandbox, ray]
 related: [docs/developing/sandbox-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/auth-and-limits.md, docs/developing/model-actor.md, docs/reference/error-messages.md]
-sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/api/auth.py, src/ndif/common/schema/request.py]
+sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/api/auth.py, src/ndif/common/schema/request.py]
 ---
 
 # Sandbox Execution

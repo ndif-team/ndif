@@ -1,120 +1,17 @@
-"""Shared wire protocol for the sandbox: framing, a type-tagged codec, and the
-message catalog both ends speak.
+"""The wire under the sandbox: framing, one codec, and channels.
 
-Imported by both ends of the socket (the host and the runner process). Keep it
-dependency-light: standard library plus torch. The framing and codec
-are transport-agnostic — they assume only an ordered byte stream — while the
-message set below is specific to the sandbox's interleaving flow.
+Imported by both ends of the socket (the host and the runner process), and by
+the tensor-parallel package for its own channels. Keep it dependency-light:
+standard library plus torch. Nothing here knows what the messages mean. The
+messages a host and a runner exchange are the classes in ``messages.py``, and
+``link.py`` receives them by type.
 
-Framing: every message is length-prefixed (``send_frame`` / ``recv_frame``). The
-codec is type-tagged (``encode`` / ``decode``): ``str`` and ``bytes`` pass through
-raw (a 1-byte tag), everything else goes through ``torch.save``/``torch.load`` —
-so a receiver can say where the tensors in a message should land as they are
-rebuilt, and an already-serialized blob rides without a second pickle pass.
+Framing: every message is length-prefixed (``send_frame`` / ``recv_frame``).
 
-The two directions are not symmetric:
-
-* runner -> host uses ``pack`` / ``unpack`` — a tuple of values plus kwargs, read
-  on the host as ``(values, kwargs)``.
-* host -> runner uses a single ``encode``d value, read back with ``decode``.
-  Multi-field messages are sent as one tuple (e.g. ``("HOOK", provider, value)``).
-
-The interleaver is split at the mediator level: the workers (greenlets) run in
-the runner, one host proxy per worker owns the parent side. A *park* is a worker
-waiting on a location, ``(event, location, pin, *rest)`` — ``event`` is VALUE /
-SWAP / SKIP, ``rest`` carries the swap value for SWAP/SKIP, ``pin`` is the worker's
-``tracer.iter`` pointer (or None); ``None`` instead of a park means the worker
-finished. The host tags/matches the occurrence, so parks cross untagged.
-
-A ``tracer.barrier()`` arrival is a park too: BARRIER with ``location`` the
-barrier's identity (``barrier:<id>``) and the count it was built with riding in
-the ``rest`` slot, no pin. Every arrival crosses — the host counts them and
-releases the round (``driver.barrier_arrival``), the runner never does — so the
-host always knows where a released worker parked next (#294).
-
-Control parks name no forward location and carry no pin; the host answers them
-in the next RESUME's args (``driver.MediatorProxy.settle_control``):
-
-  ("SOURCE", path, None)      source-instrument ``path`` and describe it — the
-                              operation names, the forward's source text, each
-                              op's line — or None when the forward can't be
-                              sourced. ``path`` is a module path, or a nested op
-                              path (``...attn.source.attention_interface_1``) for
-                              a recursive `.source` (#281): that arms the host
-                              (reply None) to answer the ``{path}.fn`` VALUE park
-                              the worker then waits on. That serve is the one
-                              place the host substitutes a served value for the
-                              forward's verbatim one (#312): it instruments the
-                              live callable host-side so the inner ops fire, and
-                              ships the same description shape — or
-                              ``(SOURCE_ERROR, message)`` on refusal, carrying
-                              base nnsight's SourceNotAvailable wording. The
-                              callable (or the whole submodule a refused drill
-                              targeted) never crosses the socket
-  ("CALL", path, None, (hook, args, kwargs))
-                              run the module at ``path`` ad hoc; reply is its
-                              output (#295)
-  ("CACHE", cache_id, None, (config,))
-                              observe for a ``tracer.cache()`` on the host;
-                              hits ship back as CACHE_HIT; reply is None
-  ("WRITEBACK", location, None, value)
-                              the runner's copy of the value it was just served
-                              at ``location``, sent after every read; the host
-                              writes its tensors into the ones it served
-                              (``driver.write_back``), so in-place edits land;
-                              reply is None
-
-Message catalog (the event name is the first element):
-
-host -> runner
-  (blob, compress, dtype, seed, env)
-                              the request payload; first message, starts nns.run.
-                              `dtype` is the model's (the runner has no loaded model
-                              to ask); `seed` is None unless several processes must
-                              draw the same numbers, as tensor-parallel ranks do;
-                              `env` is the request's per-request environment, applied
-                              to the runner's meta model so its tree matches the
-                              host's (a PEFT adapter reshapes both)
-  ("RESUME", id, args, pin)   switch worker ``id`` in with ``args`` (a read's value,
-                              or empty for a swap or a barrier release); ``pin``
-                              pushes the host's pin so tracer.iter relaxation stays
-                              in step — or ``KEEP_PIN`` when answering a control
-                              park (SOURCE/CALL/CACHE) or a BARRIER park, which
-                              carried no pin, so the host has nothing current
-                              to push. Reply: PARK
-  ("THROW", id, requester, kind)
-                              worker ``id`` is still parked on ``requester`` the
-                              model never reached; ``kind`` is the host's
-                              classification — "OUT_OF_ORDER" (throw
-                              OutOfOrderError into it), "ITER" (an open-ended
-                              tracer.iter outran the model: unwind and warn), or
-                              "BARRIER" (the barrier never released: throw the
-                              base ValueError). No reply
-  ("CACHE_HIT", cache_id, path, key, value)
-                              one filtered, transformed value for a
-                              ``tracer.cache()`` living in the runner. No reply
-  ("DONE", result)            the forward pass returned ``result``; ends the pump
-
-runner -> host
-  ("INTERLEAVE", fn, parks, *args) + kwargs
-                              run wrapper method ``fn`` on the model with these
-                              inputs; ``parks`` is one initial park per worker
-  ("PARK", id, park)          worker ``id``'s next park (or None if it finished),
-                              in reply to RESUME
-  ("STOP",)                   a worker halted the run (tracer.stop()); unwind the
-                              model (its interleaver swallows the early stop)
-  ("PRINT", text)             forwarded stdout from the traced block
-  ("END", blob, deserialize_ms)
-                              finished; ``blob`` is torch.save of the block's
-                              nnsight.save()-marked values, for the host to upload;
-                              ``deserialize_ms`` is the runner's deserialize time
-  ("EXCEPTION", error, cause_type)
-                              the block raised: ``error`` is the traceback the
-                              runner already formatted (tracebacks don't survive
-                              the socket), ``cause_type`` the terminal
-                              exception's class name — telemetry records it so a
-                              sandboxed mistake counts under its real type, not
-                              the RunnerError wrapper (#280)
+Codec: one value in each direction (``encode`` / ``decode``). ``str`` and
+``bytes`` pass through raw behind a 1-byte tag, everything else goes through
+``torch.save`` / ``torch.load``, so a receiver can say where the tensors in a
+message land as they are rebuilt.
 """
 
 import io
@@ -123,25 +20,6 @@ import struct
 import time
 
 import torch
-
-# RESUME's pin field normally pushes the host proxy's iteration pointer to the
-# worker, keeping `tracer.iter` relaxation in lockstep. A RESUME answering a
-# *control* park (SOURCE/CALL/CACHE) has nothing truthful to push: the control
-# park carried no pin, and the worker may have advanced its own since its last
-# model park — a `tracer.iter` loop moves the pin between parks, and `.source`
-# parks a control event on every access. Pushing the host's stale copy there
-# wound the worker back a step (#296). This sentinel in place of the pin means
-# "leave the worker's pin as it is". A string, compared by value, because real
-# pins are ints or None and the sentinel has to survive the codec.
-KEEP_PIN = "KEEP_PIN"
-
-# First element of the pair served at an armed recursive-`.source` path's
-# ``{path}.fn`` park when the drilled-into callable can't be sourced: the host
-# ships ("SOURCE_ERROR", message) instead of a description, and the runner
-# raises SourceNotAvailable(message) from the user's own frame
-# (driver.serve_recursive_source / nns.ipc_recursive_source, #312). A string,
-# compared by value, so it survives the codec — same reasoning as KEEP_PIN.
-SOURCE_ERROR = "SOURCE_ERROR"
 
 
 # -- length-prefixed framing -------------------------------------------------
@@ -208,59 +86,12 @@ def decode(blob: bytes, map_location=None):
     )
 
 
-def pack(values, kwargs=None) -> bytes:
-    """Encode positional values then keyword values, each tag-encoded."""
-    kwargs = kwargs or {}
-    out = struct.pack(">I", len(values))
-    for value in values:
-        item = encode(value)
-        out += struct.pack(">I", len(item)) + item
-    out += struct.pack(">I", len(kwargs))
-    for key, value in kwargs.items():
-        key_bytes = key.encode()
-        out += struct.pack(">I", len(key_bytes)) + key_bytes
-        item = encode(value)
-        out += struct.pack(">I", len(item)) + item
-    return out
-
-
-def unpack(blob: bytes, map_location=None):
-    """Inverse of pack: returns ``(values, kwargs)``.
-
-    ``map_location`` is handed to every value's `decode` — see there.
-    """
-    offset = 0
-
-    def take():
-        nonlocal offset
-        (n,) = struct.unpack(">I", blob[offset : offset + 4])
-        offset += 4
-        chunk = blob[offset : offset + n]
-        offset += n
-        return chunk
-
-    (count,) = struct.unpack(">I", blob[offset : offset + 4])
-    offset += 4
-    values = [decode(take(), map_location) for _ in range(count)]
-
-    kwargs = {}
-    if offset < len(blob):
-        (kcount,) = struct.unpack(">I", blob[offset : offset + 4])
-        offset += 4
-        kwargs = {take().decode(): decode(take(), map_location) for _ in range(kcount)}
-
-    return values, kwargs
-
-
 class Channel:
     """A framed message channel over one socket. Transport only.
 
-    The framing, the timeout handling and the close are the same everywhere a
-    process in this system talks to another one; only the *codec* differs by
-    direction, so subclasses override `send`/`recv` and inherit the rest. Three
-    near-identical copies of this existed — the sandbox host's, the runner's, and
-    the tensor-parallel `Channel` — differing in which of `encode`/`pack` they
-    reached for.
+    The framing, the codec, the timeout handling and the close are the same
+    everywhere a process in this system talks to another one: the sandbox host,
+    the runner, and the tensor-parallel ranks all use this class as it is.
 
     A timeout applies to each `recv` **syscall**, not to a whole frame, so a
     timeout between a header and its body leaves the stream mid-frame and every
@@ -293,8 +124,8 @@ class Channel:
         self.send_raw(encode(value))
 
     def recv(self, timeout=None):
-        """One value, as sent."""
-        return decode(self.recv_raw(timeout))
+        """One value, as sent, with its tensors where `map_location` says."""
+        return decode(self.recv_raw(timeout), self.map_location)
 
     def close(self) -> None:
         try:
@@ -338,9 +169,9 @@ class Fanout:
         channels: one per peer, in a fixed order. ``channels[0]`` is the peer whose
             reply is returned.
         signature: what must match across peers, given a received message.
-            Defaults to the event name — enough to catch one peer resuming a worker
-            while another finishes. A caller that knows the protocol can compare
-            more.
+            Defaults to the message's type — enough to catch one peer resuming a
+            worker while another finishes. A caller that knows the protocol can
+            compare more.
         timeout: how long to wait for the group. Bounded on purpose: peers that
             have genuinely diverged will never all arrive, and a stall is a worse
             way to learn that than an error.
@@ -351,10 +182,10 @@ class Fanout:
         self._signature = signature or signature_of
         self.timeout = timeout
 
-    def send(self, *args, **kwargs) -> None:
+    def send(self, message) -> None:
         """Send the same message to every peer."""
         for channel in self.channels:
-            channel.send(*args, **kwargs)
+            channel.send(message)
 
     def recv(self, timeout=None):
         """Wait for every peer, check they agree, and return the first one's message.
@@ -398,14 +229,9 @@ class Fanout:
 
 
 def signature_of(message):
-    """The event name in a received message, whichever codec produced it.
+    """What the peers behind a `Fanout` must agree on: the type of the message.
 
-    `unpack` yields ``(values, kwargs)`` and `decode` yields the value itself, so
-    a Fanout can sit on either direction without being told which.
+    A peer whose payload is never read sends the type alone
+    (``host.FollowerConnection``), so a type stands for itself.
     """
-    if isinstance(message, tuple) and len(message) == 2 and isinstance(message[0], (list, tuple)):
-        values = message[0]
-        return values[0] if values else None
-    if isinstance(message, (list, tuple)):
-        return message[0] if message else None
-    return message
+    return message if isinstance(message, type) else type(message)

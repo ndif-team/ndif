@@ -190,7 +190,7 @@ connection.send(
   (one fresh process per request, stopped afterwards, so no Python state
   carries between requests; what it writes to the shared filesystem, such as
   `/tmp` or the HF cache, does persist), ships it the blob, and services
-  `INTERLEAVE` events: the block runs in the runner while the forward pass runs
+  `Interleave` messages: the block runs in the runner while the forward pass runs
   here, taking strict turns over the socket. The runner returns the `torch.save`d bytes directly.
 
 Both paths hand `torch.save` bytes to the same result step. They agree on

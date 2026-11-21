@@ -3,7 +3,7 @@ title: Sandbox Internals
 one_liner: How a request's traced block runs in a separate runner process while the model stays on the host, with nnsight's interleaver split across a Unix socket.
 tags: [internals, dev, sandbox, ray]
 related: [docs/concepts/sandbox-execution.md, docs/developing/model-actor.md, docs/developing/nnsight-integration.md, docs/concepts/request-lifecycle.md, docs/reference/error-messages.md]
-sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/deployments/modeling/base.py]
+sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/messages.py, src/ndif/services/ray/sandbox/link.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/worker.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/meta.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/deployments/modeling/base.py]
 ---
 
 # Sandbox Internals
@@ -21,17 +21,32 @@ and stay there — `src/ndif/services/ray/deployments/modeling/base.py`
 interleaved**, taking strict turns — locally a greenlet switch, here a process
 boundary that must not change the semantics.
 
-`src/ndif/services/ray/sandbox/driver.py` is the **host** side — one proxy per
-runner worker, the interleaved run, the control events — and knows nothing of Ray
-or requests, so a tensor-parallel shard can be a host too
-(`src/ndif/services/ray/tp/`). `src/ndif/services/ray/sandbox/model.py` is the
-**actor** side: the runner pool, the request lifecycle, and error reporting, most
-of it in the `SandboxHost` mixin the sharded actor shares.
+The modules, by layer:
+
+| Layer | Module | Holds |
+|---|---|---|
+| wire | `protocol.py` | frames, one codec, `Channel`, `Fanout` |
+| messages | `messages.py` | one class per message and per control request |
+| link | `link.py` | `Link`: receive by type, one exchange |
+| host | `driver.py` | the request loop, the run loop, one `MediatorProxy` per worker |
+| host | `controls.py` | the handler for each control request |
+| runner | `worker.py` | `IPCInterleaver`, the worker's side of the loop |
+| runner | `adapters.py` | replacements for nnsight's methods, and `install` |
+| runner | `meta.py` | the weightless model and the unpickler |
+| runner | `execute.py` | running one request |
+
+`driver.py` knows nothing of Ray or requests, so a tensor-parallel shard can be a
+host too (`src/ndif/services/ray/tp/`). `model.py`, `host.py` and `runner.py` run
+the sandbox itself: `src/ndif/services/ray/sandbox/model.py` is the **actor**
+side (the runner pool, the request lifecycle, and error reporting, most of it in
+the `SandboxHost` mixin the sharded actor shares), `host.py` spawns runners, and
+`runner.py` is the runner process.
 
 This page assumes nnsight's interleaver (`Mediator`, `Event`, park/switch,
 occurrence tagging). `src/ndif/services/ray/sandbox/ARCHITECTURE.md` is
-authoritative for the *why*, and the `protocol.py` module docstring for the
-message payloads; this page adds the request-level context and the lifecycle.
+authoritative for the *why*, and `src/ndif/services/ray/sandbox/messages.py` for
+what each message carries; this page adds the request-level context and the
+lifecycle.
 
 ## The first branch: trusted vs untrusted
 
@@ -45,7 +60,7 @@ in request.tags`) decides whether the sandbox runs at all:
 
 `SandboxHost.execution_scope` forks the same way: trusted reuses the base's
 stdout/stderr capture, untrusted gets a `nullcontext` because its output arrives as
-`PRINT` messages. How the tags are stamped (the key's user_tags with auth on;
+`Print` messages. How the tags are stamped (the key's user_tags with auth on;
 client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
 with auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 
@@ -74,37 +89,59 @@ import it): length-prefixed frames (`send_frame`/`recv_frame`; `recvn` raises
 `ConnectionError` on a half-read, which is what a killed runner looks like), and a
 one-byte-tagged codec (`encode`: raw `bytes`, UTF-8 `str`, or `torch.save`).
 `torch` because `torch.load` takes a `map_location`, so the receiver places tensors
-as they are rebuilt — `SandboxDriver.pump` sets it to the host's model device.
-Runner → host uses `pack`/`unpack` (`(values, kwargs)`); host → runner sends one
-`encode`d value, so multi-field messages are one tuple.
+as they are rebuilt — `SandboxDriver.pump` sets it from `landing`. Both directions
+use the same codec, and both ends use `Channel` as it is: a message is one object.
+
+`src/ndif/services/ray/sandbox/link.py` `Link` sits on a channel and receives by
+type. The caller names the messages it is waiting for (`receive`, or `request` to
+send first). A message that can arrive at any point is handed to its handler in
+`always` wherever that end is waiting. Anything else raises `ProtocolError`
+naming what arrived and what was expected, so two ends that fall out of step fail
+at that message.
 
 ## Message catalog
 
-A *park* is `(event, location, pin, *rest)`: `event` is `Event.VALUE`/`SWAP`/`SKIP`,
-`Event.BARRIER`, or a control-event string; `rest` carries the replacement for
-SWAP/SKIP; `pin` is the worker's `tracer.iter` pointer or `None`. Parks cross
-**untagged** — the host owns the `.i{n}` occurrence tag. Payload shapes are in the
-`protocol.py` docstring; this table maps each message to the code on both ends.
+Each message is a class in `src/ndif/services/ray/sandbox/messages.py`, whose
+docstrings say what the fields carry. This table maps each to the code on both
+ends.
 
 | Message | Dir | Sent by | Handled by |
 |---|---|---|---|
-| `(blob, compress, dtype, seed, env)` | h→r | `SandboxHost.run_in_runner` | `Runner.handle` → `nns.run` |
-| `RESUME` | h→r | `MediatorProxy.switch`, `settle_control`, `release` | `IPCInterleaver.pump` |
-| `THROW` (`OUT_OF_ORDER` / `ITER` / `BARRIER`) | h→r | `SandboxDriver.check_dangling` | `IPCInterleaver.throw` |
-| `CACHE_HIT` | h→r | `ShippingCache._record` | `pump`, into the runner's `Cache` |
-| `DONE` | h→r | `SandboxDriver.interleave` | ends `pump` |
-| `INTERLEAVE` | r→h | `IPCEnvoy.interleave` | `SandboxDriver.interleave` |
-| `PARK` | r→h | `pump`, `writeback` | `MediatorProxy.adopt` |
-| `STOP` | r→h | `pump` on `tracer.stop()` | `MediatorProxy.switch` raises `EarlyStopException` |
-| `PRINT` | r→h | `Writer.write` (runner.py) | `SandboxDriver.next_event` → `Status.LOG` |
-| `END` | r→h | `nns.run` | `pump` returns the blob |
-| `EXCEPTION` | r→h | `nns.run` | `next_event` raises `RunnerError` |
-| `SOURCE` / `CALL` / `CACHE` | control park | `ipc_module_source` / `ipc_recursive_source`, `IPCEnvoy.__call__`, `ipc_cache` | `MediatorProxy.settle_control` → `install_source`, `run_module`, a `ShippingCache` |
-| `WRITEBACK` | control park | `IPCInterleaver.writeback` | `MediatorProxy.settle_control` → `write_back` |
+| `Payload` | h→r | `SandboxHost.run_in_runner` | `Runner.handle` → `execute.run` |
+| `Resume` | h→r | `MediatorProxy.switch` | `IPCInterleaver.pump` |
+| `Reply` | h→r | `MediatorProxy.settle_control`, `release` | `IPCInterleaver.pump`; `writeback` for its own request |
+| `Throw` (a `Dangling` kind) | h→r | `SandboxDriver.check_dangling` | `IPCInterleaver.throw` |
+| `CacheHit` | h→r | `ShippingCache._record` | `IPCInterleaver.record`, wherever the runner is waiting |
+| `Done` | h→r | `SandboxDriver.interleave` | ends `pump` |
+| `Interleave` | r→h | `IPCEnvoy.interleave` | `SandboxDriver.interleave` |
+| `Park` | r→h | `pump`, `writeback` | `MediatorProxy.resume` → `adopt` |
+| `Stop` | r→h | `pump` on `tracer.stop()` | `MediatorProxy.resume` raises `EarlyStopException` |
+| `Print` | r→h | `Writer.write` (runner.py) | the host link's `always` → `Status.LOG` |
+| `End` | r→h | `execute.run` | `pump` returns the blob |
+| `Failed` | r→h | `execute.run` | the host link's `always` raises `RunnerError` |
 
-Control parks name nothing the forward produces: they ride inside a `PARK`, are
-drained by `settle_control` before `handle` sees them, and are answered in the next
-`RESUME`'s `args`.
+A `Park` carries where a worker waits next: nnsight's `Pending` for a model
+location (`Event.VALUE`/`SWAP`/`SKIP`) or a barrier (`Event.BARRIER`), a control
+request, or `None` when the worker has finished. A `Pending` crosses with the
+worker's `tracer.iter` pin in its `iteration` field — the host owns the `.i{n}`
+occurrence tag.
+
+A control request asks the host for something only it can do. It is a subclass of
+`Control`, it is answered by its handler in
+`src/ndif/services/ray/sandbox/controls.py`, and the answer goes back in a
+`Reply`:
+
+| Request | Parked by | Handler |
+|---|---|---|
+| `Source` | `ipc_module_source`, `ipc_recursive_source` | `source` |
+| `Call` | `IPCEnvoy.__call__` | `call` |
+| `Observe` | `ipc_cache` | `observe`, which attaches a `ShippingCache` |
+| `Writeback` | `IPCInterleaver.writeback` | `writeback` → `write_back` |
+
+`MediatorProxy.settle_control` looks the request's type up in `HANDLERS` and
+answers until the worker parks on a location, so `handle` never sees one. A new
+kind of request is a class in `messages.py`, a handler registered with `@control`,
+and the park in the runner.
 
 ## Lifecycle
 
@@ -142,7 +179,8 @@ or core-tight node.
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers` and the model key, and calls `nns.load_meta_model(model_key)`
+path, `peers` and the model key. It calls `adapters.install` (see
+[below](#persistent-ids-and-the-meta-model)) and then `meta.load_meta_model(model_key)`
 **before binding**, so a host that can connect is a host whose runner is warm.
 A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
@@ -156,13 +194,13 @@ threads.
 `Runner.serve` accepts `peers` connections (dropping `spawn`'s readiness probe via
 `_hung_up`), handles the exchange, and loops forever; a failing exchange goes to
 stderr without killing the loop. `Runner.handle` takes the payload from the first
-host to connect, redirects stdout *and* stderr to separate `Writer`s (one `PRINT`
+host to connect, redirects stdout *and* stderr to separate `Writer`s (one `Print`
 per complete line; stderr because `warnings.warn` goes there), and calls
-`nns.run`.
+`execute.run`.
 
-`src/ndif/services/ray/sandbox/nns.py` `run` applies the request's env
-(`set_env`), deserializes with
-`BackendRequestModel.deserialize(..., unpickler=IPCCloudUnpickler)`, runs the block
+`src/ndif/services/ray/sandbox/execute.py` `run` applies the request's env
+(`set_env`), deserializes with `BackendRequestModel.deserialize`, passing
+`IPCCloudUnpickler` with the request's link bound, runs the block
 through the in-process path's own `execute_traced_block` (same autocast bracket,
 same save collection), and `torch.save`s the saved values with the shared
 `src/ndif/services/ray/deployments/modeling/util.py` `cpu_pickle_module` — so the
@@ -172,8 +210,9 @@ and shipped as text with the terminal exception's class name.
 
 ### Persistent ids and the meta model
 
-`IPCCloudUnpickler.persistent_load` resolves the payload's persistent ids in three
-steps: `"Interleaver"` becomes an `IPCInterleaver` bound to this request's socket
+`IPCCloudUnpickler.persistent_load` (`src/ndif/services/ray/sandbox/meta.py`)
+resolves the payload's persistent ids in three steps: `"Interleaver"` becomes an
+`IPCInterleaver` bound to this request's link
 (checked first, so the meta model's own interleaver can't shadow it); anything in
 `PERSISTENT_OBJECTS` (`Module:<path>`, `Tokenizer`, `Pipeline`, …) resolves to the
 runner's **meta** object, which lets a block call `model.tokenizer(...)` without a
@@ -188,8 +227,9 @@ best-effort: a diverged tree degrades to ids resolving to `None`, since every
 activation is a socket round trip anyway — so `ArchitectureMismatchError` is raised
 on the in-process path only.
 
-Importing `nns` installs process-wide patches, which is why `runner.py` imports it
-and the host never does: `Mediator.event` → `ipc_event` (park untagged);
+`src/ndif/services/ray/sandbox/adapters.py` `install` applies process-wide
+patches. Importing the module changes nothing; `Runner.__init__` calls `install`,
+and nothing on the host may: `Mediator.event` → `ipc_event` (park untagged);
 `Barrier.__call__` → `ipc_barrier`; every callable on `IPCEnvoy` grafted onto
 `Envoy` itself (the tracer's root is a model-wrapper subclass that *inherits*
 `interleave`); `Envoy.source` → `ipc_module_source` and `SourceEnvoy.source` →
@@ -226,28 +266,29 @@ Each nnsight `Mediator` is cut in half at the model↔mediator seam:
 | Mechanism | Runner half | Host half |
 |---|---|---|
 | block execution / parking | worker greenlet; patched `Mediator.event` parks untagged with the pin | `MediatorProxy.adopt` tags `.i{n}` |
-| occurrence counting, pin relaxation | none (pin pushed back on every `RESUME`) | inherited `Mediator.handle` on the proxy |
+| occurrence counting, pin relaxation | none (pin pushed back on every `Resume`) | inherited `Mediator.handle` on the proxy |
 | forward hooks | `IPCInterleaver.instrument` is a no-op | the model's real `Interleaver` |
 | batch scoping, input assembly | `batch_group` computed by the tracer, shipped | `Batcher` + `narrow`/`widen`, `SandboxDriver._assemble` |
 | barriers | `ipc_barrier` parks every arrival | `SandboxDriver.barrier_arrival` counts and releases |
-| `.source` / ad-hoc call / cache | `IPCSource`, `IPCEnvoy.__call__`, the real `Cache` | `install_source` + `serve_recursive_source`, `run_module`, `ShippingCache` |
-| dangling workers | `IPCInterleaver.throw` | `check_dangling` sends `THROW` |
+| `.source` / ad-hoc call / cache | `IPCSource`, `IPCEnvoy.__call__`, the real `Cache` | the handlers in `controls.py`: `source` + `serve_recursive_source`, `call`, `observe` |
+| dangling workers | `IPCInterleaver.throw` | `check_dangling` sends `Throw` |
 
 `MediatorProxy` (`src/ndif/services/ray/sandbox/driver.py`) **subclasses `Mediator`
 and reuses `handle` unchanged** — matching, iteration and relaxation are stock
-nnsight. It overrides `adopt` (re-tag an incoming park), `switch` (a greenlet hop
-becomes a `RESUME`→`PARK` round trip), `start` (only records the interleaver — the
-worker's first park arrived in `INTERLEAVE`) and `alive` ("has a pending park").
+nnsight. It overrides `switch` (a greenlet hop becomes a `Resume`→`Park` exchange,
+which `resume` carries out and `adopt` re-tags), `start` (only records the
+interleaver — the worker's first park arrived in `Interleave`) and `alive` ("has a
+pending park").
 
 `IPCEnvoy.interleave` is the runner's entry into a model call: it prepends the
 trace's edits, starts every worker so each parks on its first location, ships
-`INTERLEAVE` with the raw per-invoke inputs, then hands the socket to
-`IPCInterleaver.pump` until `DONE`. On the host, `SandboxDriver.interleave` builds
-one proxy per park (`_build_proxies`, which settles their control parks), installs
+`Interleave` with the raw per-invoke inputs, then hands the link to
+`IPCInterleaver.pump` until `Done`. On the host, `SandboxDriver.interleave` builds
+one proxy per park (`_build_proxies`, which answers their control requests), installs
 them as the model interleaver's mediators, enters `request_dtype(dtype)` and the
 interleaver, assembles the inputs (`_assemble`: trace-level kwargs win; host-built
 tensors are moved by `_to_device`), runs `fn(...)` for real, serves the return
-value at `"result"`, checks for dangling workers, and sends `DONE`.
+value at `"result"`, checks for dangling workers, and sends `Done`.
 
 ### One read and one swap
 
@@ -257,25 +298,25 @@ sequenceDiagram
   participant P as MediatorProxy (host)
   participant U as pump (runner)
   participant W as worker (runner)
-  Note over W,P: worker parked on (VALUE, "model.h.0.output", pin)
+  Note over W,P: worker parked on Pending(VALUE, "model.h.0.output", pin)
   F->>P: handle("model.h.0.output", value)
   P->>P: tag matches ".i0" → narrow to batch_group
-  P->>U: RESUME id, (narrowed,), pin
-  U->>W: switch(narrowed) → worker parks on (SWAP, same loc, pin, edited)
-  U->>P: PARK id, (WRITEBACK, loc, None, copy)  ← writeback of the read
-  P->>U: write_back(narrowed, copy); RESUME id, (None,), KEEP_PIN
-  U->>P: PARK id, (SWAP, loc, pin, edited)  ← the worker's real park
-  P->>U: widen(value, group, edited); RESUME → worker parks elsewhere
+  P->>U: Resume(id, (narrowed,), pin)
+  U->>W: switch(narrowed) → worker parks on Pending(SWAP, same loc, pin, edited)
+  U->>P: Park(id, Writeback(loc, copy))  ← writeback of the read
+  P->>U: write_back(narrowed, copy), then Reply(id, (None,))
+  U->>P: Park(id, Pending(SWAP, loc, pin, edited))  ← the worker's real park
+  P->>U: widen(value, group, edited), then Resume → worker parks elsewhere
   P-->>F: possibly-edited value returns into the forward
 ```
 
 **Why the writeback.** A read hands the worker a *copy*, so an in-place edit
 (`output[:] = 0`) would never reach the host. After resuming a worker that was
-answering a read, `pump` sends a `WRITEBACK` control park carrying the copy the
+answering a read, `pump` sends a `Writeback` request carrying the copy the
 worker was handed (`IPCInterleaver.writeback`), while the host is still inside
 `Mediator.handle` for that location — unconditionally, since `pump` can't tell
 whether the copy was edited. The host writes the copy's tensors into the ones it
-served (`write_back` in `src/ndif/services/ray/sandbox/driver.py`) and replaces
+served (`write_back` in `src/ndif/services/ray/sandbox/controls.py`) and replaces
 nothing, so the forward keeps its own objects, as it does trusted. A read costs
 two round trips, a read then a swap three; a location no worker is parked on
 never crosses.
@@ -294,43 +335,44 @@ reasoning; the mechanics in brief:
 
 - **Occurrences and `tracer.iter`.** The runner parks untagged with its pin
   (`ipc_event`); `MediatorProxy.adopt` tags with the pin when pinned, else with the
-  proxy's own `iterations[location]`; every `RESUME` pushes the proxy's `iteration`
-  back. A `RESUME` answering a control park or releasing a barrier sends the
-  `KEEP_PIN` sentinel instead — those parks carry no pin, so the proxy's copy may be
-  stale and the worker's own stands.
-- **Control parks.** `MediatorProxy.settle_control` drains `SOURCE`/`CALL`/`CACHE`
-  parks before `handle` sees them, once per proxy before the forward and again after
-  every `switch`. `run_module` defers to the host `Envoy.__call__`, so `hook=False`
-  spends no occurrence for the module or anything under it.
-- **Recursive `.source`.** `ipc_recursive_source` arms the host with a SOURCE park
-  carrying the op path, then parks on `{path}.fn`. When the op fires,
-  `SandboxDriver.serve_recursive_source` instruments the live callable host-side and
-  serves a *description* (`{names, lines, source}`) or `(SOURCE_ERROR, message)` with
-  the base `SourceNotAvailable` wording; the callable never crosses. Arming that came
+  occurrence the model reaches next (`Mediator.occurrence`); every `Resume` pushes
+  the proxy's `iteration` back. The answer to a control request or a barrier park
+  is a `Reply`, which carries no pin — those parks sent none, so the proxy's copy
+  may be stale and the worker's own stands.
+- **Control requests.** `MediatorProxy.settle_control` answers them before `handle`
+  sees them, once per proxy before the forward and again after every `switch`.
+  The `call` handler defers to the host `Envoy.__call__`, so `hook=False` spends no
+  occurrence for the module or anything under it.
+- **Recursive `.source`.** `ipc_recursive_source` arms the host with a `Source`
+  request carrying the op path, then parks on `{path}.fn`. When the op fires,
+  `serve_recursive_source` instruments the live callable host-side and serves a
+  *description* (`{names, lines, source}`) or a `SourceRefused` with the base
+  `SourceNotAvailable` wording; the callable never crosses. Arming that came
   with the initial parks is re-applied after `Interleaver.__enter__` clears
   `sourced`.
 - **Barriers.** `ipc_barrier` parks every arrival (`Event.BARRIER`);
   `SandboxDriver.barrier_arrival` counts per barrier id and releases the round when
   full. Counting runner-side would release workers the host never hears about.
 - **Caches.** `ipc_cache` builds an ordinary nnsight `Cache` in the runner and parks
-  on `CACHE`; the host attaches a `ShippingCache` whose `_record` sends `CACHE_HIT`
+  on `Observe`; the host attaches a `ShippingCache` whose `_record` sends `CacheHit`
   for every location the forward reaches, narrowed to the worker's rows.
 
 ## Termination
 
 | Path | Trigger | Mechanism |
 |---|---|---|
-| Normal | block finishes | forward returns → `DONE` → `pump` returns → block ends → `END` with the saved-values blob → host uploads it |
-| `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `STOP` and re-raises; the proxy's `switch` raises `EarlyStopException` on the host, unwinding the forward, which `Interleaver.__exit__` swallows; `IPCEnvoy.interleave` swallows it in the runner too |
-| Dangling worker | worker still parked after the forward | `check_dangling` classifies the park as nnsight's `dangling_unwind` does and sends `THROW`: `OUT_OF_ORDER` raises `OutOfOrderError`, `ITER` warns that a `tracer.iter` loop outran the model, `BARRIER` raises the base `ValueError`. A fatal kind makes the runner report `EXCEPTION` and exit, so the `THROW` loop and the `DONE` send tolerate `OSError` and let `pump` read the buffered `EXCEPTION` |
-| Block error | any exception in the runner | formatted in `nns.run`, sent as `EXCEPTION`; `next_event` raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
+| Normal | block finishes | forward returns → `Done` → `pump` returns → block ends → `End` with the saved-values blob → host uploads it |
+| `tracer.stop()` | `EarlyStopException` in a worker | `pump` sends `Stop` and holds the stop; the proxy's `resume` raises `EarlyStopException` on the host, which nnsight's `Interleaver.handle` holds until the visit is finished (other workers parked there are still served) and `Interleaver.__exit__` swallows. The runner keeps answering until the host's `Done`, then raises the stop, which `IPCEnvoy.interleave` swallows |
+| Dangling worker | worker still parked after the forward | `check_dangling` classifies the park as nnsight's `dangling_unwind` does and sends `Throw` with a `Dangling` kind: `OUT_OF_ORDER` raises `OutOfOrderError`, `ITER` warns that a `tracer.iter` loop outran the model, `BARRIER` raises the base `ValueError`. A fatal kind makes the runner report `Failed` and exit, so the `Throw` loop and the `Done` send tolerate `OSError` and let `pump` read the buffered `Failed` |
+| Block error | any exception in the runner | formatted in `execute.run`, sent as `Failed`; the host link raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
+| Out of step | a message arrives that the receiver was not waiting for | `Link.receive` raises `ProtocolError` naming it |
 | Host error | the forward raises on the host (a swapped value the next layer can't use, a widen that can't splice an edit) | the host's own exception propagates to the base `format_error` as itself; the runner's recv fails and its noise stays in the runner's stderr |
 | Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, and the thread is the request's own (`run_on_own_thread`). The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
 | Always | after every request | `cleanup` → `discard_sandbox` stops the request's runner; `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
 
-`next_event` services `PRINT` throughout — it echoes the line as a `Status.LOG`
-response and keeps reading — so a caller waiting for a specific reply never sees
-the user's stdout.
+The host's link handles `Print` throughout — `SandboxDriver.pump` puts it in the
+link's `always`, which echoes the line as a `Status.LOG` response and keeps
+reading — so a caller waiting for a specific reply never sees the user's stdout.
 
 ## What the separation is
 
@@ -374,7 +416,7 @@ runs on the host after the forward. So on the untrusted path today:
   a bare `loss.backward()` finishes with `.grad` `None`. So the runner replaces
   `Tensor.backward`, `torch.autograd.backward` and `torch.autograd.grad` with a
   function that raises `NotImplementedError(NO_BACKWARD)`
-  (`src/ndif/services/ray/sandbox/nns.py`), which tells the user to ask for
+  (`src/ndif/services/ray/sandbox/adapters.py`), which tells the user to ask for
   trusted access. That includes a backward that never touches the model.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
   mediator in the runner, whose `handle` never runs, so only the generic writeback
