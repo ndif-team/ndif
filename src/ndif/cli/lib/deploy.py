@@ -23,7 +23,7 @@ from ._common import (
     ensure_ray_connected,
     normalize_specs,
 )
-from .events import notify_reconcile
+from .dispatcher import reconcile
 from .models import (
     extract_task_from_model_key,
     get_current_deployments,
@@ -37,7 +37,6 @@ def deploy(
     *,
     sync: bool = False,
     ray_address: Optional[str] = None,
-    redis_url: Optional[str] = None,
     on_message: OnMessage = None,
 ) -> dict:
     """Deploy a set of models on the NDIF controller.
@@ -205,11 +204,11 @@ def deploy(
         for eviction in all_evictions:
             emit(on_message, f"  - {eviction['model_key']} [{eviction['replica_id']}]")
 
-    # Nudge any already-active dispatcher Processors to refresh their replica
-    # pool for models we deployed to or evicted from.
+    # Have the dispatcher refresh its replica pool for the models we deployed to
+    # or evicted from.
     touched = {e["model_key"] for e in deployments_result if e.get("model_key")}
     touched |= {e["model_key"] for e in all_evictions if e.get("model_key")}
-    notify_reconcile(redis_url, touched)
+    reconcile(touched)
 
     return {"deployments": deployments_result, "evictions": all_evictions}
 

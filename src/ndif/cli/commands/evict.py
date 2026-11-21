@@ -17,9 +17,8 @@ from ..lib.evict import NDIFConnectivityError, evict as evict_lib
               help="Target a single replica by id (requires exactly one checkpoint).")
 @click.option("--all", "evict_all", is_flag=True, help="Evict every HOT deployment.")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
-@click.option("--redis-url", default=None, help="Redis URL for dispatcher reconcile (default: NDIF_REDIS_URL).")
 def evict(checkpoints, revision, task, trust_remote_code, replica, evict_all,
-          ray_address, redis_url):
+          ray_address):
     """Evict (remove) replicas of one or more model deployments.
 
     CHECKPOINTS: model checkpoints (optional if using --all).
@@ -49,7 +48,7 @@ def evict(checkpoints, revision, task, trust_remote_code, replica, evict_all,
     try:
         if evict_all:
             result = evict_lib(evict_all=True, ray_address=ray_address,
-                               redis_url=redis_url, on_message=click.echo)
+                               on_message=click.echo)
         else:
             result = evict_lib(
                 checkpoints=[(cp, revision) for cp in checkpoints],
@@ -57,7 +56,6 @@ def evict(checkpoints, revision, task, trust_remote_code, replica, evict_all,
                 trust_remote_code=trust_remote_code,
                 replica=replica,
                 ray_address=ray_address,
-                redis_url=redis_url,
                 on_message=click.echo,
             )
 

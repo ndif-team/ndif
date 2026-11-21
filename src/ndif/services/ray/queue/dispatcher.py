@@ -10,7 +10,8 @@ provision and re-provision replicas on demand.
 It runs inside the Ray cluster, as the detached ``Dispatcher`` actor on the head
 node (:class:`DispatcherActor`), and goes down and comes back with the head.
 Redis is its only link to the API, which reads the ``ray:connected`` key it
-renews to know it is alive.
+renews to know it is alive. The CLI and the dashboard call ``queue_state``,
+``kill`` and ``reconcile`` on the actor's handle.
 
 Launched by the ray service's ``start.sh``, after the Controller:
     python -m ndif.services.ray.queue.dispatcher
@@ -32,11 +33,6 @@ from ....common.redis import (
     ENV_TIMEOUT_S,
     ENV_TRIGGER_STREAM,
     ENV_TTL_S,
-    EVENT_KILL,
-    EVENT_QUEUE_STATE,
-    EVENT_RECONCILE,
-    EVENT_RESPONSE_TTL_S,
-    EVENTS_STREAM,
     STATUS_KEY,
     STATUS_READY_CHANNEL,
     STATUS_REQUESTED_KEY,
@@ -209,61 +205,22 @@ class Dispatcher:
                     logger.exception("env_worker: failed to report the error")
                 await asyncio.sleep(1)
 
-    async def events_worker(self) -> None:
-        """Serve CLI operational events: queue introspection, kill, reconcile.
+    # ------------------------------------------------------------------
+    # Called on the actor's handle by the CLI and the dashboard. They act on
+    # the dispatcher's own state, its Processors, which the Controller does
+    # not hold.
+    # ------------------------------------------------------------------
 
-        Blocks on the events stream and dispatches each entry by ``event_type``
-        to a handler. Handlers are individually guarded so one bad event can't
-        take the worker down. See :mod:`ndif.common.redis.events`.
+    async def queue_state(self) -> dict:
+        """Every Processor's live state, keyed by model key (``ndif queue``)."""
+        return {"processors": {mk: p.snapshot() for mk, p in self.processors.items()}}
+
+    async def kill(self, request_id: str) -> dict:
+        """Cancel a request, queued or executing (``ndif kill``).
+
+        Returns ``{"status", "message"}``, where ``status`` is
+        ``removed_from_queue``, ``cancelled_execution`` or ``not_found``.
         """
-        client = RedisProvider.async_client
-        last_id = None
-        handlers = {
-            EVENT_QUEUE_STATE: self._handle_queue_state,
-            EVENT_KILL: self._handle_kill,
-            EVENT_RECONCILE: self._handle_reconcile,
-        }
-
-        while True:
-            try:
-                if last_id is None:
-                    last_id = await stream_tail(client, EVENTS_STREAM)
-                messages = await client.xread(
-                    {EVENTS_STREAM: last_id}, block=STREAM_BLOCK_MS, count=1
-                )
-                if not messages:
-                    continue
-                _, entries = messages[0]
-                for entry_id, fields in entries:
-                    last_id = entry_id
-                    handler = handlers.get(fields.get("event_type"))
-                    if handler is None:
-                        continue
-                    try:
-                        await handler(fields)
-                    except Exception:
-                        logger.exception(f"events_worker: handler failed for {fields}")
-            except Exception:
-                logger.exception("events_worker: error reading events stream")
-                await asyncio.sleep(1)
-
-    async def _respond(self, response_key: str, payload: dict) -> None:
-        """Push a JSON reply to the caller's response_key (brpop'd by the CLI)."""
-        client = RedisProvider.async_client
-        await client.lpush(response_key, json.dumps(payload, default=str))
-        await client.expire(response_key, EVENT_RESPONSE_TTL_S)
-
-    async def _handle_queue_state(self, fields: dict) -> None:
-        payload = {
-            "processors": {mk: p.snapshot() for mk, p in self.processors.items()}
-        }
-        await self._respond(fields["response_key"], payload)
-
-    async def _handle_kill(self, fields: dict) -> None:
-        await self._respond(fields["response_key"], await self._kill(fields["request_id"]))
-
-    async def _kill(self, request_id: str) -> dict:
-        """Cancel a request: remove it if queued, else cancel it if executing."""
         for processor in self.processors.values():
             request = processor.pop_queued(request_id)
             if request is not None:
@@ -280,8 +237,13 @@ class Dispatcher:
 
         return {"status": "not_found", "message": f"Request {request_id} not found."}
 
-    async def _handle_reconcile(self, fields: dict) -> None:
-        processor = self.processors.get(fields["model_key"])
+    async def reconcile(self, model_key: str) -> None:
+        """Re-sync one model's Processor with the Controller's replica list.
+
+        For a deploy or evict made outside the dispatcher (``ndif deploy``,
+        ``ndif evict``, the dashboard). A model with no Processor needs nothing.
+        """
+        processor = self.processors.get(model_key)
         if processor is not None:
             await processor.reconcile()
 
@@ -296,7 +258,6 @@ class Dispatcher:
         asyncio.create_task(self.heartbeat_worker())
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.env_worker())
-        asyncio.create_task(self.events_worker())
 
         while True:
             try:

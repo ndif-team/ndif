@@ -252,6 +252,11 @@ def get_controller_actor_handle(namespace: str = NAMESPACE) -> NDIFActorHandle:
     return get_named_actor("Controller", namespace=namespace)
 
 
+def get_dispatcher_actor_handle(namespace: str = NAMESPACE) -> NDIFActorHandle:
+    """Handle to the singleton Dispatcher actor."""
+    return get_named_actor("Dispatcher", namespace=namespace)
+
+
 def model_actor_name(model_key: MODEL_KEY, replica_id: REPLICA_ID) -> str:
     return f"{replica_id}:ModelActor:{model_key}"
 

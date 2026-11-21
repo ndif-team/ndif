@@ -365,8 +365,7 @@ class Processor:
     async def reconcile(self) -> None:
         """Match the pool to the controller's replica list, both directions.
 
-        Invoked after an out-of-band deploy/evict (via the dispatcher's events
-        worker):
+        Invoked after an out-of-band deploy/evict (``Dispatcher.reconcile``):
 
           - replicas the controller has dropped are *left alone* — see below;
           - replicas the controller has gained are adopted, so capacity added
@@ -423,9 +422,9 @@ class Processor:
             # (keeping ensure_started from provisioning a duplicate) while it
             # comes up.
             self.replicas[replica_id] = replica
-            # Backgrounded: this is awaited by the dispatcher's events worker,
-            # and Replica.wait has no timeout — doing it inline would wedge that
-            # worker (and every later reconcile/kill) on one unready actor.
+            # Backgrounded: Replica.wait has no timeout, and Dispatcher.reconcile
+            # awaits this method, so doing it inline would hold that call open
+            # on one unready actor.
             asyncio.create_task(self.adopt(replica))
 
     async def adopt(self, replica: Replica) -> None:

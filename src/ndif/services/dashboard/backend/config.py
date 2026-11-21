@@ -16,7 +16,7 @@ NDIF_DASHBOARD_FRONTEND_DIST      built Vue frontend dir to serve
                                   (default: <package>/frontend/dist)
 NDIF_DASHBOARD_DEV_MODE           "true" disables auth (frontend dev only)
 
-NDIF_RAY_ADDRESS / NDIF_REDIS_URL inherited by the cli/lib calls (deploy /
+NDIF_RAY_ADDRESS                  inherited by the cli/lib calls (deploy /
                                   evict / restart / reconcile).
 """
 
