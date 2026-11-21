@@ -13,9 +13,9 @@ The interleaver is split across the socket at the mediator level:
   ``Mediator.event`` below).
 * Each worker's **parent side** — the occurrence counter, the pin, and the
   read/swap matching — lives on the host as one proxy per worker. The host drives
-  each worker individually over the socket: ``pump`` resumes a worker on RESUME
-  and returns its next park, throws the host-classified dangling error on THROW,
-  and ends on DONE. ``tracer.barrier()`` follows the same doctrine: every arrival
+  each worker individually over the socket: ``pump`` switches a worker in on
+  ``Resume`` and answers with its next park, throws the host-classified dangling
+  error on ``Throw``, and ends on ``Done``. ``tracer.barrier()`` follows the same doctrine: every arrival
   parks over the socket (patched ``Barrier.__call__``) and the *host* counts and
   releases the round, so a released worker's next park always crosses.
 
@@ -24,8 +24,8 @@ values only cross when the host resumes it (a read) or it swaps (in its park).
 Because a read hands back a *copy*, ``pump`` writes each read's value back after
 the worker moves past it, so in-place edits (``output[:] = 0``) reach the host.
 Two things the runner can't do with a *weightless* module — ``.source`` and an
-ad-hoc module call (``IPCEnvoy.__call__``) — become SOURCE / CALL events the host
-serves.
+ad-hoc module call (``IPCEnvoy.__call__``) — become ``Source`` / ``Call`` requests
+the host answers.
 
 ``IPCCloudUnpickler`` resolves the persistent interleaver to an ``IPCInterleaver``
 bound to this request's socket; the model / modules / tokenizer load from this
@@ -61,11 +61,29 @@ from ....common.errors import RequestError
 from ....common.schema.request import BackendRequestModel
 from ..deployments.modeling.nns import execute_traced_block
 from ..deployments.modeling.util import cpu_pickle_module, resolve_dtype
-from .protocol import KEEP_PIN, SOURCE_ERROR
+from .link import Link
+from .messages import (
+    CacheHit,
+    Call,
+    Dangling,
+    Done,
+    End,
+    Failed,
+    Interleave,
+    Observe,
+    Park,
+    Reply,
+    Resume,
+    Source,
+    SourceRefused,
+    Stop,
+    Throw,
+    Writeback,
+)
 
-# The runner's connection to the host, for the request currently executing. The
+# The runner's link to the host, for the request currently executing. The
 # runner handles one request at a time, so a module global is enough.
-connection = None
+link = None
 
 
 def ipc_event(cls, event, location, *rest):
@@ -134,16 +152,16 @@ class IPCInterleaver(Interleaver):
     """Interleaver whose model side is the host, reached over a socket.
 
     The workers (greenlets) run here; there are no modules to hook. The host owns
-    the parent side and drives each worker by id: :meth:`pump` resumes a worker on
-    RESUME (replying with its next park), throws into one on THROW, and returns the
-    model's result on DONE.
+    the parent side and drives each worker by id: :meth:`pump` switches a worker
+    in on `Resume` or `Reply` (answering with its next park), throws into one on
+    `Throw`, and returns the model's result on `Done`.
     """
 
-    def __init__(self, connection) -> None:
+    def __init__(self, link) -> None:
         super().__init__()
-        self.connection = connection
+        self.link = link
         # tracer.cache() caches, by id — the host observes on our behalf and ships
-        # each kept value back as a CACHE_HIT for us to record here.
+        # each kept value back as a CacheHit for us to record here.
         self.caches: dict[int, Cache] = {}
 
     def instrument(self, envoy: Envoy) -> None:
@@ -154,64 +172,65 @@ class IPCInterleaver(Interleaver):
     def pump(self):
         """Drive the workers from the host until the run ends.
 
-        RESUME switches a worker in (a read's value, or nothing for a swap) and
-        replies with its next park; the host pushes the worker's pin so tracer.iter
-        relaxation stays in lockstep — except for ``KEEP_PIN``, which answers a
-        control park and leaves the worker's own pin standing (see below).
-        THROW surfaces a dangling worker. DONE carries
-        the model's result and ends the loop. Every RESUME also writes the previous
-        read's value back (see :meth:`writeback`) so in-place edits reach the host.
+        `Resume` switches a worker in (a read's value, or nothing for a swap) and
+        is answered with its next park; the host pushes the worker's pin so
+        tracer.iter relaxation stays in lockstep. `Reply` does the same in answer
+        to a control request or a barrier park, and leaves the worker's own pin
+        standing (see below). `Throw` surfaces a dangling worker. `Done` carries
+        the model's result and ends the loop. After a read, the worker's copy of
+        the value also goes back (see :meth:`writeback`) so in-place edits reach
+        the host.
 
         ``reads`` tracks each worker's outstanding read (by mediator id), seeded from
-        the parks already shipped in the INTERLEAVE message.
+        the parks already shipped in the `Interleave` message.
         """
+        # A location one of this run's caches wants can be reached on the host at
+        # any point; record the (already filtered + moved-to-cpu) value wherever
+        # this end is waiting.
+        self.link.always = {CacheHit: self.record}
         reads = {
             mediator_id: read
             for mediator_id, mediator in enumerate(self.mediators)
             if (read := read_of(mediator.pending)) is not None
         }
         while True:
-            message = self.connection.recv()
-            kind = message[0]
-            if kind == "DONE":
-                return message[1]
-            if kind == "RESUME":
-                _, mediator_id, args, pin = message
-                mediator = self.mediators[mediator_id]
-                # KEEP_PIN answers a control park (SOURCE/CALL/CACHE), where the
-                # host's copy of the pin is stale: relaxation only happens while
-                # a model location is served, and the worker may have moved its
-                # own pin since its last model park (a `tracer.iter` step).
-                # Overwriting it here wound the loop back a step (#296).
-                if pin != KEEP_PIN:
-                    mediator.iteration = pin
-                # The read this RESUME answers, if any — the worker has held its
-                # (copied) value and may have edited it in place.
-                read = reads.pop(mediator_id, None)
-                try:
-                    park = mediator.switch(*args)
-                except EarlyStopException:
-                    # A worker halted the run (tracer.stop()); tell the host to
-                    # unwind the model, then let the stop propagate as nnsight's does.
-                    self.connection.send("STOP")
-                    raise
-                if read is not None:
-                    self.writeback(mediator_id, read, args[0])
-                if (new_read := read_of(park)) is not None:
-                    reads[mediator_id] = new_read
-                self.connection.send("PARK", mediator_id, park)
-            elif kind == "THROW":
-                _, mediator_id, requester, dangling_kind = message
-                self.throw(self.mediators[mediator_id], requester, dangling_kind)
-            elif kind == "CACHE_HIT":
-                # A location one of our caches wants was reached on the host; record
-                # the (already filtered + moved-to-cpu) value into that cache.
-                _, cache_id, path, key, value = message
-                self.caches[cache_id]._record(path, key, value)
+            message = self.link.receive(Resume, Reply, Throw, Done)
+            if isinstance(message, Done):
+                return message.result
+            mediator = self.mediators[message.worker]
+            if isinstance(message, Throw):
+                self.throw(mediator, message.requester, message.kind)
+                continue
+            # A `Reply` answers a control request or a barrier park, where the
+            # host's copy of the pin is stale: relaxation only happens while a
+            # model location is served, and the worker may have moved its own
+            # pin since its last model park (a `tracer.iter` step). Overwriting
+            # it here wound the loop back a step (#296).
+            if isinstance(message, Resume):
+                mediator.iteration = message.pin
+            # The read this message answers, if any — the worker has held its
+            # (copied) value and may have edited it in place.
+            read = reads.pop(message.worker, None)
+            try:
+                park = mediator.switch(*message.args)
+            except EarlyStopException:
+                # A worker halted the run (tracer.stop()); tell the host to
+                # unwind the model, then let the stop propagate as nnsight's does.
+                self.link.send(Stop())
+                raise
+            if read is not None:
+                self.writeback(message.worker, read, message.args[0])
+            if (new_read := read_of(park)) is not None:
+                reads[message.worker] = new_read
+            self.link.send(Park(message.worker, park))
+
+    def record(self, hit) -> None:
+        """Put one value the host observed into the cache it belongs to."""
+        self.caches[hit.cache]._record(hit.path, hit.key, hit.value)
 
     def writeback(self, mediator_id, read, value):
         """Send a read's (maybe-edited) value back for the host to write into its
-        own, then absorb the host's reply.
+        own, and wait for the host's reply.
 
         A read hands the worker a *copy* of the model's value (it crossed the
         socket), so an in-place edit — ``output[:] = 0`` — never reaches the host on
@@ -219,31 +238,31 @@ class IPCInterleaver(Interleaver):
         applies any edit before the model moves on. We always write back (any
         tensor may have been edited, and we can't tell from here).
 
-        A WRITEBACK control park, not a SWAP: a swap replaces the host's objects
-        with these copies, and the forward's other references to the originals then
-        hold something else than the module ran on (see ``driver.write_back``).
+        A `Writeback` control request, not a swap: a swap replaces the host's
+        objects with these copies, and the forward's other references to the
+        originals then hold something else than the module ran on (see
+        ``controls.write_back``).
         """
         # TODO: only the value is sent back — eproperty write-back transforms
         # attached to the read are silently dropped on the sandbox path.
         location, _ = read
-        self.connection.send("PARK", mediator_id, ("WRITEBACK", location, None, value))
-        self.connection.recv()
+        self.link.request(Park(mediator_id, Writeback(location, value)), Reply)
 
     def throw(self, mediator, requester, kind):
         """End a worker still parked after the run, as the host classified it.
 
         Mirrors ``Interleaver.check_dangling_mediators`` / ``dangling_unwind``:
-        ``kind`` is the host's classification (``check_dangling``):
+        ``kind`` is the host's classification (``check_dangling``), a `Dangling`:
 
-        * ``"BARRIER"`` — the barrier was never going to release (fewer blocks
+        * ``BARRIER`` — the barrier was never going to release (fewer blocks
           reached it than it was built for); the base's ValueError, raised out
           of the worker's own frame, same wording as the trusted path.
-        * ``"ITER"`` — a ``tracer.iter`` loop outran the model; unwound and
+        * ``ITER`` — a ``tracer.iter`` loop outran the model; unwound and
           warned about, its reached iterations kept.
-        * ``"OUT_OF_ORDER"`` — a real error: the model already ran past the
+        * ``OUT_OF_ORDER`` — a real error: the model already ran past the
           requested location; propagates, failing the run.
         """
-        if kind == "BARRIER":
+        if kind is Dangling.BARRIER:
             mediator.worker.throw(
                 ValueError(
                     "A barrier was never reached by every block it waits for; "
@@ -254,7 +273,7 @@ class IPCInterleaver(Interleaver):
         error = OutOfOrderError(
             f"'{requester}' was requested but the model already ran past it"
         )
-        if kind == "ITER":
+        if kind is Dangling.ITER:
             try:
                 mediator.worker.throw(error)
             except OutOfOrderError:
@@ -285,7 +304,7 @@ class IPCEnvoy(Envoy):
                 # so the host builds a proxy per worker. The per-invoke inputs ride
                 # along as raw `invokes` — the pipeline/tokenizer that assemble them
                 # into model inputs live on the host, not in this process — then
-                # serve the run. Dangling workers are surfaced by the host (THROW).
+                # serve the run. Dangling workers are surfaced by the host (Throw).
                 mediators = self.interleaver.mediators
                 parks = [mediator.pending for mediator in mediators]
                 # Each worker's row range in the combined batch, so the host can
@@ -293,8 +312,8 @@ class IPCEnvoy(Envoy):
                 # edit or empty invoke).
                 batch_groups = [mediator.batch_group for mediator in mediators]
                 invokes = batcher.invokes if batcher is not None else []
-                connection.send(
-                    "INTERLEAVE", fn_name, parks, batch_groups, invokes, **kwargs
+                self.interleaver.link.send(
+                    Interleave(fn_name, parks, batch_groups, invokes, kwargs)
                 )
                 result = self.interleaver.pump()
         except EarlyStopException:
@@ -305,11 +324,10 @@ class IPCEnvoy(Envoy):
 
     def __call__(self, *args, hook=False, **kwargs):
         # An ad-hoc module call (e.g. the logit lens): the module lives on the host,
-        # so send a CALL event with the inputs, run its forward there, and hand the
-        # output back. `hook` mirrors Envoy.__call__ (direct forward vs full module).
-        return getcurrent().parent.switch(
-            Pending("CALL", self.path, None, (hook, args, kwargs))
-        )
+        # so park on a `Call` request with the inputs, run its forward there, and
+        # hand the output back. `hook` mirrors Envoy.__call__ (direct forward vs
+        # full module).
+        return getcurrent().parent.switch(Call(self.path, hook, args, kwargs))
 
 
 class IPCCloudUnpickler(CustomCloudUnpickler):
@@ -336,7 +354,7 @@ class IPCCloudUnpickler(CustomCloudUnpickler):
         # weights themselves are never in this process — a resolved module is the
         # meta build's, and reads of its activations still cross the socket.
         if pid == "Interleaver":
-            return IPCInterleaver(connection)
+            return IPCInterleaver(link)
         elif pid in self.persistent_objects:
             return self.persistent_objects[pid]
 
@@ -351,8 +369,8 @@ class IPCSource:
     the host instruments the forward that actually runs — so an ``IPCSource`` is
     built from the host's *description* of it instead: the names, the source
     text, and the line each operation sits on (``None`` when the forward can't
-    be sourced). A module's ``.source`` gets the description in the SOURCE
-    reply (``install_source``, driver.py); a recursive drill gets the same
+    be sourced). A module's ``.source`` gets the description in the reply to
+    its ``Source`` request (``controls.source``); a recursive drill gets the same
     shape served at ``{path}.fn`` (see :func:`ipc_recursive_source`). Each
     ``source.<op>`` is then just a location the interleaver serves, exactly
     like a module ``.output``.
@@ -400,8 +418,8 @@ class IPCSource:
 
 def ipc_module_source(self: Envoy) -> IPCSource:
     # Round-trip to the host: install source on the module whose forward runs
-    # there, and describe it (install_source, driver.py).
-    described = getcurrent().parent.switch(Pending("SOURCE", self.path, None))
+    # there, and describe it (controls.source).
+    described = getcurrent().parent.switch(Source(self.path))
     return IPCSource(self, self.path, described)
 
 
@@ -414,14 +432,14 @@ def ipc_recursive_source(self: SourceEnvoy) -> IPCSource:
     callable over, then builds an instrumented copy for the model to run in its
     place. None of that lands in the right process here: the mark and the build
     must sit on the interleaver whose forward runs — the host's. So the runner
-    arms the host with a ``SOURCE`` control park carrying the **op path**
-    (``install_source``, driver.py) and parks on ``{path}.fn`` exactly as the
+    arms the host with a ``Source`` request carrying the **op path**
+    (``controls.source``) and parks on ``{path}.fn`` exactly as the
     base does — but what the host serves at that park is a *description*, never
     the callable (#312): it classifies the live value with base nnsight's own
     checks and builds the instrumented copy into its own ``sourced`` at the
-    serve moment (``SandboxDriver.serve_recursive_source``), then ships either
-    the one-level SOURCE reply shape (names/lines/source) or a
-    ``(SOURCE_ERROR, message)`` refusal carrying the base ``SourceNotAvailable``
+    serve moment (``controls.serve_recursive_source``), then ships either
+    the one-level reply shape (names/lines/source) or a
+    ``SourceRefused(message)`` carrying the base ``SourceNotAvailable``
     wording — raised here from this worker's own frame, exactly as the trusted
     path raises it. Recursive source is ``IPCSource`` all the way down.
 
@@ -443,10 +461,10 @@ def ipc_recursive_source(self: SourceEnvoy) -> IPCSource:
     # unpickling copy.
     interleaver = mediator.interleaver
     if interleaver.sourced.get(self.path) is None:
-        getcurrent().parent.switch(Pending("SOURCE", self.path, None))
+        getcurrent().parent.switch(Source(self.path))
         described = Mediator.value(f"{self.path}.fn")
-        if isinstance(described, tuple) and described[:1] == (SOURCE_ERROR,):
-            raise SourceNotAvailable(described[1])
+        if isinstance(described, SourceRefused):
+            raise SourceNotAvailable(described.message)
         interleaver.sourced[self.path] = described
     return IPCSource(self.envoy, self.path, interleaver.sourced[self.path])
 
@@ -472,9 +490,9 @@ def ipc_cache(self, *args, **kwargs):
 
     A cache here would never fill — the forward, and so ``Interleaver.handle``, runs
     on the host. So build the ordinary Cache / CacheView (kept a plain nnsight type,
-    so the client can deserialize it), then register it and send a ``CACHE`` event
-    carrying the filter. The host observes on our behalf and ships each kept value
-    back as a ``CACHE_HIT``, which :meth:`IPCInterleaver.pump` records into it.
+    so the client can deserialize it), then register it and park on an ``Observe``
+    request carrying the filter. The host observes on our behalf and ships each kept
+    value back as a ``CacheHit``, which :meth:`IPCInterleaver.record` puts into it.
     """
     view = _original_cache(self, *args, **kwargs)
     cache = view._cache
@@ -489,7 +507,7 @@ def ipc_cache(self, *args, **kwargs):
         "include_output": cache.include_output,
         "include_inputs": cache.include_inputs,
     }
-    getcurrent().parent.switch(Pending("CACHE", cache_id, None, (config,)))
+    getcurrent().parent.switch(Observe(cache_id, config))
     return view
 
 
@@ -632,8 +650,8 @@ def run(conn, blob: bytes, compress: bool = False, dtype: str = "float32",
     applied to the loaded model just before this — see :func:`set_env` for why
     the runner needs it too.
     """
-    global connection
-    connection = conn
+    global link
+    link = Link(conn)
 
     # Deserialization is separated from execution because the two fail for
     # entirely different reasons and only the second has a user traceback worth
@@ -677,7 +695,7 @@ def _run(
         # this into. The in-process path raises the very same object; only text
         # crosses this socket, so the runner ships str() of it, plus the type's
         # name so telemetry records what failed rather than the wrapper (#280).
-        terminal = ("EXCEPTION", str(error), type(error).__name__)
+        terminal = Failed(str(error), type(error).__name__)
     else:
         try:
             # The shared executor, not a copy of it: the autocast bracket and the
@@ -704,10 +722,10 @@ def _run(
             # RunnerError, and without the name a user mistake is recorded in
             # telemetry as the wrapper — OutOfOrderError trusted, RunnerError
             # untrusted, for the identical block (#280).
-            terminal = ("EXCEPTION", message, type(error).__name__)
+            terminal = Failed(message, type(error).__name__)
         else:
-            terminal = ("END", buffer.getvalue(), deserialize_ms)
+            terminal = End(buffer.getvalue(), deserialize_ms)
     # Drain a trailing partial print line (stdout is the runner's line-buffering
     # Writer here) so it lands before the terminal event on the socket.
     sys.stdout.flush()
-    conn.send(*terminal)
+    link.send(terminal)

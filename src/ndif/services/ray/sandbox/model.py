@@ -25,6 +25,7 @@ from nnsight.schema.response import Status
 from ..deployments.modeling.base import BaseModelDeployment
 from .driver import RunnerError, SandboxDriver
 from .host import Pool
+from .messages import Payload
 
 if TYPE_CHECKING:
     from ....common.schema.request import BackendRequestModel
@@ -122,7 +123,9 @@ class SandboxHost:
             # against. The base applied the same dict to this actor's model
             # moments ago.
             connection.send(
-                (request.payload, request.compress, str(self.dtype), seed, request.env)
+                Payload(
+                    request.payload, request.compress, str(self.dtype), seed, request.env
+                )
             )
             self.after_payload()
             driver = SandboxDriver(
@@ -151,8 +154,8 @@ class SandboxHost:
 
     def execution_scope(self, request: "BackendRequestModel"):
         # A trusted request runs in-process, so use the base's stdout capture. A
-        # sandboxed one forwards stdout as PRINT events instead (see next_event),
-        # so there's nothing to wrap here.
+        # sandboxed one forwards stdout as `Print` messages instead (see
+        # `SandboxDriver.pump`), so there's nothing to wrap here.
         if request.trusted:
             return super().execution_scope(request)
         return contextlib.nullcontext()

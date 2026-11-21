@@ -24,36 +24,20 @@ import time
 import pytest
 
 # No guard, unlike the suites beside it: `protocol.py` is pure transport — sockets,
-# framing and cloudpickle — so this collects and runs in a client-only environment
-# too, which is where someone debugging the wire is most likely to be.
-from ndif.services.ray.sandbox.protocol import Channel, Fanout, RanksDiverged, pack, unpack
+# framing and torch's pickler — and `messages.py` imports nothing but the standard
+# library, so this collects and runs in a client-only environment too, which is
+# where someone debugging the wire is most likely to be.
+from ndif.services.ray.sandbox.messages import Done, End, Park, Payload, Resume
+from ndif.services.ray.sandbox.protocol import Channel, Fanout, RanksDiverged
 
-
-class RunnerEnd(Channel):
-    """The runner's end of one rank's socket, with the runner's codec.
-
-    Mirrors `sandbox.runner.Connection` without importing it — that module patches
-    nnsight globally on import, which a test process should not inherit.
-    """
-
-    def send(self, event, *values, **kwargs):
-        self.send_raw(pack((event, *values), kwargs))
+# The runner's end of one rank's socket. Both ends use `Channel` as it is.
+RunnerEnd = Channel
 
 
 class Peer(Channel):
-    """A stand-in rank, with a rank's codec.
+    """A stand-in rank: a `Channel` that can also answer after a delay."""
 
-    Mirrors `sandbox.host.Connection`: a rank sends the runner one encoded value
-    and receives the runner's ``(values, kwargs)``. The two directions differ
-    deliberately, so a Fanout has to sit correctly on one of them.
-    """
-
-    def recv(self, timeout=None):
-        return unpack(self.recv_raw(timeout))
-
-    def reply(self, event, *values, after: float = 0.0):
-        message = (event, *values)
-
+    def reply(self, message, after: float = 0.0):
         if after:
             timer = threading.Timer(after, lambda: self.send(message))
             timer.daemon = True
@@ -77,53 +61,51 @@ class TestTheBarrier:
 
     def test_it_waits_for_every_peer(self):
         fanout, peers = group()
-        peers[0].reply("RESUME", 0, ("value",), 0)
-        peers[1].reply("RESUME", 0, ("value",), 0)
-        peers[2].reply("RESUME", 0, ("value",), 0, after=0.25)
+        peers[0].reply(Resume(0, ("value",), 0))
+        peers[1].reply(Resume(0, ("value",), 0))
+        peers[2].reply(Resume(0, ("value",), 0), after=0.25)
 
         started = time.time()
         message = fanout.recv()
 
         assert time.time() - started >= 0.2, "returned before the last peer arrived"
-        assert message[0] == "RESUME"
+        assert isinstance(message, Resume)
 
     def test_arrival_order_does_not_matter(self):
         fanout, peers = group()
-        peers[2].reply("RESUME", 0, (), 0)
-        peers[0].reply("RESUME", 0, (), 0, after=0.15)
-        peers[1].reply("RESUME", 0, (), 0)
+        peers[2].reply(Resume(0, (), 0))
+        peers[0].reply(Resume(0, (), 0), after=0.15)
+        peers[1].reply(Resume(0, (), 0))
 
-        assert fanout.recv()[0] == "RESUME"
+        assert isinstance(fanout.recv(), Resume)
 
     def test_the_first_peers_message_is_the_one_returned(self):
         # Where the ranks hold pieces of a sharded tensor their values differ and
         # one has to be chosen. Where the value was made whole first they are
         # identical and the choice does not matter.
         fanout, peers = group()
-        peers[0].reply("RESUME", 0, ("rank0",), 0)
-        peers[1].reply("RESUME", 0, ("rank1",), 0)
-        peers[2].reply("RESUME", 0, ("rank2",), 0)
+        peers[0].reply(Resume(0, ("rank0",), 0))
+        peers[1].reply(Resume(0, ("rank1",), 0))
+        peers[2].reply(Resume(0, ("rank2",), 0))
 
         message = fanout.recv()
 
-        assert message[2] == ("rank0",)
+        assert message.args == ("rank0",)
 
     def test_one_send_reaches_every_peer(self):
         fanout, peers = group()
 
-        fanout.send("PARK", 7)
+        fanout.send(Park(7, None))
 
         for peer in peers:
-            values, _ = peer.recv()
-            # `unpack` yields a list, not the tuple that went in.
-            assert list(values) == ["PARK", 7]
+            assert peer.recv() == Park(7, None)
 
     def test_a_worker_is_served_once_per_serve_not_once_per_rank(self):
         # The property the whole design rests on. Three ranks arrive; the caller
         # sees one message, so it switches its worker one time.
         fanout, peers = group()
         for peer in peers:
-            peer.reply("RESUME", 0, (), 0)
+            peer.reply(Resume(0, (), 0))
 
         served = 0
         message = fanout.recv()
@@ -138,18 +120,18 @@ class TestDivergence:
 
     def test_peers_asking_different_things_raise(self):
         fanout, peers = group()
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[1].reply("RESUME", 0, (), 0)
-        peers[2].reply("DONE", None)  # took a different path
+        peers[0].reply(Resume(0, (), 0))
+        peers[1].reply(Resume(0, (), 0))
+        peers[2].reply(Done(None))  # took a different path
 
         with pytest.raises(RanksDiverged, match="disagree"):
             fanout.recv()
 
     def test_the_message_names_who_disagreed(self):
         fanout, peers = group()
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[1].reply("DONE", None)
-        peers[2].reply("RESUME", 0, (), 0)
+        peers[0].reply(Resume(0, (), 0))
+        peers[1].reply(Done(None))
+        peers[2].reply(Resume(0, (), 0))
 
         with pytest.raises(RanksDiverged) as caught:
             fanout.recv()
@@ -160,16 +142,16 @@ class TestDivergence:
         # A rank that has genuinely diverged will never arrive. Waiting forever is
         # a worse way to learn that than an error naming it.
         fanout, peers = group(timeout=0.4)
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[1].reply("RESUME", 0, (), 0)
+        peers[0].reply(Resume(0, (), 0))
+        peers[1].reply(Resume(0, (), 0))
 
         with pytest.raises(RanksDiverged, match="did not answer"):
             fanout.recv()
 
     def test_the_late_peer_is_named(self):
         fanout, peers = group(timeout=0.3)
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[2].reply("RESUME", 0, (), 0)
+        peers[0].reply(Resume(0, (), 0))
+        peers[2].reply(Resume(0, (), 0))
 
         with pytest.raises(RanksDiverged) as caught:
             fanout.recv()
@@ -178,24 +160,24 @@ class TestDivergence:
 
     def test_a_dropped_peer_raises(self):
         fanout, peers = group()
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[1].reply("RESUME", 0, (), 0)
+        peers[0].reply(Resume(0, (), 0))
+        peers[1].reply(Resume(0, (), 0))
         peers[2].close()  # the process died mid-request
 
         with pytest.raises(RanksDiverged, match="dropped"):
             fanout.recv()
 
     def test_a_stricter_signature_catches_finer_disagreement(self):
-        # The default compares the event name, which catches a rank finishing while
-        # others resume. A caller that knows the protocol can compare the control
-        # fields too -- here, which worker is being resumed.
+        # The default compares the message's type, which catches a rank finishing
+        # while others resume. A caller that knows the protocol can compare the
+        # control fields too -- here, which worker is being resumed.
         def worker_and_event(message):
-            return message[0], message[1]
+            return type(message), message.worker
 
         fanout, peers = group(signature=worker_and_event)
-        peers[0].reply("RESUME", 0, (), 0)
-        peers[1].reply("RESUME", 1, (), 0)  # a different worker
-        peers[2].reply("RESUME", 0, (), 0)
+        peers[0].reply(Resume(0, (), 0))
+        peers[1].reply(Resume(1, (), 0))  # a different worker
+        peers[2].reply(Resume(0, (), 0))
 
         with pytest.raises(RanksDiverged):
             fanout.recv()
@@ -214,11 +196,11 @@ class TestItLooksLikeAChannel:
         # Which is what makes a single-GPU sandbox and a tensor-parallel one the
         # same code path with a different number of peers.
         fanout, peers = group(count=1)
-        peers[0].reply("END", b"blob", 1.5)
+        peers[0].reply(End(b"blob", 1.5))
 
         message = fanout.recv()
 
-        assert message[0] == "END" and message[1] == b"blob"
+        assert message == End(b"blob", 1.5)
 
     def test_close_closes_every_peer(self):
         fanout, peers = group()
@@ -245,13 +227,11 @@ class TestItDropsIntoThePumpLoop:
         """The shape of `IPCInterleaver.pump`, with a counter for a worker."""
         while True:
             message = connection.recv()
-            kind = message[0]
-            if kind == "DONE":
-                return message[1]
-            if kind == "RESUME":
-                _, mediator_id, args, pin = message
-                park = worker(*args)
-                connection.send("PARK", mediator_id, park)
+            if isinstance(message, Done):
+                return message.result
+            if isinstance(message, Resume):
+                park = worker(*message.args)
+                connection.send(Park(message.worker, park))
 
     def test_three_ranks_serve_a_worker_once_each_time(self):
         fanout, peers = group()
@@ -264,9 +244,9 @@ class TestItDropsIntoThePumpLoop:
         def rank(peer, index):
             # Each rank drives its own forward and reaches the same two locations.
             for step in range(2):
-                peer.send(("RESUME", 0, (f"value-{index}-{step}",), 0))
-                assert peer.recv()[0][0] == "PARK"
-            peer.send(("DONE", f"result-{index}"))
+                peer.send(Resume(0, (f"value-{index}-{step}",), 0))
+                assert isinstance(peer.recv(), Park)
+            peer.send(Done(f"result-{index}"))
 
         threads = [
             threading.Thread(target=rank, args=(peer, index), daemon=True)
@@ -290,9 +270,9 @@ class TestItDropsIntoThePumpLoop:
         replies = []
 
         def rank(peer):
-            peer.send(("RESUME", 0, (), 0))
-            replies.append(peer.recv()[0][0])
-            peer.send(("DONE", None))
+            peer.send(Resume(0, (), 0))
+            replies.append(type(peer.recv()))
+            peer.send(Done(None))
 
         threads = [threading.Thread(target=rank, args=(peer,), daemon=True) for peer in peers]
         for thread in threads:
@@ -302,7 +282,7 @@ class TestItDropsIntoThePumpLoop:
         for thread in threads:
             thread.join(timeout=5)
 
-        assert replies == ["PARK"] * 3
+        assert replies == [Park] * 3
 
 
 class TestTheRunnerServesAGroup:
@@ -338,7 +318,7 @@ class TestTheRunnerServesAGroup:
                         payload = leader.recv()
                         conn = Fanout(channels) if len(channels) > 1 else leader
                         # Say what we saw, to everyone, then stop.
-                        conn.send("SAW", len(channels), payload[0])
+                        conn.send(("SAW", len(channels), payload.blob))
                         raise SystemExit(0)
 
                 Probe({path!r}, peers={peers}).serve()
@@ -362,7 +342,7 @@ class TestTheRunnerServesAGroup:
         process, path = self._runner(peers=3, script_dir=tmp_path)
         try:
             leader = self._connect(path)
-            leader.send(("payload", False, "float32", None))
+            leader.send(Payload("payload", False, "float32"))
 
             # Only one host so far: the runner must not have started.
             time.sleep(0.4)
@@ -370,7 +350,7 @@ class TestTheRunnerServesAGroup:
             third = self._connect(path)
 
             for host in (leader, second, third):
-                values, _ = host.recv()
+                values = host.recv()
                 assert values[0] == "SAW"
                 assert values[1] == 3, "the runner did not see the whole group"
                 assert values[2] == "payload"
@@ -383,9 +363,9 @@ class TestTheRunnerServesAGroup:
         process, path = self._runner(peers=1, script_dir=tmp_path)
         try:
             host = self._connect(path)
-            host.send(("payload", False, "float32", None))
+            host.send(Payload("payload", False, "float32"))
 
-            values, _ = host.recv()
+            values = host.recv()
 
             assert values[0] == "SAW" and values[1] == 1
         finally:
@@ -407,10 +387,10 @@ class TestTheRunnerServesAGroup:
 
             leader = self._connect(path)
             follower = self._connect(path)
-            leader.send(("after-a-probe", False, "float32", None))
+            leader.send(Payload("after-a-probe", False, "float32"))
 
             for host in (leader, follower):
-                values, _ = host.recv()
+                values = host.recv()
                 assert values[1] == 2 and values[2] == "after-a-probe"
         finally:
             process.terminate()
@@ -423,10 +403,10 @@ class TestTheRunnerServesAGroup:
         try:
             leader = self._connect(path)
             follower = self._connect(path)
-            leader.send(("from-the-leader", False, "float32", None))
+            leader.send(Payload("from-the-leader", False, "float32"))
 
             for host in (leader, follower):
-                values, _ = host.recv()
+                values = host.recv()
                 assert values[2] == "from-the-leader"
         finally:
             process.terminate()
@@ -438,8 +418,8 @@ class TestFollowersSendOnlyTheirSignature:
 
     `Fanout.recv` returns peer 0's message and drops the rest, so every other
     rank's activation was serialized, sent, rebuilt and discarded — seven eighths
-    of this leg at degree 8. A follower sends the signature alone, which is the
-    only part of its message anything ever reads.
+    of this leg at degree 8. A follower sends the signature alone, the type of
+    its message, which is the only part of it anything ever reads.
     """
 
     def _follower_bytes(self, value):
@@ -451,9 +431,9 @@ class TestFollowersSendOnlyTheirSignature:
         return Channel(theirs).recv()
 
     def test_the_payload_does_not_go_on_the_wire(self):
-        sent = self._follower_bytes(("RESUME", 7, ("a-large-activation",), 3))
+        sent = self._follower_bytes(Resume(7, ("a-large-activation",), 3))
 
-        assert sent == ("RESUME",)
+        assert sent is Resume
         assert "a-large-activation" not in repr(sent)
 
     def test_the_signature_still_matches_the_leaders(self):
@@ -461,7 +441,7 @@ class TestFollowersSendOnlyTheirSignature:
         # has to remain comparable to a leader that sent everything.
         from ndif.services.ray.sandbox.protocol import signature_of
 
-        leader = ("RESUME", 7, ("value",), 3)
+        leader = Resume(7, ("value",), 3)
 
         assert signature_of(self._follower_bytes(leader)) == signature_of(leader)
 
@@ -478,12 +458,12 @@ class TestFollowersSendOnlyTheirSignature:
             theirs.append(end)
         fanout = Fanout(ours)
 
-        theirs[0].send(("RESUME", 0, ("the value",), 0))
-        theirs[1].send(("RESUME", 0, ("rank 1's copy",), 0))
-        theirs[2].send(("RESUME", 0, ("rank 2's copy",), 0))
+        theirs[0].send(Resume(0, ("the value",), 0))
+        theirs[1].send(Resume(0, ("rank 1's copy",), 0))
+        theirs[2].send(Resume(0, ("rank 2's copy",), 0))
         message = fanout.recv()
 
-        assert message == ("RESUME", 0, ("the value",), 0), (
+        assert message == Resume(0, ("the value",), 0), (
             "the leader's payload must survive intact"
         )
 
@@ -498,8 +478,8 @@ class TestFollowersSendOnlyTheirSignature:
             theirs.append(Channel(b) if index == 0 else FollowerConnection(b))
         fanout = Fanout(ours)
 
-        theirs[0].send(("RESUME", 0, (), 0))
-        theirs[1].send(("DONE", "finished instead"))
+        theirs[0].send(Resume(0, (), 0))
+        theirs[1].send(Done("finished instead"))
 
         with pytest.raises(RanksDiverged, match="disagree"):
             fanout.recv()

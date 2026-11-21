@@ -15,7 +15,7 @@ path, with no error:
   real cache never got them, and every later step of a cached ``generate`` ran
   that layer's attention without its history.
 
-The fix is ``driver.write_back``: the copy's tensors are written into the
+The fix is ``controls.write_back``: the copy's tensors are written into the
 originals, and nothing is replaced.
 
 Same harness as ``test_sandbox_iter_pins``, whose helpers this imports: no server
@@ -30,7 +30,7 @@ import pytest
 torch = pytest.importorskip("torch")
 nnsight = pytest.importorskip("nnsight")
 
-from ndif.services.ray.sandbox.driver import write_back
+from ndif.services.ray.sandbox.controls import write_back
 
 from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     PROMPT,

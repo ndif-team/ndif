@@ -1,8 +1,8 @@
 """The sandbox runner: a separate process that runs the user's traced block.
 
-Binds a Unix socket and serves: each connection delivers the request payload
-(``(blob, compress, dtype, seed, env)``); the runner deserializes and executes it with ``nns.run``,
-which drives the exchange with events (INTERLEAVE/PRINT/END/EXCEPTION). Importing
+Binds a Unix socket and serves: each connection delivers the request (a
+``Payload``); the runner deserializes and executes it with ``nns.run``, which
+drives the exchange with the messages in ``messages.py``. Importing
 ``nns`` here — in the runner, never on the host — installs the IPC envoy/interleaver
 patches. The process is not hardened (no namespaces, seccomp, rlimits, or
 filesystem jail); what it provides is separation from the model actor and a fresh
@@ -19,7 +19,8 @@ import threading
 import time
 
 from . import nns
-from .protocol import Channel, Fanout, pack
+from .messages import Print
+from .protocol import Channel, Fanout
 
 _PARENT_POLL_S = 1.0
 
@@ -60,23 +61,12 @@ def die_with_parent() -> None:
     threading.Thread(target=watch, daemon=True, name="die-with-parent").start()
 
 
-class Connection(Channel):
-    """The runner's framed channel to the host (used by ``nns.run`` and ``Writer``).
-
-    ``send`` ships a runner -> host message (event name + values + kwargs); ``recv``
-    reads one host -> runner message. See ``protocol.py`` for the message catalog.
-    """
-
-    def send(self, event, *values, **kwargs):
-        self.send_raw(pack((event, *values), kwargs))
-
-
 class Writer:
-    """Forwards the user's stdout to the host as PRINT events, one per complete
+    """Forwards the user's stdout to the host as `Print` messages, one per complete
     line (like the in-process ``LogStream``) so a lone ``"\\n"`` from ``print``
     doesn't become an empty LOG. ``flush`` drains a trailing partial line.
 
-    Takes anything that can `send` an event, so the same writer serves one host or
+    Takes anything that can `send` a message, so the same writer serves one host or
     a whole group of them."""
 
     def __init__(self, connection):
@@ -87,12 +77,12 @@ class Writer:
         self.buffer += text
         while "\n" in self.buffer:
             line, self.buffer = self.buffer.split("\n", 1)
-            self.connection.send("PRINT", line)
+            self.connection.send(Print(line))
         return len(text)
 
     def flush(self):
         if self.buffer:
-            self.connection.send("PRINT", self.buffer)
+            self.connection.send(Print(self.buffer))
             self.buffer = ""
 
 
@@ -172,7 +162,7 @@ class Runner:
                         # runner would wait forever for a host that already left.
                         sock.close()
                         continue
-                    channels.append(Connection(sock))
+                    channels.append(Channel(sock))
                 self.handle(channels)
             except Exception as error:
                 # A dropped probe or a failing exchange must not kill the loop.
@@ -191,18 +181,23 @@ class Runner:
         # them by construction.
         leader = channels[0]
         connection = Fanout(channels) if len(channels) > 1 else leader
-        # The host sends the request payload; deserialize and run it here (nns.run
-        # reports its own END/EXCEPTION). All stdout *and stderr* from the traced
-        # block is forwarded to the host as PRINT events — stderr because that is
-        # where `warnings.warn` goes, and a warning only the runner sees is a
-        # warning nobody reads. Separate writers so their partial lines don't
+        # The host sends the request (a `Payload`); deserialize and run it here
+        # (nns.run reports its own End or Failed). All stdout *and stderr* from the
+        # traced block is forwarded to the host as `Print` messages — stderr because
+        # that is where `warnings.warn` goes, and a warning only the runner sees is
+        # a warning nobody reads. Separate writers so their partial lines don't
         # interleave.
-        blob, compress, dtype, *rest = leader.recv()
-        seed = rest[0] if rest else None
-        env = rest[1] if len(rest) > 1 else None
+        payload = leader.recv()
         with contextlib.redirect_stdout(Writer(connection)):
             with contextlib.redirect_stderr(Writer(connection)):
-                nns.run(connection, blob, compress, dtype, seed, env)
+                nns.run(
+                    connection,
+                    payload.blob,
+                    payload.compress,
+                    payload.dtype,
+                    payload.seed,
+                    payload.env,
+                )
 
 
 if __name__ == "__main__":

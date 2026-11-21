@@ -16,7 +16,7 @@ import time
 import uuid
 from typing import Optional, Tuple
 
-from .protocol import Channel, signature_of, unpack
+from .protocol import Channel, signature_of
 
 # The dir containing the top-level ``ndif`` package, so the runner (which runs as
 # ndif.services.ray.sandbox.runner) can import ndif.* and reuse its helpers.
@@ -76,12 +76,8 @@ def runner_env() -> dict:
 
 
 class Connection(Channel):
-    """The host's end of a runner channel.
-
-    Inherits the framing; overrides only the receive codec, because the two
-    directions deliberately differ — the host sends one value, the runner replies
-    with an event name plus values and kwargs (see this module's protocol).
-    """
+    """The host's end of a runner channel: a `Channel` that connects to the
+    runner's socket."""
 
     @classmethod
     def open(cls, path: str, timeout: float = 60.0) -> "Connection":
@@ -90,10 +86,6 @@ class Connection(Channel):
         sock.connect(path)
         sock.settimeout(None)
         return cls(sock)
-
-    def recv(self, timeout=None):
-        """Receive a runner message as ``(values, kwargs)``, on this host's device."""
-        return unpack(self.recv_raw(timeout), self.map_location)
 
 
 class FollowerConnection(Connection):
@@ -106,19 +98,19 @@ class FollowerConnection(Connection):
     them whole, so at degree 8 seven eighths of this leg was tensors serialized,
     sent, rebuilt and discarded.
 
-    This sends the signature alone. The barrier is untouched: still one message per
-    event per peer, in the same order, so a peer that resumed a worker while
-    another finished is still caught. What is given up is the *option* of ever
-    comparing payloads across ranks — which was never taken, since the signature
-    defaults to the event name and comparing whole tensors at every location would
-    cost more than the interleave it guards.
+    This sends the signature alone, which is the type of the message. The barrier
+    is untouched: still one message per event per peer, in the same order, so a
+    peer that resumed a worker while another finished is still caught. What is
+    given up is the *option* of ever comparing payloads across ranks — which was
+    never taken, since the signature defaults to the type and comparing whole
+    tensors at every location would cost more than the interleave it guards.
 
     Every tensor-parallel shard is a follower by construction; rank 0 is the actor
     and always the leader, which is why this needs no rank plumbing.
     """
 
     def send(self, value) -> None:
-        super().send((signature_of(value),))
+        super().send(signature_of(value))
 
 
 class Sandbox:
@@ -178,7 +170,7 @@ def spawn(
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
     # `quiet` silences stdout only. **stderr is never discarded**: the block's own
-    # output is forwarded as PRINT events (see nns.Writer), so anything reaching
+    # output is forwarded as `Print` messages (see runner.Writer), so anything reaching
     # this stderr is the runner process failing on its own account -- including
     # `serve`'s "runner: ..." handler, which is the only report of a request the
     # runner could not finish. Sending it to DEVNULL made a runner that died

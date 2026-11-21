@@ -216,6 +216,7 @@ def run_sandboxed_measured(model, blob: bytes):
 
     from ndif.services.ray.sandbox import host
     from ndif.services.ray.sandbox.driver import SandboxDriver
+    from ndif.services.ray.sandbox.messages import Payload
 
     sandbox = host.spawn(model_key=model.to_model_key())
     sizes = []
@@ -223,7 +224,7 @@ def run_sandboxed_measured(model, blob: bytes):
         connection = sandbox.connection()
         send_raw = connection.send_raw
         connection.send_raw = lambda data: (sizes.append(len(data)), send_raw(data))
-        connection.send((blob, False, "torch.float32", None, {}))
+        connection.send(Payload(blob, False, "torch.float32", None, {}))
         data, _ = SandboxDriver(model, torch.float32).pump(connection)
         return torch.load(io.BytesIO(data), weights_only=False)["vals"], sizes
     finally:
