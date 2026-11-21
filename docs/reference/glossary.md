@@ -120,7 +120,7 @@ See [queue-and-scheduling.md](../concepts/queue-and-scheduling.md).
 
 A worker stopping to wait for a value the model hasn't produced yet, registering
 interest in a location (`model.transformer.h.0.output`). In the sandbox it crosses
-the socket as a `PARK` message. See
+the socket as a `Park` message. See
 [sandbox-internals.md](../developing/sandbox-internals.md).
 
 ## Pinning

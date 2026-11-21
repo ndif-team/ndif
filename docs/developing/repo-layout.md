@@ -101,11 +101,17 @@ ray/
 ├── sandbox/
 │   ├── ARCHITECTURE.md the design of record for this subtree
 │   ├── model.py        SandboxHost + SandboxModelDeployment + SandboxModelActor
-│   ├── driver.py       the host side of a run: proxies, interleave, control events
+│   ├── driver.py       the host side of a run: request loop, run loop, a proxy per worker
+│   ├── controls.py     the host's handler for each control request
 │   ├── host.py         spawn runners, Pool, Connection
 │   ├── runner.py       the runner process entry point
-│   ├── nns.py          nnsight patches that run only inside the runner
-│   └── protocol.py     framing, codec, and the message catalog
+│   ├── execute.py      runner: run one request
+│   ├── worker.py       runner: the worker's side of the loop
+│   ├── adapters.py     runner: replacements for nnsight's methods, applied by install()
+│   ├── meta.py         runner: the weightless model and the unpickler
+│   ├── messages.py     one class per message and per control request
+│   ├── link.py         receive by type; one exchange
+│   └── protocol.py     framing, one codec, Channel, Fanout
 └── tp/
     ├── ARCHITECTURE.md the tensor-parallel design
     ├── model.py        TPModelActor and SandboxedTPModelActor (rank 0)

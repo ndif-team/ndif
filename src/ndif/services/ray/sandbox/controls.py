@@ -162,8 +162,8 @@ def serve_recursive_source(interleaver, path: str, fn):
 
 @control(Call)
 def call(driver, proxy, request):
-    """Run the module at ``request.path`` ad hoc and return its output — the host side
-    of the runner's ``IPCEnvoy.__call__`` (an ad-hoc module call, e.g. the
+    """Run the module at ``request.path`` ad hoc and return its output — the host
+    side of the runner's ``IPCEnvoy.__call__`` (an ad-hoc module call, e.g. the
     logit lens, where the module lives here).
 
     Defers to ``Envoy.__call__`` instead of picking a callable itself,

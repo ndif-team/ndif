@@ -210,7 +210,8 @@ class Call(Control):
 
 @dataclass
 class Observe(Control):
-    """Watch the forward for a ``tracer.cache()``; each value it keeps comes back as a `CacheHit`."""
+    """Watch the forward for a ``tracer.cache()``. Each value the cache keeps
+    comes back as a `CacheHit`."""
 
     cache: int
     config: dict

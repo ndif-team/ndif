@@ -3,7 +3,7 @@ title: Enable API-Key Auth
 one_liner: Turn on Postgres-backed API-key verification on the compose stack, keep the keys across `just down`, and lock the dashboard — until you do, every caller's Python runs in-process next to the weights.
 tags: [runbook, operating, auth, api, sandbox, dashboard]
 related: [docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/operating/production.md, docs/operating/dashboard.md, docs/operating/compose-stack.md, docs/developing/api-service.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/runbooks/trace-a-users-failed-job.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, src/ndif/services/api/app.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/routers/deployments.py, docker/postgres/init.sql, docker/docker-compose.yml, justfile]
+sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, src/ndif/services/api/app.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/routers/deployments.py, docker/postgres/init.sql, docker/docker-compose.yml, justfile]
 ---
 
 # Enable API-Key Auth

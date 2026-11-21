@@ -3,7 +3,7 @@ title: Trace a User's Failed Job
 one_liner: From "my trace errored at 14:20" to root cause — correlating one request id across the API logs, the actor logs, Loki and Influx, and telling user error apart from server failure.
 tags: [runbook, operating, telemetry, errors, api, sandbox]
 related: [docs/reference/error-messages.md, docs/concepts/status-and-results.md, docs/concepts/request-lifecycle.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/developing/telemetry-internals.md, docs/developing/sandbox-internals.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/enable-auth.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/objectstore.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, docker/grafana/provisioning/datasources/loki.yml]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/objectstore.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/execute.py, docker/grafana/provisioning/datasources/loki.yml]
 ---
 
 # Trace a User's Failed Job
@@ -92,7 +92,7 @@ last frames are greenlet/threading or NDIF paths, it's the server.**
 
 On the untrusted path the runner catches the exception where it is live, formats
 the traceback there and ships the text back
-(`src/ndif/services/ray/sandbox/nns.py` `_run`);
+(`src/ndif/services/ray/sandbox/execute.py` `_run`);
 `SandboxHost.format_error` passes it through as a non-fatal user error
 (`src/ndif/services/ray/sandbox/model.py` `SandboxHost.format_error`). On the
 trusted path `BaseModelDeployment.format_error`

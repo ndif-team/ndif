@@ -151,8 +151,8 @@ Publishers include the queue's processor and replica workers, the dispatcher
 (when an operator kills a request), the model actor (`BaseModelDeployment.run`
 in `src/ndif/services/ray/deployments/modeling/base.py`), and the sandbox's
 stdout forwarder — the `on_log` callback `SandboxHost.run_in_runner` hands the
-driver, fired for each `PRINT` event in `SandboxDriver.next_event`
-(`src/ndif/services/ray/sandbox/driver.py`). The API itself does *not* publish
+driver, fired for each `Print` message the driver's link receives
+(`src/ndif/services/ray/sandbox/driver.py` `SandboxDriver.pump`). The API itself does *not* publish
 `RECEIVED` — it returns that response over HTTP.
 
 A channel is not one message per request. Every line the user's code prints

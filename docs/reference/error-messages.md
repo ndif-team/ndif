@@ -152,7 +152,8 @@ there means "nothing recorded yet", and the client treats it as still running.
 
 | Exception | Raised by | Meaning |
 |---|---|---|
-| `RunnerError` | `src/ndif/services/ray/sandbox/driver.py` `SandboxDriver.next_event` | The user's block raised in the runner. Carries the runner-formatted traceback text and `cause_type`; `SandboxHost.format_error` returns it verbatim, non-fatal. Always user code |
+| `RunnerError` | `src/ndif/services/ray/sandbox/driver.py` `SandboxDriver.pump` | The user's block raised in the runner. Carries the runner-formatted traceback text and `cause_type`; `SandboxHost.format_error` returns it verbatim, non-fatal. Always user code |
+| `ProtocolError` | `src/ndif/services/ray/sandbox/link.py` `Link.receive` | The host and the runner fell out of step: a message arrived that the receiver was not waiting for. The text names both. A fault in the sandbox, not in user code |
 | `CachedActorError` | `src/ndif/services/ray/deployments/modeling/base.py` `BaseModelDeployment.run` | The actor is WARM, or was demoted mid-run. Raised outside the user-error path on purpose so the queue re-queues |
 | `asyncio.CancelledError` | `src/ndif/services/ray/queue/replica.py` `Replica.dispatch` | A worker task cancelled by a purge, or by an `ndif kill` the actor did not honour in time; answered with the eviction sentence above, then re-raised |
 | `ConnectionError: connection closed before message complete` | `src/ndif/services/ray/sandbox/protocol.py` `recvn` | The runner died, or was stopped. Expected during a timeout or cancel (`SandboxModelDeployment.interrupt` stops it to unblock the host); a real crash otherwise |

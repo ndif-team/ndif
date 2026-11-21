@@ -34,6 +34,9 @@ over the socket, compared against the local run; no Ray:
 | `test_sandbox_recursive_source.py` | recursive `.source` over the socket, against the local run |
 | `test_sandbox_adhoc_calls.py` | an ad-hoc module call (`hook=False` and `hook=True`) leaving the module's real occurrence alone |
 | `test_sandbox_gradients.py` | every form of backward pass refused with the trusted-access message |
+| `test_sandbox_writeback.py` | an in-place edit of a value a block read, and a read of a layer's `.input` in a cached generate, leaving the forward its own tensors and KV cache |
+| `test_sandbox_stop.py` | `tracer.stop()`: the trace after a stopped one in a session, and the other invoke parked on the visit the stop fired at |
+| `test_sandbox_two_hosts.py` | two hosts, each with its own gpt2, driving one runner through the `Fanout`, the second as a follower: the path a tensor-parallel group takes |
 
 **Offline** — no model, no server, no GPU:
 
@@ -41,6 +44,7 @@ over the socket, compared against the local run; no Ray:
 |---|---|
 | `test_placement.py` | placement arithmetic, eviction bookkeeping and placement overrides over synthetic nodes, plus process-free checks of the tensor-parallel and sandbox actor plumbing (seeding, runner env, error reporting, the opt-in switch) |
 | `test_fanout.py` | the `Fanout` barrier that lets one runner drive several ranks |
+| `test_link.py` | `Link` against a scripted peer: a reply received by type, messages that can arrive at any point, and a message nobody was waiting for |
 | `test_replica_wait.py` | what counts as "not yet" versus "never" when waiting on a replica |
 | `test_node_registry.py` | the controller noticing nodes that are gone (a stale registry after mass node loss) and `summarize_error` producing a useful line |
 | `test_inline_result_cap.py` | `NDIF_MAX_SOCKET_RESULT_BYTES`: its default, and that `to_env()` carries it to a model actor |

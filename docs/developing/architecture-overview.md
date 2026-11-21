@@ -188,9 +188,10 @@ verbatim and, for untrusted requests, splits it across a process boundary. See
 
 - **Never import Ray in an API worker.** The API has no connection to the
   cluster; the endpoints read Redis caches the dispatcher refreshes.
-- **Never import `sandbox/nns.py` on the host.** Importing it installs
+- **Never call `install` from `sandbox/adapters.py` on the host.** It applies
   process-wide nnsight patches that would redirect the real model's `interleave`
-  to a socket. It is imported only inside the runner process.
+  to a socket. `Runner` calls it, inside the runner process. Importing the
+  module changes nothing.
 - **Connect telemetry providers after forking.** See
   [Telemetry Internals](telemetry-internals.md).
 - **Don't assume more than one dispatcher.** The queue design assumes exactly one

@@ -3,7 +3,7 @@ title: Wire Schemas
 one_liner: Every model in common/schema — BackendRequestModel, BackendResponseModel, Status, and the controller RPC shapes — field by field.
 tags: [reference, api, controller, internals]
 related: [docs/concepts/status-and-results.md, docs/concepts/request-lifecycle.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md, docs/developing/controller-internals.md, docs/developing/sandbox-internals.md, docs/developing/telemetry-internals.md, docs/reference/redis-keys.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/common/schema/controller.py, src/ndif/common/errors.py, src/ndif/common/types.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/common/schema/controller.py, src/ndif/common/errors.py, src/ndif/common/types.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py]
 ---
 
 # Wire Schemas
@@ -70,7 +70,7 @@ records `len(request.payload)`, the compressed size.
 
 The actor inverts it with `BackendRequestModel.deserialize` — the subclass
 override — in `BaseModelDeployment.execute`, and the sandbox runner calls the same
-override (`src/ndif/services/ray/sandbox/nns.py` `_run`). The override classifies
+override (`src/ndif/services/ray/sandbox/execute.py` `_run`). The override classifies
 an unreadable payload as `PayloadError` and an unresolvable module path as
 `ArchitectureMismatchError` (`src/ndif/common/errors.py`), so both paths report
 the same sentence. Past the API, the whole request travels as pickle:
@@ -124,7 +124,7 @@ it serializes as its own name (`"COMPLETED"`).
 | `RUNNING` | `BaseModelDeployment.run` | The actor has started executing the block. | once per dispatch |
 | `COMPLETED` | `BaseModelDeployment.run` | Done; `data` carries the result or a URL to it. | **terminal** |
 | `ERROR` | many (below) | Failed, cancelled, timed out, or killed; `description` carries the message. | **terminal** |
-| `LOG` | `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`); in the sandbox, `SandboxDriver.next_event` through the `on_log` callback | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many per run** |
+| `LOG` | `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`); in the sandbox, a `Print` message through the `on_log` callback of `SandboxDriver` | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many per run** |
 
 `ERROR` comes from the actor (an exception via `format_error`, or the execution
 timeout — both in `BaseModelDeployment.run`); from the

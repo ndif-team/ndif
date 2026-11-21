@@ -3,7 +3,7 @@ title: nnsight Integration
 one_liner: The client/server contract — what nnsight puts on the wire, how the server rebuilds and runs it, which nnsight internals NDIF depends on, what version drift breaks, and how to develop against a local nnsight.
 tags: [internals, dev, api, sandbox]
 related: [docs/operating/configuration.md, docs/reference/error-messages.md, docs/developing/sandbox-internals.md, docs/developing/model-actor.md, docs/reference/schemas.md, docs/reference/http-api.md, docs/concepts/request-lifecycle.md, docs/concepts/status-and-results.md, docs/developing/testing.md, docs/reference/external-resources.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/versioning.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/nns.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, pyproject.toml]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/services/api/app.py, src/ndif/services/api/versioning.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/nns.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/worker.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/meta.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, pyproject.toml]
 ---
 
 # nnsight Integration
@@ -163,19 +163,19 @@ nnsight" src/ndif` bounds the blast radius of a client bump.
 |---|---|---|
 | `schema.request.RequestModel` | `common/schema/request.py`, `ray/tp/shard.py` | the envelope and both directions of (de)serialization |
 | `schema.response.ResponseModel`, `Status` | `common/schema/response.py`, the actors | the status wire format |
-| `intervention.serialization.UnknownPersistentIdError`, `CustomCloudUnpickler` | `common/schema/request.py`; `ray/sandbox/nns.py` | deserialize error classification; the runner's id resolution |
+| `intervention.serialization.UnknownPersistentIdError`, `CustomCloudUnpickler` | `common/schema/request.py`; `ray/sandbox/meta.py` | deserialize error classification; the runner's id resolution |
 | `modeling.huggingface.HuggingFaceModel`, `CheckpointUnreachable` | `ray/deployments/modeling/base.py`, `ray/tp/`; the evaluator | model loading (`from_model_key(..., device_map, max_memory, dispatch, torch_dtype)`) |
-| `modeling.mixins.remotable.Remotable`, `bytes_per_element` | the evaluator, `ray/sandbox/nns.py`, the dashboard monitor | meta-device sizing and model-key round-tripping |
+| `modeling.mixins.remotable.Remotable`, `bytes_per_element` | the evaluator, `ray/sandbox/meta.py`, the dashboard monitor | meta-device sizing and model-key round-tripping |
 | `tracing.globals.BLOCKS`, `SOURCES` | `ray/deployments/modeling/nns.py` | the per-request snapshot/restore |
 | `tracing.tracer._saves`, `inc`, `dec` | `ray/deployments/modeling/nns.py` | collecting saved values at all |
-| `tracing.util.clean_traceback`, `filter_traceback` | `ray/deployments/modeling/base.py`, `ray/sandbox/nns.py` | the user-facing traceback in an `ERROR` |
-| `intervention.interleaver.{Interleaver, Mediator, Event, EarlyStopException, OutOfOrderError, Pending}` | `ray/sandbox/nns.py`, `ray/sandbox/driver.py` | **the split interleaver** — below |
-| `intervention.barrier.Barrier` | `ray/sandbox/nns.py` | host-counted barriers |
-| `intervention.envoy.Envoy` | `ray/sandbox/nns.py` | the whole-class patch that routes model calls over IPC |
-| `intervention.source.SourceEnvoy`, `install_source`, `SourceNotAvailable` (and `instrument`, `make_op`, `bind`) | `ray/sandbox/nns.py`, `ray/sandbox/driver.py` | `.source` inside a sandboxed trace |
+| `tracing.util.clean_traceback`, `filter_traceback` | `ray/deployments/modeling/base.py`, `ray/sandbox/execute.py` | the user-facing traceback in an `ERROR` |
+| `intervention.interleaver.{Interleaver, Mediator, Event, EarlyStopException, OutOfOrderError, Pending}` | `ray/sandbox/worker.py`, `ray/sandbox/adapters.py`, `ray/sandbox/driver.py` | **the split interleaver** — below |
+| `intervention.barrier.Barrier` | `ray/sandbox/adapters.py` | host-counted barriers |
+| `intervention.envoy.Envoy` | `ray/sandbox/adapters.py` | the whole-class patch that routes model calls over IPC |
+| `intervention.source.SourceEnvoy`, `install_source`, `SourceNotAvailable` (and `instrument`, `make_op`, `bind`) | `ray/sandbox/adapters.py`, `ray/sandbox/controls.py` | `.source` inside a sandboxed trace |
 | `intervention.batching.Batcher` | `ray/sandbox/driver.py` | host-side input assembly |
-| `intervention.cache.Cache` | `ray/sandbox/nns.py`, `ray/sandbox/driver.py` | `tracer.cache()` over the socket |
-| `intervention.tracer.InterleavingTracer` | `ray/sandbox/nns.py` | the `cache` patch |
+| `intervention.cache.Cache` | `ray/sandbox/worker.py`, `ray/sandbox/controls.py` | `tracer.cache()` over the socket |
+| `intervention.tracer.InterleavingTracer` | `ray/sandbox/adapters.py` | the `cache` patch |
 | `modeling.quantization.quantization` | `ray/deployments/modeling/util.py` | quantized loading |
 | `util.from_import_path`, `util.apply` | `cli/lib/models.py`, `ray/sandbox/driver.py` | model-key resolution, nested-structure mapping |
 
