@@ -110,7 +110,7 @@ that model waits out a load cycle.
 
 | What happens | What the server logs say | Meaning |
 |---|---|---|
-| The status shows `QUEUED` a second time | `Replica … evicted (<class>) — re-queueing request, dropping from pool.`, `error_type=evicted:<class>` | An eviction — `CachedActorError` (demoted to WARM, before or during the run), `ActorDiedError`, or a `ValueError` from the actor lookup (`src/ndif/services/ray/queue/replica.py` `EVICTED_ERRORS`). The request goes back to the front of its queue and re-runs from the start; a demotion mid-run also logs `model execution preempted; requeued` |
+| The status shows `QUEUED` a second time | `Replica … evicted (<class>) — re-queueing request, dropping from pool.`, `error_type=evicted:<class>` | An eviction — `CachedActorError` (demoted to WARM, before or during the run, including a run that failed because its weights were moved to CPU under it), `ActorDiedError`, or a `ValueError` from the actor lookup (`src/ndif/services/ray/queue/replica.py` `EVICTED_ERRORS`). The request goes back to the front of its queue and re-runs from the start; a demotion mid-run also logs `model execution preempted; requeued` |
 | Sits on `RECEIVED`, `QUEUED`, `PROVISIONING` or `DEPLOYING` | — | [Debug a stuck request](../runbooks/debug-a-stuck-request.md) |
 | `COMPLETED` with no saves, no error | — | Early stop (`tracer.stop()`) is normal; otherwise a client-side `.save()` question for nnsight |
 | A warning that a `tracer.iter` loop outran the model | — | Not an error: the iterations that were reached are kept |

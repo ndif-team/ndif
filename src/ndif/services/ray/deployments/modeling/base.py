@@ -451,6 +451,14 @@ class BaseModelDeployment:
             # bug above. The finally below still restores state and cleans up.
             raise
         except Exception as exception:
+            if self.cached:
+                # to_cache moved the weights to CPU under this request, and the
+                # forward failed on them before the preempting cancel reached
+                # it. The request did nothing wrong: re-queue it, as above.
+                self.report(request, "preempted", elapsed_ms(exec_started))
+                raise CachedActorError(
+                    f"Model actor {self.model_key} was cached (WARM) mid-execution."
+                ) from exception
             message, fatal = self.format_error(exception)
             request.respond(
                 Status.ERROR,
