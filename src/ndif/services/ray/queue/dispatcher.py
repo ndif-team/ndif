@@ -75,10 +75,9 @@ class Dispatcher:
         self.processors: dict[str, Processor] = {}
 
     async def startup(self) -> None:
-        """Wait for Redis and the Controller before serving.
+        """Clear the cached status and env, and their locks, once Redis answers.
 
-        Clears the cached status and env, and their locks: they describe
-        whatever cluster ran before this one.
+        They describe whatever cluster ran before this one.
         """
         while True:
             try:
@@ -88,14 +87,6 @@ class Dispatcher:
                 break
             except Exception:
                 logger.exception("Waiting for Redis")
-                await asyncio.sleep(1)
-
-        while True:
-            try:
-                controller_handle()
-                break
-            except Exception:
-                logger.exception("Waiting for the Controller")
                 await asyncio.sleep(1)
 
     async def get(self) -> list[BackendRequestModel]:

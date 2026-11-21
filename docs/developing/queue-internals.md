@@ -66,9 +66,8 @@ half of every model's queue in its own memory.
 
 It reaches the Controller and the model actors through Ray's own handles
 (`controller_handle`, `model_handle` in `src/ndif/common/providers/ray.py`).
-`Dispatcher.startup` runs once before the loop: it waits for Redis, deletes the
-cached status/env and their coalescing locks, then waits until the `Controller`
-actor can be looked up. `Dispatcher.heartbeat_worker` keeps the `ray:connected`
+`Dispatcher.startup` runs once before the loop: it waits for Redis and deletes
+the cached status/env and their coalescing locks. `Dispatcher.heartbeat_worker` keeps the `ray:connected`
 key alive from then on (see
 [The Redis Layer](redis-layer.md#the-rayconnected-flag)).
 

@@ -207,8 +207,7 @@ A plain string key the dispatcher keeps alive as a heartbeat.
 `Dispatcher.heartbeat_worker` sets it to `"1"` every 10 s, with an expiry of
 `CONNECTED_TTL_S` (30 s). Nothing deletes it; it lapses when the dispatcher
 dies, with the head or alone. Before the worker starts, `Dispatcher.startup`
-waits for Redis and the Controller and clears the status and env caches and
-their locks ([Queue Internals](queue-internals.md#the-dispatcher)). The API
+waits for Redis and clears the status and env caches and their locks ([Queue Internals](queue-internals.md#the-dispatcher)). The API
 uses the key as a route dependency,
 `require_ray_connection`, to 503 early rather than enqueue work the backend
 can't serve — it guards `/request`, `/status`, `/env` and `/connected`.

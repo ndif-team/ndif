@@ -285,7 +285,7 @@ above, for the default). What a wrong address looks like is in
   whole stack down and then starts only `ray` and its dependencies; run
   `just up` afterwards to bring the rest back.
 - **Ray takes minutes to become ready.** A 503 from `/request` right after
-  startup usually means the controller isn't up yet; check the ray log before
+  startup usually means the ray service is still starting; check the ray log before
   assuming anything is broken.
 - **Gated checkpoints need `HF_TOKEN`.** The compose `ray` service passes it
   through from your environment, so export it before `just up`.

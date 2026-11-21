@@ -229,8 +229,7 @@ environment, not the client's.
 `RayProvider.connect` verifies the host/port is listening before calling
 `ray.init`, and `RayProvider.connected` is deliberately stricter than "the
 cluster is up" — it also requires that `ray.get_actor("Controller",
-namespace="NDIF")` resolves. The dispatcher waits on the same lookup before its
-first pass (`Dispatcher.startup`).
+namespace="NDIF")` resolves.
 
 Actor handles come back as `NDIFActorHandle`
 (`src/ndif/common/providers/ray.py`), a `ClientActorHandle` subclass whose

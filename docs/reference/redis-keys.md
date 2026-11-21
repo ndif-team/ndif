@@ -36,7 +36,7 @@ drain.
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `ray:connected` | String | `Dispatcher.heartbeat_worker` — `set ... ex=CONNECTED_TTL_S` every 10 s, the first once Redis *and* the Controller actor answer; never deleted | `src/ndif/services/api/app.py` `require_ray_connection` | `CONNECTED_TTL_S`, **30s** | `"1"`. A heartbeat — presence is the signal |
+| `ray:connected` | String | `Dispatcher.heartbeat_worker` — `set ... ex=CONNECTED_TTL_S` every 10 s, the first once Redis answers; never deleted | `src/ndif/services/api/app.py` `require_ray_connection` | `CONNECTED_TTL_S`, **30s** | `"1"`. A heartbeat — presence is the signal |
 
 Guards `POST /request`, `GET /status`, `GET /env` and `/connected`; absence yields
 a 503 "compute backend is reconnecting".

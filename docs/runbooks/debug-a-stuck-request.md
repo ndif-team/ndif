@@ -83,7 +83,7 @@ renews the key every 10 s with a 30 s expiry, so it lapses once the dispatcher i
 gone (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.heartbeat_worker`).
 
 **If the key is missing**, no dispatcher is serving: the Ray head is down or
-still starting, or the dispatcher is waiting for Redis or the Controller
+still starting, or the dispatcher is waiting for Redis
 (`Dispatcher.startup`). A dispatcher that
 went down took every request it had popped with it, and **nothing told those
 users**: one still waiting must resubmit. Requests still on the ingress list are
@@ -278,7 +278,7 @@ provisioned Loki datasource puts on every `request_id`:
 |---|---|---|
 | `ndif.request` | everywhere the request goes | one record per status transition: `stage`, `prev_stage`, `prev_stage_ms`. The last `stage` is how far it got |
 | `ndif.api` | API workers | rejections (`api request rejected: 403`), unhandled 500s |
-| `ndif.queue.dispatcher` | dispatcher | `Waiting for Redis`, `Waiting for the Controller`, errors in the dispatch loop and the status, env and events workers |
+| `ndif.queue.dispatcher` | dispatcher | `Waiting for Redis`, errors in the dispatch loop and the status, env and events workers |
 | `ndif.queue.processor` | dispatcher | `request enqueued`, autoscaling, provisioning errors |
 | `ndif.queue.replica` | dispatcher | eviction re-queues, `request errored during execution`, `request errored: cancelled mid-dispatch` |
 | `ndif.controller` | Ray head | placement, node updates, `CANT_ACCOMMODATE` |

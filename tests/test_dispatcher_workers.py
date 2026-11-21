@@ -133,7 +133,7 @@ def test_heartbeat_worker_renews_the_connected_key_before_it_expires(dispatcher,
     assert sleeps == [ttl / 3, 1, ttl / 3]
 
 
-def test_startup_waits_for_redis_and_then_for_the_controller(dispatcher, monkeypatch):
+def test_startup_waits_for_redis(dispatcher, monkeypatch):
     instance, sleeps = dispatcher
     deletes = []
 
@@ -143,17 +143,9 @@ def test_startup_waits_for_redis_and_then_for_the_controller(dispatcher, monkeyp
             if len(deletes) == 1:
                 raise RedisConnectionError("Redis is not up yet")
 
-    lookups = []
-
-    def controller_handle():
-        lookups.append(1)
-        if len(lookups) < 3:
-            raise ValueError("Failed to look up actor with name 'Controller'")
-
     monkeypatch.setattr(dispatcher_module.RedisProvider, "async_client", Redis(), raising=False)
-    monkeypatch.setattr(dispatcher_module, "controller_handle", controller_handle)
 
     asyncio.run(instance.startup())
 
-    assert len(deletes) == 2 and len(lookups) == 3
-    assert sleeps == [1, 1, 1]
+    assert len(deletes) == 2
+    assert sleeps == [1]

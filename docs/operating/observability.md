@@ -81,7 +81,7 @@ purpose — they're unbounded.
 |---|---|---|
 | `ndif.api` | `api` | HTTP ingress: rejections with `status_code`/`path`, unhandled 500s |
 | `ndif.request` | `api`, `dispatcher` **and** `model` | The lifecycle event on every status change, with `stage`, `prev_stage`, `prev_stage_ms` |
-| `ndif.queue.dispatcher` | `dispatcher` | Startup waits on Redis and the Controller, dispatch-loop and status-worker errors |
+| `ndif.queue.dispatcher` | `dispatcher` | Startup waits on Redis, dispatch-loop and status-worker errors |
 | `ndif.queue.processor` | `dispatcher` | Enqueue, provisioning, autoscaling |
 | `ndif.queue.replica` | `dispatcher` | Dispatch to an actor, replica loss |
 | `ndif.controller` | `ray` | Node updates, placement decisions, evictions |
