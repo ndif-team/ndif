@@ -54,10 +54,9 @@ to the API is Redis.
 
 The API pickles the whole `BackendRequestModel` — payload included — and
 `LPUSH`es it onto the list named by `NDIF_QUEUE_KEY`. The dispatcher `BRPOP`s
-the other end, which makes it FIFO, then drains up to
-`NDIF_QUEUE_FETCH_BATCH_MAX - 1` more with non-blocking `RPOP` to amortize
-round-trips (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`). The
-blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S`.
+the other end one request at a time, which makes it FIFO
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`). The blocking pop
+times out every `NDIF_QUEUE_FETCH_TIMEOUT_S`.
 
 > **Gotcha:** once a request is popped it lives only in the dispatcher's memory.
 > If the dispatcher goes down — with the Ray head, or alone, in which case Ray

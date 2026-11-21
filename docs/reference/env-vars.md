@@ -65,7 +65,6 @@ non-positive value, and the process does not start.
 |---|---|---|
 | `NDIF_QUEUE_KEY` | `queue` | Redis list the API pushes onto and the dispatcher pops from. |
 | `NDIF_QUEUE_FETCH_TIMEOUT_S` | `10` | Blocking-pop timeout: the length of an idle pass of the dispatch loop. The dispatcher's stream reads block for as long, and its Redis reply timeout is this plus 10 s. |
-| `NDIF_QUEUE_FETCH_BATCH_MAX` | `32` | Max requests drained per dispatch iteration. |
 | `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often a per-model processor inspects its queue. |
 | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Scale up when the oldest queued request has waited longer than this. |
 | `NDIF_AUTOSCALING_BACKOFF_S` | `120` | Pause after a scale-up before another can fire. |

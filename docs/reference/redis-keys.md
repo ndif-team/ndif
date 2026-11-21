@@ -24,13 +24,12 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get` — `brpop`, then up to `fetch_batch_max - 1` `rpop`s | none | One pickled `BackendRequestModel` per element, payload blob included |
+| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get` — `brpop`, one request per call | none | One pickled `BackendRequestModel` per element, payload blob included |
 
 The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
 `brpop` gives FIFO. The pickles are not UTF-8, which is one reason
 `RedisProvider` keeps a separate non-decoding `async_bytes_client`. The blocking
-pop waits `NDIF_QUEUE_FETCH_TIMEOUT_S`; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one
-drain.
+pop waits `NDIF_QUEUE_FETCH_TIMEOUT_S`.
 
 ## Control-plane health
 

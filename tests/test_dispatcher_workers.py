@@ -89,6 +89,26 @@ def test_a_stream_is_read_on_from_its_newest_entry():
     assert asyncio.run(dispatcher_module.stream_tail(Redis(), "s")) == "1700000000000-3"
 
 
+def test_get_pops_one_request_and_none_on_a_quiet_queue(dispatcher, monkeypatch):
+    instance, _ = dispatcher
+    replies = [(b"queue", dispatcher_module.pickle.dumps("request")), None]
+    pops = []
+
+    class Redis:
+        async def brpop(self, key, timeout=None):
+            pops.append((key, timeout))
+            return replies.pop(0)
+
+    monkeypatch.setattr(
+        dispatcher_module.RedisProvider, "async_bytes_client", Redis(), raising=False
+    )
+
+    assert asyncio.run(instance.get()) == "request"
+    assert asyncio.run(instance.get()) is None
+    config = dispatcher_module.CONFIG
+    assert pops == [(config.queue_key, config.fetch_timeout_s)] * 2
+
+
 def test_main_loop_pauses_between_failures(dispatcher):
     instance, sleeps = dispatcher
     calls = []

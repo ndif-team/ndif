@@ -89,27 +89,15 @@ class Dispatcher:
                 logger.exception("Waiting for Redis")
                 await asyncio.sleep(1)
 
-    async def get(self) -> list[BackendRequestModel]:
-        """Fetch pending requests from the Redis queue.
+    async def get(self) -> BackendRequestModel | None:
+        """Pop the next request from the Redis queue.
 
-        Blocking-pop one, for at most ``fetch_timeout_s``, then batch-pop up to
-        ``fetch_batch_max`` more to amortize round-trips under load.
+        Waits at most ``fetch_timeout_s``, and returns ``None`` if none arrived.
         """
-        client = RedisProvider.async_bytes_client
-
-        result = await client.brpop(CONFIG.queue_key, timeout=CONFIG.fetch_timeout_s)
-        if result is None:
-            return []
-
-        requests = [pickle.loads(result[1])]
-
-        while len(requests) < CONFIG.fetch_batch_max:
-            item = await client.rpop(CONFIG.queue_key)
-            if item is None:
-                break
-            requests.append(pickle.loads(item))
-
-        return requests
+        result = await RedisProvider.async_bytes_client.brpop(
+            CONFIG.queue_key, timeout=CONFIG.fetch_timeout_s
+        )
+        return None if result is None else pickle.loads(result[1])
 
     async def dispatch(self, request: BackendRequestModel) -> None:
         """Route a request to its model's Processor, creating one if needed.
@@ -298,7 +286,7 @@ class Dispatcher:
             await processor.reconcile()
 
     async def dispatch_worker(self) -> None:
-        """Main loop: fetch requests and route them.
+        """Main loop: fetch a request and route it.
 
         Runs indefinitely. Errors in the loop are logged but don't terminate
         the dispatcher.
@@ -312,13 +300,14 @@ class Dispatcher:
 
         while True:
             try:
-                requests = await self.get()
+                request = await self.get()
+                if request is None:
+                    continue
 
-                for request in requests:
-                    try:
-                        await self.dispatch(request)
-                    except Exception:
-                        logger.exception(f"Error dispatching request {request.id}")
+                try:
+                    await self.dispatch(request)
+                except Exception:
+                    logger.exception(f"Error dispatching request {request.id}")
             except Exception:
                 logger.exception("Error in dispatch worker")
                 # Don't spin: while Redis is down every read fails at once.
