@@ -126,17 +126,6 @@ actor writes its result through it. The async clients stay without retries: a pu
 subscriber that reconnected silently would miss whatever was published meanwhile and wait
 forever, rather than fail.
 
-`RedisProvider.max_publish_bytes` is the inline-result cap — the largest payload
-safely published as one pubsub message. It is derived on first use from the server's
-`client-output-buffer-limit pubsub` (`CONFIG GET`) as `min(soft, hard // 2)`,
-counting only enabled bounds: 8 MiB against stock Redis 7. Past those limits a
-subscriber is *disconnected* and the buffered response lost, and Redis's memory
-accounting adds an allocator-dependent overhead over the payload, which is why the
-soft limit leads. No limits at all gives a fixed 20 MiB; a failed `CONFIG GET`
-(blocked on managed Redis) a fixed 8 MiB. Memoized per process; `connect()` clears
-it. An operator raises the Redis pubsub limits to raise the cap; what the cap means
-for a user is in [Status and results](../concepts/status-and-results.md).
-
 `RedisProvider.connected` is a `ping()` with exceptions swallowed.
 
 **Used by** the API app, the dispatcher, and `BackendRequestModel.respond` /
@@ -206,7 +195,10 @@ Methods: `put(key, data, content_type)` creates the bucket on first use and uplo
 through `upload_fileobj` with `_TRANSFER` (boto3's defaults, 8 parts in flight):
 one `put_object` up to 8 MiB, a parallel multipart upload above; `get(key)`
 returns `bytes | None` and deliberately doesn't create it (missing means "nothing
-yet"); `presigned_get(key, expires=1h)`.
+yet"); `presigned_get(key, expires=1h)`. `max_socket_result_bytes`
+(`NDIF_MAX_SOCKET_RESULT_BYTES`, 8 MiB) is the inline cap: the result size above
+which `BaseModelDeployment.run` uploads here; what the cap means for a user is in
+[Status and results](../concepts/status-and-results.md).
 
 **Used by** `BaseModelDeployment.upload_bytes` (key `{request.id}.pt`),
 `BackendRequestModel.respond` for non-blocking requests (key

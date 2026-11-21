@@ -173,7 +173,7 @@ A status update is a JSON text frame:
 | `ERROR` | anywhere; `description` carries the user-facing message |
 
 On `COMPLETED`, the result arrives one of two ways. If the result fits under the
-inline cap (`RedisProvider.max_publish_bytes`) and the job is blocking, the whole
+inline cap (`NDIF_MAX_SOCKET_RESULT_BYTES`) and the job is blocking, the whole
 response is sent as one **binary** frame (`torch.save` bytes) with the result in
 `data`. Otherwise `data` is a presigned GET URL for `{request_id}.pt` in the object
 store (`BaseModelDeployment.upload_bytes`), which the client fetches directly. The

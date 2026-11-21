@@ -202,7 +202,7 @@ activations; they differ where a block touches weights or gradients — see
 `BaseModelDeployment.prepare_result`) compresses the `torch.save` output to
 match `request.compress` and meters it, so the blob is byte-identical whichever route it takes. Then `run` picks: if the
 request has a `session_id` and the blob is at or under the inline cap
-(`RedisProvider.max_publish_bytes`; see
+(`NDIF_MAX_SOCKET_RESULT_BYTES`; see
 [Status and Results](status-and-results.md#how-the-result-gets-back)) it rides
 back *on the response*; otherwise `upload_bytes` PUTs it at `{request.id}.pt`
 and presigns a GET valid for an hour. The `COMPLETED` response carries either

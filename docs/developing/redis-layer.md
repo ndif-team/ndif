@@ -193,13 +193,8 @@ line — so a chatty block produces hundreds of publishes on one channel.
 
 > **Gotcha:** a subscriber whose output buffer exceeds the server's
 > `client-output-buffer-limit pubsub` is *disconnected*, and everything buffered
-> for it is lost — on this channel that means a COMPLETED response, result
-> included. The model actor therefore caps what may ride a single publish at
-> `RedisProvider.max_publish_bytes`, derived from those same server limits
-> (`min(soft, hard // 2)`, 8 MiB against stock redis:7); larger results go to the
-> object store. The cap bounds one message, not a queue of them: a subscriber
-> that stops draining while several near-cap results are published can still be
-> dropped.
+> for it is lost. A result never rides the channel for that reason: it is stored
+> under `result:{id}` and the channel carries only its notice.
 
 ## The `ray:connected` flag
 

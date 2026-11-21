@@ -74,7 +74,7 @@ non-positive value, and the process does not start.
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py` `RedisProvider`; `src/ndif/cli/service.py` `_redis_command` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI starts `redis-server` on this URL's port. The inline-result cap derives from this server's `client-output-buffer-limit pubsub` (`RedisProvider.max_publish_bytes`: `min(soft, hard // 2)`, 8 MiB on stock redis:7); there is deliberately no env var for it, so raise the Redis limits to raise the cap. |
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py` `RedisProvider`; `src/ndif/cli/service.py` `_redis_command` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI starts `redis-server` on this URL's port. |
 | `NDIF_ENV_TTL_S` | `300` | `src/ndif/common/redis/env.py` `ENV_TTL_S` | How long a cached `/env` payload is served before a refresh is triggered. |
 | `NDIF_ENV_TIMEOUT_S` | `60` | `src/ndif/common/redis/env.py` `ENV_TIMEOUT_S` | How long a `/env` request waits for a refresh, and how long the refresh holds the coalescing lock. |
 | `NDIF_STATUS_TTL_S` | `60` | `src/ndif/common/redis/status.py` `STATUS_TTL_S` | Same, for the cached `/status` blob. |
@@ -153,6 +153,7 @@ RustFS in dev, S3 in production.
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket result blobs are written to. |
 | `NDIF_OBJECT_STORE_REGION` | `us-east-1` | Set explicitly so presigning never round-trips to discover the region. |
 | `NDIF_OBJECT_STORE_VERIFY` | `true` | TLS verification (`_boolish`: `1`/`true`/`yes`/`on`). Set false for a self-signed store over HTTPS. |
+| `NDIF_MAX_SOCKET_RESULT_BYTES` | `8388608` (8 MiB) | The inline cap: a blocking request's result up to this many bytes goes back on the COMPLETED response, through Redis, and a larger one goes to the object store. `0` sends every result to the object store. Set it on the Ray head; the Controller forwards it to each model actor. |
 | `NDIF_OBJECT_STORE_CONSOLE_PORT` | `9001` | **CLI only** (`src/ndif/cli/service.py` `_rustfs_command`): the console port of a RustFS the CLI spawns. Compose hardcodes its own. |
 
 Set both keys empty to authenticate as the host's own IAM role: the keys are used
