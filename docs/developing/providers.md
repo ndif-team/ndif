@@ -137,9 +137,7 @@ soft limit leads. No limits at all gives a fixed 20 MiB; a failed `CONFIG GET`
 it. An operator raises the Redis pubsub limits to raise the cap; what the cap means
 for a user is in [Status and results](../concepts/status-and-results.md).
 
-`RedisProvider.connected` is a `ping()` with exceptions swallowed. `reset()` closes
-only the sync client; the async ones are replaced on the next `connect()`, since
-closing them needs an event loop.
+`RedisProvider.connected` is a `ping()` with exceptions swallowed.
 
 **Used by** the API app, the dispatcher, and `BackendRequestModel.respond` /
 `arespond` — every process that publishes a status update, model actors included.

@@ -169,16 +169,6 @@ class RedisProvider(Provider):
         except Exception:
             return False
 
-    @classmethod
-    def reset(cls) -> None:
-        try:
-            if getattr(cls, "sync_client", None) is not None:
-                cls.sync_client.close()
-        except Exception:
-            pass
-        # The async client is replaced on the next connect(); closing it needs
-        # an event loop we may not be in here.
-
 
 RedisProvider.from_env()
 RedisProvider.connect()
