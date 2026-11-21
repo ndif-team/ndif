@@ -3,7 +3,7 @@ title: Redis Keys Reference
 one_liner: Every Redis key, channel and stream NDIF uses — type, writer, reader, TTL and the env var that controls it.
 tags: [reference, redis, api, queue, cli]
 related: [docs/developing/redis-layer.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/concepts/status-and-results.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/common/redis/__init__.py, src/ndif/services/ray/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py, src/ndif/services/ray/sandbox/driver.py]
+sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/__init__.py, src/ndif/services/ray/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/services/ray/sandbox/driver.py]
 ---
 
 # Redis Keys Reference
@@ -57,29 +57,11 @@ rows are identical with `env` in the name and `NDIF_ENV_TTL_S` (default **300s**
 | `status:trigger` | Stream | `_coalesced_fetch` — `xadd(..., maxlen=16, approximate=True)`, lock winner only | The worker — `xread(block=STREAM_BLOCK_MS, count=1)`, from the stream's newest entry when the worker started (`stream_tail`) | ~16 entries, no time TTL | `{"t": "1"}` — a doorbell; content unused |
 | `status:ready` | Pub/sub channel | The worker — `"ok"` or `"error"` | Waiting `/status` requests | n/a | `"ok"` / `"error"` |
 
-## Operational events (CLI → dispatcher)
-
-Constants in `src/ndif/common/redis/events.py`.
-
-| Key | Type | Written by | Read by | TTL | Holds |
-|---|---|---|---|---|---|
-| `dispatcher:events` | Stream | The CLI — `xadd(..., maxlen=64, approximate=True)`: `ndif queue` and `ndif kill` (`src/ndif/cli/lib/events.py` `_request`), and `notify_reconcile` after `ndif deploy` / `ndif evict` | `Dispatcher.events_worker` — `xread(block=STREAM_BLOCK_MS, count=1)`, from the stream's newest entry when the worker started | ~64 entries, no time TTL | `event_type` plus per-type fields |
-| `ndif:cli:{event_type}:{pid}:{time_ns}` | List | `Dispatcher._respond` — `lpush` of the JSON reply, then `expire` | The CLI process that minted it (`_request`) — `brpop`, default timeout 5 s (15 s for `kill`) | `EVENT_RESPONSE_TTL_S` = **30s**, hardcoded | One JSON reply |
-
-The response key is minted per call from the PID and `time.time_ns()`, so it is
-never reused. Event types on `dispatcher:events`:
-
-| `event_type` | Fields | Dispatcher does |
-|---|---|---|
-| `queue_state_request` | `response_key` | Replies `{"processors": {model_key: snapshot}}` (`Dispatcher._handle_queue_state`) |
-| `kill_request` | `response_key`, `request_id` | `Dispatcher._kill`: a queued request is dequeued and errored; an executing one is errored and cancelled on the model actor (`Replica.cancel`), and its replica worker is cancelled only if the actor does not finish it within a few seconds. Replies `removed_from_queue` / `cancelled_execution` / `not_found` |
-| `reconcile_model` | `model_key` | Re-syncs that Processor's replica pool. Fire-and-forget, no reply (`Dispatcher._handle_reconcile`) |
-
 ## Response channels
 
 | Channel | Type | Published by | Subscribed by | TTL | Carries |
 |---|---|---|---|---|---|
-| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message | n/a | A JSON `BackendResponseModel` (text frame), or for a COMPLETED response carrying the result itself (blob at most `ObjectStoreProvider.max_socket_result_bytes`) the notice `\x00result:{request_id}`; `/subscribe` `GETDEL`s that key and sends the response's `torch.save` bytes as a binary frame |
+| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher.kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message | n/a | A JSON `BackendResponseModel` (text frame), or for a COMPLETED response carrying the result itself (blob at most `ObjectStoreProvider.max_socket_result_bytes`) the notice `\x00result:{request_id}`; `/subscribe` `GETDEL`s that key and sends the response's `torch.save` bytes as a binary frame |
 
 The inline result does not cross pub/sub: it is stored under `result:{request_id}`
 and the channel carries only its notice.
@@ -129,9 +111,10 @@ redis-cli -u "$NDIF_REDIS_URL" xlen status:trigger
 redis-cli -u "$NDIF_REDIS_URL" subscribe <session_id>
 ```
 
-`ndif queue` reports the same queue state through the events stream without
-touching Redis by hand, and `ndif info` / `ndif doctor` check that Redis answers
-`PING` at all (`src/ndif/cli/lib/checks.py` `check_redis`).
+`ndif queue` reports what the dispatcher holds after it has popped a request,
+which is not in Redis: it asks the Dispatcher actor over Ray. `ndif info` /
+`ndif doctor` check that Redis answers `PING` at all
+(`src/ndif/cli/lib/checks.py` `check_redis`).
 
 > **Gotcha:** deleting `status:requested` by hand while a refresh is genuinely in
 > flight lets a second refresh start; deleting `ray:connected` makes every guarded

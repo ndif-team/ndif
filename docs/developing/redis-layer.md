@@ -1,9 +1,9 @@
 ---
 title: The Redis Layer
-one_liner: common/redis/* — the coalesced status/env caches, the CLI event stream, and response pub/sub, with the exact keys, TTLs and handshakes each one uses.
+one_liner: common/redis/* — the coalesced status/env caches and response pub/sub, with the exact keys, TTLs and handshakes each one uses.
 tags: [internals, dev, redis, api, queue, cli]
 related: [docs/reference/redis-keys.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/developing/api-service.md, docs/concepts/status-and-results.md, docs/concepts/queue-and-scheduling.md, docs/reference/env-vars.md, docs/developing/cli-internals.md]
-sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/events.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/cli/lib/events.py]
+sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py]
 ---
 
 # The Redis Layer
@@ -14,14 +14,13 @@ sources: [src/ndif/common/redis/__init__.py, src/ndif/common/redis/status.py, sr
 NDIF processes coordinate through, plus the TTL/timeout knobs that go with them.
 It is the keys package only — the connection lives in
 `ndif.common.providers.redis` (see [Providers](providers.md)). This page is the
-home of the coalesced `/status` / `/env` cache, the CLI event stream, response
+home of the coalesced `/status` / `/env` cache, response
 pub/sub, and the `ray:connected` flag.
 
 | Mechanism | Shape | Between |
 |---|---|---|
 | Request queue | List (`lpush` / `brpop`) | API workers → dispatcher |
 | Coalesced caches (`/status`, `/env`) | String + lock + trigger stream + pub/sub | API workers ⇄ dispatcher |
-| Operational events | Stream + per-caller reply list | CLI → dispatcher → CLI |
 | Response publishing | Pub/sub channel per session | Anything that advances a request → the client's websocket |
 
 The queue itself is configured in `src/ndif/services/ray/queue/config.py` and
@@ -116,39 +115,13 @@ sleeps a second so a persistently failing controller can't peg the event loop. A
   survives until read, so a trigger isn't lost if the worker is busy; pub/sub is
   fire-and-forget, so a wake-up to nobody costs nothing.
 
-## The events stream
+## What does not go through Redis
 
-`src/ndif/common/redis/events.py` is a different shape: these events act on the
-dispatcher's **own in-memory state** (its `Processor` objects), not on the
-controller. The CLI produces them; `Dispatcher.events_worker` consumes them.
-
-Everything rides `dispatcher:events` (`EVENTS_STREAM`), with the entry's
-`event_type` field selecting a handler:
-
-| `event_type` | Constant | Extra fields | Semantics |
-|---|---|---|---|
-| `queue_state_request` | `EVENT_QUEUE_STATE` | `response_key` | Request/response — snapshot of every Processor |
-| `kill_request` | `EVENT_KILL` | `response_key`, `request_id` | Request/response — a queued request is removed and errored; an executing one is errored to the client and cancelled on the model actor, with the dispatch cancelled only if the actor does not finish it within a few seconds |
-| `reconcile_model` | `EVENT_RECONCILE` | `model_key` | Fire-and-forget — re-sync one Processor's replica pool |
-
-The request/response ones do their own tiny RPC: the caller mints a unique
-`response_key`, appends the event, and blocks on `brpop`
-(`src/ndif/cli/lib/events.py` `_request`):
-
-```python
-response_key = f"ndif:cli:{event_type}:{os.getpid()}:{time.time_ns()}"
-client.xadd(EVENTS_STREAM, {"event_type": event_type,
-                            "response_key": response_key, **fields},
-            maxlen=64, approximate=True)
-result = client.brpop(response_key, timeout=timeout)
-```
-
-The dispatcher replies with `Dispatcher._respond`: one `lpush` of the JSON
-payload, then `expire(response_key, EVENT_RESPONSE_TTL_S)` — 30 seconds — so a
-reply nobody collected is reaped. The CLI's default timeout is 5s.
-`notify_reconcile` is best-effort and swallows every error: a Redis hiccup must
-not fail a deploy that already succeeded on the controller. Handlers are
-individually try/excepted so one malformed event can't kill the worker.
+`ndif queue`, `ndif kill` and the reconcile at the end of a deploy or evict act
+on the dispatcher's **own in-memory state** (its `Processor` objects). The CLI
+reaches them over Ray, as calls on the Dispatcher actor's handle
+(`src/ndif/cli/lib/dispatcher.py`; see
+[Queue internals](queue-internals.md#calls-from-the-cli)).
 
 ## Response publishing
 
@@ -212,19 +185,15 @@ dispatcher pops it.
 
 ## Gotchas
 
-> **The workers start at the stream's tail.** Both cache workers and the events
-> worker begin from the id of the stream's newest entry (`stream_tail`), meaning
-> "only entries added from now on". Triggers or CLI events appended while the
-> dispatcher was down are never seen. A waiting
-> `/status` then 504s after `STATUS_TIMEOUT_S`, and the lock expires at the same
-> moment, so the *next* request retries cleanly. A `ndif queue` issued against a
-> dead dispatcher raises `TimeoutError` with "Is the Ray head running?".
+> **The workers start at the stream's tail.** Both cache workers begin from the
+> id of the stream's newest entry (`stream_tail`), meaning "only entries added
+> from now on". Triggers appended while the dispatcher was down are never seen.
+> A waiting `/status` then 504s after `STATUS_TIMEOUT_S`, and the lock expires at
+> the same moment, so the *next* request retries cleanly.
 
 > **Exactly one dispatcher is assumed.** `xread` is used, not consumer groups, so
-> every dispatcher reading `status:trigger` would refresh, and every one reading
-> `dispatcher:events` would handle the event and `lpush` a reply. The ray
-> service's `start.sh` launches exactly one per cluster, under a fixed actor
-> name.
+> every dispatcher reading `status:trigger` would refresh. The ray service's
+> `start.sh` launches exactly one per cluster, under a fixed actor name.
 
 > **Redis is not persisted in the dev stack.** The `redis` compose service mounts
 > no volume. A restart drops queued requests, both caches, and every in-flight

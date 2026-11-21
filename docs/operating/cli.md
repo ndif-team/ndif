@@ -3,7 +3,7 @@ title: The ndif CLI
 one_liner: Every `ndif` command — service lifecycle, model deploy/scale/evict/restart/export, queue and cluster introspection — with options, defaults, and what each one touches.
 tags: [operating, cli, runbook]
 related: [docs/operating/models-and-deployment.md, docs/operating/configuration.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/dashboard.md, docs/developing/cli-internals.md, docs/reference/env-vars.md, docs/runbooks/deploy-and-pin-a-model.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/cli/commands/doctor.py, src/ndif/cli/commands/version.py, src/ndif/cli/commands/export.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/events.py, src/ndif/services/ray/queue/dispatcher.py, docker/Dockerfile, justfile]
+sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/commands/deploy.py, src/ndif/cli/commands/start.py, src/ndif/cli/commands/stop.py, src/ndif/cli/commands/doctor.py, src/ndif/cli/commands/version.py, src/ndif/cli/commands/export.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/dispatcher.py, src/ndif/services/ray/queue/dispatcher.py, docker/Dockerfile, justfile]
 ---
 
 # The ndif CLI
@@ -218,7 +218,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 
 ### `ndif deploy`
 
-`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--trust-remote-code] [--pinned] [--replicas N] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR] [--redis-url URL]`
+`ndif deploy [CHECKPOINTS...] [-f FILE] [--sync] [--revision REV] [--task TASK] [--trust-remote-code] [--pinned] [--replicas N] [--actor-class PATH] [--dtype DTYPE] [--gpus N] [--size-bytes N] [--padding-factor F] [--padding-bias N] [--max-tp N] [--ray-address ADDR]`
 
 | Option | Type / default | Effect |
 |---|---|---|
@@ -237,7 +237,7 @@ needs the same `--task` on every later `scale`, `evict` and `restart`.
 | `--padding-factor` | float, unset | headroom as a fraction of the model's size |
 | `--padding-bias` | int, unset | flat headroom, per model |
 | `--max-tp` | int, unset | largest tensor-parallel degree; `0` never places it tensor-parallel |
-| `--ray-address` / `--redis-url` | `NDIF_RAY_ADDRESS` / `NDIF_REDIS_URL` | Redis is only for the post-deploy nudge |
+| `--ray-address` | `NDIF_RAY_ADDRESS` | |
 
 What each field does is in
 [Models and Deployment](models-and-deployment.md#per-model-configuration);
@@ -255,9 +255,9 @@ shortfall); calls the controller's `_deploy` in two batches, non-pinned then
 pinned; then blocks per replica on the actor's `__ray_ready__`, polling every 2s
 with **no deadline** (`wait_for_replica_ready`). Only "not registered yet" and
 "restarting" are waited through — a constructor that raised propagates as
-itself, not as a timeout. Last it sends a fire-and-forget `reconcile_model`
-event per touched model key so a live Processor refreshes its replica pool; a
-Redis failure there never fails the deploy.
+itself, not as a timeout. Last it calls the Dispatcher actor's `reconcile` for
+each touched model key, without waiting, so a live Processor refreshes its
+replica pool; a failure there never fails the deploy.
 
 Per-model status ends up `READY`, `PARTIAL` (some replicas failed) or `ERROR`;
 evictions the controller performed to make room are listed at the end.
@@ -318,14 +318,13 @@ with `--trust-remote-code` needs the flag here too, as on `evict` and `restart`.
 
 ### `ndif evict`
 
-`ndif evict [CHECKPOINTS...] [--revision REV] [--task TASK] [--trust-remote-code] [--replica ID] [--all] [--ray-address ADDR] [--redis-url URL]`
+`ndif evict [CHECKPOINTS...] [--revision REV] [--task TASK] [--trust-remote-code] [--replica ID] [--all] [--ray-address ADDR]`
 
 `--revision` and `--task` apply to *every* checkpoint given. `--replica ID`
 targets one replica and requires exactly one checkpoint. `--all` targets every
 currently-HOT model key and cannot be combined with checkpoints or `--replica`.
 Without `--replica` the controller removes **every HOT and WARM replica** of the
-model key. Afterwards the CLI sends the same `reconcile_model` nudge as
-`deploy`.
+model key. Afterwards the CLI makes the same `reconcile` call as `deploy`.
 
 `pinned` protects a deployment from the controller's *automatic* eviction, not
 from you — `ndif evict --all` sweeps pinned deployments too. And because `--all`
@@ -383,17 +382,16 @@ What survives the round trip, and what does not (`padding_factor`,
 
 ## Queue operations
 
-`queue` and `kill` do **not** use HTTP. They append an event to the Redis stream
-`dispatcher:events` carrying a unique `response_key`, then block on `BRPOP` for
-the dispatcher's JSON reply with a 5s timeout, 15s for a kill (`src/ndif/cli/lib/events.py`
-`_request`). The dispatcher runs as an actor on the Ray head, so
-`No response from the dispatcher` means Redis is up but the **dispatcher** is not
-answering: the head is down or still starting, or the dispatcher stopped. It
-does not mean Redis is down.
+`queue` and `kill` do **not** use HTTP. Like `deploy` and `status` they connect
+to Ray (`NDIF_RAY_ADDRESS`), and they call the Dispatcher actor on the head
+(`src/ndif/cli/lib/dispatcher.py`). `Cannot connect to Ray` means the head's
+Ray Client port is unreachable or the Controller is not up; `Failed to look up
+actor with name 'Dispatcher'` means the head answers and the **dispatcher** is
+not running.
 
 ### `ndif queue`
 
-`ndif queue [--json-output] [--watch] [--redis-url URL]` — snapshots every live
+`ndif queue [--json-output] [--watch] [--ray-address ADDR]` — snapshots every live
 Processor: lifecycle status (`uninitialized`, `provisioning`, `deploying`,
 `ready`, `cancelled`), the replicas in its pool and whether each is busy, queue
 depth, and the queued request ids (first three shown). A model with no in-flight
@@ -417,13 +415,13 @@ Overview:
 
 ### `ndif kill`
 
-`ndif kill REQUEST_ID [--redis-url URL]` — the dispatcher first scans every
+`ndif kill REQUEST_ID [--ray-address ADDR]` — the dispatcher first scans every
 Processor's queue and, if the request is still waiting, removes it and answers
 the client `ERROR` / "Request cancelled by operator." Otherwise it finds the
 replica executing it: the client gets the same `ERROR`, and the model actor
 cancels the request, interrupting the block as the execution timeout does; the
 replica keeps serving
-(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher._kill`,
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
 `src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
 If the actor has not finished the request within a few seconds, the dispatcher
 cancels the **dispatch** instead and the block may run on; follow with
@@ -456,7 +454,7 @@ this machine's Python, platform, GPUs and a short package list instead.
 `just` manages *containers*, `ndif start|stop|logs` manage *local processes*;
 they track different things and cannot see each other. The model and queue
 commands have no `just` equivalent — run them on the host against
-`NDIF_RAY_ADDRESS`/`NDIF_REDIS_URL`, or inside a container:
+`NDIF_RAY_ADDRESS`, or inside a container:
 `docker compose -f docker/docker-compose.yml exec ray ndif status`. The host
 route needs the same Python and Ray versions as the cluster; the container route
 always matches.

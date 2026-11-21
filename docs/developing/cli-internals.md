@@ -3,7 +3,7 @@ title: CLI Internals
 one_liner: How the `ndif` click app is assembled — command modules, env layering, PID-file state, model keys (with their task), and the lib/ layer the dashboard also calls — plus how to add a command.
 tags: [internals, dev, cli]
 related: [docs/operating/cli.md, docs/developing/dashboard-internals.md, docs/developing/queue-internals.md, docs/developing/controller-internals.md, docs/developing/redis-layer.md, docs/developing/repo-layout.md, docs/reference/env-vars.md, docs/developing/contributing.md]
-sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/lib/_common.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/events.py, src/ndif/services/dashboard/backend/ndif_client.py]
+sources: [src/ndif/cli/main.py, src/ndif/cli/config.py, src/ndif/cli/service.py, src/ndif/cli/state.py, src/ndif/cli/util.py, src/ndif/cli/lib/_common.py, src/ndif/cli/lib/deploy.py, src/ndif/cli/lib/models.py, src/ndif/cli/lib/model_config.py, src/ndif/cli/lib/dispatcher.py, src/ndif/services/dashboard/backend/ndif_client.py]
 ---
 
 # CLI Internals
@@ -29,7 +29,7 @@ user-facing reference is [CLI](../operating/cli.md). Two facts frame the design:
 | `state.py` | `$NDIF_HOME` PID/log bookkeeping |
 | `util.py` | logo, `pid_alive`, `terminate_pid`, `is_port_in_use` |
 | `commands/*.py` | one click command per module — parsing, validation, rendering |
-| `lib/*.py` | reusable implementations: deploy, scale, evict, restart, status, events, models, config files, connectivity checks |
+| `lib/*.py` | reusable implementations: deploy, scale, evict, restart, status, dispatcher, models, config files, connectivity checks |
 
 ## The group and command registration
 
@@ -55,7 +55,7 @@ an exported variable; `--env-file` overrides everything.
 
 - `config.get(name)` — `os.environ.get(name, DEFAULTS.get(name))`; how `info`,
   `doctor`, `env` and `lib/` resolve `NDIF_RAY_ADDRESS` / `NDIF_REDIS_URL` /
-  `NDIF_API_URL`.
+  `NDIF_API_URL` (`lib/` reads only the first).
 - `config.build_env(env_pairs, typed)` — `{**DEFAULTS, **os.environ}`, then `-e
   KEY=VALUE` pairs, then the typed shortcuts in `ENV_OPTIONS`. This is the
   environment handed to a spawned service. A new typed shortcut is an `ENV_OPTIONS`
@@ -87,12 +87,12 @@ Each `lib/` module exposes a function whose contract the dashboard depends on:
 
 | Function | Returns | Side effects |
 |---|---|---|
-| `lib.deploy.deploy(specs, *, sync, ray_address, redis_url, on_message)` | `{"deployments": [...], "evictions": [...]}` | controller deploy, readiness wait, reconcile events |
+| `lib.deploy.deploy(specs, *, sync, ray_address, on_message)` | `{"deployments": [...], "evictions": [...]}` | controller deploy, readiness wait, dispatcher reconcile |
 | `lib.scale.scale(checkpoint \| model_key, *, n, task, gpus, ...)` | dict | adds replicas through the same deploy path |
-| `lib.evict.evict(*, checkpoints \| model_keys \| evict_all, task, replica, ...)` | `{"results": [...]}` | controller evict, reconcile events |
+| `lib.evict.evict(*, checkpoints \| model_keys \| evict_all, task, replica, ...)` | `{"results": [...]}` | controller evict, dispatcher reconcile |
 | `lib.restart.restart(checkpoint \| model_key, *, task, replica, ...)` | `{"model_key", "replicas": [...]}` | `ray.kill` + readiness wait |
 | `lib.status.status(*, ray_address)` | controller status dict | none |
-| `lib.events.fetch_queue_state` / `kill_request` / `notify_reconcile` | dict / dict / `None` | Redis events stream |
+| `lib.dispatcher.queue_state(*, ray_address)` / `kill(request_id, *, ray_address)` / `reconcile(model_keys)` | `{"processors": {...}}` / `{"status", "message"}` / `None` | calls on the Dispatcher actor: none / cancels a request / re-syncs replica pools |
 | `lib.models.*` | below | none |
 
 Three conventions make it work for both callers:
@@ -196,12 +196,12 @@ are only known once pip has resolved them. Build-time inputs (`TORCH_CUDA`,
 
 1. **Create `src/ndif/cli/commands/<verb>.py`** with one `@click.command()` function
    named after the verb and a one-line module docstring `"""``ndif <verb>`` — purpose."""`.
-2. **Put the logic in `lib/`** if it touches Ray, Redis or the controller, with an
+2. **Put the logic in `lib/`** if it touches Ray, the controller or the dispatcher, with an
    `on_message` callback. A CLI-only helper can stay private in the command module.
 3. **Import Ray / nnsight / redis inside the function.**
 4. **Register it** in `main.py`: the import and the `add_command` tuple.
-5. **Follow the option conventions.** `--ray-address`, `--redis-url`, `--api-url`
-   default to `NDIF_RAY_ADDRESS`, `NDIF_REDIS_URL`, `NDIF_API_URL` via `config.get`,
+5. **Follow the option conventions.** `--ray-address` and `--api-url`
+   default to `NDIF_RAY_ADDRESS` and `NDIF_API_URL` via `config.get`,
    documented as `(default: NDIF_*)`. Read-only commands take `--json-output`;
    anything worth polling takes `--watch` (2 s loop, `click.clear()`, clean return on
    `KeyboardInterrupt`). A command that resolves a checkpoint takes `--task`.
@@ -219,12 +219,10 @@ A verb that manages a *process* rather than a model is a `Service`, not a comman
 - `commands/queue.py` renders a `status_changed_at` field that `Processor.snapshot()`
   never emits, so the "(for HH:MM:SS)" suffix never appears. Don't treat the CLI's
   render as a schema.
-- `src/ndif/cli/lib/events.py` `_client` passes `socket_timeout=None` on purpose:
-  redis-py 8+ otherwise applies a 5 s timeout against Redis 8, aborting the blocking
-  wait before the dispatcher replies.
-- `notify_reconcile` swallows every exception. A deploy that succeeded on the
-  controller must not fail on a Redis hiccup — but a missed reconcile leaves a live
-  Processor with a stale replica pool until its next refresh.
+- `lib.dispatcher.reconcile` does not wait for the dispatcher and swallows a
+  failure to reach it. A deploy that succeeded on the controller must not fail
+  there — but a missed reconcile leaves a live Processor without a replica added
+  out-of-band until the dispatcher restarts.
 - `ndif info` iterates `SERVICES`, not `SERVICE_MAP`, so the dashboard never appears
   in its output even when a PID file tracks it.
 
@@ -239,5 +237,5 @@ server; the rest of the CLI is exercised through the live-server suite. See
 [CLI](../operating/cli.md) for the commands themselves;
 [Dashboard internals](dashboard-internals.md) for the second consumer of `lib/`;
 [Controller internals](controller-internals.md) for the other side of deploy, evict
-and status; [Queue internals](queue-internals.md) and [Redis layer](redis-layer.md)
-for the events stream `queue`, `kill` and reconcile ride on.
+and status; [Queue internals](queue-internals.md#calls-from-the-cli) for the
+Dispatcher calls behind `queue`, `kill` and reconcile.

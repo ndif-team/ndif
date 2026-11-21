@@ -142,8 +142,8 @@ Three things can pull a request back out of flight:
   at the front of *its own* priority group, not the whole queue. It keeps its
   original `enqueued_at`, so the autoscaler still sees its true wait. The user
   sees no error.
-- **Operator cancel.** `ndif kill <request_id>` goes through the dispatcher's
-  event stream. A queued request is removed and errored. An executing one is
+- **Operator cancel.** `ndif kill <request_id>` calls the Dispatcher actor's
+  `kill`. A queued request is removed and errored. An executing one is
   errored to the user and cancelled on the actor, which interrupts the block and
   takes the next request; only if the actor has not finished it within a few
   seconds is the replica's worker task cancelled instead

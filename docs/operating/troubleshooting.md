@@ -69,7 +69,7 @@ narrower "what is installed".
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status --verbose` per-GPU free memory | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `ndif deploy` errors with an HF `trust_remote_code` message | The repo ships custom modelling code and the key lacks `trust_remote_code` | the evaluator traceback in the error | `ndif deploy --trust-remote-code <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trust_remote_code-in-the-model-key) |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision and task are part of the key), or the replica is only WARM | `ndif status --json-output` for the exact key | Pass the deployment's `--revision` / `--task` |
-| `ndif queue` prints `No response from the dispatcher` | Redis is up, the **dispatcher** on the Ray head is not answering — the head is down or still starting, or the dispatcher stopped | `curl -i localhost:8001/connected` | [ping works, requests hang](#ping-works-but-requests-hang) |
+| `ndif queue` prints `Failed to look up actor with name 'Dispatcher'` | The Ray head answers and the **dispatcher** on it is not running — the head is still starting, or the dispatcher stopped | `curl -i localhost:8001/connected` | [ping works, requests hang](#ping-works-but-requests-hang) |
 | `ndif start` printed ✓ but `/connected` never leaves 503 | A service died after its 2-second startup check | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
 | Code changes have no effect | The source is baked into the image | — | `just ta` (down → build → up) |
 | `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth (grpc fork handlers skipped) | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` before `SpecificServer startup failed` | `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it |
@@ -134,11 +134,11 @@ request accepted before the key lapsed waits in the Redis list on `RECEIVED`.
 
 ```bash
 docker compose -f docker/docker-compose.yml exec redis redis-cli llen queue   # 0 or small
-docker compose -f docker/docker-compose.yml exec api ndif queue               # 5 s timeout
+docker compose -f docker/docker-compose.yml exec ray ndif queue
 ```
 
-An `llen queue` that stays above zero plus `No response from the dispatcher` is
-the signature. Ray restarts the dispatcher actor when its process dies, and a
+An `llen queue` that stays above zero plus `Failed to look up actor with name
+'Dispatcher'` is the signature. Ray restarts the dispatcher actor when its process dies, and a
 new head starts a new one; restarting the API does neither.
 [Debug a Stuck Request](../runbooks/debug-a-stuck-request.md) says what happens
 to the requests it held (step 1) and how to replace a dispatcher that is alive

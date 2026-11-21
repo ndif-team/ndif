@@ -139,8 +139,8 @@ in-process (`src/ndif/services/ray/sandbox/model.py`
 
 `src/ndif/common/` is imported by every service: `providers/` (classmethod
 singletons over Redis, Ray, S3, Postgres, Influx, Loki, each with its own
-fail-open behavior), `redis/` (the coalesced status/env caches, the CLI event
-stream), `schema/` (the wire models), and the telemetry trio. See
+fail-open behavior), `redis/` (the coalesced status/env caches), `schema/`
+(the wire models), and the telemetry trio. See
 [Providers](providers.md), [Redis Layer](redis-layer.md),
 [Telemetry Internals](telemetry-internals.md).
 
