@@ -57,6 +57,12 @@ in the next RESUME's args (``driver.MediatorProxy.settle_control``):
   ("CACHE", cache_id, None, (config,))
                               observe for a ``tracer.cache()`` on the host;
                               hits ship back as CACHE_HIT; reply is None
+  ("WRITEBACK", location, None, value)
+                              the runner's copy of the value it was just served
+                              at ``location``, sent after every read; the host
+                              writes its tensors into the ones it served
+                              (``driver.write_back``), so in-place edits land;
+                              reply is None
 
 Message catalog (the event name is the first element):
 

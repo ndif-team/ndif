@@ -35,6 +35,10 @@ from nnsight.util import apply
 from ..deployments.modeling.nns import request_dtype
 from .protocol import KEEP_PIN, SOURCE_ERROR
 
+# Parks that name no forward location; `MediatorProxy.settle_control` answers them.
+CONTROL_PARKS = ("SOURCE", "CALL", "CACHE", "WRITEBACK")
+
+
 class RunnerError(Exception):
     """A failure raised by the user's block in the runner, carrying its already-
     formatted traceback (tracebacks don't survive cloudpickle, so the runner
@@ -83,6 +87,32 @@ def landing(model) -> Callable:
         return torch.serialization.default_restore_location(storage, home)
 
     return land
+
+
+def write_back(served, edited) -> None:
+    """Copy a block's in-place edits of a value it read into the host's own value.
+
+    ``served`` is what the host handed over and ``edited`` is the runner's copy of
+    it, sent back after the block moved on. Each tensor in ``served`` takes the
+    values of its counterpart, in place, if they differ. Nothing is replaced, so
+    the forward keeps its own objects, as it does on the trusted path: its other
+    references to an edited tensor see the edit, and an object a module updates,
+    such as the KV cache in a layer's inputs, stays the one the forward holds.
+
+    A tensor the block left alone is not written, so one that cannot be written in
+    place (an expanded attention mask) can still be read.
+    """
+    if isinstance(served, torch.Tensor):
+        if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
+            edited = edited.to(served.device)
+            if not torch.equal(served, edited):
+                served.copy_(edited)
+    elif isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
+        for mine, theirs in zip(served, edited):
+            write_back(mine, theirs)
+    elif isinstance(served, dict) and isinstance(edited, dict):
+        for key in served.keys() & edited.keys():
+            write_back(served[key], edited[key])
 
 
 def describe(compiled) -> dict:
@@ -177,10 +207,11 @@ class MediatorProxy(Mediator):
             self.pending = Pending(event, location, None, *rest)
             self.driver.barrier_arrival(self)
             return
-        if event in ("SOURCE", "CALL", "CACHE"):
+        if event in CONTROL_PARKS:
             # A control event, not a model location: SOURCE (instrument a module),
-            # CALL (run a module's forward ad hoc), or CACHE (observe for a
-            # tracer.cache()). Its payload rides in `value` as one tuple, since a
+            # CALL (run a module's forward ad hoc), CACHE (observe for a
+            # tracer.cache()), or WRITEBACK (the copy of a read, to write into the
+            # original). Its payload rides in `value` as one tuple, since a
             # Pending has no room for several items; settle_control unpacks it.
             # The iteration stays None so it is never mistaken for a location
             # this run can reach.
@@ -193,14 +224,16 @@ class MediatorProxy(Mediator):
         occurrence = pin if pin is not None else self.occurrence(location)
         self.pending = Pending(event, location, occurrence, *rest)
 
-    def settle_control(self) -> None:
+    def settle_control(self, served=None) -> None:
         # Drain control parks that name no forward location: SOURCE (source-instrument
-        # a module so its ops fire), CALL (run a module's forward ad hoc), and CACHE
-        # (attach a shipping cache so this worker's tracer.cache() fills over IPC).
+        # a module so its ops fire), CALL (run a module's forward ad hoc), CACHE
+        # (attach a shipping cache so this worker's tracer.cache() fills over IPC),
+        # and WRITEBACK (the runner's copy of `served`, the read `switch` just
+        # answered; its edits are written into `served`).
         # Reply to the worker and resume it — repeat until it parks on a real
         # location, so `handle` only ever sees model locations. Runs before the
         # forward and after every switch.
-        while self.pending is not None and self.pending.event in ("SOURCE", "CALL", "CACHE"):
+        while self.pending is not None and self.pending.event in CONTROL_PARKS:
             kind = self.pending.event
             if kind == "SOURCE":
                 reply = self.driver.install_source(self.pending.provider)
@@ -209,6 +242,9 @@ class MediatorProxy(Mediator):
                 reply = self.driver.run_module(
                     self.pending.provider, hook, call_args, call_kwargs
                 )
+            elif kind == "WRITEBACK":
+                write_back(served, self.pending.value)
+                reply = None
             else:  # CACHE: observe on the runner's behalf, shipping hits back to it
                 (config,) = self.pending.value
                 self.caches.append(
@@ -294,7 +330,8 @@ class MediatorProxy(Mediator):
             # model's interleaver __exit__ swallows as an intentional early stop.
             raise EarlyStopException()
         self.adopt(rest[1])
-        self.settle_control()
+        # After a read, the worker's first park is the WRITEBACK of what it was served.
+        self.settle_control(args[0] if args else None)
         return self.pending
 
 

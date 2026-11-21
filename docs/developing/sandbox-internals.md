@@ -100,6 +100,7 @@ SWAP/SKIP; `pin` is the worker's `tracer.iter` pointer or `None`. Parks cross
 | `END` | r→h | `nns.run` | `pump` returns the blob |
 | `EXCEPTION` | r→h | `nns.run` | `next_event` raises `RunnerError` |
 | `SOURCE` / `CALL` / `CACHE` | control park | `ipc_module_source` / `ipc_recursive_source`, `IPCEnvoy.__call__`, `ipc_cache` | `MediatorProxy.settle_control` → `install_source`, `run_module`, a `ShippingCache` |
+| `WRITEBACK` | control park | `IPCInterleaver.writeback` | `MediatorProxy.settle_control` → `write_back` |
 
 Control parks name nothing the forward produces: they ride inside a `PARK`, are
 drained by `settle_control` before `handle` sees them, and are answered in the next
@@ -261,8 +262,8 @@ sequenceDiagram
   P->>P: tag matches ".i0" → narrow to batch_group
   P->>U: RESUME id, (narrowed,), pin
   U->>W: switch(narrowed) → worker parks on (SWAP, same loc, pin, edited)
-  U->>P: PARK id, (SWAP, loc, pin, narrowed)  ← writeback of the read
-  P->>U: widen(value, group, narrowed); RESUME id, (), pin
+  U->>P: PARK id, (WRITEBACK, loc, None, copy)  ← writeback of the read
+  P->>U: write_back(narrowed, copy); RESUME id, (None,), KEEP_PIN
   U->>P: PARK id, (SWAP, loc, pin, edited)  ← the worker's real park
   P->>U: widen(value, group, edited); RESUME → worker parks elsewhere
   P-->>F: possibly-edited value returns into the forward
@@ -270,13 +271,19 @@ sequenceDiagram
 
 **Why the writeback.** A read hands the worker a *copy*, so an in-place edit
 (`output[:] = 0`) would never reach the host. After resuming a worker that was
-answering a read, `pump` sends a synthetic `SWAP` park at the same location
-carrying the value the worker was handed (`IPCInterleaver.writeback`), while the
-host is still inside `Mediator.handle` for that location — unconditionally, since
-`pump` can't tell whether the object was edited. So every read also *replaces* the
-activation: on a single-invoke trace `widen` returns the runner's copy verbatim,
-and object identity is not preserved across a read. A read costs two round trips,
-a read then a swap three; a location no worker is parked on never crosses.
+answering a read, `pump` sends a `WRITEBACK` control park carrying the copy the
+worker was handed (`IPCInterleaver.writeback`), while the host is still inside
+`Mediator.handle` for that location — unconditionally, since `pump` can't tell
+whether the copy was edited. The host writes the copy's tensors into the ones it
+served (`write_back` in `src/ndif/services/ray/sandbox/driver.py`) and replaces
+nothing, so the forward keeps its own objects, as it does trusted. A read costs
+two round trips, a read then a swap three; a location no worker is parked on
+never crosses.
+
+Only tensor values are written back, and only once. An in-place edit made after
+the block's next read of the model is not sent. A block that puts a different
+object into a container it read (`kwargs["mask"] = None`) changes its own copy;
+assigning the location (`layer.inputs = ...`) is a swap and does cross.
 
 ### Host authority: occurrences, sources, barriers, caches
 
