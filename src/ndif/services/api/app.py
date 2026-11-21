@@ -264,7 +264,6 @@ async def _coalesced_fetch(
                 status_code=504, detail=f"Timed out waiting for {subject}."
             )
     finally:
-        await pubsub.unsubscribe(ready_channel)
         await pubsub.aclose()
 
     raise HTTPException(status_code=503, detail=f"Could not retrieve {subject}.")
@@ -452,5 +451,4 @@ async def subscribe(websocket: WebSocket):
         # is a BaseException, so a plain `except Exception` / suppress(Exception)
         # would miss it.) An outer cancel of this coroutine still propagates.
         await asyncio.gather(forward_task, disconnect_task, return_exceptions=True)
-        await pubsub.unsubscribe(session_id)
         await pubsub.aclose()
