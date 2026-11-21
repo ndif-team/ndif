@@ -311,8 +311,8 @@ request.
 
 `BaseModelDeployment.prepare_result` zstd-compresses (level 3) when
 `request.compress` is set and meters the size. The blob then takes one of two routes
-back, decided against the inline cap — `RedisProvider.max_publish_bytes`, derived
-from the Redis server's own pubsub output-buffer limits: under the cap, and with a
+back, decided against the inline cap, `ObjectStoreProvider.max_socket_result_bytes`
+(`NDIF_MAX_SOCKET_RESULT_BYTES`, 8 MiB by default): under the cap, and with a
 `session_id` to publish to, it rides on the `COMPLETED` response's `data` field
 itself, stored as `torch.save` output under the Redis key `result:{id}` with a
 short notice on pub/sub, and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking request, which has no socket —

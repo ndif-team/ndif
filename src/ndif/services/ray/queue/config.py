@@ -32,8 +32,6 @@ class QueueConfig:
         fetch_timeout_s: Blocking-pop timeout; how long a read on an empty
             queue or stream waits before it is issued again.
             (NDIF_QUEUE_FETCH_TIMEOUT_S)
-        fetch_batch_max: Max requests drained per dispatch iteration, to
-            amortize Redis round-trips under load. (NDIF_QUEUE_FETCH_BATCH_MAX)
         autoscaling_interval_s: How often a Processor checks its queue head.
             (NDIF_AUTOSCALING_INTERVAL_S)
         autoscaling_wait_threshold_s: Scale up when the oldest queued request
@@ -46,7 +44,6 @@ class QueueConfig:
 
     queue_key: str
     fetch_timeout_s: int
-    fetch_batch_max: int
     autoscaling_interval_s: int
     autoscaling_wait_threshold_s: int
     autoscaling_backoff_s: int
@@ -57,7 +54,6 @@ class QueueConfig:
         return cls(
             queue_key=os.environ.get("NDIF_QUEUE_KEY", "queue"),
             fetch_timeout_s=_positive_int("NDIF_QUEUE_FETCH_TIMEOUT_S", 10),
-            fetch_batch_max=_positive_int("NDIF_QUEUE_FETCH_BATCH_MAX", 32),
             autoscaling_interval_s=_positive_int("NDIF_AUTOSCALING_INTERVAL_S", 5),
             autoscaling_wait_threshold_s=_positive_int(
                 "NDIF_AUTOSCALING_WAIT_THRESHOLD_S", 30

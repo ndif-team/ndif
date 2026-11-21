@@ -168,8 +168,8 @@ status timing. See [schemas.md](schemas.md) and
 
 ## Result delivery (inline or presigned)
 
-A COMPLETED result small enough for the Redis channel
-(`RedisProvider.max_publish_bytes`) rides on the response itself as a binary
+A COMPLETED result at or under the inline cap
+(`NDIF_MAX_SOCKET_RESULT_BYTES`) rides on the response itself as a binary
 websocket frame; a larger one, and every non-blocking one, is uploaded to the
 object store and returned as a **presigned GET URL** signed for
 `NDIF_OBJECT_STORE_PUBLIC_URL`. See

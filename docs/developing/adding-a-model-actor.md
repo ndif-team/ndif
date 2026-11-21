@@ -111,7 +111,7 @@ Replace `execute` only and you get all of this for free. Go further and keep it:
    hangs the client's websocket.
 2. **`execute` returns `(blob, deserialize_ms)`**: the `torch.save` bytes, and the
    deserialize time or `None` (the metric field is then dropped). `run` decides the
-   route — inline under `RedisProvider.max_publish_bytes()` on a request with a live
+   route — inline under `ObjectStoreProvider.max_socket_result_bytes` on a request with a live
    socket, otherwise `upload_bytes` to `{request.id}.pt` and a presigned URL — and
    `prepare_result` compresses iff `request.compress`.
 3. **Saved values are `nnsight.save()`-marked locals**, matched by identity in the

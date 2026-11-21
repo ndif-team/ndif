@@ -264,7 +264,6 @@ async def _coalesced_fetch(
                 status_code=504, detail=f"Timed out waiting for {subject}."
             )
     finally:
-        await pubsub.unsubscribe(ready_channel)
         await pubsub.aclose()
 
     raise HTTPException(status_code=503, detail=f"Could not retrieve {subject}.")
@@ -401,15 +400,12 @@ async def subscribe(websocket: WebSocket):
         async for message in pubsub.listen():
             if message["type"] == "message":
                 payload = message["data"]
-                # A JSON response starts with '{'; a pickled one is a zip
-                # container (torch.save) and never does. Status updates stay
-                # text frames, so a client that only reads text sees exactly
-                # what it saw before this existed.
+                # A JSON response starts with '{' and goes out as a text
+                # frame. A pickled one sits under a key and the channel carries
+                # its notice; see BackendRequestModel.respond.
                 if payload[:1] == b"{":
                     await websocket.send_text(payload.decode())
                 elif payload[:1] == RESULT_NOTICE:
-                    # The pickled response itself sits under a key; see
-                    # BackendRequestModel.respond.
                     key = payload[1:]
                     blob = await RedisProvider.async_bytes_client.getdel(key)
                     if blob is None:
@@ -419,8 +415,6 @@ async def subscribe(websocket: WebSocket):
                         )
                         return
                     await websocket.send_bytes(blob)
-                else:
-                    await websocket.send_bytes(payload)
 
     async def watch_disconnect() -> None:
         # The client never sends on this socket, so receive() returns only when
@@ -452,5 +446,4 @@ async def subscribe(websocket: WebSocket):
         # is a BaseException, so a plain `except Exception` / suppress(Exception)
         # would miss it.) An outer cancel of this coroutine still propagates.
         await asyncio.gather(forward_task, disconnect_task, return_exceptions=True)
-        await pubsub.unsubscribe(session_id)
         await pubsub.aclose()

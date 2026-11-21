@@ -52,7 +52,7 @@ sequenceDiagram
     A->>A: verify key, gate client version, read blob
     A->>R: LPUSH queue <pickled BackendRequestModel>
     A-->>C: 200 RECEIVED
-    D->>R: BRPOP queue (+ up to 31 more RPOPs: a batch of 32)
+    D->>R: BRPOP queue
     D->>D: Processor(model_key).enqueue(...)
     alt no replica yet (cold start)
         D->>R: PUBLISH <session_id> PROVISIONING
@@ -116,12 +116,11 @@ and `LPUSH`es the *pickled* request onto the Redis list named by
 returns; everything after this is asynchronous.
 
 **4. Dispatcher pops.** The dispatcher is a detached Ray actor on the head node,
-launched by the ray service's `start.sh`. Its loop `BRPOP`s the queue with a 10s
-timeout and then drains up to 31 more with non-blocking `RPOP`, a batch of at most
-`NDIF_QUEUE_FETCH_BATCH_MAX` (32) (`src/ndif/services/ray/queue/dispatcher.py`
-`Dispatcher.get`) — so the shared list is FIFO and one pop amortizes into a
-batch. Each request is routed by `model_key` to a lazily created `Processor`
-(`Dispatcher.dispatch`).
+launched by the ray service's `start.sh`. Its loop `BRPOP`s the queue one
+request at a time, with a 10s timeout
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`), so the shared
+list is FIFO. Each request is routed by `model_key` to a lazily created
+`Processor` (`Dispatcher.dispatch`).
 
 **5. Processor queues and provisions.** `Processor.enqueue`
 (`src/ndif/services/ray/queue/processor.py`) hands the request to
@@ -203,7 +202,7 @@ activations; they differ where a block touches weights or gradients — see
 `BaseModelDeployment.prepare_result`) compresses the `torch.save` output to
 match `request.compress` and meters it, so the blob is byte-identical whichever route it takes. Then `run` picks: if the
 request has a `session_id` and the blob is at or under the inline cap
-(`RedisProvider.max_publish_bytes`; see
+(`NDIF_MAX_SOCKET_RESULT_BYTES`; see
 [Status and Results](status-and-results.md#how-the-result-gets-back)) it rides
 back *on the response*; otherwise `upload_bytes` PUTs it at `{request.id}.pt`
 and presigns a GET valid for an hour. The `COMPLETED` response carries either

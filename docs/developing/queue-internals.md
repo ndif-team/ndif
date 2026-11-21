@@ -38,7 +38,6 @@ import, so a typo fails the process rather than silently defaulting.
 |---|---|---|---|
 | `queue_key` | `NDIF_QUEUE_KEY` | `queue` | The Redis list the API LPUSHes to and the dispatcher BRPOPs from |
 | `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`) and the dispatcher's Redis reply timeout (it plus 10 s) derive from it |
-| `fetch_batch_max` | `NDIF_QUEUE_FETCH_BATCH_MAX` | 32 | Max requests drained per dispatch iteration |
 | `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its oldest queued request |
 | `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Oldest-request wait that triggers a scale-up |
 | `autoscaling_backoff_s` | `NDIF_AUTOSCALING_BACKOFF_S` | 120 | Pause after a scale-up before re-checking |
@@ -73,13 +72,12 @@ key alive from then on (see
 
 ### The dispatch loop
 
-Each iteration: `get()` a batch, then `dispatch()` each request to its
-Processor. An error in the loop is logged and the loop goes on a second later.
+Each iteration: `get()` a request, then `dispatch()` it to its Processor. An
+error in the loop is logged and the loop goes on a second later.
 
-`Dispatcher.get` blocks on `brpop` for up to `fetch_timeout_s`, then
-non-blockingly `rpop`s until the batch is full or the list is empty. The
-batched pops amortize round-trips under load. Both use `async_bytes_client`
-because the values are pickles.
+`Dispatcher.get` blocks on `brpop` for up to `fetch_timeout_s` and returns one
+request, or `None` when none arrived. It uses `async_bytes_client` because the
+values are pickles.
 
 `Dispatcher.dispatch` creates a `Processor` per `model_key` on first sight and
 never removes one — an idle Processor is a cheap object with an empty pool and a

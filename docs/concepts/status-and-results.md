@@ -112,7 +112,9 @@ few kilobytes to many gigabytes of tensors. Both routes start the same way:
    is byte-identical whichever route it takes.
 
 Then `BaseModelDeployment.run` picks a route against the **inline cap**,
-`RedisProvider.max_publish_bytes` (`src/ndif/common/providers/redis.py`):
+`NDIF_MAX_SOCKET_RESULT_BYTES`, 8 MiB by default
+(`src/ndif/common/providers/objectstore.py`
+`ObjectStoreProvider.max_socket_result_bytes`):
 
 **On the response.** A blocking request whose blob is at or under the cap gets
 it as `data` on the `COMPLETED` response. The response's `torch.save` bytes are
@@ -132,28 +134,14 @@ Either way the client decompresses, `torch.load(..., map_location="cpu")`, and �
 on the blocking path — pushes the values back into the caller's frame so
 `h = ....save()` populates.
 
-**Why the cap exists, and where it comes from.** A pub/sub subscriber whose
-output buffer exceeds Redis's `client-output-buffer-limit pubsub` is
-disconnected, and the message goes with it: the job reads `COMPLETED` on the
-server while the client never receives the result, which was never written to
-the object store. So the cap is derived from the server's own limits rather than
-configured beside them: `max_publish_bytes` reads them with `CONFIG GET` once per
-process and takes `min(soft, hard // 2)`, counting each bound only when enabled.
-
-| Redis configuration | Inline cap |
-|---|---|
-| stock redis:7 (32 MiB hard, 8 MiB soft) | 8 MiB |
-| no pubsub limits configured | 20 MiB |
-| `CONFIG GET` fails (managed Redis) | 8 MiB |
-
-To raise the cap, raise the Redis pubsub limits — the cap follows. The soft limit
-is the primary bound because Redis's buffer accounting carries an
-allocator-dependent overhead over the payload (the reasoning is in the
-`max_publish_bytes` docstring).
-
-The inline result itself no longer crosses pub/sub (only its notice does), so
-the pubsub output-buffer limits the cap is derived from do not bound it any more;
-the cap is kept as the size limit for the inline route.
+**Why there is a cap.** An inline result is held in Redis's memory until
+`/subscribe` picks it up, and then passes through the API process and the
+websocket. Redis runs commands on one thread, so while it stores and returns a
+large value every other command waits, and it refuses a value over 512 MB. A
+result in the object store is downloaded by the client directly. The cap is the
+size where a result stops being worth sending through Redis; set it on the Ray
+head, and the Controller forwards it to each model actor. `0` sends every
+result through the object store.
 
 > **Gotcha:** a presigned URL is an HMAC over the request *including the host*.
 > If `NDIF_OBJECT_STORE_PUBLIC_URL` isn't the address the client can actually

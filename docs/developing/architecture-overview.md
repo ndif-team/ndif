@@ -100,7 +100,7 @@ An API worker's job is narrow: authenticate, validate, stamp the request, and
 head, launched by `start.sh` after the controller. It runs a single asyncio loop
 that owns everything downstream of the Redis list:
 
-- `Dispatcher` — `BRPOP`s the shared list, drains a batch, routes by `model_key`.
+- `Dispatcher` — `BRPOP`s the shared list one request at a time, routes by `model_key`.
 - `Processor` — one per model. Holds that model's in-memory `RequestQueue` (an
   `asyncio.PriorityQueue`), provisions replicas, and decides when to scale up.
 - `Replica` — one per deployed actor. Waits for `__ray_ready__`, then pulls from

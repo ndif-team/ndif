@@ -152,7 +152,7 @@ what an unmodified client parses.
 | `id` | `str` | *(required)* | The request id this update belongs to. |
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — queue position, error message, or one line of `print` output for `LOG`. |
-| `data` | `Optional[Any]` | `None` | Only on `COMPLETED`: the result itself (on a response sent as `torch.save` bytes) when it fits under `RedisProvider.max_publish_bytes` and the job is blocking, otherwise a presigned GET URL for `{id}.pt` (`BaseModelDeployment.upload_bytes`). The cap lives in [status-and-results.md](../concepts/status-and-results.md). |
+| `data` | `Optional[Any]` | `None` | Only on `COMPLETED`: the result itself (on a response sent as `torch.save` bytes) when it fits under `ObjectStoreProvider.max_socket_result_bytes` and the job is blocking, otherwise a presigned GET URL for `{id}.pt` (`BaseModelDeployment.upload_bytes`). The cap lives in [status-and-results.md](../concepts/status-and-results.md). |
 | `meta` | `Optional[dict]` | `None` | What the run cost, on `COMPLETED` **and** on the actor's `ERROR` responses (`src/ndif/services/ray/deployments/modeling/util.py` `request_meta`): `runtime` (wall-clock seconds), `max_mem_by_gpu` / `max_mem_pct_by_gpu` (bytes above the resident weights, and that against the headroom the request had), `max_memory_usage` (the worst device), and, only on an out-of-memory failure, `alloc_shortfall_by_gpu`. GPU keys are strings so the JSON and `torch.save` encodings agree. |
 
 Model config (`arbitrary_types_allowed=True, protected_namespaces=()`) is

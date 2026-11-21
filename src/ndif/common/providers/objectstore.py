@@ -2,11 +2,9 @@
 
 Uses **boto3**, so the same code talks to RustFS in dev and AWS S3 in prod.
 
-Results over the inline cap (``RedisProvider.max_publish_bytes``, derived from
-the Redis server's own pubsub output-buffer limits) are too big to ride the
-redis pub/sub response channel, so the model actor uploads them here and
-publishes a presigned GET url on the COMPLETED response; the client downloads
-them directly.
+A result over the inline cap (``max_socket_result_bytes``) is uploaded here by
+the model actor, which publishes a presigned GET url on the COMPLETED response;
+the client downloads it directly.
 
 Two endpoints, because upload and download happen from different networks:
     ``url``         reached by the server (e.g. ``rustfs:9000`` on the compose
@@ -61,6 +59,10 @@ class ObjectStoreProvider(Provider):
         "region": ("NDIF_OBJECT_STORE_REGION", "us-east-1", str),
         # TLS cert verification; set false for a self-signed store over https.
         "verify": ("NDIF_OBJECT_STORE_VERIFY", True, _boolish),
+        # The inline cap: a blocking request's result up to this many bytes goes
+        # back on the COMPLETED response, through Redis, and a larger one is
+        # staged here. 0 stages every result.
+        "max_socket_result_bytes": ("NDIF_MAX_SOCKET_RESULT_BYTES", 8 << 20, int),
     }
 
     url: str
@@ -70,6 +72,7 @@ class ObjectStoreProvider(Provider):
     bucket: str
     region: str
     verify: bool
+    max_socket_result_bytes: int
 
     client: "boto3.client"  # server-side: upload + bucket ops
     public_client: "boto3.client"  # client-facing: presign GET urls

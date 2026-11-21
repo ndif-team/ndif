@@ -24,13 +24,12 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get` — `brpop`, then up to `fetch_batch_max - 1` `rpop`s | none | One pickled `BackendRequestModel` per element, payload blob included |
+| `queue` | List | `POST /request` — `lpush` on the bytes client (`src/ndif/services/api/app.py` `create_request`) | `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get` — `brpop`, one request per call | none | One pickled `BackendRequestModel` per element, payload blob included |
 
 The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
 `brpop` gives FIFO. The pickles are not UTF-8, which is one reason
 `RedisProvider` keeps a separate non-decoding `async_bytes_client`. The blocking
-pop waits `NDIF_QUEUE_FETCH_TIMEOUT_S`; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one
-drain.
+pop waits `NDIF_QUEUE_FETCH_TIMEOUT_S`.
 
 ## Control-plane health
 
@@ -80,7 +79,7 @@ never reused. Event types on `dispatcher:events`:
 
 | Channel | Type | Published by | Subscribed by | TTL | Carries |
 |---|---|---|---|---|---|
-| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message | n/a | A JSON `BackendResponseModel` (text frame), or for a COMPLETED response carrying the result itself (blob at most `RedisProvider.max_publish_bytes`) the notice `\x00result:{request_id}`; `/subscribe` `GETDEL`s that key and sends the response's `torch.save` bytes as a binary frame |
+| `{session_id}` | Pub/sub channel | `src/ndif/common/schema/request.py` `BackendRequestModel.respond` / `arespond` — called by the queue's processor and replica workers, `Dispatcher._kill`, the model actor (`BaseModelDeployment.run`), `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`), and in the sandboxed path the `on_log` callback `SandboxHost.run_in_runner` hands `SandboxDriver` | The API's `/subscribe` websocket (`src/ndif/services/api/app.py` `subscribe`), on the bytes client, forwarding each message | n/a | A JSON `BackendResponseModel` (text frame), or for a COMPLETED response carrying the result itself (blob at most `ObjectStoreProvider.max_socket_result_bytes`) the notice `\x00result:{request_id}`; `/subscribe` `GETDEL`s that key and sends the response's `torch.save` bytes as a binary frame |
 
 The inline result does not cross pub/sub: it is stored under `result:{request_id}`
 and the channel carries only its notice.
