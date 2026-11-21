@@ -65,7 +65,8 @@ key or an unreachable backend raises before any endpoint body runs.
 route dependency, not a middleware. It reads the `ray:connected` Redis flag
 (kept alive by `src/ndif/services/ray/queue/dispatcher.py`
 `Dispatcher.heartbeat_worker`) and
-raises 503 if absent. Applied to `/request`, `/status`, `/env`, and `/connected`.
+raises 503 if absent. A Redis that errors, or does not answer within 5 s,
+counts as absent. Applied to `/request`, `/status`, `/env`, and `/connected`.
 
 **`validate_request`** (`src/ndif/services/api/auth.py`) — the `/request` body
 dependency. It parses the multipart `data` form field into a

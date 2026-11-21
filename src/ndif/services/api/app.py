@@ -112,8 +112,18 @@ async def require_ray_connection() -> None:
     expires once it stops. Used as a route dependency to short-circuit with 503
     before doing any work, rather than enqueuing a request the backend can't
     serve.
+
+    A Redis that errors or does not answer within 5 s counts as not connected:
+    nothing can be queued through it either.
     """
-    if not await RedisProvider.async_client.get("ray:connected"):
+    try:
+        async with asyncio.timeout(5):
+            connected = await RedisProvider.async_client.get("ray:connected")
+    except Exception as error:
+        logger.warning(f"could not read ray:connected: {type(error).__name__}: {error}")
+        connected = None
+
+    if not connected:
         raise HTTPException(
             status_code=503,
             detail="Service temporarily unavailable: compute backend is "
