@@ -57,9 +57,7 @@ The API pickles the whole `BackendRequestModel` — payload included — and
 the other end, which makes it FIFO, then drains up to
 `NDIF_QUEUE_FETCH_BATCH_MAX - 1` more with non-blocking `RPOP` to amortize
 round-trips (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.get`). The
-blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle loop still
-comes round to renew `ray:connected`, the key that tells the API a dispatcher
-is running.
+blocking pop times out every `NDIF_QUEUE_FETCH_TIMEOUT_S`.
 
 > **Gotcha:** once a request is popped it lives only in the dispatcher's memory.
 > If the dispatcher goes down — with the Ray head, or alone, in which case Ray

@@ -204,11 +204,11 @@ line — so a chatty block produces hundreds of publishes on one channel.
 
 ## The `ray:connected` flag
 
-A plain string key the dispatcher keeps alive as a heartbeat. `Dispatcher.beat`
-sets it to `"1"` on every pass of the dispatch loop, with an expiry of
-`CONNECTED_TTL_S`: three times `NDIF_QUEUE_FETCH_TIMEOUT_S`, so 30 s by default.
-Nothing deletes it; it lapses when the loop stops, or when the dispatcher dies
-with the head. Before the first beat `Dispatcher.startup` waits for Redis,
+A plain string key the dispatcher keeps alive as a heartbeat.
+`Dispatcher.heartbeat_worker` sets it to `"1"` every 10 s, with an expiry of
+`CONNECTED_TTL_S` (30 s). Nothing deletes it; it lapses when the dispatcher
+dies, with the head or alone. Before the worker starts, `Dispatcher.startup`
+waits for Redis,
 deletes `status`, `status:requested`, `env` and `env:requested` (those describe
 whatever cluster ran before this one, and clearing the locks means the first
 request triggers a fresh refresh), and waits until the Controller actor can be

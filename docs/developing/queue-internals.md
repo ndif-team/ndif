@@ -38,7 +38,7 @@ import, so a typo fails the process rather than silently defaulting.
 | Field | Env var | Default | What it does |
 |---|---|---|---|
 | `queue_key` | `NDIF_QUEUE_KEY` | `queue` | The Redis list the API LPUSHes to and the dispatcher BRPOPs from |
-| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`), the `ray:connected` expiry (`CONNECTED_TTL_S`, three times it) and the dispatcher's Redis reply timeout (it plus `REDIS_REPLY_GRACE_S`) derive from it |
+| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`) and the dispatcher's Redis reply timeout (it plus `REDIS_REPLY_GRACE_S`) derive from it |
 | `fetch_batch_max` | `NDIF_QUEUE_FETCH_BATCH_MAX` | 32 | Max requests drained per dispatch iteration |
 | `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its oldest queued request |
 | `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Oldest-request wait that triggers a scale-up |
@@ -70,19 +70,18 @@ the model actors through Ray's own handles (`controller_handle`, `model_handle`
 in `src/ndif/common/providers/ray.py`), and a head that goes down takes it
 along. `Dispatcher.startup` runs once before the loop: it waits for Redis,
 deletes the cached status/env and their coalescing locks, then waits until the
-`Controller` actor can be looked up. `Dispatcher.beat` keeps the
+`Controller` actor can be looked up. `Dispatcher.heartbeat_worker` keeps the
 `ray:connected` key alive from then on (see
 [The Redis Layer](redis-layer.md#the-rayconnected-flag)).
 
 ### The dispatch loop
 
-Each iteration: `beat()`, `get()` a batch, then `dispatch()` each request to its
+Each iteration: `get()` a batch, then `dispatch()` each request to its
 Processor. An error in the loop is logged and the loop goes on a second later.
 
 `Dispatcher.get` blocks on `brpop` for up to `fetch_timeout_s`, then
-non-blockingly `rpop`s until the batch is full or the list is empty. The blocking
-pop bounds an idle pass so `beat` still runs when nothing is arriving;
-the batched pops amortize round-trips under load. Both use `async_bytes_client`
+non-blockingly `rpop`s until the batch is full or the list is empty. The
+batched pops amortize round-trips under load. Both use `async_bytes_client`
 because the values are pickles.
 
 `Dispatcher.dispatch` creates a `Processor` per `model_key` on first sight and
@@ -91,14 +90,15 @@ sleeping autoscaling task.
 
 ### The side workers
 
-`dispatch_worker` also starts three long-lived tasks: `status_worker` and
-`env_worker`, the refresh half of the coalesced `/status` / `/env` cache, and
-`events_worker`, the CLI's control channel (`ndif queue`, `ndif kill`, and the
-reconcile event emitted after an out-of-band `ndif deploy` / `ndif evict`). Their
-streams, handlers and reply protocol are in
+`dispatch_worker` also starts four long-lived tasks: `heartbeat_worker`, which
+renews `ray:connected`; `status_worker` and `env_worker`, the refresh half of
+the coalesced `/status` / `/env` cache; and `events_worker`, the CLI's control
+channel (`ndif queue`, `ndif kill`, and the reconcile event emitted after an
+out-of-band `ndif deploy` / `ndif evict`). The streams, handlers and reply
+protocol of the last three are in
 [The Redis Layer](redis-layer.md#the-events-stream). Nothing restarts these tasks, so
 each one, like the main loop, catches every error, logs it and retries a second
-later, which also carries them through a Redis outage. Their stream reads block
+later, which also carries them through a Redis outage. The stream reads block
 for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
 without closing times out and is retried. An `ndif kill` of an
 executing request goes through `Replica.cancel(interrupt=True)`: the request is
@@ -349,7 +349,8 @@ heap.
 
 > **One event loop for all models.** The dispatcher is a single asyncio loop,
 > so a blocking call anywhere in a Processor or Replica stalls every model's
-> queue, and `beat` with it: `ray:connected` lapses and the API answers 503.
+> queue, and `heartbeat_worker` with it: `ray:connected` lapses and the API
+> answers 503.
 > Keep this path `await`-only or wrapped in `asyncio.to_thread`. Ray calls go
 > through `controller_handle()` and `model_handle()`, Ray's own handles, whose
 > `await handle.method.remote(...)` yields to the loop (see

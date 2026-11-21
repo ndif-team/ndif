@@ -44,7 +44,7 @@ once; every other page zooms into one of its hops.
   is a detached Ray actor on the head node. A popped request lives in its memory,
   so an API restart leaves the queue alone and a head failure drops in-flight
   work. `ray:connected` is its heartbeat: the key expires within 30 s of the
-  dispatch loop stopping.
+  dispatcher dying.
 - **Source is baked into the image.** Run `just ta` after a code change.
   `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 - **The published image runs the core stack in one container.** `NDIF_SERVICE`

@@ -29,14 +29,14 @@ request's `session_id`. For *why* each mechanism is shaped the way it is, see
 The name is `NDIF_QUEUE_KEY`, default `queue` (`QueueConfig.queue_key`). `lpush` +
 `brpop` gives FIFO. The pickles are not UTF-8, which is one reason
 `RedisProvider` keeps a separate non-decoding `async_bytes_client`. The blocking
-pop uses `NDIF_QUEUE_FETCH_TIMEOUT_S` so an idle dispatch loop still comes round
-to renew `ray:connected`; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one drain.
+pop waits `NDIF_QUEUE_FETCH_TIMEOUT_S`; `NDIF_QUEUE_FETCH_BATCH_MAX` caps one
+drain.
 
 ## Control-plane health
 
 | Key | Type | Written by | Read by | TTL | Holds |
 |---|---|---|---|---|---|
-| `ray:connected` | String | `Dispatcher.beat` — `set ... ex=CONNECTED_TTL_S` on every pass of the dispatch loop, the first once Redis *and* the Controller actor answer; never deleted | `src/ndif/services/api/app.py` `require_ray_connection` | `CONNECTED_TTL_S`: three times `NDIF_QUEUE_FETCH_TIMEOUT_S`, default **30s** | `"1"`. A heartbeat — presence is the signal |
+| `ray:connected` | String | `Dispatcher.heartbeat_worker` — `set ... ex=CONNECTED_TTL_S` every 10 s, the first once Redis *and* the Controller actor answer; never deleted | `src/ndif/services/api/app.py` `require_ray_connection` | `CONNECTED_TTL_S`, **30s** | `"1"`. A heartbeat — presence is the signal |
 
 Guards `POST /request`, `GET /status`, `GET /env` and `/connected`; absence yields
 a 503 "compute backend is reconnecting".
@@ -136,8 +136,7 @@ touching Redis by hand, and `ndif info` / `ndif doctor` check that Redis answers
 
 > **Gotcha:** deleting `status:requested` by hand while a refresh is genuinely in
 > flight lets a second refresh start; deleting `ray:connected` makes every guarded
-> endpoint 503 until the dispatch loop's next pass sets it again, within
-> `NDIF_QUEUE_FETCH_TIMEOUT_S` on an idle queue. Neither is
+> endpoint 503 until the dispatcher's next renewal, within 10 s. Neither is
 > corrupting, but both will confuse a debugging session.
 
 > **Gotcha:** these names are unprefixed, so two NDIF deployments pointed at one

@@ -69,7 +69,8 @@ key or an unreachable backend raises before any endpoint body runs.
 
 **`require_ray_connection`** (`src/ndif/services/api/app.py`) — an app-level
 route dependency, not a middleware. It reads the `ray:connected` Redis flag
-(kept alive by `src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.beat`) and
+(kept alive by `src/ndif/services/ray/queue/dispatcher.py`
+`Dispatcher.heartbeat_worker`) and
 raises 503 if absent. Applied to `/request`, `/status`, `/env`, and `/connected`.
 
 **`validate_request`** (`src/ndif/services/api/auth.py`) — the `/request` body
@@ -284,7 +285,7 @@ channel.
 > one returns 400.
 
 > **`ray:connected` outlives the dispatcher by its TTL.** For up to 30 s after
-> the dispatch loop stops, the flag is still set, `require_ray_connection` keeps
+> the dispatcher stops, the flag is still set, `require_ray_connection` keeps
 > passing and requests go onto a list nothing is popping — see
 > [The Redis Layer](redis-layer.md#the-rayconnected-flag).
 

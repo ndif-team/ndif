@@ -11,8 +11,8 @@ It runs inside the Ray cluster, as the detached ``Dispatcher`` actor on the head
 node (:class:`DispatcherActor`). It has no connection to Ray to lose: it reaches
 the Controller and the model actors through Ray's own handles, and a head that
 goes down takes it along, to be started again with the next head. Redis is its
-only link to the API, which learns that a dispatch loop is running from the
-``ray:connected`` key the loop keeps alive.
+only link to the API, which learns that the dispatcher is alive from the
+``ray:connected`` key it keeps renewing.
 
 Launched by the ray service's ``start.sh``, after the Controller:
     python -m ndif.services.ray.queue.dispatcher
@@ -54,9 +54,8 @@ from .processor import Processor
 logger = logging.getLogger("ndif.queue.dispatcher")
 
 
-# How long ``ray:connected`` outlives the pass of the dispatch loop that set
-# it. The loop sets it on every pass, and an idle pass takes ``fetch_timeout_s``.
-CONNECTED_TTL_S = 3 * CONFIG.fetch_timeout_s
+# How long ``ray:connected`` outlives the dispatcher. Renewed three times within it.
+CONNECTED_TTL_S = 30
 
 # How long a blocking stream read waits for an entry before it returns empty.
 STREAM_BLOCK_MS = CONFIG.fetch_timeout_s * 1000
@@ -111,20 +110,10 @@ class Dispatcher:
                 logger.exception("Waiting for the Controller")
             await asyncio.sleep(1)
 
-    async def beat(self) -> None:
-        """Tell the API that a dispatch loop is running.
-
-        The key expires unless the loop comes round again, so a dispatcher that
-        died with its head, or one whose loop has stopped, reads as down within
-        ``CONNECTED_TTL_S``.
-        """
-        await RedisProvider.async_client.set("ray:connected", "1", ex=CONNECTED_TTL_S)
-
     async def get(self) -> list[BackendRequestModel]:
         """Fetch pending requests from the Redis queue.
 
-        Blocking-pop one (bounded by ``fetch_timeout_s`` so an idle loop still
-        comes round to renew ``ray:connected``), then batch-pop up to
+        Blocking-pop one, for at most ``fetch_timeout_s``, then batch-pop up to
         ``fetch_batch_max`` more to amortize round-trips under load.
         """
         client = RedisProvider.async_bytes_client
@@ -154,6 +143,22 @@ class Dispatcher:
             self.processors[request.model_key] = Processor(request.model_key)
 
         await self.processors[request.model_key].enqueue(request)
+
+    async def heartbeat_worker(self) -> None:
+        """Tell the API that the dispatcher is alive.
+
+        The key expires unless it is renewed, so a dispatcher that died with its
+        head reads as down within ``CONNECTED_TTL_S``.
+        """
+        client = RedisProvider.async_client
+
+        while True:
+            try:
+                await client.set("ray:connected", "1", ex=CONNECTED_TTL_S)
+                await asyncio.sleep(CONNECTED_TTL_S / 3)
+            except Exception:
+                logger.exception("heartbeat_worker: failed to renew ray:connected")
+                await asyncio.sleep(1)
 
     async def status_worker(self) -> None:
         """Serve coalesced cluster-status refreshes for the API's /status.
@@ -318,21 +323,20 @@ class Dispatcher:
             await processor.reconcile()
 
     async def dispatch_worker(self) -> None:
-        """Main loop: fetch requests and route them, keeping the API told.
+        """Main loop: fetch requests and route them.
 
         Runs indefinitely. Errors in the loop are logged but don't terminate
         the dispatcher.
         """
         await self.startup()
 
+        asyncio.create_task(self.heartbeat_worker())
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.env_worker())
         asyncio.create_task(self.events_worker())
 
         while True:
             try:
-                await self.beat()
-
                 requests = await self.get()
 
                 for request in requests:

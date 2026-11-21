@@ -8,7 +8,7 @@ between retries spins, measured at thousands of reads a second.
 
 The dispatcher runs inside the Ray cluster and Redis can be across a WAN from
 it, so no read may wait forever, and the API has only the ``ray:connected`` key
-to tell it that a dispatch loop is running.
+to tell it that the dispatcher is alive.
 
 Pure unit tests over fakes: no Redis, no Ray, no server.
 """
@@ -104,7 +104,7 @@ def test_main_loop_pauses_between_failures(dispatcher):
         raise RedisConnectionError("Redis went away")
 
     instance.get = get
-    instance.startup = instance.beat = idle
+    instance.startup = instance.heartbeat_worker = idle
     instance.status_worker = instance.env_worker = instance.events_worker = idle
 
     with pytest.raises(asyncio.CancelledError):
@@ -113,34 +113,28 @@ def test_main_loop_pauses_between_failures(dispatcher):
     assert sleeps == [1, 1], "retried with no pause"
 
 
-def test_every_pass_of_the_main_loop_renews_the_connected_key(dispatcher, monkeypatch):
-    """The key is all the API has, and it must lapse when the loop stops."""
-    instance, _ = dispatcher
+def test_heartbeat_worker_renews_the_connected_key_before_it_expires(dispatcher, monkeypatch):
+    """The key is all the API has, and it must lapse when the dispatcher is gone."""
+    instance, sleeps = dispatcher
     sets = []
 
     class Redis:
         async def set(self, key, value, ex=None):
             sets.append((key, ex))
+            if len(sets) == 2:
+                raise RedisConnectionError("Redis went away")
+            if len(sets) == 4:
+                raise asyncio.CancelledError
 
     monkeypatch.setattr(dispatcher_module.RedisProvider, "async_client", Redis(), raising=False)
-    passes = []
-
-    async def get():
-        passes.append(1)
-        if len(passes) == 3:
-            raise asyncio.CancelledError
-        return []
-
-    instance.get = get
-    instance.startup = idle
-    instance.status_worker = instance.env_worker = instance.events_worker = idle
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(instance.dispatch_worker())
+        asyncio.run(instance.heartbeat_worker())
 
-    assert sets == [("ray:connected", dispatcher_module.CONNECTED_TTL_S)] * 3
-    # An idle pass lasts the fetch timeout, and the key has to outlive it.
-    assert dispatcher_module.CONNECTED_TTL_S > dispatcher_module.CONFIG.fetch_timeout_s
+    ttl = dispatcher_module.CONNECTED_TTL_S
+    assert sets == [("ray:connected", ttl)] * 4
+    # Renewed well inside the expiry, and retried soon after a failure.
+    assert sleeps == [ttl / 3, 1, ttl / 3]
 
 
 def test_startup_waits_for_redis_and_then_for_the_controller(dispatcher, monkeypatch):

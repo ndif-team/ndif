@@ -317,8 +317,7 @@ without a body.
 again in a few minutes."`
 
 > **Gotcha:** this reflects the `ray:connected` Redis flag, which the dispatcher
-> renews on every pass of its dispatch loop with an expiry of three times
-> `NDIF_QUEUE_FETCH_TIMEOUT_S`, 30 s by default. For up to that long after the
+> renews every 10 s with a 30 s expiry. For up to 30 s after the
 > dispatcher stops, this still reports "connected" while nothing is being
 > dispatched.
 

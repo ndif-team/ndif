@@ -129,12 +129,11 @@ fail outright.
 
 `/ping` reports the API healthy with no dispatcher running, which defeats naive
 monitoring. The signal that follows the dispatcher is the `ray:connected` Redis
-key: its dispatch loop renews the key on every pass, with an expiry of three
-times `NDIF_QUEUE_FETCH_TIMEOUT_S` (30 s by default), so the key lapses once the
-loop stops or the dispatcher dies with the Ray head
-(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.beat`):
+key: the dispatcher renews it every 10 s with a 30 s expiry, so the key lapses
+once the dispatcher dies, with the Ray head or alone
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.heartbeat_worker`):
 
-| Endpoint | With no dispatch loop running |
+| Endpoint | With no dispatcher alive |
 |---|---|
 | `GET /ping` | Still passes: no dependencies at all — a live gunicorn worker is enough |
 | `GET /connected` | 503 once `ray:connected` has lapsed |

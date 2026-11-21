@@ -32,8 +32,8 @@ Where the evidence lives:
 4. **The dispatcher is one Ray actor**, `Dispatcher` in the `NDIF` namespace, on
    the head node (`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`).
    Ray restarts it if its process dies, and the `ray:connected` key it keeps
-   alive expires within 30 s of its loop stopping — so `/ping` can pass while
-   nothing is dispatching, and `/connected` cannot for long. Its logs are an actor's: under
+   alive expires within 30 s of its death — so `/ping` can pass with no
+   dispatcher, and `/connected` cannot for long. Its logs are an actor's: under
    `service="dispatcher"` in Loki, and otherwise in Ray's log directory in the
    `ray` container (step 7), not in `just logs ray`.
 
@@ -76,18 +76,17 @@ flowchart TB
 ```bash
 curl -s localhost:8001/ping                                   # "pong": the web process is alive
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8001/connected
-rcli get ray:connected                                        # "1" while the dispatch loop is running
+rcli get ray:connected                                        # "1" while the dispatcher is alive
 ```
 
 `/connected`, `/request`, `/status` and `/env` 503 unless `ray:connected` is set
-(`src/ndif/services/api/app.py` `require_ray_connection`). The dispatcher sets
-the key on every pass of its dispatch loop with a 30 s expiry, three times
-`NDIF_QUEUE_FETCH_TIMEOUT_S`, so it lapses once the loop stops
-(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.beat`).
+(`src/ndif/services/api/app.py` `require_ray_connection`). The dispatcher
+renews the key every 10 s with a 30 s expiry, so it lapses once the dispatcher is
+gone (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.heartbeat_worker`).
 
-**If the key is missing**, no dispatch loop is running: the Ray head is down or
-still starting, the dispatcher is waiting for Redis or the Controller before its
-first pass (`Dispatcher.startup`), or its loop has stopped. A dispatcher that
+**If the key is missing**, no dispatcher is serving: the Ray head is down or
+still starting, or the dispatcher is waiting for Redis or the Controller
+(`Dispatcher.startup`). A dispatcher that
 went down took every request it had popped with it, and **nothing told those
 users**: one still waiting must resubmit. Requests still on the ingress list are
 served by the next dispatcher. `just ps` and `just logs ray` show whether the
@@ -104,7 +103,7 @@ rcli llen queue     # 0, or a small transient number
 | Symptom | Meaning |
 |---|---|
 | `ndif queue` prints `No response from the dispatcher for queue_state_request. Is the Ray head running?` | the dispatcher is not answering. It is down or being restarted, and `/connected` is 503 or turns 503 within 30 s; or its events worker is stuck while the dispatch loop still runs |
-| `llen queue` stays above zero | the dispatcher isn't popping; `/connected` turns 503 within 30 s |
+| `llen queue` stays above zero | the dispatcher isn't popping. `/connected` turns 503 within 30 s if it is down, and stays 200 if it is alive but its dispatch loop is stuck |
 
 Restarting the API does not touch the dispatcher. If the dispatcher's process
 died, Ray restarts it (`max_restarts=-1`), and the new one adopts the replicas

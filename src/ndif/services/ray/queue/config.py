@@ -29,8 +29,8 @@ class QueueConfig:
     Attributes:
         queue_key: Redis list the API pushes requests onto and the dispatcher
             pops from. (NDIF_QUEUE_KEY)
-        fetch_timeout_s: Blocking-pop timeout; how long an idle pass of the
-            dispatch loop lasts, and so how often ``ray:connected`` is renewed.
+        fetch_timeout_s: Blocking-pop timeout; how long a read on an empty
+            queue or stream waits before it is issued again.
             (NDIF_QUEUE_FETCH_TIMEOUT_S)
         fetch_batch_max: Max requests drained per dispatch iteration, to
             amortize Redis round-trips under load. (NDIF_QUEUE_FETCH_BATCH_MAX)
