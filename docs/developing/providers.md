@@ -120,6 +120,11 @@ raises `redis.exceptions.TimeoutError` and the loop retries. Every other process
 keeps `None`: a pubsub subscriber waits on a quiet channel for as long as it
 stays quiet.
 
+The async two also pass `max_connections=10_000`, the Redis server's default
+`maxclients`. redis-py's own default is 100, and every open
+`/subscribe` session holds one connection of its API worker's pool, so at 100 a
+worker's 99th request failed with `MaxConnectionsError`.
+
 Only `sync_client` retries a dead connection, three times with backoff, because a model
 actor writes its result through it. The async clients stay without retries: a pubsub
 subscriber that reconnected silently would miss whatever was published meanwhile and wait
