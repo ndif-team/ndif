@@ -114,9 +114,6 @@ ray/
     └── common.py       what every rank must do identically
 ```
 
-The dispatcher is not a separate container: `start.sh` launches it on the head
-as a detached Ray actor ([Queue internals](queue-internals.md)).
-
 Whether a request's Python runs in the actor or in a runner is decided per request
 by `request.trusted`, not by which actor class is deployed — a trusted block runs
 *in* the model actor process even when the sandbox actor is deployed. Read

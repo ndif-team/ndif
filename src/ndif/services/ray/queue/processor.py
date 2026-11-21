@@ -65,13 +65,11 @@ class Processor:
     """Orchestrates per-model request queue, replicas, and dispatch."""
 
     def __init__(self, model_key: MODEL_KEY) -> None:
-        """Initialize a Processor for the model ``model_key``."""
         self.model_key = model_key
 
         self.queue = RequestQueue()
         self.status = ProcessorStatus.UNINITIALIZED
         self.replicas: Dict[REPLICA_ID, Replica] = {}
-        self.start_task: Optional[asyncio.Task[None]] = None
 
         self.autoscaling_task: asyncio.Task[None] = asyncio.create_task(
             self.autoscaling_loop()
@@ -144,7 +142,7 @@ class Processor:
         if self.status in (ProcessorStatus.PROVISIONING, ProcessorStatus.DEPLOYING):
             return
         self.status = ProcessorStatus.PROVISIONING
-        self.start_task = asyncio.create_task(self.start())
+        asyncio.create_task(self.start())
 
     def mark_idle(self) -> None:
         """Drop back to UNINITIALIZED once the pool has drained to nothing.
@@ -396,20 +394,9 @@ class Processor:
         while the queue is empty — and self-corrects on the next request, which
         pays one wasted dispatch and is then re-queued and served.
         """
-        try:
-            response: ReplicaStates = await controller_handle().get_deployment.remote(
-                self.model_key
-            )
-        except Exception as e:
-            event(
-                logger,
-                "reconcile could not ask the controller for its replicas",
-                level=logging.ERROR,
-                exc_info=True,
-                model_key=self.model_key,
-                error_type=error_type_name(e),
-            )
-            return
+        response: ReplicaStates = await controller_handle().get_deployment.remote(
+            self.model_key
+        )
 
         current = {state.replica_id for state in response.replicas}
         shed = set(self.replicas) - current

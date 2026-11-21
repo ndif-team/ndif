@@ -161,16 +161,15 @@ there means "nothing recorded yet", and the client treats it as still running.
 | `torch.cuda.OutOfMemoryError` at load | `BaseModelDeployment.load_from_disk` | Sizing: the estimate was too small, or the GPU was not actually free. Reaches users as `Error starting model.` — [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `RuntimeError: '<name>' is still on the meta device …` / `… is on 'cpu', expected one of CUDA devices […]` / `… is on cuda:N, outside the assigned set […]` / `No tensors were placed on assigned GPUs […]` | `src/ndif/services/ray/deployments/modeling/util.py` `verify_device_placement` | The load did not land on the granted GPUs; `cpu` means the budget was too small and accelerate offloaded the overflow |
 | An HF error about `trust_remote_code` | the evaluator or the load | The repo ships custom modelling code and the model key lacks `trust_remote_code`; the client loads with `trust_remote_code=True`, or an admin deploys with `--trust-remote-code` ([the key field](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)) |
-| `No response from the dispatcher for <event>. Is the Ray head running?` | `src/ndif/cli/lib/events.py` | CLI (`ndif queue` and other dispatcher events). The dispatcher runs on the Ray head, and the API has no part in this. Transient while the head starts and the dispatcher comes up; persistent means the dispatcher is down or its events worker is stuck |
+| `No response from the dispatcher for <event>. Is the Ray head running?` | `src/ndif/cli/lib/events.py` | CLI (`ndif queue` and other dispatcher events). Transient while the head starts and the dispatcher comes up; persistent means the dispatcher is down or its events worker is stuck |
 | `NDIFConnectivityError: Cannot connect to Ray at <url>: …` | `src/ndif/cli/lib/_common.py` `ensure_ray_connected` | CLI and dashboard only. Ray is down, the address isn't listening, or the `Controller` actor is missing from the `NDIF` namespace (`RayProvider.connected`) |
 
 An OOM *during* a request is a different case: the weights fit and the
 activations didn't. The user gets a CUDA traceback, the replica stays healthy, and
 the fix is their batch, sequence length or saved activations — or more padding.
 
-The dispatcher does nothing with a request's error beyond logging it, because the
-replica already told the user — an isolated `request errored during execution`
-needs no action.
+An isolated `request errored during execution` needs no action: the replica
+already told the user.
 
 ## CLI output
 

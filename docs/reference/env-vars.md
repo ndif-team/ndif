@@ -27,13 +27,10 @@ compose service's `environment:`). Containers run `ndif start --foreground`, so
 the CLI defaults apply inside compose too. The layering, worked through, is in
 [configuration.md](../operating/configuration.md).
 
-Config crosses a process boundary by itself in two places: creating a model actor
-exports the controller's Redis, object-store, Loki and Influx settings into the
-actor's Ray `runtime_env`
-(`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
-`_provider_runtime_env`, applied in `Deployment.create`), and launching the
-dispatcher actor exports the same four from the launcher's environment
-(`src/ndif/services/ray/queue/dispatcher.py` `app`).
+Config crosses one process boundary by itself: creating a model actor exports the
+controller's Redis, object-store, Loki and Influx settings into the actor's Ray
+`runtime_env` (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
+`_provider_runtime_env`, applied in `Deployment.create`).
 
 ## Identity and logging
 
@@ -58,13 +55,11 @@ dispatcher actor exports the same four from the launcher's environment
 
 ## Queue and autoscaling
 
-Read once at import by `src/ndif/services/ray/queue/config.py` `QueueConfig.from_env`.
-The dispatcher is what uses them, and it runs as an actor on the Ray head, so set
-them in the environment of the ray service's head node, not the API's. Only
-`NDIF_QUEUE_KEY` is read by both, and must match. The six numeric ones go through
-`_positive_int`, which raises at import on a non-integer or non-positive value —
-the process that read it does not start (on the head, the dispatcher's launcher
-and `start.sh` with it).
+Read once at import by `src/ndif/services/ray/queue/config.py` `QueueConfig.from_env`,
+in the dispatcher, so set them in the environment of the ray service's head node.
+Only `NDIF_QUEUE_KEY` is also read by the API, and must match. The six numeric
+ones go through `_positive_int`, which raises at import on a non-integer or
+non-positive value, and the process does not start.
 
 | Variable | Default | Effect |
 |---|---|---|

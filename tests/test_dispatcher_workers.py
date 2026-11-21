@@ -6,10 +6,6 @@ dispatcher: ``/status`` and ``/env`` then stay broken after Redis comes back.
 While Redis is down every read also fails at once, so a loop with no pause
 between retries spins, measured at thousands of reads a second.
 
-The dispatcher runs inside the Ray cluster and Redis can be across a WAN from
-it, so no read may wait forever, and the API has only the ``ray:connected`` key
-to tell it that the dispatcher is alive.
-
 Pure unit tests over fakes: no Redis, no Ray, no server.
 """
 

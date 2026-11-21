@@ -155,8 +155,8 @@ on this host. A colleague on your LAN needs an address they can resolve.
 
 The costly omission is `NDIF_REDIS_URL` on `ray`. It is not a startup crash: the
 controller and the dispatcher come up, but the dispatcher cannot reach Redis, so
-it never sets `ray:connected` and every request gets a 503. The dispatcher and
-the model actors get their provider config through their Ray `runtime_env`
+it never sets `ray:connected` and every request gets a 503. Model actors inherit
+the controller's provider config through their Ray `runtime_env`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
 `_provider_runtime_env`), so setting it on `ray` fixes every actor, and missing
 it breaks every actor at once.

@@ -67,8 +67,8 @@ Influx config into a model actor's `runtime_env`
 `_provider_runtime_env`) and overrides `NDIF_SERVICE` to `model`. The controller
 actor is launched the same way with only `LokiProvider.to_env()`
 (`src/ndif/services/ray/deployments/controller/controller.py` `app`), and the
-dispatcher actor with the same four as a model actor and `NDIF_SERVICE` set to
-`dispatcher` (`src/ndif/services/ray/queue/dispatcher.py` `app`).
+dispatcher actor, which reads the head node's environment, with only
+`NDIF_SERVICE=dispatcher` (`src/ndif/services/ray/queue/dispatcher.py` `app`).
 
 ## What runs with no configuration
 
@@ -115,12 +115,11 @@ silently sets a 5 s socket timeout, shorter than the dispatcher's
 `TimeoutError`.
 
 Only the dispatcher sets `async_socket_timeout`: `DispatcherActor.__init__`
-(`src/ndif/services/ray/queue/dispatcher.py`) makes it the fetch timeout plus
-`REDIS_REPLY_GRACE_S` (10 s), above the block of its longest blocking command, and
-calls `connect()` again. A read on a connection that died without closing then
-raises `redis.exceptions.TimeoutError`, and the dispatcher's loops retry a second
-later. Every other process keeps `None`: a pubsub subscriber, which the API is,
-waits on a quiet channel for as long as the channel stays quiet.
+(`src/ndif/services/ray/queue/dispatcher.py`) makes it the fetch timeout plus 10 s
+and calls `connect()` again, so a read on a connection that died without closing
+raises `redis.exceptions.TimeoutError` and the loop retries. Every other process
+keeps `None`: a pubsub subscriber waits on a quiet channel for as long as it
+stays quiet.
 
 Only `sync_client` retries a dead connection, three times with backoff, because a model
 actor writes its result through it. The async clients stay without retries: a pubsub
@@ -178,10 +177,9 @@ moved to CPU (WARM), and two kinds of handle to the actors `"Controller"` and
 Every lookup and call through the client handles is bounded at
 `RAY_CLIENT_TIMEOUT_S` (60 s) and raises `TimeoutError` past it. Over Ray Client an
 actor lookup and the id of a call wait with no timeout when the head dies, so each
-runs on a thread that can be given up on (`on_thread`), and the caller waits for
-that thread where it is (`bounded`): the lookup and each `.remote()` have the limit
-each. The result of a call has no limit. The queue's handles are not over Ray
-Client and have no limit of their own.
+runs on a thread the caller gives up on at the limit (`bounded`): the lookup and
+each `.remote()` have the limit each. The result of a call has no limit. The
+queue's handles are not over Ray Client and have no limit of their own.
 
 `ray.init` has no limit: a head that accepts the connection and then stalls holds
 the caller there until that head goes. `reset()` closes the gRPC channel before
@@ -191,8 +189,7 @@ period.
 
 **Used by** the CLI's `ensure_ray_connected` (`src/ndif/cli/lib/_common.py`), which
 overwrites `RayProvider.ray_url` from `--ray-address` first, and through the CLI's
-`lib/` by the dashboard. The queue uses only `controller_handle` and
-`model_handle`.
+`lib/` by the dashboard.
 
 ## ObjectStoreProvider
 

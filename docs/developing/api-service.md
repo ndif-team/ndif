@@ -48,12 +48,6 @@ worker*. It exists because the telemetry providers must connect after the fork;
 the reasoning, and why `preload_app = True` breaks it, is in
 [Telemetry Internals](telemetry-internals.md).
 
-> **Gotcha:** the dispatcher is not part of this service: it is an actor on the
-> Ray head. Set `NDIF_API_WORKERS=4` and you get four web workers and still
-> exactly one dispatcher — which is what you want, since the dispatcher holds all
-> per-model queue state in process memory. See
-> [Queue Internals](queue-internals.md).
-
 ## App-level middleware and handlers
 
 `src/ndif/services/api/app.py` registers exactly three things at the app level:

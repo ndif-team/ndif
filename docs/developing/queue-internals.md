@@ -19,8 +19,7 @@ Three facts frame the design:
 
 1. **There is exactly one dispatcher.** It is the detached Ray actor
    `Dispatcher` in the `NDIF` namespace, launched once on the head by
-   `src/ndif/services/ray/start.sh` regardless of `NDIF_API_WORKERS`, because all
-   queue state is in-process.
+   `src/ndif/services/ray/start.sh`, because all queue state is in-process.
 2. **The API never touches Ray.** Its workers cannot reach the controller or a
    model actor; the dispatcher is the bridge, and Redis is its only link to
    them.
@@ -38,7 +37,7 @@ import, so a typo fails the process rather than silently defaulting.
 | Field | Env var | Default | What it does |
 |---|---|---|---|
 | `queue_key` | `NDIF_QUEUE_KEY` | `queue` | The Redis list the API LPUSHes to and the dispatcher BRPOPs from |
-| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`) and the dispatcher's Redis reply timeout (it plus `REDIS_REPLY_GRACE_S`) derive from it |
+| `fetch_timeout_s` | `NDIF_QUEUE_FETCH_TIMEOUT_S` | 10 | BRPOP timeout — the length of an idle pass of the dispatch loop. The stream workers' `xread` block (`STREAM_BLOCK_MS`) and the dispatcher's Redis reply timeout (it plus 10 s) derive from it |
 | `fetch_batch_max` | `NDIF_QUEUE_FETCH_BATCH_MAX` | 32 | Max requests drained per dispatch iteration |
 | `autoscaling_interval_s` | `NDIF_AUTOSCALING_INTERVAL_S` | 5 | How often a Processor checks its oldest queued request |
 | `autoscaling_wait_threshold_s` | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | 30 | Oldest-request wait that triggers a scale-up |
@@ -65,13 +64,12 @@ actor the loop starts again, without the requests the previous one had popped.
 Never run two against one Redis: both `BRPOP` the same list, so each would hold
 half of every model's queue in its own memory.
 
-The dispatcher has no connection to Ray to lose. It reaches the Controller and
-the model actors through Ray's own handles (`controller_handle`, `model_handle`
-in `src/ndif/common/providers/ray.py`), and a head that goes down takes it
-along. `Dispatcher.startup` runs once before the loop: it waits for Redis,
-deletes the cached status/env and their coalescing locks, then waits until the
-`Controller` actor can be looked up. `Dispatcher.heartbeat_worker` keeps the
-`ray:connected` key alive from then on (see
+It reaches the Controller and the model actors through Ray's own handles
+(`controller_handle`, `model_handle` in `src/ndif/common/providers/ray.py`).
+`Dispatcher.startup` runs once before the loop: it waits for Redis, deletes the
+cached status/env and their coalescing locks, then waits until the `Controller`
+actor can be looked up. `Dispatcher.heartbeat_worker` keeps the `ray:connected`
+key alive from then on (see
 [The Redis Layer](redis-layer.md#the-rayconnected-flag)).
 
 ### The dispatch loop
@@ -334,12 +332,10 @@ heap.
 > **A dispatcher restart loses every in-flight and queued request.** Once
 > popped, a request waits in a `Processor.queue` or sits in
 > `Replica.current_request` — both plain Python objects in the actor's process.
-> If the actor alone dies, Ray restarts it (`max_restarts=-1`) and the new one
-> adopts the running replicas through `Processor.start` as requests arrive. If
-> the head goes down the dispatcher goes with it, until the next head starts
-> one. Either way nothing errors the requests it held: their users are not
-> told. Only requests still in the Redis `queue` list survive, and wait for the
-> next dispatcher. Restarting the API does not touch the dispatcher.
+> Whether the actor dies alone (Ray restarts it, and the new one adopts the
+> running replicas through `Processor.start` as requests arrive) or with the
+> head, nothing errors the requests it held. Only requests still in the Redis
+> `queue` list survive.
 
 > **`Replica.wait()` has no timeout.** If the controller reports a successful
 > deploy but the actor never becomes ready, `start()` is stuck awaiting it,

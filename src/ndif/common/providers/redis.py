@@ -66,10 +66,8 @@ class RedisProvider(Provider):
         a blocking call out-waits 5s. Setting it explicitly restores the
         pre-8.0 behavior (no read timeout on blocking ops).
 
-        The async clients take ``async_socket_timeout`` instead, when a process
-        sets one. The dispatcher does, to a value above the block of its longest
-        blocking command: it can sit across a WAN from Redis, where a connection
-        can die without closing and a read with no timeout never returns.
+        The async clients take ``async_socket_timeout``, which only the
+        dispatcher sets.
 
         ``retry`` is explicit too: ``from_url`` doesn't get the retries that
         ``redis.Redis()`` has by default, so without it one dead connection loses

@@ -267,7 +267,7 @@ every actor process it later spawns inherit it and their Loki lines are labelled
 `service=ray`. Model actors override it to `model` in their `runtime_env`
 (`Deployment.create`), and the dispatcher to `dispatcher`, so their telemetry
 attributes separately. Provider configuration (Redis, object store, Loki,
-Influx) is likewise pushed into each of those actors' `runtime_env` by
+Influx) is likewise pushed into each model actor's `runtime_env` by
 `_provider_runtime_env()`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`) — a Ray
 worker inherits only its node's ambient environment, so anything the launcher

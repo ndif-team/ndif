@@ -292,8 +292,8 @@ durable volumes and retention policy for anything it needs to keep. See
 - **No horizontal queue tier.** `NDIF_API_WORKERS` scales gunicorn workers, which
   only do ingress. Every request passes through one dispatcher, a single actor on
   the Ray head (`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`).
-  Its queues are in its memory: a head failure loses the requests it had popped,
-  and their users are not told.
+  Its queues are in its memory
+  ([Queue Internals](../developing/queue-internals.md#where-it-wedges)).
 
 ## Pre-flight checklist
 

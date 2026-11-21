@@ -8,11 +8,9 @@ The Dispatcher pops requests from Redis, lazily creates a Processor per
 provision and re-provision replicas on demand.
 
 It runs inside the Ray cluster, as the detached ``Dispatcher`` actor on the head
-node (:class:`DispatcherActor`). It has no connection to Ray to lose: it reaches
-the Controller and the model actors through Ray's own handles, and a head that
-goes down takes it along, to be started again with the next head. Redis is its
-only link to the API, which learns that the dispatcher is alive from the
-``ray:connected`` key it keeps renewing.
+node (:class:`DispatcherActor`), and goes down and comes back with the head.
+Redis is its only link to the API, which reads the ``ray:connected`` key it
+renews to know it is alive.
 
 Launched by the ray service's ``start.sh``, after the Controller:
     python -m ndif.services.ray.queue.dispatcher
@@ -57,13 +55,7 @@ logger = logging.getLogger("ndif.queue.dispatcher")
 # How long ``ray:connected`` outlives the dispatcher. Renewed three times within it.
 CONNECTED_TTL_S = 30
 
-# How long a blocking stream read waits for an entry before it returns empty.
 STREAM_BLOCK_MS = CONFIG.fetch_timeout_s * 1000
-
-# How long a reply may take beyond the block of the command it answers. Redis
-# can be across a WAN from here, where a connection can die without closing: a
-# read on one would otherwise wait forever.
-REDIS_REPLY_GRACE_S = 10
 
 
 async def stream_tail(client, stream: str) -> str:
@@ -85,10 +77,8 @@ class Dispatcher:
     async def startup(self) -> None:
         """Wait for Redis and the Controller before serving.
 
-        Clears every Redis key derived from the cluster: the cached status and
-        env describe whatever cluster ran before this one, and clearing the
-        coalescing locks too means the first request triggers a fresh refresh
-        instead of waiting out a lock's TTL.
+        Clears the cached status and env, and their locks: they describe
+        whatever cluster ran before this one.
         """
         while True:
             try:
@@ -104,11 +94,9 @@ class Dispatcher:
             try:
                 controller_handle()
                 break
-            except ValueError:
-                logger.info("Waiting for the Controller")
             except Exception:
                 logger.exception("Waiting for the Controller")
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
 
     async def get(self) -> list[BackendRequestModel]:
         """Fetch pending requests from the Redis queue.
@@ -145,11 +133,7 @@ class Dispatcher:
         await self.processors[request.model_key].enqueue(request)
 
     async def heartbeat_worker(self) -> None:
-        """Tell the API that the dispatcher is alive.
-
-        The key expires unless it is renewed, so a dispatcher that died with its
-        head reads as down within ``CONNECTED_TTL_S``.
-        """
+        """Renew ``ray:connected``, which tells the API the dispatcher is alive."""
         client = RedisProvider.async_client
 
         while True:
@@ -351,7 +335,7 @@ class Dispatcher:
 
 
 @ray.remote(num_cpus=0, num_gpus=0, max_restarts=-1, resources={"head": 1})
-class DispatcherActor:
+class DispatcherActor(Dispatcher):
     """The Dispatcher as a detached actor on the head node.
 
     The dispatch loop is a task started here and not a method somebody calls,
@@ -360,6 +344,8 @@ class DispatcherActor:
     """
 
     def __init__(self) -> None:
+        super().__init__()
+
         # Install the telemetry sinks in this actor's worker process: Loki for
         # logs, InfluxDB for the RECEIVED / QUEUED status-time points.
         from ....common.providers.influx import InfluxProvider
@@ -368,40 +354,23 @@ class DispatcherActor:
         LokiProvider.connect()
         InfluxProvider.connect()
 
-        # Rebuild the async clients with a limit on how long a reply may take.
-        # Only this process sets one: a pubsub subscriber, which the API is,
-        # waits on a quiet channel for as long as the channel stays quiet.
-        RedisProvider.async_socket_timeout = CONFIG.fetch_timeout_s + REDIS_REPLY_GRACE_S
+        # Redis can be across a WAN, where a connection can die without
+        # closing. Give replies 10 s beyond the longest blocking read.
+        RedisProvider.async_socket_timeout = CONFIG.fetch_timeout_s + 10
         RedisProvider.connect()
 
-        self.dispatcher = Dispatcher()
-        self.task = asyncio.create_task(self.dispatcher.dispatch_worker())
-
-    async def queue_state(self) -> dict:
-        """Every Processor's snapshot. Also what makes this an async actor."""
-        return {mk: p.snapshot() for mk, p in self.dispatcher.processors.items()}
+        self.task = asyncio.create_task(self.dispatch_worker())
 
 
 def app() -> None:
     """Launch the detached Dispatcher actor in the NDIF namespace."""
-    # Imported here: that module imports the model actor, and with it torch,
-    # which only this short-lived launcher should pay for.
-    from ..deployments.controller.cluster.deployment import _provider_runtime_env
-
     # get_if_exists makes relaunch idempotent, as for the Controller.
     DispatcherActor.options(
         name="Dispatcher",
         namespace=NAMESPACE,
         lifetime="detached",
         get_if_exists=True,
-        runtime_env={
-            "env_vars": {
-                # The actor's worker inherits only the head node's ambient
-                # environment, so the provider config is carried in.
-                **_provider_runtime_env(),
-                "NDIF_SERVICE": "dispatcher",
-            }
-        },
+        runtime_env={"env_vars": {"NDIF_SERVICE": "dispatcher"}},
     ).remote()
 
 

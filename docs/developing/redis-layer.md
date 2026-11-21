@@ -98,8 +98,7 @@ await client.publish(STATUS_READY_CHANNEL, "ok")
 
 On failure the worker logs, **deletes the lock** so the next request can retry
 immediately, publishes `"error"` so waiters get a 503 instead of hanging, and
-yields with `asyncio.sleep(0)` so a persistently failing controller can't peg
-the event loop. A second API worker that misses during a refresh loses the
+sleeps a second so a persistently failing controller can't peg the event loop. A second API worker that misses during a refresh loses the
 `SET NX`, skips the `XADD`, and is woken by the same `PUBLISH`.
 
 ### Why a cache with a trigger stream instead of RPC
@@ -208,11 +207,9 @@ A plain string key the dispatcher keeps alive as a heartbeat.
 `Dispatcher.heartbeat_worker` sets it to `"1"` every 10 s, with an expiry of
 `CONNECTED_TTL_S` (30 s). Nothing deletes it; it lapses when the dispatcher
 dies, with the head or alone. Before the worker starts, `Dispatcher.startup`
-waits for Redis,
-deletes `status`, `status:requested`, `env` and `env:requested` (those describe
-whatever cluster ran before this one, and clearing the locks means the first
-request triggers a fresh refresh), and waits until the Controller actor can be
-looked up. The API uses the key as a route dependency,
+waits for Redis and the Controller and clears the status and env caches and
+their locks ([Queue Internals](queue-internals.md#the-dispatcher)). The API
+uses the key as a route dependency,
 `require_ray_connection`, to 503 early rather than enqueue work the backend
 can't serve — it guards `/request`, `/status`, `/env` and `/connected`.
 
@@ -223,10 +220,8 @@ dispatcher pops it.
 
 > **The workers start at the stream's tail.** Both cache workers and the events
 > worker begin from the id of the stream's newest entry (`stream_tail`), meaning
-> "only entries added from now on". It is that id and not `$`, because a blocking
-> read that ran out its block and was issued again from `$` would miss whatever
-> was added in between. Triggers or CLI events appended while the dispatcher was
-> down are never seen. A waiting
+> "only entries added from now on". Triggers or CLI events appended while the
+> dispatcher was down are never seen. A waiting
 > `/status` then 504s after `STATUS_TIMEOUT_S`, and the lock expires at the same
 > moment, so the *next* request retries cleanly. A `ndif queue` issued against a
 > dead dispatcher raises `TimeoutError` with "Is the Ray head running?".

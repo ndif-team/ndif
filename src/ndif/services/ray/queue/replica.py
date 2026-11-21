@@ -253,9 +253,6 @@ class Replica:
             raise
 
         except Exception as e:
-            # An exception raised *inside* the actor (CachedActorError, on a
-            # HOT->WARM demotion) arrives as ``RayTaskError(CachedActorError)``,
-            # an instance of both classes, so ``isinstance`` sees it.
             if isinstance(e, EVICTED_ERRORS):
                 # The replica is gone (lookup failure, actor died, or moved to
                 # CPU cache). Drop this replica (task -> None ends the worker

@@ -244,8 +244,8 @@ its own `__init__`: the controller connects **Loki only** (it emits events, no
 metrics); `BaseModelDeployment.__init__` and `DispatcherActor.__init__` connect
 **both**. Ray workers inherit only the node's ambient environment, so the
 controller ships provider config into each model actor's `runtime_env` and
-overrides `NDIF_SERVICE` to `model`, and the dispatcher's launcher does the same
-with `dispatcher` — see [Providers](providers.md#config-propagation).
+overrides `NDIF_SERVICE` to `model`; the dispatcher's launcher sets only
+`NDIF_SERVICE=dispatcher` — see [Providers](providers.md#config-propagation).
 
 ## Gotchas
 

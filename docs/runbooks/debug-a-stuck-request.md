@@ -31,9 +31,7 @@ Where the evidence lives:
    queue inside the dispatcher.
 4. **The dispatcher is one Ray actor**, `Dispatcher` in the `NDIF` namespace, on
    the head node (`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`).
-   Ray restarts it if its process dies, and the `ray:connected` key it keeps
-   alive expires within 30 s of its death — so `/ping` can pass with no
-   dispatcher, and `/connected` cannot for long. Its logs are an actor's: under
+   Ray restarts it if its process dies. Its logs are an actor's: under
    `service="dispatcher"` in Loki, and otherwise in Ray's log directory in the
    `ray` container (step 7), not in `just logs ray`.
 
@@ -107,11 +105,9 @@ rcli llen queue     # 0, or a small transient number
 
 Restarting the API does not touch the dispatcher. If the dispatcher's process
 died, Ray restarts it (`max_restarts=-1`), and the new one adopts the replicas
-already running as requests arrive for them (`Processor.start`). Every request
-the old one had popped is gone: those users get no further status and must
-resubmit. A dispatcher that is alive but stuck comes back only with a new
-process. Killing the actor makes Ray start one, and leaves the controller and
-the model actors alone:
+already running as requests arrive for them (`Processor.start`). A dispatcher
+that is alive but stuck comes back only with a new process. Killing the actor
+makes Ray start one, and leaves the controller and the model actors alone:
 
 ```bash
 docker compose -f docker/docker-compose.yml exec ray python -c "

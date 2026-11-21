@@ -1,9 +1,6 @@
 """A Redis read on a connection that died without closing has to give up.
 
-The dispatcher runs inside the Ray cluster, which can be across a WAN from
-Redis. A connection dropped there without a FIN or a reset leaves a read
-waiting forever, so the dispatcher's process gives its async clients a limit
-(``RedisProvider.async_socket_timeout``).
+``RedisProvider.async_socket_timeout`` is the limit; the dispatcher sets it.
 
 No Redis: a local server accepts the connection and never answers.
 """

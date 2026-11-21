@@ -150,9 +150,7 @@ services:
         NDIF_VERSION: ${NDIF_VERSION:-}
     environment:
       NDIF_SERVICE: api
-      # The API reaches redis by service name on the compose network. It has no
-      # connection to ray: the dispatcher runs in the ray service and takes
-      # requests off redis.
+      # The API reaches redis by service name on the compose network.
       NDIF_REDIS_URL: redis://redis:6379
       # Ship logs to Loki (reached by service name on the compose network).
       NDIF_LOKI_URL: http://loki:3100/loki/api/v1/push

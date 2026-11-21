@@ -67,11 +67,10 @@ So when the controller creates a model actor it exports its own Redis,
 object-store, Loki and Influx settings into the actor's Ray `runtime_env`
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
 `_provider_runtime_env`, applied in `Deployment.create`), plus
-`NDIF_SERVICE=model` so the actor's telemetry attributes correctly. The head's
-`start.sh` launches the dispatcher actor the same way, with
-`NDIF_SERVICE=dispatcher` (`src/ndif/services/ray/queue/dispatcher.py` `app`);
-its queue and autoscaling settings are not exported, so it reads them from the
-head node's own environment.
+`NDIF_SERVICE=model` so the actor's telemetry attributes correctly. The
+dispatcher actor runs on the head and reads the head node's environment; its
+launcher sets only `NDIF_SERVICE=dispatcher`
+(`src/ndif/services/ray/queue/dispatcher.py` `app`).
 
 **You configure model actors and the dispatcher by configuring the `ray`
 service** on the head.

@@ -1,11 +1,9 @@
 """Ray control-plane provider.
 
-Lookups for the controller actor and per-replica model actors, for two kinds of
-caller. The queue runs inside the cluster, as the ``Dispatcher`` actor, and
-uses Ray's own handles (``controller_handle``, ``model_handle``). The CLI and
-the dashboard's reconcile job connect from outside over Ray Client
-(``ray://``), and get the connection lifecycle (``RayProvider``) and handles
-whose lookups and calls are bounded.
+Lookups for the controller actor and per-replica model actors. The queue runs
+inside the cluster and uses Ray's own handles (``controller_handle``,
+``model_handle``). The CLI and the dashboard connect over Ray Client
+(``ray://``) and get ``RayProvider`` and handles with bounded lookups and calls.
 
 Actor names mirror the controller's: the controller is ``Controller``, the
 dispatcher is ``Dispatcher`` and a replica is
@@ -160,18 +158,15 @@ class NDIFClientRemoteMethod:
         self._method_num_returns = 1
 
     def remote(self, *args, **kwargs):
-        return bounded(f"{self._method_name}.remote()", self.send, *args, **kwargs)
+        # A ref whose id has not arrived waits for it on first use, with no
+        # timeout, so it is waited for here, bounded.
+        def call() -> ClientObjectRef:
+            (id_future,) = client_ray.call_remote(self, *args, **kwargs)
+            ref = ClientObjectRef(id_future)
+            ref.binary()
+            return ref
 
-    def send(self, *args, **kwargs) -> ClientObjectRef:
-        """Make the call and wait for its id, with no time limit.
-
-        A ref whose id has not arrived waits for it on first use, with no
-        timeout, so it is waited for here.
-        """
-        (id_future,) = client_ray.call_remote(self, *args, **kwargs)
-        ref = ClientObjectRef(id_future)
-        ref.binary()
-        return ref
+        return bounded(f"{self._method_name}.remote()", call)
 
     def _prepare_client_task(self):
         from ray.core.generated import ray_client_pb2
@@ -209,19 +204,16 @@ class NDIFActorHandle(ClientActorHandle):
 RAY_CLIENT_TIMEOUT_S = 60
 
 
-def on_thread(fn, *args, **kwargs) -> Future:
-    """Run ``fn`` on a daemon thread.
+def bounded(what: str, fn, *args, **kwargs):
+    """Call ``fn`` on a daemon thread; raise ``TimeoutError`` if it outlives
+    ``RAY_CLIENT_TIMEOUT_S``.
 
     Over Ray Client, actor lookups and calls wait on futures with no timeout:
     one in flight when the head dies waits until Ray gives up on the
-    connection, and for good if Ray then fails to tell it. On a thread of its own
-    it can be given up on: the thread is abandoned with whatever it holds (a
-    ref dropped elsewhere would wait for its id too).
+    connection, and for good if Ray then fails to tell it. A thread that times
+    out is abandoned with whatever it holds.
     """
     future: Future = Future()
-    # Running, so that a caller that stops waiting cannot cancel it and leave
-    # the thread with nowhere to put its result.
-    future.set_running_or_notify_cancel()
 
     def run() -> None:
         try:
@@ -230,45 +222,29 @@ def on_thread(fn, *args, **kwargs) -> Future:
             future.set_exception(e)
 
     threading.Thread(target=run, daemon=True).start()
-    return future
-
-
-def timed_out(what: str) -> TimeoutError:
-    return TimeoutError(
-        f"{what} did not return within {RAY_CLIENT_TIMEOUT_S}s; "
-        "the Ray connection is probably dead"
-    )
-
-
-def bounded(what: str, fn, *args, **kwargs):
-    """Call ``fn`` on a thread (see :func:`on_thread`); raise ``TimeoutError``
-    if it outlives ``RAY_CLIENT_TIMEOUT_S``.
-
-    Blocks the caller while it waits.
-    """
-    future = on_thread(fn, *args, **kwargs)
     wait([future], RAY_CLIENT_TIMEOUT_S)
     if not future.done():
-        raise timed_out(what)
+        raise TimeoutError(
+            f"{what} did not return within {RAY_CLIENT_TIMEOUT_S}s; "
+            "the Ray connection is probably dead"
+        )
     return future.result()
 
 
-def lookup(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
-    """``ray.get_actor``, as an :class:`NDIFActorHandle`, with no time limit.
+def get_named_actor(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
+    """``ray.get_actor``, bounded (see :func:`bounded`), as an
+    :class:`NDIFActorHandle`.
 
     No-ops the class swap when not in Ray-client mode (native
     ``ray.actor.ActorHandle`` has no descriptor-prefetch behavior, so the
     standard ``remote()`` syntax already just works).
     """
-    handle = ray.get_actor(name, namespace=namespace)
+    handle = bounded(
+        f"ray.get_actor({name!r})", ray.get_actor, name, namespace=namespace
+    )
     if isinstance(handle, ClientActorHandle):
         handle.__class__ = NDIFActorHandle
     return handle
-
-
-def get_named_actor(name: str, namespace: str = NAMESPACE) -> NDIFActorHandle:
-    """:func:`lookup`, bounded (see :func:`bounded`)."""
-    return bounded(f"ray.get_actor({name!r})", lookup, name, namespace)
 
 
 def get_controller_actor_handle(namespace: str = NAMESPACE) -> NDIFActorHandle:
