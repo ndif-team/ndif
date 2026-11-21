@@ -102,8 +102,7 @@ store raises on `put`/`presigned_get`. Postgres **fails closed** — a query fai
 - `sync_client` — sync, `decode_responses=True`: response pub/sub from sync code
   (the model actor).
 - `async_client` — async, `decode_responses=True`: the status/env caches, the
-  events stream, the dispatcher's `ray:connected` heartbeat, response pub/sub from
-  async workers.
+  dispatcher's `ray:connected` heartbeat, response pub/sub from async workers.
 - `async_bytes_client` — async, raw bytes: the pickled request queue (decoding
   would corrupt the pickle).
 

@@ -57,7 +57,7 @@ The console script `ndif = "ndif.cli:cli"`: a click group with one command per m
 | Path | Role |
 |---|---|
 | `providers/` | one module per external service behind the `Provider` base ([Providers](providers.md)) |
-| `redis/` | Redis key constants only: the `/status` and `/env` caches and the dispatcher's event stream |
+| `redis/` | Redis key constants only: the `/status` and `/env` caches |
 | `schema/` | `BackendRequestModel` / `BackendResponseModel` (subclasses of nnsight's, so the wire format is the client's) and the controller RPC contracts |
 | `errors.py` | caller-facing errors shared by the in-process and sandbox paths |
 | `metrics.py`, `telemetry.py`, `logging_setup.py` | metrics classes, `event()`, the console formatter ([Telemetry internals](telemetry-internals.md)) |

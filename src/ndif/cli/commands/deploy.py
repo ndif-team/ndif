@@ -43,10 +43,9 @@ from ..lib.model_config import load_model_config
 @click.option("--max-tp", "max_tp", type=int, default=None,
               help="Largest tensor-parallel degree to use; 0 to never place this model tensor-parallel.")
 @click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
-@click.option("--redis-url", default=None, help="Redis URL for dispatcher reconcile (default: NDIF_REDIS_URL).")
 def deploy(checkpoints, config_file, sync, revision, task, trust_remote_code,
            pinned, replicas, actor_class, dtype, gpus, size_bytes, padding_factor,
-           padding_bias, max_tp, ray_address, redis_url):
+           padding_bias, max_tp, ray_address):
     """Deploy one or more models.
 
     CHECKPOINTS: model checkpoints (e.g. "gpt2", "meta-llama/Llama-3.1-8B").
@@ -113,7 +112,7 @@ def deploy(checkpoints, config_file, sync, revision, task, trust_remote_code,
 
     try:
         result = deploy_lib(specs, sync=sync, ray_address=ray_address,
-                            redis_url=redis_url, on_message=click.echo)
+                            on_message=click.echo)
     except NDIFConnectivityError as e:
         click.echo(f"✗ Error: {e}", err=True)
         raise click.Abort()

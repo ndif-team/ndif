@@ -140,7 +140,7 @@ service**; a service that misses one silently talks to itself.
 
 | Variable | Provider default | Compose sets | On |
 |---|---|---|---|
-| `NDIF_REDIS_URL` | `redis://localhost:6379` | `redis://redis:6379` | `api`, `ray`, `dashboard` |
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | `redis://redis:6379` | `api`, `ray` |
 | `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `ray://ray:10001` | `dashboard` — not `api`, which has no connection to Ray, nor `ray`, which starts the cluster rather than dialing it |
 | `NDIF_OBJECT_STORE_URL` | `http://localhost:9000` | `http://rustfs:9000` | `api`, `ray` |
 | `NDIF_OBJECT_STORE_PUBLIC_URL` | falls back to the above | `http://localhost:9000` | `api`, `ray` |

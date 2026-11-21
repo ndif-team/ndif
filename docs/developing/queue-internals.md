@@ -3,7 +3,7 @@ title: Queue Internals
 one_liner: The dispatcher actor — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
 tags: [internals, dev, queue, redis, ray]
 related: [docs/developing/api-service.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/redis-keys.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/start.sh, src/ndif/common/providers/ray.py, src/ndif/common/redis/events.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/start.sh, src/ndif/common/providers/ray.py, src/ndif/cli/lib/dispatcher.py]
 ---
 
 # Queue Internals
@@ -85,17 +85,31 @@ sleeping autoscaling task.
 
 ### The side workers
 
-`dispatch_worker` also starts four long-lived tasks: `heartbeat_worker`, which
-renews `ray:connected`; `status_worker` and `env_worker`, the refresh half of
-the coalesced `/status` / `/env` cache; and `events_worker`, the CLI's control
-channel (`ndif queue`, `ndif kill`, and the reconcile event emitted after an
-out-of-band `ndif deploy` / `ndif evict`). The streams, handlers and reply
-protocol of the last three are in
-[The Redis Layer](redis-layer.md#the-events-stream). Nothing restarts these tasks, so
+`dispatch_worker` also starts three long-lived tasks: `heartbeat_worker`, which
+renews `ray:connected`; and `status_worker` and `env_worker`, the refresh half
+of the coalesced `/status` / `/env` cache, whose streams are in
+[The Redis Layer](redis-layer.md#the-coalesced-cache). Nothing restarts these tasks, so
 each one, like the main loop, catches every error, logs it and retries a second
 later, which also carries them through a Redis outage. The stream reads block
 for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
-without closing times out and is retried. An `ndif kill` of an
+without closing times out and is retried.
+
+### Calls from the CLI
+
+Three methods on the actor are for callers outside it. The CLI and the dashboard
+reach them the way they reach the Controller: over Ray Client, through the
+handle `get_dispatcher_actor_handle()` returns
+(`src/ndif/common/providers/ray.py`), from `src/ndif/cli/lib/dispatcher.py`. They
+run on the actor's event loop, between passes of the dispatch loop, and act on
+what only the dispatcher holds: its Processors.
+
+| Method | Caller | Does | Returns |
+|---|---|---|---|
+| `queue_state()` | `ndif queue` | Snapshots every Processor (`Processor.snapshot`) | `{"processors": {model_key: snapshot}}` |
+| `kill(request_id)` | `ndif kill` | Removes and errors a queued request; errors and interrupts an executing one | `{"status", "message"}`, with `status` one of `removed_from_queue`, `cancelled_execution`, `not_found` |
+| `reconcile(model_key)` | the end of `ndif deploy` / `ndif evict`, and the dashboard's same calls | Re-syncs that model's Processor with the Controller's replica list (`Processor.reconcile`); nothing for a model with no Processor | `None`; the caller does not wait |
+
+An exception in one reaches its caller as a `RayTaskError`. A kill of an
 executing request goes through `Replica.cancel(interrupt=True)`: the request is
 errored, the actor's `cancel()` is called, and the dispatch is given a few
 seconds to return on its own; only if it does not is the dispatch task

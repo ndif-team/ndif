@@ -117,7 +117,7 @@ The server's own record of the failure:
 ### Killed jobs
 
 An operator `ndif kill` of an executing request produces two `ERROR` responses in
-a row (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher._kill`,
+a row (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
 `src/ndif/services/ray/queue/replica.py` `Replica.cancel`): first `Request
 cancelled by operator.` from the dispatcher, then `Your job was cancelled or
 preempted by the server.` from the actor (`BaseModelDeployment.run`). The actor's

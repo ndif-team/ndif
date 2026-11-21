@@ -309,9 +309,9 @@ ndif export --stdout > models.yaml  # current HOT set as a models.yaml
 
 Explicit eviction is unconditional — it respects neither `pinned` nor the age
 rule. It resolves checkpoints to keys the same way deploy does (task inferred
-when `--task` is absent), so it needs Hub access. Deploy and evict then publish
-a Redis reconcile event so live dispatcher `Processor`s refresh their replica
-pools (`src/ndif/cli/lib/events.py` `notify_reconcile`).
+when `--task` is absent), so it needs Hub access. Deploy and evict then call
+the Dispatcher actor's `reconcile` so live `Processor`s refresh their replica
+pools (`src/ndif/cli/lib/dispatcher.py` `reconcile`).
 
 `ndif status --json-output` gives, per replica: `model_key`, `replica_id`,
 `deployment_level`, `application_state` (`RUNNING`/`DEPLOYING`/`UNHEALTHY`,

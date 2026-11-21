@@ -52,7 +52,7 @@ just up dashboard          # or `just up` for the whole stack
 
 Compose wires it to the rest of the stack by service name
 (`NDIF_DASHBOARD_MONITOR_URL=http://api:8001`, `NDIF_RAY_ADDRESS=ray://ray:10001`,
-`NDIF_REDIS_URL=redis://redis:6379`, `NDIF_API_URL=http://api:8001`) and keeps
+`NDIF_API_URL=http://api:8001`) and keeps
 its writable state on the named volume `dashboard_data` at `/var/lib/dashboard`.
 
 **Standalone**, `start.sh` is the same script, minus cron:

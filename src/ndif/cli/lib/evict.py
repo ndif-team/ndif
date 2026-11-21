@@ -6,7 +6,7 @@ from typing import Optional
 
 from .. import config
 from ._common import NDIFConnectivityError, OnMessage, emit, ensure_ray_connected
-from .events import notify_reconcile
+from .dispatcher import reconcile
 from .models import (
     extract_task_from_model_key,
     get_current_deployments,
@@ -23,7 +23,6 @@ def evict(
     evict_all: bool = False,
     replica: Optional[str] = None,
     ray_address: Optional[str] = None,
-    redis_url: Optional[str] = None,
     on_message: OnMessage = None,
 ) -> dict:
     """Evict models from the cluster.
@@ -98,8 +97,8 @@ def evict(
             })
         out.append({"model_key": mk, "status": "evicted", "replicas": records})
 
-    # Nudge any already-active dispatcher Processors to drop the evicted replicas.
-    notify_reconcile(redis_url, target_keys)
+    # Have the dispatcher refresh its replica pool for the evicted models.
+    reconcile(target_keys)
 
     return {"results": out}
 

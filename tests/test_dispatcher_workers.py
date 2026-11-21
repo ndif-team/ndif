@@ -1,6 +1,6 @@
 """The dispatcher's loops have to outlive a Redis outage, and say they are alive.
 
-``status_worker``, ``env_worker`` and ``events_worker`` are started once and
+``status_worker`` and ``env_worker`` are started once and
 nothing restarts them, so an error that escapes one ends it for the life of the
 dispatcher: ``/status`` and ``/env`` then stay broken after Redis comes back.
 While Redis is down every read also fails at once, so a loop with no pause
@@ -64,7 +64,7 @@ async def idle():
     pass
 
 
-@pytest.mark.parametrize("worker", ["status_worker", "env_worker", "events_worker"])
+@pytest.mark.parametrize("worker", ["status_worker", "env_worker"])
 def test_side_workers_survive_redis_going_away(dispatcher, monkeypatch, worker):
     instance, sleeps = dispatcher
     redis = RedisDown()
@@ -84,7 +84,7 @@ def test_side_workers_survive_redis_going_away(dispatcher, monkeypatch, worker):
 def test_a_stream_is_read_on_from_its_newest_entry():
     class Redis:
         async def xrevrange(self, stream, count=None):
-            return [("1700000000000-3", {"event_type": "kill_request"})]
+            return [("1700000000000-3", {"t": "1"})]
 
     assert asyncio.run(dispatcher_module.stream_tail(Redis(), "s")) == "1700000000000-3"
 
@@ -121,7 +121,7 @@ def test_main_loop_pauses_between_failures(dispatcher):
 
     instance.get = get
     instance.startup = instance.heartbeat_worker = idle
-    instance.status_worker = instance.env_worker = instance.events_worker = idle
+    instance.status_worker = instance.env_worker = idle
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(instance.dispatch_worker())

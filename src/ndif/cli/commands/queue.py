@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import click
 
-from ..lib.events import fetch_queue_state
+from ..lib.dispatcher import queue_state
 from ...common.types import key_field
 from ..lib.models import extract_repo_id_from_model_key, extract_task_from_model_key
 
@@ -14,8 +14,8 @@ from ..lib.models import extract_repo_id_from_model_key, extract_task_from_model
 @click.command()
 @click.option("--json-output", "json_flag", is_flag=True, help="Output raw JSON.")
 @click.option("--watch", is_flag=True, help="Watch mode (refresh every 2s).")
-@click.option("--redis-url", default=None, help="Redis URL (default: NDIF_REDIS_URL).")
-def queue(json_flag, watch, redis_url):
+@click.option("--ray-address", default=None, help="Ray address (default: NDIF_RAY_ADDRESS).")
+def queue(json_flag, watch, ray_address):
     """View queue and processor status.
 
     Shows each active per-model processor: its status, replica pool, queue
@@ -31,7 +31,7 @@ def queue(json_flag, watch, redis_url):
         if watch:
             try:
                 while True:
-                    data = fetch_queue_state(redis_url)
+                    data = queue_state(ray_address=ray_address)
                     click.clear()
                     _render(data, json_flag)
                     click.echo("\n(Press Ctrl+C to exit watch mode)")
@@ -40,7 +40,7 @@ def queue(json_flag, watch, redis_url):
                 click.echo("\nExiting watch mode...")
                 return
         else:
-            _render(fetch_queue_state(redis_url), json_flag)
+            _render(queue_state(ray_address=ray_address), json_flag)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         raise click.Abort()

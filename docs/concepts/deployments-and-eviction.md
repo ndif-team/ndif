@@ -165,7 +165,8 @@ separate loop re-reads the Ray node list every `NDIF_CONTROLLER_SYNC_INTERVAL_S`
 are purged.
 
 The queue is only loosely coupled to this. An out-of-band deploy or evict (CLI,
-dashboard) pushes a `reconcile_model` event so the affected `Processor` adopts
+dashboard) ends by calling the Dispatcher actor's `reconcile` for each model it
+touched, so the affected `Processor` adopts
 any replica added; replicas the controller dropped leave the pool through the
 `EVICTED_ERRORS` path above.
 
