@@ -74,3 +74,20 @@ class ArchitectureMismatchError(RequestError):
             "then align any mismatch it flags under nnsight / transformers / "
             "torch and re-run."
         )
+
+
+class WeightEditError(RequestError):
+    """An untrusted block edited one of the model's own tensors in place.
+
+    A weight or a buffer reaches a block inside a value it reads: an argument of
+    an operation under ``.source``, or the input or output of a module that
+    passes the tensor on. The sandbox writes a block's in-place edits back into
+    the host's tensors, and this one would stay in the model for every later
+    request, so the host refuses the write and the request fails.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Your code tried to edit the model's weights or buffers, which is "
+            "prohibited."
+        )

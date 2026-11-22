@@ -18,6 +18,7 @@ import torch
 
 from nnsight.intervention.cache import Cache
 
+from ....common.errors import WeightEditError
 from .messages import CacheHit, Call, Observe, Source, SourceRefused, Writeback
 
 #: The handler for each type of control request.
@@ -234,7 +235,21 @@ def observe(driver, proxy, request):
 # ------------------------------------------------------------------ the write-back of a read
 
 
-def write_back(served, edited) -> None:
+def kept_by(module) -> set:
+    """Where each parameter and buffer of ``module`` stores its values.
+
+    These are the tensors that outlive a request, and `write_back` writes into
+    none of them. The set holds storage addresses and not the tensors, because
+    a slice or a transpose of a weight is a different tensor over the same
+    storage.
+    """
+    return {
+        tensor.untyped_storage().data_ptr()
+        for tensor in (*module.parameters(), *module.buffers())
+    }
+
+
+def write_back(served, edited, kept=frozenset()) -> None:
     """Copy a block's in-place edits of a value it read into the host's own value.
 
     ``served`` is what the host handed over and ``edited`` is the runner's copy of
@@ -246,23 +261,31 @@ def write_back(served, edited) -> None:
 
     A tensor the block left alone is not written, so one that cannot be written in
     place (an expanded attention mask) can still be read.
+
+    ``kept`` is the model's own storage (`kept_by`). A value can hold a weight:
+    the third argument of the ``F.layer_norm`` call inside a norm is the module's
+    ``weight`` itself. Writing an edit of it would change the model for every
+    later request, so it raises ``WeightEditError`` and the weight is left as it
+    was.
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
             edited = edited.to(served.device)
             if not torch.equal(served, edited):
+                if served.untyped_storage().data_ptr() in kept:
+                    raise WeightEditError()
                 served.copy_(edited)
     elif isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
         for mine, theirs in zip(served, edited):
-            write_back(mine, theirs)
+            write_back(mine, theirs, kept)
     elif isinstance(served, dict) and isinstance(edited, dict):
         for key in served.keys() & edited.keys():
-            write_back(served[key], edited[key])
+            write_back(served[key], edited[key], kept)
 
 
 @control(Writeback)
 def writeback(driver, proxy, request):
     """Write the worker's copy of the value it just read into the original,
     which is what the proxy served (``MediatorProxy.switch``)."""
-    write_back(proxy.served, request.value)
+    write_back(proxy.served, request.value, driver.kept)
     proxy.served = None
