@@ -98,3 +98,22 @@ def test_it_sits_on_a_fanout_as_on_a_channel():
     assert isinstance(link.receive(Resume), Resume)
     link.send(Park(0, None))
     assert [host.recv() for host in theirs] == [Park(0, None)] * 2
+
+
+def test_frames_sent_from_two_threads_arrive_whole():
+    # A frame is a header and a body, sent one after the other, and a thread a
+    # block started can print while the block itself parks.
+    ours, theirs = socket.socketpair()
+    sender, receiver = Channel(ours), Channel(theirs)
+    texts, count = ("a" * 64, "b" * 64), 2000
+
+    def send(text):
+        for _ in range(count):
+            sender.send(text)
+
+    threads = [threading.Thread(target=send, args=(text,), daemon=True) for text in texts]
+    for thread in threads:
+        thread.start()
+    received = [receiver.recv(timeout=10) for _ in range(2 * count)]
+
+    assert [received.count(text) for text in texts] == [count, count]

@@ -17,6 +17,7 @@ message land as they are rebuilt.
 import io
 import select
 import struct
+import threading
 import time
 
 import torch
@@ -60,11 +61,19 @@ def recvn(sock, n: int) -> bytearray:
 # on a shard would otherwise arrive labelled `cuda:0` and be mixed into a `cuda:1`
 # forward. Relocating after the fact also works, but allocates on the wrong card
 # first, which under tensor parallelism is another rank's memory budget.
-
 #
 # The zip checksum is turned off for these saves only. It is a pass over every
 # byte of every tensor, and nothing on this wire checks it; a blob a client
-# downloads is saved elsewhere, with the default.
+# downloads is saved elsewhere, with the default. The setting belongs to the
+# whole process and `patch` puts back what it found, so two saves that overlap
+# could leave it off. The lock keeps them apart.
+#
+# Pickle protocol 4, because torch's default, 2, has no opcode for bytes: the
+# blob of saved values in a runner's last message would be written as text,
+# half again its size and several times slower.
+
+SAVING = threading.Lock()
+
 
 def encode(value):
     if isinstance(value, bytes):
@@ -73,8 +82,8 @@ def encode(value):
         return b"\x02" + value.encode()
     buffer = io.BytesIO()
     buffer.write(b"\x03")
-    with torch.utils.serialization.config.patch({"save.compute_crc32": False}):
-        torch.save(value, buffer)
+    with SAVING, torch.utils.serialization.config.patch({"save.compute_crc32": False}):
+        torch.save(value, buffer, pickle_protocol=4)
     return buffer.getbuffer()
 
 
@@ -121,11 +130,16 @@ class Channel:
         #: to its own model's device before it drives a request; the runner leaves
         #: it alone, because the block is meant to compute on GPU.
         self.map_location = None
+        #: Held for a whole frame, which is two ``sendall`` calls, so that frames
+        #: sent from two threads do not interleave. A thread the block started
+        #: can print while the block itself parks.
+        self.sending = threading.Lock()
 
-    def send_raw(self, data: bytes) -> None:
-        send_frame(self.sock, data)
+    def send_raw(self, data) -> None:
+        with self.sending:
+            send_frame(self.sock, data)
 
-    def recv_raw(self, timeout=None) -> bytes:
+    def recv_raw(self, timeout=None) -> bytearray:
         if timeout is None:
             return recv_frame(self.sock)
         self.sock.settimeout(timeout)
