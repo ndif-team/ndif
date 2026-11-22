@@ -205,7 +205,7 @@ timeout. What `interrupt` does to the running code depends on the class:
   op already in flight finishes first. The thread is the request's own
   (`run_on_own_thread`), so a late injection cannot reach other work.
 - **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
-  the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
+  the request's runner process (SIGKILL), which closes the
   socket the host thread is reading, then does the same `kill_thread`.
 - **Tensor-parallel.** `TPModelDeployment.interrupt` sets an abort flag every
   rank checks at a shared checkpoint rather than killing a thread mid-collective;

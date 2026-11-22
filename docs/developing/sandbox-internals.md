@@ -149,7 +149,9 @@ and the park in the runner.
 
 `spawn` (`src/ndif/services/ray/sandbox/host.py`) picks `/tmp/sbx-<12 hex>.sock`,
 builds the runner's environment from the `RUNNER_ENV` allowlist via `runner_env`,
-prepends the repo root to `PYTHONPATH`, sets `PYTHONHASHSEED=0`, launches
+prepends the repo root to `PYTHONPATH`, sets `PYTHONHASHSEED=0` and
+`TOKENIZERS_PARALLELISM=false` (a tokenizers thread pool does not survive the
+template's fork), launches
 `ndif.services.ray.sandbox.runner` with the socket path, `peers`, its own pid,
 the mode (`runner` or `template`) and — when the pool has one — the model key,
 then polls until the socket accepts (`wait_for`, 30s), raising if the process
@@ -188,8 +190,11 @@ time (~6 then). With forks a smaller pool keeps up, unless CUDA is preloaded.
 
 `NDIF_SANDBOX_PRELOAD_CUDA` makes each runner start CUDA before it binds its
 socket (`runner.preload_cuda`), which takes ~0.45s off every request (A100) and
-holds ~0.5 GB of the model's first card per waiting runner. It is off by
-default for that memory. With it on, the rate at which new runners start CUDA
+holds ~0.5 GB per waiting runner on the first card the runner sees (`cuda:0`,
+which on a node with several cards need not be the model's). It is off by
+default for that memory. A runner that cannot start CUDA early, because that
+card is full, reports it and serves anyway. A replica parked on the CPU (WARM)
+keeps its pool, so its waiting runners keep their contexts on the card. With it on, the rate at which new runners start CUDA
 limits throughput: 30 back-to-back small requests through a pool of 7 ran at
 2.5 per second, against 1.5 with it off, where each request starts CUDA itself.
 
@@ -200,18 +205,21 @@ limits throughput: 30 back-to-back small requests through a pool of 7 ran at
 
 ### The runner process
 
-`Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers` and the model key. Its `build` calls `adapters.install` (see
-[below](#persistent-ids-and-the-meta-model)) and then `meta.load_meta_model(model_key)`
-**before binding**, so a host that can connect is a host whose runner is warm. A
-forked runner is built with no model key: it inherited both from its template.
+A runner process (`src/ndif/services/ray/sandbox/runner.py`) is started with
+the socket path, `peers` and the model key. It calls `build` once, which calls
+`adapters.install` (see [below](#persistent-ids-and-the-meta-model)) and then
+`meta.load_meta_model(model_key)`, **before binding**, so a host that can
+connect is a host whose runner is warm. A forked runner does not build: it
+inherited both from its template.
 A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
-`None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
+`None`. A runner's `__main__` first calls `die_with_parent`, a daemon thread that polls
 `getppid` once a second and `os._exit(1)`s once it no longer matches the parent
 pid `spawn` passed in — the actor was SIGKILLed (eviction, or an
 unrecoverable-CUDA restart) and no Python cleanup ran. A forked runner watches
-its template the same way. The pid is passed rather than read at start-up
+its template the same way. A template makes the same check between commands
+in `serve_template` and starts no thread, so that it has one thread when it
+forks. The pid is passed rather than read at start-up
 because the imports come first: a parent that died during them had already been
 replaced by init, which the runner then watched forever. It polls rather than
 using `PR_SET_PDEATHSIG` because that signal fires when the parent *thread*
@@ -244,7 +252,7 @@ resolves the payload's persistent ids in three steps: `"Interleaver"` becomes an
 runner's **meta** object, which lets a block call `model.tokenizer(...)` without a
 round trip; anything else resolves to `None` rather than raising.
 
-`load_meta_model` builds the map once per runner from
+`load_meta_model` builds the map once per runner process, or once per template, from
 `Remotable.from_model_key(...)._remoteable_persistent_objects()` — the map the
 in-process actor builds from its real model, so the keys line up. `set_env`
 rebuilds it per request from the payload's `env`, because an env can reshape the
@@ -254,7 +262,7 @@ activation is a socket round trip anyway — so `ArchitectureMismatchError` is r
 on the in-process path only.
 
 `src/ndif/services/ray/sandbox/adapters.py` `install` applies process-wide
-patches. Importing the module changes nothing; `Runner.__init__` calls `install`,
+patches. Importing the module changes nothing; `runner.build` calls `install`,
 and nothing on the host may: `Mediator.event` → `ipc_event` (park untagged);
 `Barrier.__call__` → `ipc_barrier`; every callable on `IPCEnvoy` grafted onto
 `Envoy` itself (the tracer's root is a model-wrapper subclass that *inherits*
@@ -274,7 +282,7 @@ Each is on `SandboxHost` in `src/ndif/services/ray/sandbox/model.py` unless note
 |---|---|
 | `execute` (`SandboxModelDeployment`) | trusted → base; else `run_in_runner(request, None)` |
 | `execution_scope` | trusted → base capture; else `nullcontext` |
-| `interrupt` (`SandboxModelDeployment`) | stop the runner, then the base `interrupt` |
+| `interrupt` (`SandboxModelDeployment`) | stop the runner, then the base `interrupt`, then wait for the execution thread to leave the model |
 | `format_error` | `RunnerError` → its text verbatim, non-fatal; else base |
 | `error_name` | `RunnerError` → its shipped `cause_type`; else base |
 | `cleanup` | `discard_sandbox`, then base |
@@ -328,8 +336,8 @@ sequenceDiagram
   F->>P: handle("model.h.0.output", value)
   P->>P: tag matches ".i0" → narrow to batch_group
   P->>U: Resume(id, (compact(narrowed),), pin)
-  U->>W: snapshot(copy), switch(copy) → worker parks on Pending(SWAP, same loc, pin, new)
-  U->>P: Park(id, Pending(SWAP, loc, pin, new), copy if edited(copy, snapshot) else None)
+  U->>W: before = clone(copy), switch(copy) → worker parks on Pending(SWAP, same loc, pin, new)
+  U->>P: Park(id, Pending(SWAP, loc, pin, new), copy if write_back(before, copy) else None)
   P->>P: write_back(narrowed, copy) if one came back
   P->>U: widen(value, group, new), then Resume → worker parks elsewhere
   P-->>F: possibly-edited value returns into the forward
@@ -345,15 +353,17 @@ elements still see each other's edits in the runner.
 
 **Why the write-back.** A read hands the worker a *copy*, so an in-place edit
 (`output[:] = 0`) would never reach the host. When `pump` switches a worker in
-with a read, it first keeps a copy of the value's tensors (`snapshot` in
-`src/ndif/services/ray/sandbox/worker.py`). When the worker parks again, `pump`
-compares them (`edited`), and if any changed, sends the worker's copy of the
-value in that `Park`. The host is still inside `Mediator.handle` for that
-location, and `MediatorProxy.resume` writes the copy's tensors into the ones it
-served (`write_back`) before adopting the park. It replaces nothing, so the
-forward keeps its own objects, as it does trusted. The comparison uses copies,
-not version counters, because an edit through `tensor.data` does not move the
-counter. A read costs one round trip and a read then a swap two; a read the
+with a read, it first keeps a copy of the value's tensors. When the worker
+parks again, `pump` runs `write_back`
+(`src/ndif/services/ray/sandbox/controls.py`) from the worker's value into that
+copy, and if it wrote anything, sends the worker's value in that `Park`. The
+host is still inside `Mediator.handle` for that location, and
+`MediatorProxy.resume` runs the same `write_back` into the tensors it served
+before adopting the park. One function decides on both ends, so the runner
+sends a value back exactly when the host would write it. It replaces nothing,
+so the forward keeps its own objects, as it does trusted. The check uses a
+copy, not version counters, because an edit through `tensor.data` does not move
+the counter. A read costs one round trip and a read then a swap two; a read the
 block does not edit sends nothing back, and a location no worker is parked on
 never crosses.
 
@@ -404,7 +414,7 @@ reasoning; the mechanics in brief:
 | Block error | any exception in the runner | formatted in `execute.run`, sent as `Failed`; the host link raises `RunnerError(text, cause_type)`; `format_error` returns the text, non-fatal; `error_name` records `cause_type` |
 | Out of step | a message arrives that the receiver was not waiting for | `Link.receive` raises `ProtocolError` naming it |
 | Host error | the forward raises on the host (a swapped value the next layer can't use, a widen that can't splice an edit) | the host's own exception propagates to the base `format_error` as itself; the runner's recv fails and its noise stays in the runner's stderr |
-| Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGTERM, SIGKILL after 5s; it blocks the actor's event loop meanwhile), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, and the thread is the request's own (`run_on_own_thread`). The host thread's socket `recv` fails with `ConnectionError` once the runner is gone |
+| Timeout / cancel | `BaseModelDeployment.run`'s race | `SandboxModelDeployment.interrupt` calls `Sandbox.stop` (SIGKILL, without waiting for the exit), then the base `interrupt`, which calls `src/ndif/services/ray/deployments/modeling/util.py` `kill_thread` to inject `SystemExit` into the recorded execution thread. The injection is asynchronous: it fires at that thread's next bytecode boundary, and the thread is the request's own (`run_on_own_thread`). The host thread's socket `recv` fails with `ConnectionError` once the runner is gone, and `interrupt` waits up to 5s for that thread to end, so the next request does not start on the model while it is still unwinding |
 | Always | after every request | `cleanup` → `discard_sandbox` stops the request's runner; `restart` does the same before the actor is killed; `die_with_parent` covers a SIGKILLed actor |
 
 The host's link handles `Print` throughout — `SandboxDriver.pump` puts it in the
@@ -424,7 +434,7 @@ reading — so a caller waiting for a specific reply never sees the user's stdou
   requests.
 - The environment is an allowlist, not a copy: `runner_env` passes through only the
   names in `RUNNER_ENV` (`src/ndif/services/ray/sandbox/host.py`) — loader and
-  locale basics, `CUDA_VISIBLE_DEVICES`, cache locations, thread-count knobs. So
+  locale basics, `CUDA_VISIBLE_DEVICES`, cache locations, `OMP_NUM_THREADS`. So
   `HF_TOKEN`, `NDIF_INFLUX_TOKEN`, `NDIF_POSTGRES_URL` and object-store credentials
   are **not inherited**. It also drops `RANK`, `LOCAL_RANK`, `WORLD_SIZE`,
   `MASTER_ADDR` and `MASTER_PORT`, so a runner spawned from rank 0 doesn't claim to

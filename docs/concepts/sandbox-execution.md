@@ -125,7 +125,7 @@ here even if it would have worked in-process.
 can import, allocate, and print. It does *not* inherit the actor's environment —
 the runner starts with an allowlist (`RUNNER_ENV` in
 `src/ndif/services/ray/sandbox/host.py`) covering the loader and locale basics,
-`CUDA_VISIBLE_DEVICES`, the cache locations, and the thread-count knobs, and
+`CUDA_VISIBLE_DEVICES`, the cache locations, and `OMP_NUM_THREADS`, and
 nothing else.
 
 ## What the separation is — and is not

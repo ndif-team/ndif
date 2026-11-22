@@ -40,7 +40,7 @@ across a process boundary.
 | [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model (base class), owns the runner pool, and turns a runner failure into a client-facing error. Thin: it acquires a runner and hands it to a driver. |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, the `Template` a pool forks its runners from, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the host's `Connection`. |
 | [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: the request loop, the interleaved run, and a `MediatorProxy` per worker. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
-| [`controls.py`](controls.py) | The host's handler for each control request (`.source`, an ad-hoc module call, `tracer.cache()`, the write-back of a read), in a table keyed by the request's type. |
+| [`controls.py`](controls.py) | The host's handler for each control request (`.source`, an ad-hoc module call, `tracer.cache()`), in a table keyed by the request's type, and what a read needs on its way out and back (`compact`, `write_back`). |
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <parent pid> runner\|template [model_key]`). Accepts a connection, receives the payload, and calls `execute.run`. Building a `Runner` calls `adapters.install` — **in the runner, never on the host**. In `template` mode it builds once and forks runners (`serve_template`). |
 | [`execute.py`](execute.py) | Runs one request **inside the runner**: deserialize the tracer, execute the block, send back what it saved or its traceback. |
 | [`worker.py`](worker.py) | `IPCInterleaver` — the **worker side** of the interleaver: the loop the host drives. |
@@ -175,11 +175,11 @@ host: forward pass reaches location L, value V
 - A **swap** (`model.layer.output = x`) rides back in the worker's `Park` (its
   pending event carries the replacement); the proxy substitutes it.
 - An **in-place edit** (`model.layer.output[:] = 0`) was made to the runner's copy.
-  The runner keeps a copy of each read's tensors (`worker.snapshot`) and, once
-  the worker parks again, compares (`worker.edited`). If any changed, the copy
-  rides back in that `Park`, and the host writes its tensors into the ones it
-  served (`controls.write_back`). Nothing is replaced, so the forward keeps its
-  own objects. A read the block only looks at sends nothing back.
+  The runner keeps a copy of each read's tensors and, once the worker parks
+  again, runs `controls.write_back` against that copy. If it wrote anything, the
+  worker's value rides back in that `Park`, and the host runs the same
+  `write_back` on the tensors it served. Nothing is replaced, so the forward
+  keeps its own objects. A read the block only looks at sends nothing back.
 - `Park(id, None)` means the worker finished.
 - After the run, `check_dangling` finds proxies still parked (workers that wanted
   something the run never delivered), classifies each as nnsight's
@@ -307,8 +307,8 @@ The non-sandbox path collects the block's `nnsight.save()`-marked locals and
 `adapters.install` rebinds `Mediator.event` and grafts `IPCEnvoy`'s overrides onto
 the base `Envoy` **process-wide**. On the host that would break the real model (its
 `interleave` would start forwarding to a socket instead of running the forward
-pass). So `Runner.__init__` calls it, in the runner process, and nothing on the
-host does. Importing `adapters` changes nothing, so a test or a host-side module
+pass). So `runner.build` calls it, once, as a runner process starts, and nothing
+on the host does. Importing `adapters` changes nothing, so a test or a host-side module
 can import any sandbox module. This is also why the handoff is a plain `Payload`
 message rather than a pickled callable — the runner already knows to run
 `execute.run`.
