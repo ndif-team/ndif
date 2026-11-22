@@ -114,11 +114,16 @@ class FollowerConnection(Connection):
 
 
 class Sandbox:
-    """A running runner process, reachable over its Unix socket."""
+    """A running runner process, reachable over its Unix socket.
 
-    def __init__(self, path: str, process: subprocess.Popen):
+    ``process`` is the `Popen` of a runner `spawn` started, or the pid of one a
+    `Template` forked, with that ``template``.
+    """
+
+    def __init__(self, path: str, process, template: "Optional[Template]" = None):
         self.path = path
         self.process = process
+        self.template = template
 
     def connection(self, timeout: float = 60.0) -> Connection:
         return Connection.open(self.path, timeout)
@@ -130,7 +135,9 @@ class Sandbox:
         actor stops a request's runner before it answers the request. SIGKILL
         rather than SIGTERM, because the block may have installed a handler.
         """
-        if self.process.poll() is None:
+        if self.template is not None:
+            self.template.kill(self.process)
+        elif self.process.poll() is None:
             self.process.kill()
             threading.Thread(target=self.process.wait, daemon=True).start()
         try:
@@ -139,12 +146,17 @@ class Sandbox:
             pass
 
 
+def socket_path() -> str:
+    return f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
+
+
 def spawn(
     python: str = sys.executable,
     quiet: bool = True,
     timeout: float = 30.0,
     peers: int = 1,
     model_key: Optional[str] = None,
+    template: bool = False,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -160,8 +172,11 @@ def spawn(
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
     behaviour before meta models, and what a standalone runner gets. Whether
     the checkpoint's own code may run during that build is in the key.
+
+    ``template`` launches a `Template` instead, which forks runners rather than
+    serving requests itself.
     """
-    path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
+    path = socket_path()
     env = runner_env()
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
@@ -187,6 +202,7 @@ def spawn(
         path,
         str(peers),
         str(os.getpid()),
+        "template" if template else "runner",
     ]
     if model_key is not None:
         argv.append(model_key)
@@ -198,21 +214,95 @@ def spawn(
         stderr=None,
     )
 
+    try:
+        wait_for(path, lambda: process.poll() is not None, timeout)
+    except TimeoutError:
+        process.kill()
+        raise
+    return Sandbox(path, process)
+
+
+def wait_for(path: str, exited, timeout: float) -> None:
+    """Wait until a runner accepts connections at ``path``.
+
+    Raises ``RuntimeError`` as soon as ``exited()`` says the process is gone, and
+    ``TimeoutError`` after ``timeout`` seconds.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         if os.path.exists(path):
             try:
-                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                probe.connect(path)
-                probe.close()
-                return Sandbox(path, process)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.connect(path)
+                return
             except OSError:
                 pass
-        if process.poll() is not None:
+        if exited():
             raise RuntimeError("runner process exited before its socket was ready")
         time.sleep(0.02)
-    process.kill()
     raise TimeoutError("timed out waiting for the runner socket")
+
+
+def running(pid: int) -> bool:
+    """Whether ``pid`` is alive: neither gone nor a zombie waiting to be reaped."""
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (FileNotFoundError, IndexError):
+        return False
+
+
+class Template:
+    """A runner process that forks the pool's runners (``runner.serve_template``).
+
+    It does the start-up every runner needs once: the imports and the meta
+    model, ~4 s. Each runner it forks is then ready in ~30 ms. It is started by
+    `spawn`, so it runs with the same allowlisted environment as any runner,
+    and its runners inherit nothing more.
+
+    It is the parent of the runners it forks, so it is also what kills them
+    (`Sandbox.stop`).
+    """
+
+    def __init__(
+        self,
+        python: str = sys.executable,
+        quiet: bool = True,
+        peers: int = 1,
+        model_key: Optional[str] = None,
+        timeout: float = 300.0,
+    ):
+        self.server = spawn(python, quiet, timeout, peers, model_key, template=True)
+
+    def fork(self, timeout: float = 60.0) -> Sandbox:
+        """A new runner, accepting connections."""
+        path = socket_path()
+        connection = Connection.open(self.server.path)
+        try:
+            connection.send(f"fork {path}")
+            pid = int(connection.recv())
+        finally:
+            connection.close()
+        sandbox = Sandbox(path, pid, self)
+        try:
+            wait_for(path, lambda: not running(pid), timeout)
+        except Exception:
+            sandbox.stop()
+            raise
+        return sandbox
+
+    def kill(self, pid: int) -> None:
+        try:
+            connection = Connection.open(self.server.path)
+        except OSError:
+            return  # the template is gone, and its runners go with it
+        try:
+            connection.send(f"kill {pid}")
+        finally:
+            connection.close()
+
+    def close(self) -> None:
+        self.server.stop()
 
 
 class Pool:
@@ -224,6 +314,10 @@ class Pool:
     in the background so acquiring one doesn't pay python/nnsight startup; taking
     one triggers a refill. Callers must ``stop()`` what they acquire — there's no
     release-back-to-pool.
+
+    Runners are forked from one `Template`, started by the first refill. If it
+    cannot start, every runner is started from nothing instead (`spawn`), as
+    before templates existed; if it dies, the next refill starts another.
     """
 
     def __init__(
@@ -243,17 +337,45 @@ class Pool:
         self.lock = threading.Lock()
         self.spawning = 0
         self.closed = False
+        # None until the first refill starts it; False if it could not start.
+        self.template: "Template | bool | None" = None
+        self.template_lock = threading.Lock()
         for _ in range(size):
             self.refill()
 
     def _spawn(self) -> Sandbox:
         """One runner, configured the way this pool's runners are."""
-        return spawn(
-            python=self.python,
-            quiet=self.quiet,
-            peers=self.peers,
-            model_key=self.model_key,
-        )
+        with self.template_lock:
+            if self.template is None:
+                try:
+                    self.template = Template(
+                        self.python, self.quiet, self.peers, self.model_key
+                    )
+                except Exception as error:
+                    print(
+                        f"sandbox: no runner template ({error!r}); "
+                        "starting each runner from nothing",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self.template = False
+            template = self.template
+        if not template:
+            return spawn(
+                python=self.python,
+                quiet=self.quiet,
+                peers=self.peers,
+                model_key=self.model_key,
+            )
+        try:
+            return template.fork()
+        except (ConnectionError, FileNotFoundError):
+            # The template died. The next runner starts another.
+            with self.template_lock:
+                if self.template is template:
+                    self.template = None
+            template.close()
+            raise
 
     def refill(self) -> None:
         """Warm one runner into the ready set in the background, unless the pool is
@@ -294,3 +416,7 @@ class Pool:
                 self.ready.get_nowait().stop()
             except queue.Empty:
                 break
+        with self.template_lock:
+            template, self.template = self.template, None
+        if template:
+            template.close()

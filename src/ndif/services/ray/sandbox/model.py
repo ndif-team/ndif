@@ -33,19 +33,19 @@ if TYPE_CHECKING:
 
 # How many runners to keep pre-warmed per model actor.
 #
-# Sized from the two costs it trades off, both measured on a g4dn.xlarge:
-# a cold spawn (python + torch + nnsight import) takes ~4s, while executing an
-# already-warm request takes ~0.7s. A pool only keeps up if refills — which run
-# concurrently, one thread each — cover the drain rate, so it needs to be at
-# least spawn/execute ~= 6. At the old default of 2 a saturated queue drained
-# the pool immediately and every other request paid the full ~4s spawn inline.
+# Sized when every runner started from nothing: ~4 s (python + torch + nnsight
+# import + meta model) against ~0.7 s for a request, measured on a g4dn.xlarge.
+# Refills run concurrently, one thread each, so a pool keeps up with a saturated
+# queue only if it holds at least start-up / request time ~= 6.
 #
-# The costs of raising it: each warm runner holds ~480 MB (PSS, measured with
-# gpt2 on 2026-09-14) whether or not it is used — more for a larger
-# architecture, since a runner builds a meta model before it binds — so 7 is
-# ~3.4 GB per model actor, and concurrent refills contend for CPU on the node
-# hosting the actor. On a memory- or core-tight node, or
-# with many models resident at once, turn this down.
+# A refill is now a fork of the pool's template (`host.Template`), ready in
+# ~30 ms, so a smaller pool keeps up. A pool whose template cannot run still
+# starts runners from nothing.
+#
+# The costs of raising it, measured with Llama-3.1-8B on 2026-11-21: a forked
+# runner adds ~125 MB (PSS) to the template's ~240 MB, where one started from
+# nothing holds ~580 MB.
+# On a memory-tight node, or with many models resident at once, turn this down.
 DEFAULT_POOL_SIZE = int(os.environ.get("NDIF_SANDBOX_POOL_SIZE", "7"))
 
 

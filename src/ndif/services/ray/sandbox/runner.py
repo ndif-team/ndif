@@ -9,16 +9,22 @@ process is not hardened (no namespaces, seccomp, rlimits, or filesystem jail);
 what it provides is separation from the model actor and a fresh process per
 request.
 
+A pool does not start each runner from nothing: it starts one *template*, which
+builds what every runner needs and forks a runner per request
+(`serve_template`).
+
 Run standalone:
-    python -m ndif.services.ray.sandbox.runner <socket> <peers> <parent pid> [model_key]
+    python -m ndif.services.ray.sandbox.runner <socket> <peers> <parent pid> runner|template [model_key]
 """
 
 import contextlib
 import os
+import signal
 import socket
 import sys
 import threading
 import time
+import traceback
 
 from . import adapters, execute, meta
 from .messages import Print
@@ -107,6 +113,37 @@ def _hung_up(sock) -> bool:
         return True
 
 
+def build(model_key: "str | None") -> None:
+    """What a runner does before it serves, which a forked runner inherits.
+
+    Replaces the nnsight methods that assume the model is in this process, then
+    builds the meta model for ``model_key`` (see `Runner` for why a failed build
+    is only reported).
+    """
+    # Before anything else: from here on, a model call in this process goes
+    # to the host over the socket.
+    adapters.install()
+    if model_key is not None:
+        try:
+            meta.load_meta_model(model_key)
+        except Exception as error:
+            print(
+                f"runner: no meta model for {model_key!r} ({error!r}); "
+                "module and tokenizer ids will resolve to None",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
+def listen(path: str) -> socket.socket:
+    if os.path.exists(path):
+        os.unlink(path)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(path)
+    sock.listen()
+    return sock
+
+
 class Runner:
     """Serves user code over a Unix socket.
 
@@ -138,24 +175,8 @@ class Runner:
     ):
         self.path = path
         self.peers = peers
-        # Before anything else: from here on, a model call in this process goes
-        # to the host over the socket.
-        adapters.install()
-        if os.path.exists(path):
-            os.unlink(path)
-        if model_key is not None:
-            try:
-                meta.load_meta_model(model_key)
-            except Exception as error:
-                print(
-                    f"runner: no meta model for {model_key!r} ({error!r}); "
-                    "module and tokenizer ids will resolve to None",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.socket.bind(path)
-        self.socket.listen()
+        build(model_key)
+        self.socket = listen(path)
 
     def serve(self):
         while True:
@@ -209,9 +230,107 @@ class Runner:
                 )
 
 
+def serve_template(path: str, peers: int, model_key: "str | None") -> None:
+    """Build once, then fork a runner for each request.
+
+    A runner started from nothing takes ~4 s, nearly all of it imports and the
+    meta model. A fork of a process that has done both is ready in ~30 ms. So a pool
+    keeps one of these (``host.Template``), and it answers two commands on its
+    socket:
+
+    * ``fork <path>``: fork a runner that serves at ``<path>``. The reply is its pid.
+    * ``kill <pid>``: SIGKILL a runner this process forked. No reply.
+
+    Exited runners are reaped here, and only between commands, so a pid this is
+    told to kill is still this process's child: never a pid the system has
+    handed to something else.
+
+    A child forked after its parent opened the GPU driver cannot use CUDA. A
+    model's own code can open it while the meta model builds, so a template
+    that finds it open exits, and the pool starts runners from nothing instead.
+    """
+    build(model_key)
+    if cuda_started():
+        sys.exit("runner template: building the meta model started CUDA; not forking")
+    listener = listen(path)
+    template = os.getpid()
+    children: "set[int]" = set()
+    while True:
+        sock, _ = listener.accept()
+        try:
+            reap(children)
+            channel = Channel(sock)
+            command, _, argument = channel.recv().partition(" ")
+            if command == "fork":
+                pid = os.fork()
+                if pid == 0:
+                    listener.close()
+                    sock.close()
+                    serve_forked(argument, peers, template)
+                children.add(pid)
+                channel.send(str(pid))
+            elif command == "kill" and int(argument) in children:
+                os.kill(int(argument), signal.SIGKILL)
+        except ConnectionError:
+            pass  # `spawn`'s readiness probe connects and says nothing
+        except Exception as error:
+            print(f"runner template: {error!r}", file=sys.stderr, flush=True)
+        finally:
+            sock.close()
+
+
+def serve_forked(path: str, peers: int, template: int) -> None:
+    """The child side of a fork: a runner of its own, which never returns."""
+    try:
+        die_with_parent(template)
+        reseed()
+        Runner(path, peers).serve()
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        os._exit(1)
+
+
+def reseed() -> None:
+    """Give a forked runner its own random state.
+
+    A fork starts with a copy of its template's, so without this every runner
+    would draw the same numbers. A runner started from nothing draws its own.
+    """
+    import random
+
+    import torch
+
+    random.seed()
+    torch.seed()
+    numpy = sys.modules.get("numpy")
+    if numpy is not None:
+        numpy.random.seed()
+
+
+def reap(children: "set[int]") -> None:
+    for pid in list(children):
+        if os.waitpid(pid, os.WNOHANG)[0]:
+            children.discard(pid)
+
+
+def cuda_started() -> bool:
+    """Whether this process has the GPU driver open."""
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            if os.readlink(f"/proc/self/fd/{fd}").startswith("/dev/nvidia"):
+                return True
+        except OSError:
+            pass
+    return False
+
+
 if __name__ == "__main__":
-    # <socket> <peers> <parent pid> [model_key]
-    path, peers, parent = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-    model_key = sys.argv[4] if len(sys.argv) > 4 else None
+    # <socket> <peers> <parent pid> runner|template [model_key]
+    path, peers, parent, mode = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+    model_key = sys.argv[5] if len(sys.argv) > 5 else None
     die_with_parent(parent)
-    Runner(path, peers=peers, model_key=model_key).serve()
+    if mode == "template":
+        serve_template(path, peers, model_key)
+    else:
+        Runner(path, peers=peers, model_key=model_key).serve()
