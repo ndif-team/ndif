@@ -177,7 +177,17 @@ def spawn(
     # `serve`'s "runner: ..." handler, which is the only report of a request the
     # runner could not finish. Sending it to DEVNULL made a runner that died
     # mid-request indistinguishable from one that hung, and cost hours.
-    argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
+    #
+    # This process's pid rides along so the runner can tell when it is gone
+    # (`runner.die_with_parent`).
+    argv = [
+        python,
+        "-m",
+        "ndif.services.ray.sandbox.runner",
+        path,
+        str(peers),
+        str(os.getpid()),
+    ]
     if model_key is not None:
         argv.append(model_key)
     process = subprocess.Popen(

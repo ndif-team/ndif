@@ -9,7 +9,8 @@ process is not hardened (no namespaces, seccomp, rlimits, or filesystem jail);
 what it provides is separation from the model actor and a fresh process per
 request.
 
-Run standalone:  python -m sandbox.runner /path/to/socket [peers] [model_key] [1]
+Run standalone:
+    python -m ndif.services.ray.sandbox.runner <socket> <peers> <parent pid> [model_key]
 """
 
 import contextlib
@@ -26,8 +27,8 @@ from .protocol import Channel, Fanout
 _PARENT_POLL_S = 1.0
 
 
-def die_with_parent() -> None:
-    """Exit when the model actor that spawned this runner goes away.
+def die_with_parent(parent: int) -> None:
+    """Exit when ``parent``, the process that started this one, goes away.
 
     Without this a runner outlives its actor. The graceful paths already stop it
     (``cleanup`` -> ``discard_sandbox`` after every request, ``interrupt`` on a
@@ -48,16 +49,20 @@ def die_with_parent() -> None:
     A daemon thread costs nothing and is thread-agnostic. A pure-Python runaway
     block still yields the GIL on the interpreter's switch interval, so the
     watchdog keeps getting scheduled while user code spins.
+
+    ``parent`` is the pid the parent passed in, not ``getppid()`` read here. This
+    runs after the imports, over a second into the process, and a parent that
+    died in that second has already been replaced by init: read here, init
+    became "the parent" and was watched forever. A runner the pool started just
+    before its actor died then idled in ``accept`` for good.
     """
-    parent = os.getppid()
 
     def watch() -> None:
-        while True:
+        # Reparented (to init, or to whatever subreaper claims us) means the
+        # parent is gone.
+        while os.getppid() == parent:
             time.sleep(_PARENT_POLL_S)
-            # Reparented (to init, or to whatever subreaper claims us) means the
-            # actor is gone.
-            if os.getppid() != parent:
-                os._exit(1)
+        os._exit(1)
 
     threading.Thread(target=watch, daemon=True, name="die-with-parent").start()
 
@@ -205,7 +210,8 @@ class Runner:
 
 
 if __name__ == "__main__":
-    die_with_parent()
-    peers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
-    model_key = sys.argv[3] if len(sys.argv) > 3 else None
-    Runner(sys.argv[1], peers=peers, model_key=model_key).serve()
+    # <socket> <peers> <parent pid> [model_key]
+    path, peers, parent = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    model_key = sys.argv[4] if len(sys.argv) > 4 else None
+    die_with_parent(parent)
+    Runner(path, peers=peers, model_key=model_key).serve()
