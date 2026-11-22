@@ -164,6 +164,24 @@ def test_by_default_a_waiting_runner_has_not_started_cuda(model, monkeypatch):
         template.close()
 
 
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs two GPUs")
+def test_preload_starts_cuda_on_the_card_the_runner_is_given(model, monkeypatch):
+    monkeypatch.setenv("NDIF_SANDBOX_PRELOAD_CUDA", "1")
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        card = torch.tensor(torch.cuda.current_device()).save()  # runs in the runner
+
+    template = host.Template(model_key=model.to_model_key(), device=1)
+    try:
+        sandbox = template.fork()
+        try:
+            assert run(model, sandbox, capture.blob)["card"] == 1
+        finally:
+            sandbox.stop()
+    finally:
+        template.close()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 def test_preload_starts_cuda_before_the_runner_is_handed_out(model, monkeypatch):
     monkeypatch.setenv("NDIF_SANDBOX_PRELOAD_CUDA", "1")

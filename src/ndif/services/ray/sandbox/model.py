@@ -73,12 +73,17 @@ class SandboxHost:
     ``__init__``; :meth:`open_pool` is the one line that does both.
     """
 
-    def open_pool(self, pool_size: Optional[int] = None, peers: int = 1) -> None:
+    def open_pool(
+        self, pool_size: Optional[int] = None, peers: int = 1, device: int = 0
+    ) -> None:
         """Warm a pool of runners for this actor.
 
         ``peers`` is how many hosts drive one runner: one ordinarily, and
         ``tp_size`` for a group that shares one, where a pool entry is a *group's*
         runner rather than a process per rank.
+
+        ``device`` is the card the model starts on, where a runner that starts
+        CUDA early starts it.
         """
         self.pool = Pool(
             size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
@@ -88,6 +93,7 @@ class SandboxHost:
             # actor loaded. The key carries whether the checkpoint's own code may
             # run, so that build is the actor's build by construction.
             model_key=self.model_key,
+            device=device,
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
@@ -206,7 +212,7 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
         self, *args: Any, pool_size: Optional[int] = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.open_pool(pool_size)
+        self.open_pool(pool_size, device=next(iter(self.gpu_mem_bytes_by_id), 0))
 
     async def to_cache(self) -> None:
         await super().to_cache()
@@ -217,7 +223,8 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
 
     def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int]) -> None:
         # A new pool, opened first so its runners start while the weights move.
-        self.open_pool(self.pool.size)
+        # The cards may have changed, so its runners are told the new first one.
+        self.open_pool(self.pool.size, device=next(iter(gpu_mem_bytes_by_id), 0))
         super().from_cache(gpu_mem_bytes_by_id)
 
     def interrupt(self) -> None:

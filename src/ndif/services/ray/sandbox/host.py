@@ -159,6 +159,7 @@ def spawn(
     peers: int = 1,
     model_key: Optional[str] = None,
     template: bool = False,
+    device: int = 0,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -178,6 +179,10 @@ def spawn(
     ``template`` starts the process as a template (``runner.serve_template``),
     which forks runners rather than serving requests itself. `Template` is the
     handle on one.
+
+    ``device`` is the card the model starts on. A runner that starts CUDA early
+    starts it there (``runner.preload_cuda``). It has to be told: it sees every
+    card the actor sees, and its first is not the model's on a node with several.
     """
     path = socket_path()
     env = runner_env()
@@ -194,6 +199,7 @@ def spawn(
     # from a template whose build encoded anything never returns from its first
     # encode. A runner tokenizes a block's own strings, which needs no pool.
     env["TOKENIZERS_PARALLELISM"] = "false"
+    env["NDIF_SANDBOX_CUDA_DEVICE"] = str(device)
     # `quiet` silences stdout only. **stderr is never discarded**: the block's own
     # output is forwarded as `Print` messages (see runner.Writer), so anything reaching
     # this stderr is the runner process failing on its own account -- including
@@ -279,8 +285,11 @@ class Template:
         peers: int = 1,
         model_key: Optional[str] = None,
         timeout: float = 300.0,
+        device: int = 0,
     ):
-        self.server = spawn(python, quiet, timeout, peers, model_key, template=True)
+        self.server = spawn(
+            python, quiet, timeout, peers, model_key, template=True, device=device
+        )
 
     def fork(self, timeout: float = 60.0) -> Sandbox:
         """A new runner, accepting connections."""
@@ -335,12 +344,14 @@ class Pool:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
+        device: int = 0,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
         self.model_key = model_key
+        self.device = device
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -361,7 +372,11 @@ class Pool:
             if self.template is None:
                 try:
                     self.template = Template(
-                        self.python, self.quiet, self.peers, self.model_key
+                        self.python,
+                        self.quiet,
+                        self.peers,
+                        self.model_key,
+                        device=self.device,
                     )
                 except Exception as error:
                     print(
@@ -378,6 +393,7 @@ class Pool:
                 quiet=self.quiet,
                 peers=self.peers,
                 model_key=self.model_key,
+                device=self.device,
             )
         try:
             return template.fork()

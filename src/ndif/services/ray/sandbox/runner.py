@@ -84,8 +84,13 @@ PRELOAD_CUDA = os.environ.get("NDIF_SANDBOX_PRELOAD_CUDA", "").strip().lower() i
 )
 
 
+#: The card the model starts on, in this process's numbering (`host.spawn`).
+CUDA_DEVICE = int(os.environ.get("NDIF_SANDBOX_CUDA_DEVICE", "0"))
+
+
 def preload_cuda() -> None:
-    """Start CUDA on this process's first visible card.
+    """Start CUDA on the card the model starts on, and make it this process's
+    current card, so the request's first CUDA calls land where CUDA already is.
 
     The first thing a request does with CUDA is ``request_dtype``'s autocast
     asking whether the card supports bf16, so that is asked here too.
@@ -100,6 +105,7 @@ def preload_cuda() -> None:
     if not torch.cuda.is_available():
         return
     try:
+        torch.cuda.set_device(CUDA_DEVICE)
         torch.cuda.is_bf16_supported()
         warm = torch.ones(2, device="cuda").add_(1)
         torch.equal(warm, warm.clone())
