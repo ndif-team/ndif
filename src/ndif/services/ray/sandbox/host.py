@@ -124,13 +124,15 @@ class Sandbox:
         return Connection.open(self.path, timeout)
 
     def stop(self) -> None:
+        """Kill the runner and return without waiting for it to exit.
+
+        Its exit takes ~150 ms, which is the CUDA context being torn down, and the
+        actor stops a request's runner before it answers the request. SIGKILL
+        rather than SIGTERM, because the block may have installed a handler.
+        """
         if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+            self.process.kill()
+            threading.Thread(target=self.process.wait, daemon=True).start()
         try:
             os.remove(self.path)
         except FileNotFoundError:
