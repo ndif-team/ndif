@@ -213,9 +213,21 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
         # Stopping the runner unblocks the host thread if it's parked on the socket;
         # the base's kill_thread covers it running the forward pass in Python.
         # An injection that lands late is harmless: see run_on_own_thread.
+        thread = next(
+            (t for t in threading.enumerate() if t.ident == self.execution_ident),
+            None,
+        )
         if self.execution_sandbox is not None:
             self.execution_sandbox.stop()
         super().interrupt()
+        # `stop` does not wait for the runner to exit, and the host thread is
+        # inside the forward until it sees the socket close. The next request
+        # must not start on this model before that thread has left it:
+        # unwinding late, it cancels the next request's workers, whose saves
+        # are then missing from a result that reports success. Bounded,
+        # because a thread inside a native call cannot be interrupted.
+        if thread is not None:
+            thread.join(timeout=5.0)
 
     def execute(self, request: "BackendRequestModel") -> "tuple[bytes, float | None]":
         """Worker-thread body: run the request's block in a fresh runner.
