@@ -114,6 +114,14 @@ model, and a different object put into a container you read
 (`kwargs["mask"] = None`). For the second, assign the location instead
 (`layer.inputs = ...`).
 
+**An in-place edit of a weight is refused.** A value you read can hold one of
+the model's own weights or buffers: an argument of an operation under `.source`
+(the `weight` passed to `F.layer_norm`), or the input or output of a module that
+passes the tensor on. Written back, an edit of it would stay in the model for
+every later request, so the host does not apply it and the request fails with a
+sentence that says so. To change such a value for one forward pass, assign the
+location a new value.
+
 **Everything you touch has to be picklable, both ways.** The block itself is
 serialized by nnsight's source-based pickler (see
 `docs/developing/nnsight-integration.md`), and on top of that every value crossing
