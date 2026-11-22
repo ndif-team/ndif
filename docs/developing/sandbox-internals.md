@@ -327,13 +327,21 @@ sequenceDiagram
   Note over W,P: worker parked on Pending(VALUE, "model.h.0.output", pin)
   F->>P: handle("model.h.0.output", value)
   P->>P: tag matches ".i0" → narrow to batch_group
-  P->>U: Resume(id, (narrowed,), pin)
+  P->>U: Resume(id, (compact(narrowed),), pin)
   U->>W: snapshot(copy), switch(copy) → worker parks on Pending(SWAP, same loc, pin, new)
   U->>P: Park(id, Pending(SWAP, loc, pin, new), copy if edited(copy, snapshot) else None)
   P->>P: write_back(narrowed, copy) if one came back
   P->>U: widen(value, group, new), then Resume → worker parks elsewhere
   P-->>F: possibly-edited value returns into the forward
 ```
+
+**What crosses on a read.** `MediatorProxy.switch` sends a compact copy of the
+narrowed value (`compact` in `src/ndif/services/ray/sandbox/controls.py`).
+`torch.save` writes a view's whole storage, and a read narrowed to one invoke's
+rows is a view of the whole batch, so without the copy each invoke's read
+carried every invoke's rows. A tensor that shares its storage with another
+tensor in the same value is sent as it is, so that two views of the same
+elements still see each other's edits in the runner.
 
 **Why the write-back.** A read hands the worker a *copy*, so an in-place edit
 (`output[:] = 0`) would never reach the host. When `pump` switches a worker in
@@ -342,8 +350,7 @@ with a read, it first keeps a copy of the value's tensors (`snapshot` in
 compares them (`edited`), and if any changed, sends the worker's copy of the
 value in that `Park`. The host is still inside `Mediator.handle` for that
 location, and `MediatorProxy.resume` writes the copy's tensors into the ones it
-served (`write_back` in `src/ndif/services/ray/sandbox/controls.py`) before
-adopting the park. It replaces nothing, so the
+served (`write_back`) before adopting the park. It replaces nothing, so the
 forward keeps its own objects, as it does trusted. The comparison uses copies,
 not version counters, because an edit through `tensor.data` does not move the
 counter. A read costs one round trip and a read then a swap two; a read the

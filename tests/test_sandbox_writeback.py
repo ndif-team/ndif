@@ -19,7 +19,9 @@ The fix is ``controls.write_back``: the copy's tensors are written into the
 originals, and nothing is replaced.
 
 The runner sends a copy back only when the block edited it (``worker.edited``),
-which has to agree with what ``write_back`` would write.
+which has to agree with what ``write_back`` would write. And what crosses on a
+read is a compact copy (``controls.compact``), so one invoke's read carries its
+own rows and not the whole batch.
 
 Same harness as ``test_sandbox_iter_pins``, whose helpers this imports: no server
 and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
@@ -29,6 +31,7 @@ and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
 from __future__ import annotations
 
 import copy
+import io
 
 import pytest
 
@@ -37,8 +40,9 @@ nnsight = pytest.importorskip("nnsight")
 
 from nnsight.util import apply
 
-from ndif.services.ray.sandbox import driver
-from ndif.services.ray.sandbox.controls import write_back
+from ndif.services.ray.sandbox import driver, host
+from ndif.services.ray.sandbox.controls import compact, write_back
+from ndif.services.ray.sandbox.messages import Payload
 from ndif.services.ray.sandbox.worker import edited, snapshot
 
 from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
@@ -198,6 +202,62 @@ def test_the_runner_sends_a_copy_back_exactly_when_write_back_would_write_it(nam
         for now, then in zip(tensors_of(served), tensors_of(untouched))
     )
     assert sent == written == expected
+
+
+def test_compact_sends_a_view_as_its_own_rows():
+    batch = torch.arange(24.0).reshape(4, 6)
+    rows = batch[1:2]
+    fresh = torch.ones(3)
+    sent = compact((rows, fresh))
+    assert torch.equal(sent[0], rows)
+    assert sent[0].untyped_storage().nbytes() == rows.numel() * rows.element_size()
+    assert sent[1] is fresh
+
+
+def test_compact_leaves_what_it_cannot_shrink_or_must_not_split():
+    batch = torch.zeros(4, 3)
+    for value in (
+        torch.zeros(2, 3),  # owns its storage
+        torch.zeros(1, 3).expand(4, 3),  # a copy would be larger
+        (batch[0:1], batch[0:1]),  # copied apart, an edit of one would miss the other
+    ):
+        assert compact(value) is value
+
+
+def run_measured(model, blob):
+    """Run ``blob`` in a runner; return its saved values and the size of every
+    frame the host sent."""
+    sandbox = host.spawn(model_key=model.to_model_key())
+    sizes = []
+    try:
+        connection = sandbox.connection()
+        send_raw = connection.send_raw
+        connection.send_raw = lambda data: (sizes.append(len(data)), send_raw(data))
+        connection.send(Payload(blob, False, "torch.float32", None, {}))
+        data, _ = driver.SandboxDriver(model, torch.float32).pump(connection)
+        return torch.load(io.BytesIO(data), weights_only=False), sizes
+    finally:
+        sandbox.stop()
+
+
+def test_a_read_carries_only_its_invokes_rows(frozen):
+    model = frozen
+    prompt = " ".join([PROMPT] * 8)
+    mlp = model.transformer.h[0].mlp
+
+    capture = Capture()
+    with model.trace(backend=capture) as tracer:
+        with tracer.invoke(prompt):
+            first = mlp.output.save()
+        with tracer.invoke(prompt):
+            second = mlp.output.save()
+
+    saved, sizes = run_measured(model, capture.blob)
+    rows = saved["first"].numel() * saved["first"].element_size()
+    # The first frame is the request and the last is `Done`, which carries the
+    # model's whole output; between them are the two reads.
+    assert len(sizes) == 4
+    assert max(sizes[1:-1]) < 1.5 * rows
 
 
 def test_only_an_edited_read_is_sent_back(frozen, monkeypatch):

@@ -27,7 +27,7 @@ from nnsight.intervention.interleaver import EarlyStopException, Event, Mediator
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
-from .controls import HANDLERS, serve_recursive_source, write_back
+from .controls import HANDLERS, compact, serve_recursive_source, write_back
 from .link import Link
 from .messages import (
     Control,
@@ -239,9 +239,12 @@ class MediatorProxy(Mediator):
                     args[0],
                 ),
             )
-        # An edit of a read comes back to the value served, which is a view into
-        # the forward's own tensors.
-        self.resume(Resume(self.id, args, self.iteration), args[0] if args else None)
+        # What crosses is a compact copy of a read; an edit of it comes back to
+        # the value itself, which is a view into the forward's own tensors.
+        served = args[0] if args else None
+        if args:
+            args = (compact(served),)
+        self.resume(Resume(self.id, args, self.iteration), served)
         self.settle_control()
         return self.pending
 

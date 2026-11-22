@@ -11,15 +11,19 @@ handler here, and the park in the runner.
 A handler takes ``(driver, proxy, request)``: the ``SandboxDriver`` running the
 model, the ``MediatorProxy`` of the worker that asked, and the request.
 
-The last section is not a request: it is what the host does when a block's
-edit of a value it served comes back (`write_back`).
+The last section is not a request: it is what the host does with a value it
+serves, on the way out (`compact`) and when an edit of it comes back
+(`write_back`).
 """
 
 from __future__ import annotations
 
+from collections import Counter
+
 import torch
 
 from nnsight.intervention.cache import Cache
+from nnsight.util import apply
 
 from .messages import CacheHit, Call, Observe, Source, SourceRefused
 
@@ -222,7 +226,9 @@ class ShippingCache(Cache):
         self._link = link
 
     def _record(self, path, key, value):
-        self._link.send(CacheHit(self._cache_id, path, key, value))
+        # Narrowed to the worker's rows, and still on the card if the cache keeps
+        # values there, so a view of the whole batch.
+        self._link.send(CacheHit(self._cache_id, path, key, compact(value)))
 
 
 @control(Observe)
@@ -235,6 +241,37 @@ def observe(driver, proxy, request):
 
 
 # ------------------------------------------------------------------ a value the host serves
+
+
+def compact(value):
+    """``value``, with each tensor that views part of a larger storage copied out,
+    so that only its own elements cross the socket.
+
+    ``torch.save`` writes the whole storage under a view. A read narrowed to one
+    invoke's rows is such a view, so each invoke's read carried every invoke's
+    rows, and N invokes reading one location sent the batch N times over.
+
+    A tensor that shares its storage with another tensor in ``value`` is sent as
+    it is. Copied apart, two views of the same elements would no longer see each
+    other's edits in the runner, and writing back the second would undo an edit
+    of the first. A tensor that is not plain (a subclass, or not strided) is also
+    sent as it is.
+    """
+    tensors = []
+    apply(value, tensors.append, torch.Tensor)
+    plain = [t for t in tensors if type(t) is torch.Tensor and t.layout is torch.strided]
+    owners = Counter(t.untyped_storage().data_ptr() for t in plain)
+    oversized = {
+        id(t)
+        for t in plain
+        if owners[t.untyped_storage().data_ptr()] == 1
+        and t.untyped_storage().nbytes() > t.numel() * t.element_size()
+    }
+    if not oversized:
+        return value
+    return apply(
+        value, lambda t: t.clone() if id(t) in oversized else t, torch.Tensor
+    )
 
 
 def write_back(served, edited) -> None:

@@ -159,16 +159,19 @@ nnsight code. The proxy only overrides the two things that touch the boundary:
 host: forward pass reaches location L, value V
         Interleaver.handle(L, V)  →  for each proxy: proxy.handle(L, V)   [real Mediator.handle]
             if this worker is parked on L at this occurrence:
-                proxy.switch(V)  ──Resume(id, V, pin)──▶  runner: worker.switch(V)
-                                                              worker reads V, maybe edits, parks again
+                proxy.switch(V)  ──Resume(id, V', pin)──▶  runner: worker.switch(V')
+                                                               worker reads V', maybe edits, parks again
                      proxy.adopt(park) ◀──Park(id, park, E)──  runner sends the worker's next park
-            (E is the copy if the block edited it in place, else None; the proxy writes E into V)
+            (E is V' if the block edited it in place, else None; the proxy writes E into V)
             (a swap's replacement rode back inside the park; the proxy substitutes it into V)
         returns the possibly-edited V into the forward pass
 ```
 
 - A **read** (`model.layer.output`) crosses only when the worker is resumed: the
-  value rides in `Resume`. Locations no worker is parked on never cross.
+  value rides in `Resume`. Locations no worker is parked on never cross. What
+  crosses is `V'`, a compact copy of `V` (`controls.compact`): `torch.save`
+  writes a view's whole storage, and a read narrowed to one invoke's rows is a
+  view of the whole batch.
 - A **swap** (`model.layer.output = x`) rides back in the worker's `Park` (its
   pending event carries the replacement); the proxy substitutes it.
 - An **in-place edit** (`model.layer.output[:] = 0`) was made to the runner's copy.
