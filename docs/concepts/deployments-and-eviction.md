@@ -48,8 +48,10 @@ it:
 
 A `WARM` replica is a live actor whose `to_cache()` moved the module to CPU and
 released its GPU memory. Bringing it back (`from_cache`) skips the disk load —
-the point of the tier. Moving between levels is an actor method, not a restart:
-the replica keeps its `replica_id`, so the Ray actor name is stable.
+the point of the tier. A sandboxed replica also ends its waiting runners when it
+is parked, and starts new ones when it comes back. Moving between levels is an
+actor method, not a restart: the replica keeps its `replica_id`, so the Ray
+actor name is stable.
 
 > **Gotcha:** `_ControllerActor.get_deployment` only returns `HOT` replicas, so a
 > model with only `WARM` replicas looks undeployed to the queue. It asks for a

@@ -184,6 +184,11 @@ request's runner before it answers the request. `size` defaults to
 `NDIF_SANDBOX_POOL_SIZE` (7, `src/ndif/services/ray/sandbox/model.py`
 `DEFAULT_POOL_SIZE`).
 
+A replica parked on the CPU (WARM) has no pool.
+`SandboxModelDeployment.to_cache` closes it, which ends the waiting runners and
+the template, and `from_cache` opens a new one before the weights move back, so
+its runners start while they move. A closed pool raises from `acquire`.
+
 The default was sized for runners started from nothing: refills run
 concurrently, so a pool keeps up only if `size` is at least start-up / request
 time (~6 then). With forks a smaller pool keeps up, unless CUDA is preloaded.
@@ -193,10 +198,10 @@ socket (`runner.preload_cuda`), which takes ~0.45s off every request (A100) and
 holds ~0.5 GB per waiting runner on the first card the runner sees (`cuda:0`,
 which on a node with several cards need not be the model's). It is off by
 default for that memory. A runner that cannot start CUDA early, because that
-card is full, reports it and serves anyway. A replica parked on the CPU (WARM)
-keeps its pool, so its waiting runners keep their contexts on the card. With it on, the rate at which new runners start CUDA
-limits throughput: 30 back-to-back small requests through a pool of 7 ran at
-2.5 per second, against 1.5 with it off, where each request starts CUDA itself.
+card is full, reports it and serves anyway. With it on, the rate at which new
+runners start CUDA limits throughput: 30 back-to-back small requests through a
+pool of 7 ran at 2.5 per second, against 1.5 with it off, where each request
+starts CUDA itself.
 
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and

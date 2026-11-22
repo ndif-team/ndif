@@ -14,6 +14,7 @@ runner, and asked to run a request. No server. The deployment class lives behind
 
 from __future__ import annotations
 
+import asyncio
 import io
 from types import SimpleNamespace
 
@@ -28,12 +29,32 @@ from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     Capture,
     model,
 )
+from test_sandbox_template import gone_within
+
+
+def deployment_for(model):
+    """A ``SandboxModelDeployment`` around ``model``, with a pool of one runner."""
+    from ndif.services.ray.sandbox.model import SandboxModelDeployment
+
+    deployment = object.__new__(SandboxModelDeployment)
+    deployment.model = model
+    deployment.dtype = torch.float32
+    deployment.model_key = model.to_model_key()
+    deployment.open_pool(pool_size=1)
+    return deployment
+
+
+def request_for(blob, responses):
+    return SimpleNamespace(
+        payload=blob,
+        compress=False,
+        env={},
+        respond=lambda status, text: responses.append((status, text)),
+    )
 
 
 def test_a_request_runs_through_the_pool_and_its_prints_reach_the_client(model):
     from nnsight.schema.response import Status
-
-    from ndif.services.ray.sandbox.model import SandboxModelDeployment
 
     with model.trace(PROMPT):
         hidden = model.transformer.h[5].output.save()
@@ -44,20 +65,12 @@ def test_a_request_runs_through_the_pool_and_its_prints_reach_the_client(model):
         print("from the block")
         hidden = model.transformer.h[5].output.save()
 
-    deployment = object.__new__(SandboxModelDeployment)
-    deployment.model = model
-    deployment.dtype = torch.float32
-    deployment.model_key = model.to_model_key()
-    deployment.open_pool(pool_size=1)
+    deployment = deployment_for(model)
     responses = []
-    request = SimpleNamespace(
-        payload=capture.blob,
-        compress=False,
-        env={},
-        respond=lambda status, text: responses.append((status, text)),
-    )
     try:
-        data, deserialize_ms = deployment.run_in_runner(request, None)
+        data, deserialize_ms = deployment.run_in_runner(
+            request_for(capture.blob, responses), None
+        )
     finally:
         deployment.discard_sandbox()
         deployment.close()
@@ -66,3 +79,48 @@ def test_a_request_runs_through_the_pool_and_its_prints_reach_the_client(model):
     assert torch.allclose(saved["hidden"], local)
     assert deserialize_ms is not None
     assert (Status.LOG, "from the block") in responses
+
+
+def test_a_parked_replica_keeps_no_runners_and_serves_again_once_restored(
+    model, monkeypatch
+):
+    from ndif.services.ray.deployments.modeling.base import BaseModelDeployment
+
+    # The base's half moves the weights between the card and the CPU, which is
+    # not what this is about.
+    async def park(self):
+        self.cached = True
+
+    monkeypatch.setattr(BaseModelDeployment, "to_cache", park)
+    monkeypatch.setattr(BaseModelDeployment, "from_cache", lambda self, gpus: None)
+
+    with model.trace(PROMPT):
+        hidden = model.transformer.h[5].output.save()
+    local = hidden
+
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        hidden = model.transformer.h[5].output.save()
+
+    deployment = deployment_for(model)
+    try:
+        parked = deployment.pool
+        waiting = parked.ready.get(timeout=60)
+        parked.ready.put(waiting)
+        template = parked.template.server.process.pid
+
+        asyncio.run(deployment.to_cache())
+        assert gone_within(waiting.process, 5)
+        assert gone_within(template, 5)
+        with pytest.raises(RuntimeError, match="closed"):
+            parked.acquire()
+
+        deployment.from_cache({})
+        assert deployment.pool is not parked
+        data, _ = deployment.run_in_runner(request_for(capture.blob, []), None)
+    finally:
+        deployment.discard_sandbox()
+        deployment.close()
+
+    saved = torch.load(io.BytesIO(data), weights_only=False)
+    assert torch.allclose(saved["hidden"], local)

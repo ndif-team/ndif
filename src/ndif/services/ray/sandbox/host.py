@@ -354,6 +354,10 @@ class Pool:
     def _spawn(self) -> Sandbox:
         """One runner, configured the way this pool's runners are."""
         with self.template_lock:
+            # Checked under the lock `close` takes the template under, so a
+            # refill that loses the race with `close` cannot start another.
+            if self.closed:
+                raise RuntimeError("the runner pool is closed")
             if self.template is None:
                 try:
                     self.template = Template(
@@ -397,6 +401,10 @@ class Pool:
         def warm():
             try:
                 sandbox = self._spawn()
+            except Exception:
+                if self.closed:
+                    return  # closed while this runner was starting
+                raise
             finally:
                 with self.lock:
                     self.spawning -= 1
@@ -410,6 +418,8 @@ class Pool:
     def acquire(self, timeout: float = 30.0) -> Sandbox:
         """Take a warm runner (or spawn one if the pool is drained) and top the
         pool back up. The caller owns the returned runner and must ``stop()`` it."""
+        if self.closed:
+            raise RuntimeError("the runner pool is closed")
         try:
             sandbox = self.ready.get(timeout=timeout)
         except queue.Empty:

@@ -16,7 +16,7 @@ use it too.
 import contextlib
 import os
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import ray
 
@@ -207,6 +207,18 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.open_pool(pool_size)
+
+    async def to_cache(self) -> None:
+        await super().to_cache()
+        # A parked replica serves nothing, so it keeps no runners waiting. They
+        # hold host memory, and with preload a CUDA context each on a card
+        # this replica has just given up.
+        self.pool.close()
+
+    def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int]) -> None:
+        # A new pool, opened first so its runners start while the weights move.
+        self.open_pool(self.pool.size)
+        super().from_cache(gpu_mem_bytes_by_id)
 
     def interrupt(self) -> None:
         # Stopping the runner unblocks the host thread if it's parked on the socket;
