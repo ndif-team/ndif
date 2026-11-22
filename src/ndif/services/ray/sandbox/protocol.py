@@ -20,27 +20,35 @@ import struct
 import time
 
 import torch
+import torch.utils.serialization
 
 
 # -- length-prefixed framing -------------------------------------------------
 
-def send_frame(sock, data: bytes) -> None:
-    sock.sendall(struct.pack(">Q", len(data)) + data)
+# A message can be hundreds of MB of activations, so neither side copies it more
+# than it has to: the header goes in its own `sendall` rather than being joined
+# onto the body, and the receiver reads straight into one buffer of the right size.
+
+def send_frame(sock, data) -> None:
+    sock.sendall(struct.pack(">Q", len(data)))
+    sock.sendall(data)
 
 
-def recv_frame(sock) -> bytes:
+def recv_frame(sock) -> bytearray:
     size = struct.unpack(">Q", recvn(sock, 8))[0]
     return recvn(sock, size)
 
 
-def recvn(sock, n: int) -> bytes:
-    buffer = bytearray()
-    while len(buffer) < n:
-        chunk = sock.recv(n - len(buffer))
-        if not chunk:
+def recvn(sock, n: int) -> bytearray:
+    buffer = bytearray(n)
+    view = memoryview(buffer)
+    received = 0
+    while received < n:
+        count = sock.recv_into(view[received:])
+        if not count:
             raise ConnectionError("connection closed before message complete")
-        buffer.extend(chunk)
-    return bytes(buffer)
+        received += count
+    return buffer
 
 
 # -- type-tagged codec: str/bytes pass through, everything else via torch --
@@ -53,17 +61,24 @@ def recvn(sock, n: int) -> bytes:
 # forward. Relocating after the fact also works, but allocates on the wrong card
 # first, which under tensor parallelism is another rank's memory budget.
 
-def encode(value) -> bytes:
+#
+# The zip checksum is turned off for these saves only. It is a pass over every
+# byte of every tensor, and nothing on this wire checks it; a blob a client
+# downloads is saved elsewhere, with the default.
+
+def encode(value):
     if isinstance(value, bytes):
         return b"\x01" + value
     if isinstance(value, str):
         return b"\x02" + value.encode()
     buffer = io.BytesIO()
-    torch.save(value, buffer)
-    return b"\x03" + buffer.getvalue()
+    buffer.write(b"\x03")
+    with torch.utils.serialization.config.patch({"save.compute_crc32": False}):
+        torch.save(value, buffer)
+    return buffer.getbuffer()
 
 
-def decode(blob: bytes, map_location=None):
+def decode(blob, map_location=None):
     """One value. ``map_location`` is torch's: where this process wants tensors.
 
     ``None`` leaves them where the sender had them, which is what the runner
@@ -71,11 +86,11 @@ def decode(blob: bytes, map_location=None):
     quietly move the user's arithmetic there and stop matching the in-process
     path.
     """
-    tag, payload = blob[:1], blob[1:]
+    tag, payload = bytes(blob[:1]), memoryview(blob)[1:]
     if tag == b"\x01":
-        return payload
+        return bytes(payload)
     if tag == b"\x02":
-        return payload.decode()
+        return str(payload, "utf-8")
     if tag == b"\x03":
         # weights_only=False: these messages carry parks and call arguments, not
         # just tensors. It is not a trust boundary either way — the runner already
