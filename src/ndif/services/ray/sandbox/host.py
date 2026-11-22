@@ -43,7 +43,7 @@ _PACKAGE_ROOT = os.path.dirname(
 #   device index is a position in this list, not a physical card;
 # * cache locations, so a block that touches the Hub or torch.hub finds the
 #   shared cache instead of downloading into the container;
-# * thread-count knobs an operator tuned for the box;
+# * the thread count an operator tuned for the box;
 # * `NDIF_SANDBOX_PRELOAD_CUDA`, the operator's choice of whether a waiting
 #   runner starts CUDA early (`runner.PRELOAD_CUDA`).
 #
@@ -66,7 +66,6 @@ RUNNER_ENV: Tuple[str, ...] = (
     "TORCH_HOME",
     "XDG_CACHE_HOME",
     "OMP_NUM_THREADS",
-    "TOKENIZERS_PARALLELISM",
     "NDIF_SANDBOX_PRELOAD_CUDA",
 )
 
@@ -176,8 +175,9 @@ def spawn(
     behaviour before meta models, and what a standalone runner gets. Whether
     the checkpoint's own code may run during that build is in the key.
 
-    ``template`` launches a `Template` instead, which forks runners rather than
-    serving requests itself.
+    ``template`` starts the process as a template (``runner.serve_template``),
+    which forks runners rather than serving requests itself. `Template` is the
+    handle on one.
     """
     path = socket_path()
     env = runner_env()
@@ -189,6 +189,11 @@ def spawn(
     # host's, and — under tensor parallelism, where every rank hosts the same runner — from
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
+    # tokenizers encodes on one thread. Its thread pool does not survive a fork:
+    # the fork has the pool's state and none of its threads, so a runner forked
+    # from a template whose build encoded anything never returns from its first
+    # encode. A runner tokenizes a block's own strings, which needs no pool.
+    env["TOKENIZERS_PARALLELISM"] = "false"
     # `quiet` silences stdout only. **stderr is never discarded**: the block's own
     # output is forwarded as `Print` messages (see runner.Writer), so anything reaching
     # this stderr is the runner process failing on its own account -- including
@@ -319,8 +324,8 @@ class Pool:
     release-back-to-pool.
 
     Runners are forked from one `Template`, started by the first refill. If it
-    cannot start, every runner is started from nothing instead (`spawn`), as
-    before templates existed; if it dies, the next refill starts another.
+    cannot start, every runner is started from nothing instead (`spawn`); if it
+    dies, the next refill starts another.
     """
 
     def __init__(
@@ -372,12 +377,13 @@ class Pool:
             )
         try:
             return template.fork()
-        except (ConnectionError, FileNotFoundError):
-            # The template died. The next runner starts another.
-            with self.template_lock:
-                if self.template is template:
-                    self.template = None
-            template.close()
+        except Exception:
+            if template.server.process.poll() is not None:
+                # The template died. The next runner starts another.
+                with self.template_lock:
+                    if self.template is template:
+                        self.template = None
+                template.close()
             raise
 
     def refill(self) -> None:

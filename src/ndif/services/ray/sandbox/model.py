@@ -33,14 +33,13 @@ if TYPE_CHECKING:
 
 # How many runners to keep pre-warmed per model actor.
 #
-# Sized when every runner started from nothing: ~4 s (python + torch + nnsight
-# import + meta model) against ~0.7 s for a request, measured on a g4dn.xlarge.
-# Refills run concurrently, one thread each, so a pool keeps up with a saturated
-# queue only if it holds at least start-up / request time ~= 6.
-#
-# A refill is now a fork of the pool's template (`host.Template`), ready in
-# ~30 ms, or ~0.5 s more with `NDIF_SANDBOX_PRELOAD_CUDA`, so a smaller pool
-# keeps up. A pool whose template cannot run still starts runners from nothing.
+# A refill is a fork of the pool's template (`host.Template`), ready in ~30 ms,
+# or ~0.5 s more with `NDIF_SANDBOX_PRELOAD_CUDA`. The default is sized for a
+# pool whose template cannot run, which starts each runner from nothing: ~4 s
+# (python + torch + nnsight import + meta model) against ~0.7 s for a request,
+# measured on a g4dn.xlarge. Refills run concurrently, one thread each, so that
+# pool keeps up with a saturated queue only if it holds at least start-up /
+# request time ~= 6.
 #
 # The costs of raising it, measured with Llama-3.1-8B on 2026-11-21: a forked
 # runner adds ~125 MB (PSS) to the template's ~240 MB, where one started from
@@ -84,10 +83,10 @@ class SandboxHost:
         self.pool = Pool(
             size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
             peers=peers,
-            # Each runner builds its own meta model from this key, so its
-            # persistent-id map has the same paths as the tree this actor loaded.
-            # The key carries whether the checkpoint's own code may run, so the
-            # runner's build is the actor's build by construction.
+            # The pool's template builds a meta model from this key, so a
+            # runner's persistent-id map has the same paths as the tree this
+            # actor loaded. The key carries whether the checkpoint's own code may
+            # run, so that build is the actor's build by construction.
             model_key=self.model_key,
         )
         # The runner currently executing (fresh per request), tracked so run() can

@@ -28,7 +28,7 @@ from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     model,
 )
 
-from ndif.services.ray.sandbox import host
+from ndif.services.ray.sandbox import host, runner
 from ndif.services.ray.sandbox.driver import SandboxDriver
 from ndif.services.ray.sandbox.messages import Payload
 
@@ -107,7 +107,29 @@ def test_closing_the_template_ends_its_runners(model):
     assert gone_within(sandbox.process, 5)
 
 
-def test_a_runner_whose_parent_is_already_gone_exits():
+def test_a_pool_forks_its_runners_and_replaces_a_template_that_died(model):
+    # No runners kept warm, so each `acquire` forks one here and now.
+    pool = host.Pool(size=0, model_key=model.to_model_key())
+    try:
+        sandbox = pool.acquire(timeout=0)
+        template = sandbox.template
+        sandbox.stop()
+        assert template is not None
+
+        template.server.process.kill()
+        template.server.process.wait()
+        with pytest.raises(OSError):
+            pool.acquire(timeout=0)
+
+        sandbox = pool.acquire(timeout=0)
+        sandbox.stop()
+        assert sandbox.template not in (None, template)
+    finally:
+        pool.close()
+
+
+@pytest.mark.parametrize("mode", ["runner", "template"])
+def test_a_runner_whose_parent_is_already_gone_exits(mode):
     # The pid a runner is given is the parent it watches. Read from getppid()
     # after the imports instead, a parent that died during them had already
     # been replaced by init, which the runner then watched forever.
@@ -116,7 +138,7 @@ def test_a_runner_whose_parent_is_already_gone_exits():
     gone.wait()
     runner = subprocess.Popen(
         [sys.executable, "-m", "ndif.services.ray.sandbox.runner",
-         path, "1", str(gone.pid), "runner"],
+         path, "1", str(gone.pid), mode],
         env={**host.runner_env(), "PYTHONPATH": host._PACKAGE_ROOT},
     )
     try:
@@ -127,17 +149,6 @@ def test_a_runner_whose_parent_is_already_gone_exits():
             os.remove(path)
 
 
-def opened_gpu_driver(pid):
-    fds = f"/proc/{pid}/fd"
-    for fd in os.listdir(fds):
-        try:
-            if os.readlink(f"{fds}/{fd}").startswith("/dev/nvidia"):
-                return True
-        except FileNotFoundError:  # closed since the listing
-            pass
-    return False
-
-
 def test_by_default_a_waiting_runner_has_not_started_cuda(model, monkeypatch):
     # Each waiting runner with CUDA started holds ~0.5 GB of the card. This also
     # shows the template did not start it, which would leave its forks unable to.
@@ -146,7 +157,7 @@ def test_by_default_a_waiting_runner_has_not_started_cuda(model, monkeypatch):
     try:
         sandbox = template.fork()
         try:
-            assert not opened_gpu_driver(sandbox.process)
+            assert not runner.cuda_started(sandbox.process)
         finally:
             sandbox.stop()
     finally:
@@ -160,7 +171,7 @@ def test_preload_starts_cuda_before_the_runner_is_handed_out(model, monkeypatch)
     try:
         sandbox = template.fork()
         try:
-            assert opened_gpu_driver(sandbox.process)
+            assert runner.cuda_started(sandbox.process)
         finally:
             sandbox.stop()
     finally:

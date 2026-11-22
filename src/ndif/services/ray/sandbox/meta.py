@@ -26,11 +26,12 @@ PERSISTENT_OBJECTS = {}
 def load_meta_model(model_key: str) -> None:
     """Build this runner's meta model and register its persistent-id map.
 
-    Called once at runner start (``Runner.__init__``, before the socket binds), so
-    every request this process serves resolves ``Module:<path>`` / ``Tokenizer`` /
-    ``Pipeline`` against a tree with the same paths as the host's real model. The
-    build is undispatched — structure only, no weights — and its cost is paid per
-    runner, i.e. inside ``spawn``'s readiness window rather than in a request.
+    Called once as a runner process starts (``runner.build``, before the socket
+    binds), so every request this process or its forks serve resolves
+    ``Module:<path>`` / ``Tokenizer`` / ``Pipeline`` against a tree with the same
+    paths as the host's real model. The build is undispatched — structure only,
+    no weights — and its cost is paid inside ``spawn``'s readiness window rather
+    than in a request.
 
     Nothing here dispatches: ``from_model_key`` defaults to the meta build, and the
     tracer the runner later deserializes is a *different* wrapper object whose

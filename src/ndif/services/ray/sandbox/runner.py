@@ -2,8 +2,8 @@
 
 Binds a Unix socket and serves: each connection delivers the request (a
 ``Payload``); the runner deserializes and executes it with ``execute.run``, which
-drives the exchange with the messages in ``messages.py``. A `Runner` calls
-``adapters.install`` when it is built — in the runner, never on the host — which
+drives the exchange with the messages in ``messages.py``. The process calls
+`build` once before it serves — in the runner, never on the host — which
 replaces the nnsight methods that assume the model is in this process. The
 process is not hardened (no namespaces, seccomp, rlimits, or filesystem jail);
 what it provides is separation from the model actor and a fresh process per
@@ -58,9 +58,9 @@ def die_with_parent(parent: int) -> None:
 
     ``parent`` is the pid the parent passed in, not ``getppid()`` read here. This
     runs after the imports, over a second into the process, and a parent that
-    died in that second has already been replaced by init: read here, init
-    became "the parent" and was watched forever. A runner the pool started just
-    before its actor died then idled in ``accept`` for good.
+    died in that second has already been replaced by init. Read here, init
+    would be "the parent" and be watched forever, and a runner the pool started
+    just before its actor died would idle in ``accept`` for good.
     """
 
     def watch() -> None:
@@ -90,17 +90,27 @@ def preload_cuda() -> None:
     The first thing a request does with CUDA is ``request_dtype``'s autocast
     asking whether the card supports bf16, so that is asked here too.
 
-    It also compares two tensors. The runner compares every read with its
-    snapshot (``worker.edited``), and the first ``torch.equal`` in a process
+    It also compares two tensors. The runner compares every read with the copy
+    it kept (``IPCInterleaver.pump``), and the first ``torch.equal`` in a process
     loads kernels, ~25 ms, for any dtype. The two have to be different
     tensors: ``torch.equal`` of a tensor with itself runs no kernel.
     """
     import torch
 
-    if torch.cuda.is_available():
+    if not torch.cuda.is_available():
+        return
+    try:
         torch.cuda.is_bf16_supported()
         warm = torch.ones(2, device="cuda").add_(1)
         torch.equal(warm, warm.clone())
+    except Exception as error:
+        # A card with no room for another context, most likely. The runner
+        # still serves: its request starts CUDA itself, or never needs it.
+        print(
+            f"runner: could not start CUDA early ({error!r})",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class Writer:
@@ -144,11 +154,23 @@ def _hung_up(sock) -> bool:
 
 
 def build(model_key: "str | None") -> None:
-    """What a runner does before it serves, which a forked runner inherits.
+    """What a runner process does once before it serves, and a forked runner
+    inherits.
 
     Replaces the nnsight methods that assume the model is in this process, then
-    builds the meta model for ``model_key`` (see `Runner` for why a failed build
-    is only reported).
+    builds the *meta* model of the checkpoint ``model_key``, so a request's
+    module / tokenizer ids resolve to real weightless objects here. It runs
+    **before the socket binds**, so a host that can connect is a host whose
+    runner is genuinely ready — the pool's readiness wait covers the build.
+    Without a key those ids resolve to ``None``, which is what a standalone
+    runner gets.
+
+    A build that fails is reported and then ignored, on purpose. The map is an
+    optimization: with none, every id resolves to ``None`` and the runner serves
+    requests exactly as it did before meta models existed. Raising here instead
+    would kill the process before it binds, which `Pool.refill` swallows on its
+    warm thread — so one unbuildable checkpoint would present as every request
+    waiting out `acquire`'s 30s timeout with nothing in the actor's log.
     """
     # Before anything else: from here on, a model call in this process goes
     # to the host over the socket.
@@ -182,30 +204,11 @@ class Runner:
     the same forward, joined by collectives, so the block must be run once for all
     of them and every reply must reach all of them. `Fanout` is what makes that the
     same code as the single case.
-
-    ``model_key`` is the checkpoint whose *meta* model this process builds, so a
-    request's module / tokenizer ids resolve to real weightless objects here. It is
-    built **before the socket binds**, so a host that can connect is a host whose
-    runner is genuinely ready — the pool's readiness wait covers the build. Without
-    one those ids resolve to ``None``, which is what a standalone runner gets.
-
-    A build that fails is reported and then ignored, on purpose. The map is an
-    optimization: with none, every id resolves to ``None`` and the runner serves
-    requests exactly as it did before meta models existed. Raising here instead
-    would kill the process before it binds, which `Pool.refill` swallows on its
-    warm thread — so one unbuildable checkpoint would present as every request
-    waiting out `acquire`'s 30s timeout with nothing in the actor's log.
     """
 
-    def __init__(
-        self,
-        path: str,
-        peers: int = 1,
-        model_key: "str | None" = None,
-    ):
+    def __init__(self, path: str, peers: int = 1):
         self.path = path
         self.peers = peers
-        build(model_key)
         if PRELOAD_CUDA:
             preload_cuda()
         self.socket = listen(path)
@@ -262,8 +265,8 @@ class Runner:
                 )
 
 
-def serve_template(path: str, peers: int, model_key: "str | None") -> None:
-    """Build once, then fork a runner for each request.
+def serve_template(path: str, peers: int, parent: int) -> None:
+    """Fork a runner for each request, from a process that has already built.
 
     A runner started from nothing takes ~4 s, nearly all of it imports and the
     meta model. A fork of a process that has done both is ready in ~30 ms. So a pool
@@ -277,20 +280,31 @@ def serve_template(path: str, peers: int, model_key: "str | None") -> None:
     told to kill is still this process's child: never a pid the system has
     handed to something else.
 
+    Between commands is also where this process checks that ``parent`` is still
+    there, once a second. A runner watches from a thread (`die_with_parent`),
+    because its main thread runs the block. This process has one thread, which
+    is what makes its forks safe: a fork copies a lock another thread holds and
+    not the thread that would release it.
+
     A child forked after its parent opened the GPU driver cannot use CUDA. A
     model's own code can open it while the meta model builds, so a template
     that finds it open exits, and the pool starts runners from nothing instead.
     """
-    build(model_key)
     if cuda_started():
         sys.exit("runner template: building the meta model started CUDA; not forking")
     listener = listen(path)
+    listener.settimeout(_PARENT_POLL_S)
     template = os.getpid()
     children: "set[int]" = set()
     while True:
-        sock, _ = listener.accept()
+        reap(children)
         try:
-            reap(children)
+            sock, _ = listener.accept()
+        except TimeoutError:
+            if os.getppid() != parent:
+                sys.exit(1)
+            continue
+        try:
             channel = Channel(sock)
             command, _, argument = channel.recv().partition(" ")
             if command == "fork":
@@ -326,14 +340,13 @@ def serve_forked(path: str, peers: int, template: int) -> None:
 def reseed() -> None:
     """Give a forked runner its own random state.
 
-    A fork starts with a copy of its template's, so without this every runner
-    would draw the same numbers. A runner started from nothing draws its own.
+    A fork starts with a copy of its template's torch and numpy generators, so
+    without this every runner would draw the same numbers. Python's ``random``
+    reseeds itself in a forked child. A runner started from nothing draws its
+    own.
     """
-    import random
-
     import torch
 
-    random.seed()
     torch.seed()
     numpy = sys.modules.get("numpy")
     if numpy is not None:
@@ -346,13 +359,13 @@ def reap(children: "set[int]") -> None:
             children.discard(pid)
 
 
-def cuda_started() -> bool:
-    """Whether this process has the GPU driver open."""
-    for fd in os.listdir("/proc/self/fd"):
+def cuda_started(pid="self") -> bool:
+    """Whether process ``pid`` (this one by default) has the GPU driver open."""
+    for fd in os.listdir(f"/proc/{pid}/fd"):
         try:
-            if os.readlink(f"/proc/self/fd/{fd}").startswith("/dev/nvidia"):
+            if os.readlink(f"/proc/{pid}/fd/{fd}").startswith("/dev/nvidia"):
                 return True
-        except OSError:
+        except OSError:  # closed since the listing
             pass
     return False
 
@@ -361,8 +374,10 @@ if __name__ == "__main__":
     # <socket> <peers> <parent pid> runner|template [model_key]
     path, peers, parent, mode = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
     model_key = sys.argv[5] if len(sys.argv) > 5 else None
-    die_with_parent(parent)
     if mode == "template":
-        serve_template(path, peers, model_key)
+        build(model_key)
+        serve_template(path, peers, parent)
     else:
-        Runner(path, peers=peers, model_key=model_key).serve()
+        die_with_parent(parent)
+        build(model_key)
+        Runner(path, peers).serve()
