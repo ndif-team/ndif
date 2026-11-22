@@ -73,6 +73,30 @@ def die_with_parent(parent: int) -> None:
     threading.Thread(target=watch, daemon=True, name="die-with-parent").start()
 
 
+#: Start CUDA while a runner waits in the pool rather than in its request. It
+#: saves the request ~0.45 s (A100) and holds the CUDA context's GPU memory
+#: (~0.5 GB) for every waiting runner, which is why it is off by default.
+PRELOAD_CUDA = os.environ.get("NDIF_SANDBOX_PRELOAD_CUDA", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+
+def preload_cuda() -> None:
+    """Start CUDA on this process's first visible card.
+
+    The first thing a request does with CUDA is ``request_dtype``'s autocast
+    asking whether the card supports bf16, so that is asked here too.
+    """
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.is_bf16_supported()
+        torch.ones(1, device="cuda").add_(1).item()
+
+
 class Writer:
     """Forwards the user's stdout to the host as `Print` messages, one per complete
     line (like the in-process ``LogStream``) so a lone ``"\\n"`` from ``print``
@@ -176,6 +200,8 @@ class Runner:
         self.path = path
         self.peers = peers
         build(model_key)
+        if PRELOAD_CUDA:
+            preload_cuda()
         self.socket = listen(path)
 
     def serve(self):

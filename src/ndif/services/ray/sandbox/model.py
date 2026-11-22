@@ -39,12 +39,12 @@ if TYPE_CHECKING:
 # queue only if it holds at least start-up / request time ~= 6.
 #
 # A refill is now a fork of the pool's template (`host.Template`), ready in
-# ~30 ms, so a smaller pool keeps up. A pool whose template cannot run still
-# starts runners from nothing.
+# ~30 ms, or ~0.5 s more with `NDIF_SANDBOX_PRELOAD_CUDA`, so a smaller pool
+# keeps up. A pool whose template cannot run still starts runners from nothing.
 #
 # The costs of raising it, measured with Llama-3.1-8B on 2026-11-21: a forked
 # runner adds ~125 MB (PSS) to the template's ~240 MB, where one started from
-# nothing holds ~580 MB.
+# nothing holds ~580 MB; with CUDA preloaded each also holds ~0.5 GB of the card.
 # On a memory-tight node, or with many models resident at once, turn this down.
 DEFAULT_POOL_SIZE = int(os.environ.get("NDIF_SANDBOX_POOL_SIZE", "7"))
 

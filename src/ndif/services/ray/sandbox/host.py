@@ -43,7 +43,9 @@ _PACKAGE_ROOT = os.path.dirname(
 #   device index is a position in this list, not a physical card;
 # * cache locations, so a block that touches the Hub or torch.hub finds the
 #   shared cache instead of downloading into the container;
-# * thread-count knobs an operator tuned for the box.
+# * thread-count knobs an operator tuned for the box;
+# * `NDIF_SANDBOX_PRELOAD_CUDA`, the operator's choice of whether a waiting
+#   runner starts CUDA early (`runner.PRELOAD_CUDA`).
 #
 # What it deliberately drops, beyond the credentials: `RANK`, `LOCAL_RANK`,
 # `WORLD_SIZE`, `MASTER_ADDR` and `MASTER_PORT`. Rank 0 sets those on itself to
@@ -65,6 +67,7 @@ RUNNER_ENV: Tuple[str, ...] = (
     "XDG_CACHE_HOME",
     "OMP_NUM_THREADS",
     "TOKENIZERS_PARALLELISM",
+    "NDIF_SANDBOX_PRELOAD_CUDA",
 )
 
 

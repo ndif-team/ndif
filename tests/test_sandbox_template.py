@@ -125,3 +125,43 @@ def test_a_runner_whose_parent_is_already_gone_exits():
         runner.kill()
         if os.path.exists(path):
             os.remove(path)
+
+
+def opened_gpu_driver(pid):
+    fds = f"/proc/{pid}/fd"
+    for fd in os.listdir(fds):
+        try:
+            if os.readlink(f"{fds}/{fd}").startswith("/dev/nvidia"):
+                return True
+        except FileNotFoundError:  # closed since the listing
+            pass
+    return False
+
+
+def test_by_default_a_waiting_runner_has_not_started_cuda(model, monkeypatch):
+    # Each waiting runner with CUDA started holds ~0.5 GB of the card. This also
+    # shows the template did not start it, which would leave its forks unable to.
+    monkeypatch.delenv("NDIF_SANDBOX_PRELOAD_CUDA", raising=False)
+    template = host.Template(model_key=model.to_model_key())
+    try:
+        sandbox = template.fork()
+        try:
+            assert not opened_gpu_driver(sandbox.process)
+        finally:
+            sandbox.stop()
+    finally:
+        template.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_preload_starts_cuda_before_the_runner_is_handed_out(model, monkeypatch):
+    monkeypatch.setenv("NDIF_SANDBOX_PRELOAD_CUDA", "1")
+    template = host.Template(model_key=model.to_model_key())
+    try:
+        sandbox = template.fork()
+        try:
+            assert opened_gpu_driver(sandbox.process)
+        finally:
+            sandbox.stop()
+    finally:
+        template.close()
