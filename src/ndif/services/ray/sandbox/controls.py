@@ -10,6 +10,9 @@ handler here, and the park in the runner.
 
 A handler takes ``(driver, proxy, request)``: the ``SandboxDriver`` running the
 model, the ``MediatorProxy`` of the worker that asked, and the request.
+
+The last section is not a request: it is what the host does when a block's
+edit of a value it served comes back (`write_back`).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import torch
 
 from nnsight.intervention.cache import Cache
 
-from .messages import CacheHit, Call, Observe, Source, SourceRefused, Writeback
+from .messages import CacheHit, Call, Observe, Source, SourceRefused
 
 #: The handler for each type of control request.
 HANDLERS: dict = {}
@@ -231,18 +234,20 @@ def observe(driver, proxy, request):
     )
 
 
-# ------------------------------------------------------------------ the write-back of a read
+# ------------------------------------------------------------------ a value the host serves
 
 
 def write_back(served, edited) -> None:
     """Copy a block's in-place edits of a value it read into the host's own value.
 
     ``served`` is what the host handed over and ``edited`` is the runner's copy of
-    it, sent back after the block moved on. Each tensor in ``served`` takes the
-    values of its counterpart, in place, if they differ. Nothing is replaced, so
-    the forward keeps its own objects, as it does on the trusted path: its other
-    references to an edited tensor see the edit, and an object a module updates,
-    such as the KV cache in a layer's inputs, stays the one the forward holds.
+    it, sent back in the worker's next park when the runner saw it change
+    (``worker.edited`` walks the same way this does). Each tensor in ``served``
+    takes the values of its counterpart, in place, if they differ. Nothing is
+    replaced, so the forward keeps its own objects, as it does on the trusted
+    path: its other references to an edited tensor see the edit, and an object a
+    module updates, such as the KV cache in a layer's inputs, stays the one the
+    forward holds.
 
     A tensor the block left alone is not written, so one that cannot be written in
     place (an expanded attention mask) can still be read.
@@ -258,11 +263,3 @@ def write_back(served, edited) -> None:
     elif isinstance(served, dict) and isinstance(edited, dict):
         for key in served.keys() & edited.keys():
             write_back(served[key], edited[key])
-
-
-@control(Writeback)
-def writeback(driver, proxy, request):
-    """Write the worker's copy of the value it just read into the original,
-    which is what the proxy served (``MediatorProxy.switch``)."""
-    write_back(proxy.served, request.value)
-    proxy.served = None

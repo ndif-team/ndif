@@ -136,10 +136,16 @@ class Park:
     `Control` request, or ``None`` when the worker has finished. A ``Pending``
     carries the worker's pin in its ``iteration`` field: the host owns the
     count of visits and resolves the occurrence.
+
+    ``edited`` is set only in answer to a `Resume` that served a read, and only
+    when the block edited the value in place: it is the worker's copy of the
+    value, which the host writes into the one it served. ``None`` means there is
+    nothing to write.
     """
 
     worker: int
     pending: Any
+    edited: Any = None
 
 
 @dataclass
@@ -215,18 +221,6 @@ class Observe(Control):
 
     cache: int
     config: dict
-
-
-@dataclass
-class Writeback(Control):
-    """The worker's copy of the value it was just served at ``location``.
-
-    Sent after every read. The host writes the copy's tensors into the ones it
-    served, so an in-place edit lands in the forward's own objects.
-    """
-
-    location: str
-    value: Any
 
 
 @dataclass

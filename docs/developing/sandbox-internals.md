@@ -109,12 +109,12 @@ ends.
 |---|---|---|---|
 | `Payload` | h→r | `SandboxHost.run_in_runner` | `Runner.handle` → `execute.run` |
 | `Resume` | h→r | `MediatorProxy.switch` | `IPCInterleaver.pump` |
-| `Reply` | h→r | `MediatorProxy.settle_control`, `release` | `IPCInterleaver.pump`; `writeback` for its own request |
+| `Reply` | h→r | `MediatorProxy.settle_control`, `release` | `IPCInterleaver.pump` |
 | `Throw` (a `Dangling` kind) | h→r | `SandboxDriver.check_dangling` | `IPCInterleaver.throw` |
 | `CacheHit` | h→r | `ShippingCache._record` | `IPCInterleaver.record`, wherever the runner is waiting |
 | `Done` | h→r | `SandboxDriver.interleave` | ends `pump` |
 | `Interleave` | r→h | `IPCEnvoy.interleave` | `SandboxDriver.interleave` |
-| `Park` | r→h | `pump`, `writeback` | `MediatorProxy.resume` → `adopt` |
+| `Park` | r→h | `pump` | `MediatorProxy.resume` → `write_back`, `adopt` |
 | `Stop` | r→h | `pump` on `tracer.stop()` | `MediatorProxy.resume` raises `EarlyStopException` |
 | `Print` | r→h | `Writer.write` (runner.py) | the host link's `always` → `Status.LOG` |
 | `End` | r→h | `execute.run` | `pump` returns the blob |
@@ -124,7 +124,8 @@ A `Park` carries where a worker waits next: nnsight's `Pending` for a model
 location (`Event.VALUE`/`SWAP`/`SKIP`) or a barrier (`Event.BARRIER`), a control
 request, or `None` when the worker has finished. A `Pending` crosses with the
 worker's `tracer.iter` pin in its `iteration` field — the host owns the `.i{n}`
-occurrence tag.
+occurrence tag. A `Park` that answers a read also carries `edited`: the worker's
+copy of the value if the block edited it in place, else `None`.
 
 A control request asks the host for something only it can do. It is a subclass of
 `Control`, it is answered by its handler in
@@ -136,7 +137,6 @@ A control request asks the host for something only it can do. It is a subclass o
 | `Source` | `ipc_module_source`, `ipc_recursive_source` | `source` |
 | `Call` | `IPCEnvoy.__call__` | `call` |
 | `Observe` | `ipc_cache` | `observe`, which attaches a `ShippingCache` |
-| `Writeback` | `IPCInterleaver.writeback` | `writeback` → `write_back` |
 
 `MediatorProxy.settle_control` looks the request's type up in `HANDLERS` and
 answers until the worker parks on a location, so `handle` never sees one. A new
@@ -328,29 +328,33 @@ sequenceDiagram
   F->>P: handle("model.h.0.output", value)
   P->>P: tag matches ".i0" → narrow to batch_group
   P->>U: Resume(id, (narrowed,), pin)
-  U->>W: switch(narrowed) → worker parks on Pending(SWAP, same loc, pin, edited)
-  U->>P: Park(id, Writeback(loc, copy))  ← writeback of the read
-  P->>U: write_back(narrowed, copy), then Reply(id, (None,))
-  U->>P: Park(id, Pending(SWAP, loc, pin, edited))  ← the worker's real park
-  P->>U: widen(value, group, edited), then Resume → worker parks elsewhere
+  U->>W: snapshot(copy), switch(copy) → worker parks on Pending(SWAP, same loc, pin, new)
+  U->>P: Park(id, Pending(SWAP, loc, pin, new), copy if edited(copy, snapshot) else None)
+  P->>P: write_back(narrowed, copy) if one came back
+  P->>U: widen(value, group, new), then Resume → worker parks elsewhere
   P-->>F: possibly-edited value returns into the forward
 ```
 
-**Why the writeback.** A read hands the worker a *copy*, so an in-place edit
-(`output[:] = 0`) would never reach the host. After resuming a worker that was
-answering a read, `pump` sends a `Writeback` request carrying the copy the
-worker was handed (`IPCInterleaver.writeback`), while the host is still inside
-`Mediator.handle` for that location — unconditionally, since `pump` can't tell
-whether the copy was edited. The host writes the copy's tensors into the ones it
-served (`write_back` in `src/ndif/services/ray/sandbox/controls.py`) and replaces
-nothing, so the forward keeps its own objects, as it does trusted. A read costs
-two round trips, a read then a swap three; a location no worker is parked on
+**Why the write-back.** A read hands the worker a *copy*, so an in-place edit
+(`output[:] = 0`) would never reach the host. When `pump` switches a worker in
+with a read, it first keeps a copy of the value's tensors (`snapshot` in
+`src/ndif/services/ray/sandbox/worker.py`). When the worker parks again, `pump`
+compares them (`edited`), and if any changed, sends the worker's copy of the
+value in that `Park`. The host is still inside `Mediator.handle` for that
+location, and `MediatorProxy.resume` writes the copy's tensors into the ones it
+served (`write_back` in `src/ndif/services/ray/sandbox/controls.py`) before
+adopting the park. It replaces nothing, so the
+forward keeps its own objects, as it does trusted. The comparison uses copies,
+not version counters, because an edit through `tensor.data` does not move the
+counter. A read costs one round trip and a read then a swap two; a read the
+block does not edit sends nothing back, and a location no worker is parked on
 never crosses.
 
-Only tensor values are written back, and only once. An in-place edit made after
-the block's next read of the model is not sent. A block that puts a different
-object into a container it read (`kwargs["mask"] = None`) changes its own copy;
-assigning the location (`layer.inputs = ...`) is a swap and does cross.
+Only tensor values are written back, and only once: an in-place edit made after
+the worker parks again (its next read, swap, module call, `.source` access or
+barrier) is not sent. A block that puts a different object into a container it
+read (`kwargs["mask"] = None`) changes its own copy; assigning the location
+(`layer.inputs = ...`) is a swap and does cross.
 
 ### Host authority: occurrences, sources, barriers, caches
 
@@ -445,8 +449,8 @@ runs on the host after the forward. So on the untrusted path today:
   (`src/ndif/services/ray/sandbox/adapters.py`), which tells the user to ask for
   trusted access. That includes a backward that never touches the model.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
-  mediator in the runner, whose `handle` never runs, so only the generic writeback
-  of the raw value reaches the host.
+  mediator in the runner, whose `handle` never runs, so only the write-back of
+  the raw value reaches the host.
 
 Activation work — reads, swaps, in-place edits, `.source`, ad-hoc module calls,
 caches, barriers, `tracer.iter`, `tracer.stop()` — crosses the socket and is served

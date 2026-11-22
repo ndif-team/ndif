@@ -161,7 +161,8 @@ host: forward pass reaches location L, value V
             if this worker is parked on L at this occurrence:
                 proxy.switch(V)  ──Resume(id, V, pin)──▶  runner: worker.switch(V)
                                                               worker reads V, maybe edits, parks again
-                     proxy.adopt(park) ◀──Park(id, park)──  runner sends the worker's next park
+                     proxy.adopt(park) ◀──Park(id, park, E)──  runner sends the worker's next park
+            (E is the copy if the block edited it in place, else None; the proxy writes E into V)
             (a swap's replacement rode back inside the park; the proxy substitutes it into V)
         returns the possibly-edited V into the forward pass
 ```
@@ -171,9 +172,11 @@ host: forward pass reaches location L, value V
 - A **swap** (`model.layer.output = x`) rides back in the worker's `Park` (its
   pending event carries the replacement); the proxy substitutes it.
 - An **in-place edit** (`model.layer.output[:] = 0`) was made to the runner's copy.
-  After every read the runner sends its copy back as a `Writeback` request,
-  and the host writes the copy's tensors into the ones it served
-  (`controls.write_back`). Nothing is replaced, so the forward keeps its own objects.
+  The runner keeps a copy of each read's tensors (`worker.snapshot`) and, once
+  the worker parks again, compares (`worker.edited`). If any changed, the copy
+  rides back in that `Park`, and the host writes its tensors into the ones it
+  served (`controls.write_back`). Nothing is replaced, so the forward keeps its
+  own objects. A read the block only looks at sends nothing back.
 - `Park(id, None)` means the worker finished.
 - After the run, `check_dangling` finds proxies still parked (workers that wanted
   something the run never delivered), classifies each as nnsight's
@@ -385,4 +388,4 @@ what it carries in its docstring. In brief:
 
 - **host → runner:** `Payload`, `Resume`, `Reply`, `Throw`, `CacheHit`, `Done`
 - **runner → host:** `Interleave`, `Park`, `Stop`, `Print`, `End`, `Failed`
-- **control requests, carried by a `Park`:** `Source`, `Call`, `Observe`, `Writeback`
+- **control requests, carried by a `Park`:** `Source`, `Call`, `Observe`

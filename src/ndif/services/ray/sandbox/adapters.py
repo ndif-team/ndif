@@ -205,8 +205,8 @@ def ipc_recursive_source(self: SourceEnvoy) -> IPCSource:
     The description is memoized in ``sourced`` under the same per-run scope the
     base property uses (cleared on interleaver entry), so a later access this
     run — a ``tracer.iter`` step — doesn't park on an op that already fired.
-    The generic read writeback ships the description back too; harmless, since it
-    holds no tensors.
+    The description holds no tensors, so the runner's check for an edited read
+    never sends it back.
     """
     try:
         mediator = Mediator.current(f"{self.path}.source")

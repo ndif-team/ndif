@@ -89,12 +89,18 @@ def preload_cuda() -> None:
 
     The first thing a request does with CUDA is ``request_dtype``'s autocast
     asking whether the card supports bf16, so that is asked here too.
+
+    It also compares two tensors. The runner compares every read with its
+    snapshot (``worker.edited``), and the first ``torch.equal`` in a process
+    loads kernels, ~25 ms, for any dtype. The two have to be different
+    tensors: ``torch.equal`` of a tensor with itself runs no kernel.
     """
     import torch
 
     if torch.cuda.is_available():
         torch.cuda.is_bf16_supported()
-        torch.ones(1, device="cuda").add_(1).item()
+        warm = torch.ones(2, device="cuda").add_(1)
+        torch.equal(warm, warm.clone())
 
 
 class Writer:
