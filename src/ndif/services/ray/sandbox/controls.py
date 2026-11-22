@@ -243,60 +243,88 @@ def observe(driver, proxy, request):
 # ------------------------------------------------------------------ a value the host serves
 
 
+def editable(tensor) -> bool:
+    """Whether a block's in-place edit of ``tensor`` can be written back: a plain
+    tensor or a parameter, stored densely.
+
+    Any other tensor is read only on this path, and is never copied or compared.
+    A subclass has operations of its own: on the ``DTensor`` a tensor-parallel
+    linear takes they are collectives, which the runner is in no group to run.
+    """
+    return (
+        type(tensor) in (torch.Tensor, torch.nn.Parameter)
+        and tensor.layout is torch.strided
+    )
+
+
 def compact(value):
     """``value``, with each tensor that views part of a larger storage copied out,
     so that only its own elements cross the socket.
 
     ``torch.save`` writes the whole storage under a view. A read narrowed to one
-    invoke's rows is such a view, so each invoke's read carried every invoke's
-    rows, and N invokes reading one location sent the batch N times over.
+    invoke's rows is such a view of the batch: sent as it is, each invoke's read
+    would carry every invoke's rows.
 
-    A tensor that shares its storage with another tensor in ``value`` is sent as
-    it is. Copied apart, two views of the same elements would no longer see each
-    other's edits in the runner, and writing back the second would undo an edit
-    of the first. A tensor that is not plain (a subclass, or not strided) is also
-    sent as it is.
+    A copy must not change what an edit of the value does, so two kinds of view
+    are sent as they are:
+
+    * One that shares its storage with another tensor in ``value``. Copied
+      apart, two views of the same elements would no longer see each other's
+      edits in the runner, and writing back the second would undo an edit of
+      the first.
+    * An expanded one. Its copy would be an ordinary tensor, so an edit torch
+      refuses on the host would pass in the runner and fail in the write-back.
     """
-    tensors = []
-    apply(value, tensors.append, torch.Tensor)
-    plain = [t for t in tensors if type(t) is torch.Tensor and t.layout is torch.strided]
-    owners = Counter(t.untyped_storage().data_ptr() for t in plain)
+    found = []
+    apply(value, found.append, torch.Tensor)
+    tensors = [tensor for tensor in found if editable(tensor)]
+    owners = Counter(tensor.untyped_storage().data_ptr() for tensor in tensors)
     oversized = {
-        id(t)
-        for t in plain
-        if owners[t.untyped_storage().data_ptr()] == 1
-        and t.untyped_storage().nbytes() > t.numel() * t.element_size()
+        id(tensor)
+        for tensor in tensors
+        if type(tensor) is torch.Tensor
+        and owners[tensor.untyped_storage().data_ptr()] == 1
+        and 0 not in tensor.stride()
+        and tensor.untyped_storage().nbytes() > tensor.numel() * tensor.element_size()
     }
     if not oversized:
         return value
     return apply(
-        value, lambda t: t.clone() if id(t) in oversized else t, torch.Tensor
+        value,
+        lambda tensor: tensor.clone() if id(tensor) in oversized else tensor,
+        torch.Tensor,
     )
 
 
-def write_back(served, edited) -> None:
-    """Copy a block's in-place edits of a value it read into the host's own value.
+def write_back(served, edited) -> bool:
+    """Copy a block's in-place edits of a value it read into the host's own value,
+    and return whether there were any.
 
     ``served`` is what the host handed over and ``edited`` is the runner's copy of
-    it, sent back in the worker's next park when the runner saw it change
-    (``worker.edited`` walks the same way this does). Each tensor in ``served``
-    takes the values of its counterpart, in place, if they differ. Nothing is
-    replaced, so the forward keeps its own objects, as it does on the trusted
-    path: its other references to an edited tensor see the edit, and an object a
-    module updates, such as the KV cache in a layer's inputs, stays the one the
-    forward holds.
+    it, sent back in the worker's next park. Each tensor in ``served`` takes the
+    values of its counterpart, in place, if they differ. Nothing is replaced, so
+    the forward keeps its own objects, as it does on the trusted path: its other
+    references to an edited tensor see the edit, and an object a module updates,
+    such as the KV cache in a layer's inputs, stays the one the forward holds.
 
     A tensor the block left alone is not written, so one that cannot be written in
     place (an expanded attention mask) can still be read.
+
+    The runner calls this too, against the copy it kept of a read, and sends the
+    read back only if this returns True (``IPCInterleaver.pump``).
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
             edited = edited.to(served.device)
             if not torch.equal(served, edited):
                 served.copy_(edited)
-    elif isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
-        for mine, theirs in zip(served, edited):
-            write_back(mine, theirs)
-    elif isinstance(served, dict) and isinstance(edited, dict):
-        for key in served.keys() & edited.keys():
-            write_back(served[key], edited[key])
+                return True
+        return False
+    # Lists, not generators: every element is written, not only the first.
+    if isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
+        return any([write_back(mine, theirs) for mine, theirs in zip(served, edited)])
+    if isinstance(served, dict) and isinstance(edited, dict):
+        return any(
+            [write_back(served[key], edited[key]) for key in served.keys() & edited.keys()]
+        )
+    return False

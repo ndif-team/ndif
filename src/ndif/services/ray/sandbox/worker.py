@@ -27,58 +27,13 @@ from nnsight.intervention.cache import Cache
 from nnsight.intervention.envoy import Envoy
 from nnsight.intervention.interleaver import (
     EarlyStopException,
-    Event,
     Interleaver,
     OutOfOrderError,
 )
+from nnsight.util import apply
 
+from .controls import editable, write_back
 from .messages import CacheHit, Dangling, Done, Park, Reply, Resume, Stop, Throw
-
-
-def is_read(park) -> bool:
-    """Whether a park waits for a value, so that what serves it is a read whose
-    copy the block may then edit."""
-    return park is not None and park.event is Event.VALUE
-
-
-def snapshot(value):
-    """A copy of each tensor in ``value``, kept in the containers
-    ``controls.write_back`` walks, as a read hands ``value`` to a worker.
-
-    Compared with the value once the worker moves on (:func:`edited`). A copy
-    rather than each tensor's version counter, because an edit through
-    ``tensor.data`` does not move the counter.
-    """
-    if isinstance(value, torch.Tensor):
-        return value.detach().clone()
-    if isinstance(value, (list, tuple)):
-        return [snapshot(item) for item in value]
-    if isinstance(value, dict):
-        return {key: snapshot(item) for key, item in value.items()}
-    return None
-
-
-def edited(value, before) -> bool:
-    """Whether ``controls.write_back`` would change the host's value, given the
-    worker's copy ``value`` now and ``before``, its :func:`snapshot`.
-
-    The two walk alike on purpose: a tensor counts when one of the same shape
-    holds different values, which also covers an element of a list replaced by
-    a tensor of its own; a list or tuple counts element by element; a dict by
-    the keys it was served with. Anything else is never written back, so it
-    never counts.
-    """
-    if isinstance(before, torch.Tensor):
-        return (
-            isinstance(value, torch.Tensor)
-            and value.shape == before.shape
-            and not torch.equal(before, value.to(before.device))
-        )
-    if isinstance(before, list) and isinstance(value, (list, tuple)):
-        return any(edited(item, old) for item, old in zip(value, before))
-    if isinstance(before, dict) and isinstance(value, dict):
-        return any(edited(value[key], before[key]) for key in value.keys() & before.keys())
-    return False
 
 
 class IPCInterleaver(Interleaver):
@@ -117,12 +72,12 @@ class IPCInterleaver(Interleaver):
         (``Park.edited``). A read hands the worker a copy, which crossed the
         socket, so an edit never reaches the host on its own. The read left the
         host parked at that location, so the edit lands before the model moves
-        on. It is sent only when it changed, which :func:`edited` tells by
-        comparing it with the :func:`snapshot` taken as it was handed over: a
-        read the block only looks at sends nothing back.
-
-        ``reads`` holds the workers parked on a read (by mediator id), seeded from
-        the parks already shipped in the `Interleave` message.
+        on. It is sent only when the host would write something: this end keeps
+        a copy of the value's tensors as it hands the value over, and afterwards
+        runs the host's own ``controls.write_back`` against that copy. A read
+        the block only looks at sends nothing back. A copy rather than each
+        tensor's version counter, because an edit through ``tensor.data`` does
+        not move the counter.
 
         A worker that calls ``tracer.stop()`` is answered for with `Stop`, and the
         stop is held until the host's `Done`. The host goes on serving the workers
@@ -135,11 +90,6 @@ class IPCInterleaver(Interleaver):
         # any point; record the (already filtered + moved-to-cpu) value wherever
         # this end is waiting.
         self.link.always = {CacheHit: self.record}
-        reads = {
-            mediator_id
-            for mediator_id, mediator in enumerate(self.mediators)
-            if is_read(mediator.pending)
-        }
         stopped = None
         while True:
             message = self.link.receive(Resume, Reply, Throw, Done)
@@ -163,11 +113,17 @@ class IPCInterleaver(Interleaver):
             # it here wound the loop back a step (#296).
             if isinstance(message, Resume):
                 mediator.iteration = message.pin
-            # Whether this message answers a read: the worker is then handed a
-            # copy of the host's value, which the block may edit in place.
-            read = message.worker in reads
-            reads.discard(message.worker)
-            before = snapshot(message.args[0]) if read else None
+            # A `Resume` that carries a value answers a read: the worker is
+            # handed a copy of the host's value, which the block may edit in
+            # place. Keep its tensors as they arrived, to tell whether it did.
+            read = isinstance(message, Resume) and bool(message.args)
+            before = None
+            if read:
+                before = apply(
+                    message.args[0],
+                    lambda tensor: tensor.detach().clone() if editable(tensor) else None,
+                    torch.Tensor,
+                )
             try:
                 park = mediator.switch(*message.args)
             except EarlyStopException as stop:
@@ -179,12 +135,12 @@ class IPCInterleaver(Interleaver):
                 continue
             # TODO: only the value is sent back — eproperty write-back transforms
             # attached to the read are silently dropped on the sandbox path.
-            changed = None
-            if read and edited(message.args[0], before):
-                changed = message.args[0]
-            if is_read(park):
-                reads.add(message.worker)
-            self.link.send(Park(message.worker, park, changed))
+            edited = read and write_back(before, message.args[0])
+            # Freed now, not held while this end waits for the host's next message.
+            before = None
+            self.link.send(
+                Park(message.worker, park, message.args[0] if edited else None)
+            )
 
     def record(self, hit) -> None:
         """Put one value the host observed into the cache it belongs to."""

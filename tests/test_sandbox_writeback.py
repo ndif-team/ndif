@@ -1,7 +1,7 @@
 """A sandboxed block edits the host's own values, not copies of them.
 
 A value a block reads crosses the socket as a copy, and the runner sends the copy
-back when the block moves on, so in-place edits reach the forward. The host used
+back if the block edited it, so in-place edits reach the forward. The host used
 to swap that copy in at the location, which replaced every object in it. The
 forward's other references to the originals then held something else than the
 module ran on, and the same block returned different numbers than on the trusted
@@ -18,10 +18,10 @@ path, with no error:
 The fix is ``controls.write_back``: the copy's tensors are written into the
 originals, and nothing is replaced.
 
-The runner sends a copy back only when the block edited it (``worker.edited``),
-which has to agree with what ``write_back`` would write. And what crosses on a
-read is a compact copy (``controls.compact``), so one invoke's read carries its
-own rows and not the whole batch.
+The runner sends a copy back only when the block edited it, which it tells by
+running ``write_back`` against a copy it kept. And what crosses on a read is a
+compact copy (``controls.compact``), so one invoke's read carries its own rows
+and not the whole batch.
 
 Same harness as ``test_sandbox_iter_pins``, whose helpers this imports: no server
 and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
@@ -30,7 +30,6 @@ and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
 
 from __future__ import annotations
 
-import copy
 import io
 
 import pytest
@@ -38,12 +37,9 @@ import pytest
 torch = pytest.importorskip("torch")
 nnsight = pytest.importorskip("nnsight")
 
-from nnsight.util import apply
-
 from ndif.services.ray.sandbox import driver, host
 from ndif.services.ray.sandbox.controls import compact, write_back
 from ndif.services.ray.sandbox.messages import Payload
-from ndif.services.ray.sandbox.worker import edited, snapshot
 
 from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     PROMPT,
@@ -146,62 +142,14 @@ def test_write_back_edits_tensors_and_replaces_nothing():
     served = ((hidden,), {"attention_mask": mask, "cache": cache})
     edited = ((torch.ones(3, 4),), {"attention_mask": mask.clone(), "cache": object()})
 
-    write_back(served, edited)
+    assert write_back(served, edited)
 
     assert served[0][0] is hidden
     assert torch.equal(hidden, torch.ones(3, 4))
     assert served[1]["attention_mask"] is mask
     assert served[1]["cache"] is cache
-
-
-def tensors_of(value):
-    found = []
-    apply(value, found.append, torch.Tensor)
-    return found
-
-
-def layer_input():
-    return ((torch.zeros(2, 3),), {"attention_mask": torch.ones(2, 3), "cache": object()})
-
-
-EDITS = {
-    "in place": (lambda value: value[0][0].add_(1), True),
-    # Does not move the tensor's version counter.
-    "through .data": (lambda value: value[0][0].data.fill_(1), True),
-    "none": (lambda value: None, False),
-    "an element replaced": (
-        lambda value: value[1].update(attention_mask=torch.zeros(2, 3)),
-        True,
-    ),
-    "an element replaced by an equal one": (
-        lambda value: value[1].update(attention_mask=torch.ones(2, 3)),
-        False,
-    ),
-    "a shape changed": (
-        lambda value: value[1].update(attention_mask=torch.ones(1, 3)),
-        False,
-    ),
-    "a key added": (lambda value: value[1].update(extra=torch.ones(1)), False),
-    "a non-tensor rebound": (lambda value: value[1].update(cache=None), False),
-}
-
-
-@pytest.mark.parametrize("name", EDITS)
-def test_the_runner_sends_a_copy_back_exactly_when_write_back_would_write_it(name):
-    edit, expected = EDITS[name]
-    served = layer_input()
-    received = copy.deepcopy(served)  # the runner's copy, as it arrives
-    before = snapshot(received)
-    edit(received)
-    sent = edited(received, before)
-
-    untouched = copy.deepcopy(served)
-    write_back(served, received)
-    written = not all(
-        torch.equal(now, then)
-        for now, then in zip(tensors_of(served), tensors_of(untouched))
-    )
-    assert sent == written == expected
+    # Nothing differs now, which is how the runner tells a read it need not send.
+    assert not write_back(served, edited)
 
 
 def test_compact_sends_a_view_as_its_own_rows():
@@ -218,8 +166,10 @@ def test_compact_leaves_what_it_cannot_shrink_or_must_not_split():
     batch = torch.zeros(4, 3)
     for value in (
         torch.zeros(2, 3),  # owns its storage
-        torch.zeros(1, 3).expand(4, 3),  # a copy would be larger
+        batch[0:1, 0:1].expand(1, 3),  # a copy could be edited, and this cannot
         (batch[0:1], batch[0:1]),  # copied apart, an edit of one would miss the other
+        # The same, where the other tensor is a parameter.
+        (weight := torch.nn.Parameter(torch.zeros(4, 3)), weight.data[0:1]),
     ):
         assert compact(value) is value
 
@@ -269,13 +219,7 @@ def test_only_an_edited_read_is_sent_back(frozen, monkeypatch):
         driver, "write_back", lambda served, copy: (written.append(copy), real(served, copy))
     )
 
-    capture = Capture()
-    with model.trace(PROMPT, backend=capture):
-        hidden = norm.input.save()
-        logits = model.lm_head.output[0, -1].save()
-    run_sandboxed(model, capture.blob)
-    assert written == []
-
+    # Two reads, one of them edited.
     capture = Capture()
     with model.trace(PROMPT, backend=capture):
         norm.input[:] = 0
