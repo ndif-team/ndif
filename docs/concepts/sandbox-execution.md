@@ -133,7 +133,8 @@ nothing else.
   message protocol, with no handle on the actor's Python objects or the model.
 - **It is** fresh per request: the pool hands out a runner that has never run user
   code and stops it when the request ends, so compiled blocks, globals, and module
-  state do not carry from one request to the next. What a block writes to the
+  state do not carry from one request to the next. Runners are forked from a
+  template process that never runs user code either. What a block writes to the
   shared filesystem does persist.
 - **It is** started with an allowlisted environment, so `HF_TOKEN`,
   `NDIF_INFLUX_TOKEN`, `NDIF_POSTGRES_URL` and object-store credentials are not

@@ -150,26 +150,48 @@ and the park in the runner.
 `spawn` (`src/ndif/services/ray/sandbox/host.py`) picks `/tmp/sbx-<12 hex>.sock`,
 builds the runner's environment from the `RUNNER_ENV` allowlist via `runner_env`,
 prepends the repo root to `PYTHONPATH`, sets `PYTHONHASHSEED=0`, launches
-`ndif.services.ray.sandbox.runner` with the socket path, `peers`, and — when the
-pool has one — the model key, then polls until
-the socket accepts (30s), raising if the process dies first. The runner's stderr
-is never discarded: it is the only report of a request the runner could not
-finish.
+`ndif.services.ray.sandbox.runner` with the socket path, `peers`, its own pid,
+the mode (`runner` or `template`) and — when the pool has one — the model key,
+then polls until the socket accepts (`wait_for`, 30s), raising if the process
+dies first. The runner's stderr is never discarded: it is the only report of a
+request the runner could not finish.
+
+A pool does not `spawn` its runners. Its first refill starts a `Template`: a
+process launched by `spawn` in `template` mode, which does the start-up every
+runner needs (imports, `adapters.install`, the meta model; ~4s) and then forks a
+runner per `Template.fork`, ready in ~30ms. Forks share the template's memory:
+~125 MB each against ~580 MB for a runner started from nothing (Llama-3.1-8B,
+PSS). The template answers `fork <path>` and `kill <pid>` on its socket
+(`runner.serve_template`); it is the runners' parent, so it is also what kills
+them, and it reaps them only between commands, so a pid it is told to kill can
+never be one the system has reused. A forked runner reseeds `random`, torch and
+numpy (`runner.reseed`), or every runner would draw the template's numbers.
+
+A child forked after its parent opened the GPU driver cannot use CUDA, so a
+template whose meta-model build opened it (a model's own code can) exits, and
+the pool falls back to `spawn` for every runner. A template that dies later is
+replaced by the next refill.
 
 `Pool` keeps up to `size` runners pre-warmed on background threads (`refill`) so a
 request doesn't pay interpreter + nnsight import + meta-model build; `acquire`
-takes a warm one (spawning inline after 30s if none is ready) and tops the pool
+takes a warm one (making one inline after 30s if none is ready) and tops the pool
 back up. **There is no release-back-to-pool** — the caller owns the process and
-must `stop()` it. `size` defaults to `NDIF_SANDBOX_POOL_SIZE` (7,
-`src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE`).
+must `stop()` it. `Sandbox.stop` SIGKILLs the runner and returns without waiting:
+the exit takes ~150ms (the CUDA context's teardown) and the actor stops a
+request's runner before it answers the request. `size` defaults to
+`NDIF_SANDBOX_POOL_SIZE` (7, `src/ndif/services/ray/sandbox/model.py`
+`DEFAULT_POOL_SIZE`).
 
-The default trades two costs. A cold spawn is roughly 6× a warm execution and
-refills run concurrently, so the pool keeps up only if `size` is at least that
-ratio; below it, every other request under load pays the spawn inline. But each
-warm runner holds a few hundred MB idle (mostly fixed cost — modeling classes,
-tokenizer, meta pipeline) and refills contend for the node's CPU, so the sandbox
-path scales worse with replicas than the in-process one. Turn it down on a memory-
-or core-tight node.
+The default was sized for runners started from nothing: refills run
+concurrently, so a pool keeps up only if `size` is at least start-up / request
+time (~6 then). With forks a smaller pool keeps up, unless CUDA is preloaded.
+
+`NDIF_SANDBOX_PRELOAD_CUDA` makes each runner start CUDA before it binds its
+socket (`runner.preload_cuda`), which takes ~0.45s off every request (A100) and
+holds ~0.5 GB of the model's first card per waiting runner. It is off by
+default for that memory. With it on, the rate at which new runners start CUDA
+limits throughput: 30 back-to-back small requests through a pool of 7 ran at
+2.5 per second, against 1.5 with it off, where each request starts CUDA itself.
 
 > **Gotcha:** a warm thread that fails to spawn is silent. `refill`'s `warm()` only
 > decrements the counter in its `finally`; the exception dies with the thread and
@@ -179,17 +201,21 @@ or core-tight node.
 ### The runner process
 
 `Runner.__init__` (`src/ndif/services/ray/sandbox/runner.py`) takes the socket
-path, `peers` and the model key. It calls `adapters.install` (see
+path, `peers` and the model key. Its `build` calls `adapters.install` (see
 [below](#persistent-ids-and-the-meta-model)) and then `meta.load_meta_model(model_key)`
-**before binding**, so a host that can connect is a host whose runner is warm.
+**before binding**, so a host that can connect is a host whose runner is warm. A
+forked runner is built with no model key: it inherited both from its template.
 A failed build is printed to
 stderr and ignored: the map is an optimization, and without it ids resolve to
 `None`. `__main__` first calls `die_with_parent`, a daemon thread that polls
-`getppid` once a second and `os._exit(1)`s when the runner is reparented — the
-actor was SIGKILLed (eviction, or an unrecoverable-CUDA restart) and no Python
-cleanup ran. It polls rather than using `PR_SET_PDEATHSIG` because that signal
-fires when the parent *thread* exits, and runners are spawned from short-lived
-threads.
+`getppid` once a second and `os._exit(1)`s once it no longer matches the parent
+pid `spawn` passed in — the actor was SIGKILLed (eviction, or an
+unrecoverable-CUDA restart) and no Python cleanup ran. A forked runner watches
+its template the same way. The pid is passed rather than read at start-up
+because the imports come first: a parent that died during them had already been
+replaced by init, which the runner then watched forever. It polls rather than
+using `PR_SET_PDEATHSIG` because that signal fires when the parent *thread*
+exits, and runners are spawned from short-lived threads.
 
 `Runner.serve` accepts `peers` connections (dropping `spawn`'s readiness probe via
 `_hung_up`), handles the exchange, and loops forever; a failing exchange goes to

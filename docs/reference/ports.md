@@ -32,7 +32,8 @@ explicit port flags and lets Ray default the rest.
 
 Two internal channels bind no fixed port. A sandboxed model actor talks to its
 runner over a Unix socket at `/tmp/sbx-<hex>.sock`
-(`src/ndif/services/ray/sandbox/host.py` `spawn`). A tensor-parallel group's rank 0
+(`src/ndif/services/ray/sandbox/host.py` `socket_path`), and a pool's template listens
+on another. A tensor-parallel group's rank 0
 drives its shards over Unix sockets too, and the group's torch.distributed
 rendezvous binds `127.0.0.1` on an ephemeral `MASTER_PORT` the OS picks per group
 (`src/ndif/services/ray/tp/host.py` `_free_port`, set in `ShardGroup.__init__`),

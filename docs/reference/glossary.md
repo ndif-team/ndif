@@ -180,7 +180,7 @@ object store and returned as a **presigned GET URL** signed for
 The OS process that executes an untrusted request's block,
 `python -m ndif.services.ray.sandbox.runner`. One fresh runner per request,
 stopped afterward; `Pool` (`src/ndif/services/ray/sandbox/host.py`) keeps
-`NDIF_SANDBOX_POOL_SIZE` pre-warmed. It holds only a weightless meta model and
+`NDIF_SANDBOX_POOL_SIZE` pre-warmed, each forked from the pool's template. It holds only a weightless meta model and
 drives the host's real one over a Unix socket. See
 [sandbox-execution.md](../concepts/sandbox-execution.md).
 

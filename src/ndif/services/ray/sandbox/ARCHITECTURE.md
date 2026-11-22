@@ -38,10 +38,10 @@ across a process boundary.
 | [`messages.py`](messages.py) | The vocabulary: one class per message and per control request. Both ends import it. |
 | [`link.py`](link.py) | `Link` — one end of the conversation. It receives by type, hands messages that can arrive at any point to their handlers, and raises `ProtocolError` on anything else. |
 | [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model (base class), owns the runner pool, and turns a runner failure into a client-facing error. Thin: it acquires a runner and hands it to a driver. |
-| [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the host's `Connection`. |
+| [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, the `Template` a pool forks its runners from, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the host's `Connection`. |
 | [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: the request loop, the interleaved run, and a `MediatorProxy` per worker. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
 | [`controls.py`](controls.py) | The host's handler for each control request (`.source`, an ad-hoc module call, `tracer.cache()`, the write-back of a read), in a table keyed by the request's type. |
-| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <model_key>`). Accepts a connection, receives the payload, and calls `execute.run`. Building a `Runner` calls `adapters.install` — **in the runner, never on the host**. |
+| [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <parent pid> runner\|template [model_key]`). Accepts a connection, receives the payload, and calls `execute.run`. Building a `Runner` calls `adapters.install` — **in the runner, never on the host**. In `template` mode it builds once and forks runners (`serve_template`). |
 | [`execute.py`](execute.py) | Runs one request **inside the runner**: deserialize the tracer, execute the block, send back what it saved or its traceback. |
 | [`worker.py`](worker.py) | `IPCInterleaver` — the **worker side** of the interleaver: the loop the host drives. |
 | [`adapters.py`](adapters.py) | The replacements for the nnsight methods that assume the model is local (patched `Mediator.event`, `IPCEnvoy`, `.source`, `tracer.cache()`, barriers), the refusal of backward passes, and `install`, which applies them. |
@@ -307,7 +307,7 @@ can import any sandbox module. This is also why the handoff is a plain `Payload`
 message rather than a pickled callable — the runner already knows to run
 `execute.run`.
 
-The runner runs as `python -m ndif.services.ray.sandbox.runner <socket> <peers> <model_key>`
+The runner runs as `python -m ndif.services.ray.sandbox.runner <socket> <peers> <parent pid> runner|template [model_key]`
 (with the repo root on `PYTHONPATH`), i.e. as a normal `ndif` submodule, so it can reuse ndif
 helpers rather than duplicate them: `execute.run` deserializes via nnsight's own
 `RequestModel.deserialize(..., unpickler=...)` (an unpickler hook

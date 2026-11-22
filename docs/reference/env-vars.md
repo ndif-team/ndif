@@ -136,7 +136,8 @@ Read by the controller launcher,
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor. A cold spawn (~4 s) is several times a warm execution, so a smaller pool makes a saturated queue pay the spawn inline; each warm runner holds roughly 0.5 GB of RAM whether used or not. Turn it down on memory- or core-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor. Each is forked from the pool's template (`src/ndif/services/ray/sandbox/host.py` `Template`) in ~30 ms and adds ~125 MB of RAM to the template's ~240 MB (Llama-3.1-8B); a pool whose template cannot run starts each from nothing (~4 s, ~0.5 GB). Turn it down on memory-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_PRELOAD_CUDA` | off | `src/ndif/services/ray/sandbox/runner.py` `PRELOAD_CUDA` | `1`/`true`/`yes`/`on`: each runner starts CUDA while it waits in the pool, so a request does not (~0.45 s on an A100). The cost is the CUDA context, ~0.5 GB of the model's first card per waiting runner (`NDIF_SANDBOX_POOL_SIZE` of them), outside the actor's GPU budget. Set on the actor; it reaches the runner through `RUNNER_ENV`. |
 
 ## Object store
 
