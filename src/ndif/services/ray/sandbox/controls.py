@@ -262,11 +262,9 @@ def write_back(served, edited, kept=frozenset()) -> None:
     A tensor the block left alone is not written, so one that cannot be written in
     place (an expanded attention mask) can still be read.
 
-    ``kept`` is the model's own storage (`kept_by`). A value can hold a weight:
-    the third argument of the ``F.layer_norm`` call inside a norm is the module's
-    ``weight`` itself. Writing an edit of it would change the model for every
-    later request, so it raises ``WeightEditError`` and the weight is left as it
-    was.
+    ``kept`` is the model's own storage (`kept_by`). An edit of a tensor stored
+    there would change the model for every later request, so it raises
+    ``WeightEditError`` and the tensor is left as it was.
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:

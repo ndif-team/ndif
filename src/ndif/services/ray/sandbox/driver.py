@@ -18,7 +18,6 @@ actor answers the client.
 
 from __future__ import annotations
 
-import functools
 from typing import Any, Callable, Optional
 
 import torch
@@ -274,14 +273,11 @@ class SandboxDriver:
         # kept here too and re-armed just after entry (`interleave`). Reset per
         # interleave, like `sourced` itself (per-run, cleared on entry).
         self.armed: "set[str]" = set()
-
-    @functools.cached_property
-    def kept(self) -> set:
-        """Where the model's parameters and buffers are stored, which a block's
-        in-place edit is never written into (``controls.write_back``). Collected
-        at each request's first write-back and not once per actor, because the
-        addresses change when a cached model is moved back onto its cards."""
-        return kept_by(self.model._module)
+        # Where the model's parameters and buffers are stored, which a block's
+        # in-place edit is never written into (`controls.write_back`). Collected
+        # per driver, so per request, because the addresses change when a cached
+        # model is moved back onto its cards.
+        self.kept = kept_by(model._module)
 
     def pump(self, connection) -> "tuple[bytes, Optional[float]]":
         """Service the runner until it reports the block finished.
