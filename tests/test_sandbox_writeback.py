@@ -161,10 +161,10 @@ def test_write_back_refuses_the_models_own_storage():
     assert torch.equal(hidden, torch.ones(3, 4))
 
     # An edit of the weight, of a view of it, or of a buffer is refused.
-    for served in (module.weight, module.weight[:2], module.running_mean):
+    for served in (module.weight, module.weight[2:], module.running_mean):
         before = served.clone()
         with pytest.raises(WeightEditError):
-            write_back((served,), (served + 1,), kept)
+            write_back({"x": (served,)}, {"x": (served + 1,)}, kept)
         assert torch.equal(served, before)
 
 
