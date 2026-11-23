@@ -280,7 +280,7 @@ output as `Print` messages instead.
 
 An exception out of the raced block is formatted by
 `BaseModelDeployment.format_error` and becomes the ERROR description verbatim: a
-`RequestError` (unreadable payload, architecture mismatch) reports its own sentence;
+`RequestError` (unreadable payload, architecture mismatch, a refused weight edit) reports its own sentence;
 anything else goes through nnsight's `clean_traceback`, which drops nnsight
 internals, then `filter_traceback`, which drops this actor's wrapper frames, leaving
 the user's code with the line text the linecache registration supplied. It also
