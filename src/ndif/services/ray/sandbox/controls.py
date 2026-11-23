@@ -25,6 +25,7 @@ import torch
 from nnsight.intervention.cache import Cache
 from nnsight.util import apply
 
+from ....common.errors import WeightEditError
 from .messages import CacheHit, Call, Observe, Source, SourceRefused
 
 #: The handler for each type of control request.
@@ -296,7 +297,21 @@ def compact(value):
     )
 
 
-def write_back(served, edited) -> bool:
+def kept_by(module) -> set:
+    """Where each parameter and buffer of ``module`` stores its values.
+
+    These are the tensors that outlive a request, and `write_back` writes into
+    none of them. The set holds storage addresses and not the tensors, because
+    a slice or a transpose of a weight is a different tensor over the same
+    storage.
+    """
+    return {
+        tensor.untyped_storage().data_ptr()
+        for tensor in (*module.parameters(), *module.buffers())
+    }
+
+
+def write_back(served, edited, kept=frozenset()) -> bool:
     """Copy a block's in-place edits of a value it read into the host's own value,
     and return whether there were any.
 
@@ -310,21 +325,33 @@ def write_back(served, edited) -> bool:
     A tensor the block left alone is not written, so one that cannot be written in
     place (an expanded attention mask) can still be read.
 
+    ``kept`` is the model's own storage (`kept_by`). An edit of a tensor stored
+    there would change the model for every later request, so it raises
+    ``WeightEditError`` and the tensor is left as it was.
+
     The runner calls this too, against the copy it kept of a read, and sends the
-    read back only if this returns True (``IPCInterleaver.pump``).
+    read back only if this returns True (``IPCInterleaver.pump``). It passes no
+    ``kept``: the model's storage is on the host.
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
             edited = edited.to(served.device)
             if not torch.equal(served, edited):
+                if served.untyped_storage().data_ptr() in kept:
+                    raise WeightEditError()
                 served.copy_(edited)
                 return True
         return False
     # Lists, not generators: every element is written, not only the first.
     if isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
-        return any([write_back(mine, theirs) for mine, theirs in zip(served, edited)])
+        return any(
+            [write_back(mine, theirs, kept) for mine, theirs in zip(served, edited)]
+        )
     if isinstance(served, dict) and isinstance(edited, dict):
         return any(
-            [write_back(served[key], edited[key]) for key in served.keys() & edited.keys()]
+            [
+                write_back(served[key], edited[key], kept)
+                for key in served.keys() & edited.keys()
+            ]
         )
     return False

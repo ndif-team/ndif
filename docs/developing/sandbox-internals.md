@@ -381,6 +381,20 @@ barrier) is not sent. A block that puts a different object into a container it
 read (`kwargs["mask"] = None`) changes its own copy; assigning the location
 (`layer.inputs = ...`) is a swap and does cross.
 
+**What the write-back refuses.** Writing into the host's own tensors reaches one
+kind it must not: a tensor the model keeps between requests. A served value can
+hold one, since the third argument of the `F.layer_norm` call inside a norm is
+the module's `weight` itself, and the input of BERT's position embedding is a
+slice of the `position_ids` buffer. `kept_by`
+(`src/ndif/services/ray/sandbox/controls.py`) collects the storage address of
+every parameter and buffer of the model, once per request when the driver is
+built (`SandboxDriver.kept`), and `write_back` raises `WeightEditError`
+(`src/ndif/common/errors.py`) before it would copy into a tensor stored at one
+of them. The comparison is by storage, so a slice or a transpose of a weight is
+covered. The error is a `RequestError`, so the client gets its sentence and no
+host frames. A tensor a module keeps as a plain attribute, not registered as a
+buffer, is not in the set.
+
 ### Host authority: occurrences, sources, barriers, caches
 
 Everything that counts or decides lives on the host; the runner only parks. The
@@ -463,6 +477,9 @@ runs on the host after the forward. So on the untrusted path today:
   it has a shape and no data, and arithmetic with it against real activations
   fails.
 - **Weight writes** land on the meta copy and are a no-op on the host's model.
+- **In-place edits of a weight or buffer inside a value the block read** fail
+  the request with `WeightEditError` (see
+  [One read and one swap](#one-read-and-one-swap)).
 - **Training loops** over parameters (an optimizer stepping `model.parameters()`)
   update meta tensors and are a no-op.
 - **Backward passes** are refused. A value read from the model arrives in the

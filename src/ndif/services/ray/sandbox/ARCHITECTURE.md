@@ -180,6 +180,8 @@ host: forward pass reaches location L, value V
   worker's value rides back in that `Park`, and the host runs the same
   `write_back` on the tensors it served. Nothing is replaced, so the forward
   keeps its own objects. A read the block only looks at sends nothing back.
+  An edit of a tensor stored where one of the model's parameters or buffers is
+  (`controls.kept_by`) is not written: the request fails with `WeightEditError`.
 - `Park(id, None)` means the worker finished.
 - After the run, `check_dangling` finds proxies still parked (workers that wanted
   something the run never delivered), classifies each as nnsight's
