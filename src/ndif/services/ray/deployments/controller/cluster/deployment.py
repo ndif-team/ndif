@@ -74,6 +74,9 @@ class Deployment:
         self.actor_class = actor_class
         self.dtype = dtype
         self.deployed = time.time()
+        # A HOT replica is loading from when it is placed until its actor
+        # reports ready; the controller clears this then.
+        self.loading = deployment_level is DeploymentLevel.HOT
 
     @property
     def cacheable(self) -> bool:

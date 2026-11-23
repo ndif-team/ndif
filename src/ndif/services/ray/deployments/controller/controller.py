@@ -99,6 +99,11 @@ class _ControllerActor:
             default_model_actor_class=self.default_model_actor_class,
         )
 
+        # Everything that changes placement holds this, so those calls run one
+        # at a time, as they did when each one held the event loop until it was
+        # done. ``status`` and ``env`` do not take it.
+        self.lock = asyncio.Lock()
+
         # TODO: detached model actors from a previous controller outlive a
         # controller restart but aren't re-adopted here — the rebuilt cluster
         # starts empty and can re-place onto GPUs those orphans still hold,
@@ -111,7 +116,9 @@ class _ControllerActor:
             logger.exception("Failed to update nodes")
 
         if deployments and deployments != [""]:
-            self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
+            asyncio.create_task(
+                self._deploy({key: DeploymentConfig(pinned=True) for key in deployments})
+            )
 
         asyncio.create_task(self.check_nodes())
 
@@ -157,7 +164,8 @@ class _ControllerActor:
         #     heartbeat turns a model that reliably OOMs on load into a flap loop.
         while True:
             try:
-                self.cluster.update_nodes()
+                async with self.lock:
+                    self.cluster.update_nodes()
             except Exception:
                 # Nothing awaits this task, so an uncaught error would end node
                 # syncing for the life of the controller, silently. Retry on
@@ -167,7 +175,7 @@ class _ControllerActor:
                 int(os.environ.get("NDIF_CONTROLLER_SYNC_INTERVAL_S", "30"))
             )
 
-    def _deploy(
+    async def _deploy(
         self,
         deployments: Union[
             MODEL_KEY, List[MODEL_KEY], Dict[MODEL_KEY, DeploymentConfig]
@@ -187,10 +195,11 @@ class _ControllerActor:
             f"{[(key, cfg.pinned) for key, cfg in configs.items()]}"
         )
 
-        response = self.cluster.deploy(configs)
+        async with self.lock:
+            response = self.cluster.deploy(configs)
 
-        if response.change:
-            self.apply()
+            if response.change:
+                await self.apply()
 
         return response
 
@@ -259,7 +268,7 @@ class _ControllerActor:
         # replica from the same dtype and the same defaults as the old one.
         return filled
 
-    def scale(
+    async def scale(
         self,
         model_key: MODEL_KEY,
         n: int = 1,
@@ -275,7 +284,7 @@ class _ControllerActor:
         """
         config = (config or DeploymentConfig()).model_copy(deep=True)
         config.replicas = n
-        return self._deploy({model_key: self._like_existing(model_key, config)})
+        return await self._deploy({model_key: self._like_existing(model_key, config)})
 
     async def deploy(
         self,
@@ -284,7 +293,7 @@ class _ControllerActor:
         ],
     ) -> DeployResponse:
         await self._describe(deployments)
-        return self._deploy(deployments)
+        return await self._deploy(deployments)
 
     async def _describe(
         self,
@@ -320,7 +329,7 @@ class _ControllerActor:
             )
         )
 
-    def evict(
+    async def evict(
         self,
         model_key: MODEL_KEY,
         replica_id: Optional[REPLICA_ID] = None,
@@ -331,10 +340,11 @@ class _ControllerActor:
         WARM replica of ``model_key``. Returns the pre-eviction state of every
         replica that was evicted.
         """
-        response = self.cluster.evict(model_key, replica_id)
+        async with self.lock:
+            response = self.cluster.evict(model_key, replica_id)
 
-        if response.replicas:
-            self.apply()
+            if response.replicas:
+                await self.apply()
 
         return response
 
@@ -387,8 +397,11 @@ class _ControllerActor:
             deployments_to_delete=deployments_to_delete,
         )
 
-    def apply(self):
-        """Execute the build() delta as Ray actor lifecycle operations."""
+    async def apply(self):
+        """Execute the build() delta as Ray actor lifecycle operations.
+
+        Called with ``self.lock`` held.
+        """
         deployment_delta = self.build()
 
         # Delete.
@@ -396,6 +409,9 @@ class _ControllerActor:
             deployment.delete()
 
         # Cache (HOT->WARM): must finish before from_cache frees its resources.
+        # Awaited, not ``ray.get``: moving a large model off its GPUs takes
+        # minutes, and a blocking wait holds the event loop, so the controller
+        # answers nothing for that long, ``status`` included.
         cache_futures = []
         cache_deployments = []
         for deployment in deployment_delta.deployments_to_cache:
@@ -413,7 +429,7 @@ class _ControllerActor:
 
         for future, deployment in zip(cache_futures, cache_deployments):
             try:
-                ray.get(future)
+                await future
             except Exception as e:
                 logger.error(
                     f"Deployment {deployment.model_key} failed during cache: {e}"
@@ -480,6 +496,7 @@ class _ControllerActor:
         """
         try:
             await future
+            deployment.loading = False
         except Exception as e:
             logger.error(
                 f"Deployment {deployment.model_key} failed during {operation}: {e}"
@@ -514,22 +531,27 @@ class _ControllerActor:
                 if not cached_replicas:
                     del node.cache[deployment.model_key]
 
-    def get_deployment(
+    async def get_deployment(
         self,
         model_key: MODEL_KEY,
         replica_id: Optional[REPLICA_ID] = None,
     ) -> ReplicaStates:
-        """List HOT replicas matching the query (WARM/cached are not included)."""
+        """List HOT replicas matching the query (WARM/cached are not included).
+
+        Waits for placement in flight, so every replica listed has its actor
+        created: the queue looks each one up by name.
+        """
         response = ReplicaStates()
-        for node in self.cluster.nodes.values():
-            replicas = node.deployments.get(model_key, {})
-            if replica_id is not None:
-                deployment = replicas.get(replica_id)
-                if deployment is not None:
-                    response.replicas.append(ReplicaState(**deployment.get_state()))
-            else:
-                for deployment in replicas.values():
-                    response.replicas.append(ReplicaState(**deployment.get_state()))
+        async with self.lock:
+            for node in self.cluster.nodes.values():
+                replicas = node.deployments.get(model_key, {})
+                if replica_id is not None:
+                    deployment = replicas.get(replica_id)
+                    if deployment is not None:
+                        response.replicas.append(ReplicaState(**deployment.get_state()))
+                else:
+                    for deployment in replicas.values():
+                        response.replicas.append(ReplicaState(**deployment.get_state()))
         return response
 
     def env(self) -> Dict[str, Any]:
@@ -587,9 +609,13 @@ class _ControllerActor:
                 if deployment.model_key not in self.cluster.evaluator.cache:
                     continue
 
-                # Tracked with no live actor: the controller believes a replica
-                # is deployed while its actor is gone, which is worth surfacing.
-                status.setdefault(application_name, {"application_state": "UNHEALTHY"})
+                # Tracked with no live actor. A replica still loading is waiting
+                # for an eviction before its actor is created. One that had
+                # loaded has lost its actor, which is worth surfacing.
+                status.setdefault(
+                    application_name,
+                    {"application_state": "DEPLOYING" if deployment.loading else "UNHEALTHY"},
+                )
 
                 entry = self.cluster.evaluator.cache[deployment.model_key]
 

@@ -100,7 +100,9 @@ def test_check_nodes_survives_a_failed_sync(monkeypatch):
             raise RuntimeError("Failed to retrieve all 9 nodes from the cluster")
         raise asyncio.CancelledError  # ends the loop
 
-    controller = SimpleNamespace(cluster=SimpleNamespace(update_nodes=update_nodes))
+    controller = SimpleNamespace(
+        cluster=SimpleNamespace(update_nodes=update_nodes), lock=asyncio.Lock()
+    )
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(_ControllerActor.check_nodes(controller))
     assert len(calls) == 2
@@ -159,8 +161,9 @@ def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
     reconcile stacks a second copy of a pinned model it can no longer see."""
     key = 'stub.Model:{"repo_id": "stub/m", "revision": null, "task": "text-generation"}'
 
-    def deployment(replica_id):
+    def deployment(replica_id, loading=False):
         return SimpleNamespace(
+            loading=loading,
             name=f"{replica_id}:ModelActor:{key}",
             model_key=key,
             replica_id=replica_id,
@@ -174,6 +177,7 @@ def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
         )
 
     live, restarting, gone = deployment("zlive"), deployment("zrestart"), deployment("zgone")
+    waiting = deployment("zwaiting", loading=True)
     records = [
         SimpleNamespace(name=f"dead{i}:ModelActor:{key}", state="DEAD") for i in range(3000)
     ]
@@ -192,7 +196,9 @@ def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
     monkeypatch.setattr(controller_mod, "get_downloaded_models", lambda: [])
 
     node = SimpleNamespace(
-        iter_deployments=lambda: [(key, d.replica_id, d) for d in (live, restarting, gone)],
+        iter_deployments=lambda: [
+            (key, d.replica_id, d) for d in (live, restarting, gone, waiting)
+        ],
         iter_cache=lambda: [],
         gpu_resources=SimpleNamespace(gpus=[]),
         deployments={},
@@ -214,8 +220,65 @@ def test_status_keeps_live_replicas_past_the_actor_limit(monkeypatch):
     # Tracked with no live actor: surfaced, not silently dropped.
     assert deployments[gone.name]["application_state"] == "UNHEALTHY"
     assert deployments[gone.name]["deployment_level"] == "HOT"
+    # Placed, but its actor is not created until an eviction ahead of it finishes.
+    assert deployments[waiting.name]["application_state"] == "DEPLOYING"
     # Dead actors the controller no longer tracks don't show up at all.
-    assert len(deployments) == 3
+    assert len(deployments) == 4
+
+
+def test_an_eviction_is_waited_for_without_holding_the_event_loop():
+    """``apply`` waited for a HOT->WARM move with ``ray.get``. On an async actor
+    that holds the event loop, so the controller answered nothing until the
+    weights were off the GPUs: 316 s on 2026-11-23, when ``/status`` failed and
+    the monitor reported NDIF down. The move is awaited now. What replaces the
+    evicted replica still starts only after it, and ``get_deployment`` still
+    waits for placement, so it never lists a replica whose actor is not created.
+    """
+    created = []
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        moved, ready = loop.create_future(), loop.create_future()
+        ready.set_result(None)
+        evicted = SimpleNamespace(model_key="old", cache=lambda: moved)
+        placed = SimpleNamespace(
+            model_key="new",
+            execution_timeout_seconds=None,
+            dtype=None,
+            loading=True,
+            create=lambda name, args: created.append(name),
+            actor=SimpleNamespace(__ray_ready__=SimpleNamespace(remote=lambda: ready)),
+        )
+
+        controller = _ControllerActor.__new__(_ControllerActor)
+        controller.lock = asyncio.Lock()
+        controller.default_execution_timeout_seconds = 60
+        controller.default_dtype = "bfloat16"
+        controller.cluster = SimpleNamespace(
+            evict=lambda model_key, replica_id: SimpleNamespace(replicas=["r"]), nodes={}
+        )
+        controller.build = lambda: controller_mod.DeploymentDelta(
+            deployments_to_cache=[evicted],
+            deployments_from_cache=[],
+            deployments_to_create=[("node", placed)],
+            deployments_to_delete=[],
+        )
+
+        evicting = asyncio.create_task(controller.evict("old"))
+        listing = asyncio.create_task(controller.get_deployment("new"))
+        await asyncio.sleep(0.01)
+
+        # The weights are still moving and this coroutine is running.
+        assert not evicting.done() and not listing.done() and created == []
+
+        moved.set_result(None)
+        await evicting
+        assert created == ["node"]
+        await listing
+        await asyncio.sleep(0)
+        assert placed.loading is False
+
+    asyncio.run(main())
 
 
 def test_all_nodes_departing_empties_the_registry(monkeypatch):
