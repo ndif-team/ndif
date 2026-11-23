@@ -150,6 +150,27 @@ def test_reconcile_names_each_model_once(handle):
     assert handle.calls == [("reconcile", "a"), ("reconcile", "b")]
 
 
+def test_scale_reconciles_the_model_it_grew(handle, monkeypatch):
+    from ndif.cli.lib import scale as scale_lib
+    from ndif.common.schema.controller import DeployResponse, ModelDeployResult
+
+    class Scale:
+        @staticmethod
+        def remote(model_key, n, config):
+            return DeployResponse(results={model_key: ModelDeployResult(replicas=["r1"])})
+
+    controller = type("Controller", (), {"scale": Scale})()
+    monkeypatch.setattr(scale_lib, "ensure_ray_connected", lambda address: None)
+    monkeypatch.setattr(
+        "ndif.common.providers.ray.get_controller_actor_handle", lambda: controller
+    )
+
+    result = scale_lib.scale(model_key="a", ray_address="ray://head:10001")
+
+    assert result["replicas"] == ["r1"]
+    assert handle.calls == [("reconcile", "a")]
+
+
 def test_reconcile_swallows_a_dispatcher_it_cannot_reach(monkeypatch):
     def missing():
         raise ValueError("Failed to look up actor with name 'Dispatcher'")
