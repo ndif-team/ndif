@@ -498,6 +498,10 @@ class _ControllerActor:
             await future
             deployment.loading = False
         except Exception as e:
+            key = (deployment.node_id, deployment.model_key, deployment.replica_id)
+            if self.state.get(key) is not deployment:
+                # Evicted while it was loading: already killed and released.
+                return
             logger.error(
                 f"Deployment {deployment.model_key} failed during {operation}: {e}"
             )

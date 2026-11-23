@@ -281,6 +281,36 @@ def test_an_eviction_is_waited_for_without_holding_the_event_loop():
     asyncio.run(main())
 
 
+def test_a_replica_evicted_while_loading_is_not_cleaned_up_again():
+    """Evicting a loading replica kills its actor, so the future watching its
+    load fails. That is not a failed deploy: the eviction already removed the
+    replica and released what it held."""
+    deleted = []
+
+    def replica(replica_id):
+        return SimpleNamespace(
+            node_id="n",
+            model_key="m",
+            replica_id=replica_id,
+            loading=True,
+            delete=lambda: deleted.append(replica_id),
+        )
+
+    async def died():
+        raise RuntimeError("the actor died")
+
+    evicted, failed = replica("evicted"), replica("failed")
+    controller = _ControllerActor.__new__(_ControllerActor)
+    controller.state = {("n", "m", "failed"): failed}
+    controller.cluster = SimpleNamespace(nodes={})
+
+    asyncio.run(controller._monitor_deployment(died(), evicted, "create"))
+    asyncio.run(controller._monitor_deployment(died(), failed, "create"))
+
+    assert deleted == ["failed"]
+    assert controller.state == {}
+
+
 def test_all_nodes_departing_empties_the_registry(monkeypatch):
     """The outage shape: every GPU node dies at once, leaving a CPU-only head.
 

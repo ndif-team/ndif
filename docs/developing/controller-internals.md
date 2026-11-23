@@ -175,7 +175,9 @@ possible. `Node.evict` then executes one eviction: a **WARM** replica is dropped
 released; a **HOT** replica releases its GPU bytes and, if `find_cache_evictions` can supply CPU
 room, is **demoted to WARM** with the *same* `replica_id` and a fresh `Deployment` — otherwise it is
 removed outright. A replica whose actor class sets `CACHEABLE = False` (the tensor-parallel actors)
-is always removed outright (`Deployment.cacheable`). Preserving `replica_id` matters because the
+is always removed outright (`Deployment.cacheable`). So is one that is still `loading`, from when it
+is placed until its actor reports ready: its actor would park only after the load, and the eviction
+would wait for it. Preserving `replica_id` matters because the
 actor's Ray name is `f"{replica_id}:ModelActor:{model_key}"` (`Deployment.name`), so the same
 process survives the transition and a later promotion reuses it (`Node.deploy`).
 

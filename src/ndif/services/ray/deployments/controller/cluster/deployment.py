@@ -82,11 +82,16 @@ class Deployment:
     def cacheable(self) -> bool:
         """Whether this replica can be parked HOT->WARM rather than torn down.
 
-        Read off the actor class (``CACHEABLE``). Resolving the class can fail
-        for a bad import path, and an unanswerable question here should not stop
-        an eviction — so it falls back to True, the behaviour every actor had
-        before any of them could say otherwise.
+        Not while it is still loading: ``to_cache`` would run only after the
+        load, so the eviction would wait out the rest of it.
+
+        Otherwise read off the actor class (``CACHEABLE``). Resolving the class
+        can fail for a bad import path, and an unanswerable question here should
+        not stop an eviction — so it falls back to True, the behaviour every
+        actor had before any of them could say otherwise.
         """
+        if self.loading:
+            return False
         try:
             return bool(getattr(self._resolve_actor_class(), "CACHEABLE", True))
         except Exception:
