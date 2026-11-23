@@ -43,7 +43,7 @@ peft==0.19.1
 # through bitsandbytes, which nnsight uses but does not depend on.
 bitsandbytes==0.50.2
 cloudpickle==3.1.2
-click==8.1.8
+click==8.5.1
 # The CLI layers ./.env (and an explicit --env-file) over the environment.
 python-dotenv==1.0.1
 # The CLI reads/writes models.yaml deployment configs (deploy -f / export).
