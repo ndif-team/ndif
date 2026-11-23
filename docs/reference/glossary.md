@@ -3,7 +3,7 @@ title: Glossary
 one_liner: Alphabetical index of NDIF-specific terms, plus the nnsight terms an NDIF reader needs.
 tags: [reference, dev]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/deployments-and-eviction.md, docs/concepts/queue-and-scheduling.md, docs/concepts/sandbox-execution.md, docs/developing/controller-internals.md, docs/developing/queue-internals.md, docs/developing/sandbox-internals.md, docs/developing/providers.md, docs/reference/env-vars.md, docs/reference/ports.md, docs/reference/schemas.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/common/types.py, src/ndif/common/providers/base.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/processor.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/cli/service.py]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/common/types.py, src/ndif/common/providers/base.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/cli/service.py]
 ---
 
 # Glossary
@@ -52,10 +52,11 @@ replicas are returned by `get_deployment`. See
 
 ## Dispatcher
 
-The single process, spawned by the gunicorn master, that pops requests from the
+The single detached Ray actor, on the head node, that pops requests from the
 Redis queue and routes each to its model's **Processor**
-(`src/ndif/services/api/queue/dispatcher.py` `Dispatcher`). It is the only API-side
-holder of a Ray client, which is why `/status` and `/env` go through Redis caches.
+(`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher`). The API has no
+connection to Ray, which is why `/status` and `/env` go through Redis caches the
+dispatcher refreshes.
 See [queue-internals.md](../developing/queue-internals.md).
 
 ## Evaluator
@@ -119,7 +120,7 @@ See [queue-and-scheduling.md](../concepts/queue-and-scheduling.md).
 
 A worker stopping to wait for a value the model hasn't produced yet, registering
 interest in a location (`model.transformer.h.0.output`). In the sandbox it crosses
-the socket as a `PARK` message. See
+the socket as a `Park` message. See
 [sandbox-internals.md](../developing/sandbox-internals.md).
 
 ## Pinning
@@ -132,7 +133,7 @@ the socket as a `PARK` message. See
 
 One per model key, owned by the dispatcher: an in-memory request queue, a pool of
 **Replica** workers draining it, and an autoscaling loop
-(`src/ndif/services/api/queue/processor.py` `Processor`). Provisions on first
+(`src/ndif/services/ray/queue/processor.py` `Processor`). Provisions on first
 request, re-provisions when a replica dies with work queued, never torn down. See
 [queue-internals.md](../developing/queue-internals.md).
 
@@ -152,8 +153,8 @@ memory, one per Processor. See
 
 ## Replica
 
-One serving instance of a model: on the Ray side a **Deployment** and its model
-actor; on the API side a `Replica` (`src/ndif/services/api/queue/replica.py`
+One serving instance of a model: to the controller a **Deployment** and its model
+actor; to the queue a `Replica` (`src/ndif/services/ray/queue/replica.py`
 `Replica`) whose task dispatches to it. `DeploymentConfig.replicas` is additive.
 See [queue-internals.md](../developing/queue-internals.md).
 
@@ -167,8 +168,8 @@ status timing. See [schemas.md](schemas.md) and
 
 ## Result delivery (inline or presigned)
 
-A COMPLETED result small enough for the Redis channel
-(`RedisProvider.max_publish_bytes`) rides on the response itself as a binary
+A COMPLETED result at or under the inline cap
+(`NDIF_MAX_SOCKET_RESULT_BYTES`) rides on the response itself as a binary
 websocket frame; a larger one, and every non-blocking one, is uploaded to the
 object store and returned as a **presigned GET URL** signed for
 `NDIF_OBJECT_STORE_PUBLIC_URL`. See
@@ -179,7 +180,7 @@ object store and returned as a **presigned GET URL** signed for
 The OS process that executes an untrusted request's block,
 `python -m ndif.services.ray.sandbox.runner`. One fresh runner per request,
 stopped afterward; `Pool` (`src/ndif/services/ray/sandbox/host.py`) keeps
-`NDIF_SANDBOX_POOL_SIZE` pre-warmed. It holds only a weightless meta model and
+`NDIF_SANDBOX_POOL_SIZE` pre-warmed, each forked from the pool's template. It holds only a weightless meta model and
 drives the host's real one over a Unix socket. See
 [sandbox-execution.md](../concepts/sandbox-execution.md).
 

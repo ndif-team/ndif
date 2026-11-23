@@ -3,7 +3,7 @@ title: Controller Internals
 one_liner: The Controller actor in depth — the Cluster/Node/Deployment/Evaluator object model, how a deploy is sized and placed against GPU memory, `trust_remote_code` in the key, and how eviction is chosen and executed.
 tags: [internals, dev, controller, ray, gotchas]
 related: [docs/developing/ray-service.md, docs/developing/model-actor.md, docs/developing/sandbox-internals.md, docs/developing/queue-internals.md, docs/concepts/deployments-and-eviction.md, docs/concepts/auth-and-limits.md, docs/reference/schemas.md, docs/reference/env-vars.md, docs/operating/models-and-deployment.md, docs/runbooks/model-oom-on-deploy.md]
-sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/common/schema/controller.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/auth.py]
+sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/cluster/evaluator.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/api/auth.py]
 ---
 
 # Controller Internals
@@ -11,7 +11,7 @@ sources: [src/ndif/services/ray/deployments/controller/controller.py, src/ndif/s
 ## What this covers
 
 The single actor that decides which model runs on which GPU. It answers `deploy` / `evict` /
-`get_deployment` for the API's queue and the `ndif` CLI, and turns its placement decisions into Ray
+`get_deployment` for the queue and the `ndif` CLI, and turns its placement decisions into Ray
 actor lifecycle operations. This page is the home of sizing, placement, the eviction policy and the
 `build()`/`apply()` diff; [Deployments and Eviction](../concepts/deployments-and-eviction.md) is the
 mental-model version. Three facts frame the design:

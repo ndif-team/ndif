@@ -48,8 +48,10 @@ it:
 
 A `WARM` replica is a live actor whose `to_cache()` moved the module to CPU and
 released its GPU memory. Bringing it back (`from_cache`) skips the disk load —
-the point of the tier. Moving between levels is an actor method, not a restart:
-the replica keeps its `replica_id`, so the Ray actor name is stable.
+the point of the tier. A sandboxed replica also ends its waiting runners when it
+is parked, and starts new ones when it comes back. Moving between levels is an
+actor method, not a restart: the replica keeps its `replica_id`, so the Ray
+actor name is stable.
 
 > **Gotcha:** `_ControllerActor.get_deployment` only returns `HOT` replicas, so a
 > model with only `WARM` replicas looks undeployed to the queue. It asks for a
@@ -145,7 +147,7 @@ budget is the node's RAM scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.7`)
 **Both outcomes are transparent to an in-flight request.** A removed actor makes
 the queue's Ray call raise `ActorDiedError`; a demotion cancels the running
 request in `to_cache()` and raises `CachedActorError`. Both are in
-`EVICTED_ERRORS` (`src/ndif/services/api/queue/replica.py`), so the queue drops
+`EVICTED_ERRORS` (`src/ndif/services/ray/queue/replica.py`), so the queue drops
 the replica, puts the request back at the front of its priority group, and
 re-provisions if work remains. The user sees no error.
 
@@ -165,7 +167,8 @@ separate loop re-reads the Ray node list every `NDIF_CONTROLLER_SYNC_INTERVAL_S`
 are purged.
 
 The queue is only loosely coupled to this. An out-of-band deploy or evict (CLI,
-dashboard) pushes a `reconcile_model` event so the affected `Processor` adopts
+dashboard) ends by calling the Dispatcher actor's `reconcile` for each model it
+touched, so the affected `Processor` adopts
 any replica added; replicas the controller dropped leave the pool through the
 `EVICTED_ERRORS` path above.
 

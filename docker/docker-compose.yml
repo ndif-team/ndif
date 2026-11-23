@@ -150,9 +150,8 @@ services:
         NDIF_VERSION: ${NDIF_VERSION:-}
     environment:
       NDIF_SERVICE: api
-      # The API reaches redis/ray by service name on the compose network.
+      # The API reaches redis by service name on the compose network.
       NDIF_REDIS_URL: redis://redis:6379
-      NDIF_RAY_ADDRESS: ray://ray:10001
       # Ship logs to Loki (reached by service name on the compose network).
       NDIF_LOKI_URL: http://loki:3100/loki/api/v1/push
       # Ship metrics to InfluxDB (org/bucket/token match the influxdb service).
@@ -208,7 +207,6 @@ services:
       NDIF_API_URL: http://api:8001
       NDIF_DASHBOARD_MONITOR_URL: http://api:8001
       NDIF_RAY_ADDRESS: ray://ray:10001
-      NDIF_REDIS_URL: redis://redis:6379
       # Read-side telemetry for the daily report cron (jobs/report.py). Same
       # org/bucket/token as the writers; the dashboard only ever queries.
       NDIF_INFLUX_URL: http://influxdb:8086
@@ -226,8 +224,6 @@ services:
     volumes:
       - dashboard_data:/var/lib/dashboard
     depends_on:
-      redis:
-        condition: service_healthy
       api:
         condition: service_started
 
@@ -283,7 +279,7 @@ services:
         condition: service_healthy
     ports:
       - "8265:8265"    # Ray dashboard
-      - "10001:10001"  # Ray client server (ray://) — how the api connects
+      - "10001:10001"  # Ray client server (ray://) — how the CLI and dashboard connect
     # Ray's plasma object store lives in /dev/shm; the docker default (64MB) is
     # far too small. Bump for real workloads.
     shm_size: "16gb"

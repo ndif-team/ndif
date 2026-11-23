@@ -3,7 +3,7 @@ title: Troubleshooting
 one_liner: The single "something broke" entry point — a route table to the runbooks and error lookup, the first commands to run, and a symptom → diagnosis → fix table for the stack as a whole.
 tags: [operating, runbook, gotchas, api, ray, redis, dashboard, telemetry]
 related: [docs/operating/compose-stack.md, docs/operating/configuration.md, docs/operating/cli.md, docs/operating/dashboard.md, docs/operating/observability.md, docs/operating/production.md, docs/concepts/services-and-topology.md, docs/reference/error-messages.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/model-oom-on-deploy.md, docs/runbooks/add-a-gpu-node.md, docs/reference/ports.md, docs/reference/env-vars.md]
-sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/replica.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
+sources: [docker/docker-compose.yml, docker/Dockerfile, justfile, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/services/dashboard/backend/app.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/cli/commands/doctor.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py]
 ---
 
 # Troubleshooting
@@ -22,7 +22,6 @@ The single entry point for "something broke". Find the row, follow it.
 | A killed job's stored response later shows `COMPLETED` | [Trace a user's failed job → Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs) |
 | Requests fail right after a kill, with a greenlet `ValueError` (`Cannot switch to a different thread`) | [Debug a stuck request → step 8](../runbooks/debug-a-stuck-request.md#step-8--unstick-it): restart the replica |
 | An actor dead for good: `UNHEALTHY` persists and requests to it get an error | [Debug a stuck request → step 4](../runbooks/debug-a-stuck-request.md#step-4--is-there-a-live-replica), the `HOT \| UNHEALTHY` row (not the load-OOM case below) |
-| The first request after `just up ray` errors `Error starting model.` | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md#right-sizing): the note after recreating `ray` |
 | The stack itself: a service down, everything hanging, no UI, no telemetry | the rest of this page |
 
 ## The first commands
@@ -32,7 +31,7 @@ just ps                # container status + health, for the whole compose stack
 just logs api          # follow one service (api | ray | dashboard | redis | rustfs | ...)
 docker compose -f docker/docker-compose.yml exec ray ndif status   # what the controller thinks is deployed
 curl -s localhost:8001/ping        # "pong" — the API process is alive, no dependencies
-curl -i localhost:8001/connected   # 200 = Ray reachable, 503 = dispatcher not connected
+curl -i localhost:8001/connected   # 200 = the dispatcher is running on Ray, 503 = it is not
 ```
 
 `just logs` follows until Ctrl-C, which detaches without stopping anything.
@@ -59,18 +58,18 @@ narrower "what is installed".
 | `api` never starts, no logs | It waits on `redis`, `rustfs`, `postgres` and `influxdb` health checks | `just ps` — are they `healthy`? | Fix the unhealthy one, or remove its `depends_on` entry |
 | `ray` container fails to create | No NVIDIA container toolkit on the host | `docker info \| grep -i nvidia` | Install the toolkit; see [no GPU](#the-ray-container-has-no-gpu) |
 | `ndif status` shows 0 nodes, deploys fail `No GPU nodes available.` | Ray started without a `GPU` resource | `just logs ray` — the `Starting Ray head node with resources:` line | [no GPU](#the-ray-container-has-no-gpu) |
-| `/ping` 200 but every request hangs | The dispatcher died; `ray:connected` has no TTL | `redis-cli llen queue` is growing | [ping works, requests hang](#ping-works-but-requests-hang) |
-| `/request` 503 "compute backend is reconnecting" | `ray:connected` is absent — the dispatcher is reconnecting to Ray | `redis-cli get ray:connected` | `just logs api`; check the ray container |
+| `/ping` 200 but requests hang, then 503 | The dispatcher stopped; `/ping` does not depend on it, and `ray:connected` takes up to 30 s to lapse | `redis-cli llen queue` stays above zero; `/connected` turns 503 | [ping works, requests hang](#ping-works-but-requests-hang) |
+| `/request` 503 "compute backend is reconnecting" | `ray:connected` is absent — no dispatcher is running its loop: the Ray head is down or still starting, or the dispatcher stopped | `redis-cli get ray:connected` | Check the ray container; [ping works, requests hang](#ping-works-but-requests-hang) |
 | Dashboard loads JSON, not a UI | No built frontend where it looks | `GET localhost:8081/` returns a `hint` field | [dashboard has no UI](#the-dashboard-has-no-ui) |
 | Jobs `COMPLETED`, clients can't download | Presigned URL signed with an unreachable host | `curl` the URL from the client machine | [presigned URLs](#presigned-urls-are-unreachable-from-the-client) |
-| Requests run but never report a status | `NDIF_REDIS_URL` unset inside the ray container | `just logs ray` — connection refused on localhost:6379 | [Service names, not localhost](compose-stack.md#service-names-not-localhost) |
+| `/connected` stays 503 with Ray up | `NDIF_REDIS_URL` unset inside the ray container, so the dispatcher cannot reach Redis | `docker compose -f docker/docker-compose.yml exec ray env \| grep NDIF_REDIS_URL` | [Service names, not localhost](compose-stack.md#service-names-not-localhost) |
 | Ray head won't start, port in use | `NDIF_RAY_HEAD_PORT` set to Redis's 6379 | `ss -ltnp \| grep 6379` | Leave it at the default 6385 |
 | Grafana panels empty | Loki/Influx not configured for that service | `just logs api \| grep -i "telemetry enabled"` | [telemetry missing](#telemetry-is-missing) |
 | `ndif deploy` sits for a long time | Weight download or a slow load — the CLI waits with no deadline | `ndif status` — actor `DEPLOYING`? | Wait. If it cannot come up you get the actor's error, not a timeout |
 | `ndif deploy` errors `CANT_ACCOMMODATE` | No node can fit the padded size | `ndif status --verbose` per-GPU free memory | [Model OOM on deploy](../runbooks/model-oom-on-deploy.md) |
 | `ndif deploy` errors with an HF `trust_remote_code` message | The repo ships custom modelling code and the key lacks `trust_remote_code` | the evaluator traceback in the error | `ndif deploy --trust-remote-code <checkpoint>`; see [Models and Deployment](models-and-deployment.md#trust_remote_code-in-the-model-key) |
 | `ndif evict gpt2` prints `nothing to evict` | Model-key mismatch (revision and task are part of the key), or the replica is only WARM | `ndif status --json-output` for the exact key | Pass the deployment's `--revision` / `--task` |
-| `ndif queue` prints `No response from the dispatcher` | Redis is up, the **API** (and its dispatcher) is not — or the API restarted under five seconds ago | `curl localhost:8001/ping` | Wait five seconds; if it persists, restart `api` |
+| `ndif queue` prints `Failed to look up actor with name 'Dispatcher'` | The Ray head answers and the **dispatcher** on it is not running — the head is still starting, or the dispatcher stopped | `curl -i localhost:8001/connected` | [ping works, requests hang](#ping-works-but-requests-hang) |
 | `ndif start` printed ✓ but `/connected` never leaves 503 | A service died after its 2-second startup check | `ndif info` — is `ray` `stopped`? `$NDIF_HOME/logs/ray.log` | Read the log — the first error after `Starting Ray head node` is the cause |
 | Code changes have no effect | The source is baked into the image | — | `just ta` (down → build → up) |
 | `ndif status` / the dashboard wait ~40 s then fail `Starting Ray client server failed`; the `.err` file it names is empty | The Ray client proxier's forked per-client server died at birth (grpc fork handlers skipped) | `ray_client_server.err` in Ray's session logs: `skipping fork() handlers` before `SpecificServer startup failed` | `start.sh` exports `GRPC_ENABLE_FORK_SUPPORT=0` before `ray start`; make sure nothing overrides it |
@@ -128,40 +127,22 @@ fail outright.
 
 ## `/ping` works but requests hang
 
-The API can report healthy with no dispatcher running, which defeats naive
-monitoring. The dispatcher sets the `ray:connected` Redis flag on connect and
-deletes it while reconnecting, and the flag has **no TTL**. If the dispatcher
-process dies outright the flag survives, and every health signal keeps passing:
-
-| Endpoint | Why it still passes |
-|---|---|
-| `GET /ping` | No dependencies at all — a live gunicorn worker is enough |
-| `GET /connected` | Reads `ray:connected` |
-| `POST /request` | Same flag; the request is accepted and `LPUSH`ed, then never popped |
-| `GET /status`, `GET /env` | Serve the last cached blob until its TTL (`NDIF_STATUS_TTL_S` 60 s / `NDIF_ENV_TTL_S` 300 s) expires; only then do they fail |
-
-Requests pile up in the Redis list unserved and clients sit on `RECEIVED`. A
-check that detects a dead dispatcher observes the *queue*:
+`/ping` has no dependencies, so it passes with no dispatcher running. Monitor
+`/connected` instead: it reads the `ray:connected` key, which lapses within 30 s
+of the dispatcher dying, and `/request`, `/status` and `/env` 503 with it. A
+request accepted before the key lapsed waits in the Redis list on `RECEIVED`.
 
 ```bash
 docker compose -f docker/docker-compose.yml exec redis redis-cli llen queue   # 0 or small
-docker compose -f docker/docker-compose.yml exec api ndif queue               # 5 s timeout
+docker compose -f docker/docker-compose.yml exec ray ndif queue
 ```
 
-A growing `llen queue` plus `No response from the dispatcher` is the signature:
-the flag says connected, the process is gone. The dispatcher is spawned by the
-API's gunicorn master (`src/ndif/services/api/gunicorn_conf.py` `on_starting`),
-so restarting the API brings it back:
-
-```bash
-just restart api
-```
-
-That restart **drops every in-flight request.** Redis's `queue` list is the only
-durable point in the path; once the dispatcher pops a request it exists only in
-that process's memory. Clients on a blocking websocket get no further status,
-not even an `ERROR`. Only requests still in the Redis list survive. See
-[Queue Internals](../developing/queue-internals.md).
+An `llen queue` that stays above zero plus `Failed to look up actor with name
+'Dispatcher'` is the signature. Ray restarts the dispatcher actor when its process dies, and a
+new head starts a new one; restarting the API does neither.
+[Debug a Stuck Request](../runbooks/debug-a-stuck-request.md) says what happens
+to the requests it held (step 1) and how to replace a dispatcher that is alive
+but stuck (step 2).
 
 If the dispatcher is alive but the queue still isn't draining, the request is
 stuck further down the path — go to
@@ -245,7 +226,7 @@ Model-actor logs are the ones people can't find: they are under
 | An HF "requires you to execute the code" error | The repo ships custom modeling code and the key lacks `trust_remote_code` | Deploy with `--trust-remote-code` ([the key field](models-and-deployment.md#trust_remote_code-in-the-model-key)) |
 | The `Could not deploy this model` refusal for `trust_remote_code` on a client's request | Nothing is running for that key and no queued request's API key has the tag ([Error Messages](../reference/error-messages.md#error-responses)) | Deploy it as an admin, or grant the key the `trust_remote_code` user_tag |
 | `ndif status` shows the actor `UNHEALTHY`, repeatedly | The actor dies during weight load and Ray restarts it | The actor's log in the Ray dashboard; usually a load-time OOM |
-| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/api/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
+| Deploy succeeds, requests still see `DEPLOYING` forever | `Replica.wait` polls `__ray_ready__` with **no timeout** (`src/ndif/services/ray/queue/replica.py`) | `ndif queue` — a Processor at `deploying` with rising depth |
 
 Raising `NDIF_MODEL_CACHE_PERCENTAGE` does **not** help a GPU shortage: it sizes
 the **CPU** RAM used as WARM cache. For GPU pressure: evict explicitly, lower

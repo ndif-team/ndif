@@ -3,7 +3,7 @@ title: Add a GPU Node
 one_liner: Join another GPU machine to a running NDIF cluster as a Ray worker, confirm the controller sees its GPUs, and take it out again without stranding requests.
 tags: [runbook, operating, ray, controller]
 related: [docs/operating/production.md, docs/developing/ray-service.md, docs/developing/controller-internals.md, docs/reference/ports.md, docs/reference/env-vars.md, docs/concepts/deployments-and-eviction.md, docs/operating/compose-stack.md, docs/operating/troubleshooting.md, docs/runbooks/deploy-and-pin-a-model.md]
-sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/cli/commands/start.py, src/ndif/cli/service.py, src/ndif/cli/config.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/api/queue/replica.py, docker/docker-compose.yml, docker/Dockerfile]
+sources: [src/ndif/services/ray/start.sh, src/ndif/services/ray/resources.py, src/ndif/cli/commands/start.py, src/ndif/cli/service.py, src/ndif/cli/config.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/cluster/node.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/queue/replica.py, docker/docker-compose.yml, docker/Dockerfile]
 ---
 
 # Add a GPU Node
@@ -18,9 +18,9 @@ Three facts decide everything below:
 
 1. **One variable picks head or worker.** With `NDIF_RAY_HEAD_ADDRESS` unset,
    `src/ndif/services/ray/start.sh` runs `ray start --head` and then the NDIF
-   controller. Set to the head's `HOST:PORT`, it runs `ray start --address` and
-   nothing else. `NDIF_RAY_ADDRESS` is unrelated: it is the `ray://` client
-   address the API and CLI dial.
+   controller and dispatcher. Set to the head's `HOST:PORT`, it runs
+   `ray start --address` and nothing else. `NDIF_RAY_ADDRESS` is unrelated: it is
+   the `ray://` client address the CLI and dashboard dial.
 2. **A worker runs Ray and nothing else** — no API, Redis, RustFS or controller.
    `ndif start` with `NDIF_RAY_HEAD_ADDRESS` set starts only `ray`
    (`src/ndif/cli/commands/start.py` `start`), and the controller actor requires
@@ -173,7 +173,7 @@ held (`src/ndif/services/ray/deployments/controller/cluster/cluster.py`
 `Cluster.update_nodes`). A request that was running on one of those actors usually
 fails with "Error submitting request to model deployment": the worker sees
 `ActorUnavailableError`, the same as a restart, and waits for the replica to come
-back (`src/ndif/services/api/queue/replica.py` `Replica.dispatch`). If the sync lands
+back (`src/ndif/services/ray/queue/replica.py` `Replica.dispatch`). If the sync lands
 first, the request gets `ActorDiedError` instead, which the queue treats as an
 eviction: it goes back to the front of its model's queue and runs again from the
 start on another replica.
@@ -199,7 +199,8 @@ check the per-node list once more just before stopping.
 
 After an unplanned loss, if a model's requests sit in `DEPLOYING` (`ndif queue`)
 once `ndif status` no longer lists the node, the queue is waiting on a replica
-that died with it: restart the API (`just restart api` on the compose stack).
+that died with it: only a new dispatcher process clears it
+([Debug a stuck request](debug-a-stuck-request.md#step-2--is-the-dispatcher-alive-and-draining)).
 Requests it held in memory are dropped; the next request provisions afresh.
 
 ## Gotchas

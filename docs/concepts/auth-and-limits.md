@@ -3,7 +3,7 @@ title: Auth and Limits
 one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag and the API gate on deploying a model that runs its own repo code, and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/api/queue/processor.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/ray/queue/processor.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -98,7 +98,7 @@ The API decides who may deploy one.
 key's blocks still run in the sandbox. Postgres needs its `user_tags` row
 ([Enable auth](../runbooks/enable-auth.md)).
 
-**The gate.** `Processor.start` (`src/ndif/services/api/queue/processor.py`),
+**The gate.** `Processor.start` (`src/ndif/services/ray/queue/processor.py`),
 when the controller reports no replicas for the key, raises `DeploymentError` if
 the key carries `trust_remote_code` and no queued request has
 `request.trust_remote_code`. Every queued request gets the
@@ -205,7 +205,7 @@ timeout. What `interrupt` does to the running code depends on the class:
   op already in flight finishes first. The thread is the request's own
   (`run_on_own_thread`), so a late injection cannot reach other work.
 - **Untrusted on `SandboxModelActor`.** `SandboxModelDeployment.interrupt` stops
-  the request's runner process (SIGTERM, then SIGKILL after 5s), which closes the
+  the request's runner process (SIGKILL), which closes the
   socket the host thread is reading, then does the same `kill_thread`.
 - **Tensor-parallel.** `TPModelDeployment.interrupt` sets an abort flag every
   rank checks at a shared checkpoint rather than killing a thread mid-collective;

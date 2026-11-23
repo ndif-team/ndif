@@ -37,12 +37,14 @@ once; every other page zooms into one of its hops.
 
 - **No Ray Serve.** Deployments are detached Ray actors named
   `{replica_id}:ModelActor:{model_key}` in the `NDIF` namespace. Ignore Serve docs.
-- **An actor's exception arrives as a `RayTaskError`; read `.cause`.** Over Ray
-  Client a bare `isinstance` against the original type silently matches nothing.
-- **The API can't reach Ray; Redis is the only durable handoff.** Only the
-  dispatcher, a child of the gunicorn master, holds a Ray client. A popped request
-  lives in its memory, so an API restart drops in-flight work, and
-  `ray:connected` has no TTL — health endpoints pass after the dispatcher dies.
+- **An actor's exception arrives as a `RayTaskError`.** In the dispatcher it is
+  also an instance of the original type. Over Ray Client (CLI, dashboard) a bare
+  `isinstance` silently matches nothing; read `.cause`.
+- **The API can't reach Ray; Redis is the only durable handoff.** The dispatcher
+  is a detached Ray actor on the head node. A popped request lives in its memory,
+  so an API restart leaves the queue alone and a head failure drops in-flight
+  work. `ray:connected` is its heartbeat: the key expires within 30 s of the
+  dispatcher dying.
 - **Source is baked into the image.** Run `just ta` after a code change.
   `just ta <svc>` tears the **whole** stack down and brings back only that service and its dependencies; HOT deployments are lost.
 - **The published image runs the core stack in one container.** `NDIF_SERVICE`

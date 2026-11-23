@@ -74,3 +74,15 @@ class ArchitectureMismatchError(RequestError):
             "then align any mismatch it flags under nnsight / transformers / "
             "torch and re-run."
         )
+
+
+class WeightEditError(RequestError):
+    """An untrusted block edited one of the model's parameters or buffers in
+    place, inside a value it read. The host refuses the write
+    (``sandbox.controls.write_back``) and the request fails."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Your code tried to edit the model's weights or buffers, which is "
+            "prohibited."
+        )

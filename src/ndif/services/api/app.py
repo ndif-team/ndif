@@ -42,7 +42,7 @@ from ndif.common.redis import (
 
 from .auth import validate_request, verify_api_key
 from .versioning import validate_client_versions
-from .queue.config import CONFIG as QUEUE_CONFIG
+from ..ray.queue.config import CONFIG as QUEUE_CONFIG
 
 # Telemetry sinks (Loki/InfluxDB) are connected per worker in gunicorn's
 # post_fork hook (see gunicorn_conf), so this module doesn't touch them.
@@ -107,12 +107,23 @@ async def log_unhandled_exception(
 async def require_ray_connection() -> None:
     """Reject requests when the compute backend (Ray) isn't reachable.
 
-    The dispatcher maintains the ``ray:connected`` Redis flag (set once
-    connected, deleted while reconnecting). Used as a route dependency to
-    short-circuit with 503 before doing any work, rather than enqueuing a
-    request the backend can't serve.
+    The dispatcher, which runs inside the Ray cluster, keeps the
+    ``ray:connected`` Redis key alive while its dispatch loop runs; the key
+    expires once it stops. Used as a route dependency to short-circuit with 503
+    before doing any work, rather than enqueuing a request the backend can't
+    serve.
+
+    A Redis that errors or does not answer within 5 s counts as not connected:
+    nothing can be queued through it either.
     """
-    if not await RedisProvider.async_client.get("ray:connected"):
+    try:
+        async with asyncio.timeout(5):
+            connected = await RedisProvider.async_client.get("ray:connected")
+    except Exception as error:
+        logger.warning(f"could not read ray:connected: {type(error).__name__}: {error}")
+        connected = None
+
+    if not connected:
         raise HTTPException(
             status_code=503,
             detail="Service temporarily unavailable: compute backend is "
@@ -263,7 +274,6 @@ async def _coalesced_fetch(
                 status_code=504, detail=f"Timed out waiting for {subject}."
             )
     finally:
-        await pubsub.unsubscribe(ready_channel)
         await pubsub.aclose()
 
     raise HTTPException(status_code=503, detail=f"Could not retrieve {subject}.")
@@ -400,15 +410,12 @@ async def subscribe(websocket: WebSocket):
         async for message in pubsub.listen():
             if message["type"] == "message":
                 payload = message["data"]
-                # A JSON response starts with '{'; a pickled one is a zip
-                # container (torch.save) and never does. Status updates stay
-                # text frames, so a client that only reads text sees exactly
-                # what it saw before this existed.
+                # A JSON response starts with '{' and goes out as a text
+                # frame. A pickled one sits under a key and the channel carries
+                # its notice; see BackendRequestModel.respond.
                 if payload[:1] == b"{":
                     await websocket.send_text(payload.decode())
                 elif payload[:1] == RESULT_NOTICE:
-                    # The pickled response itself sits under a key; see
-                    # BackendRequestModel.respond.
                     key = payload[1:]
                     blob = await RedisProvider.async_bytes_client.getdel(key)
                     if blob is None:
@@ -418,8 +425,6 @@ async def subscribe(websocket: WebSocket):
                         )
                         return
                     await websocket.send_bytes(blob)
-                else:
-                    await websocket.send_bytes(payload)
 
     async def watch_disconnect() -> None:
         # The client never sends on this socket, so receive() returns only when
@@ -451,5 +456,4 @@ async def subscribe(websocket: WebSocket):
         # is a BaseException, so a plain `except Exception` / suppress(Exception)
         # would miss it.) An outer cancel of this coroutine still propagates.
         await asyncio.gather(forward_task, disconnect_task, return_exceptions=True)
-        await pubsub.unsubscribe(session_id)
         await pubsub.aclose()

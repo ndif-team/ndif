@@ -62,7 +62,7 @@ reads configuration from disk. When you add one:
   `CONFIG` dict — `attr: (ENV_VAR, typed_default, cast)`, which
   `src/ndif/common/providers/base.py` `Provider` turns into `from_env()` /
   `to_env()`. For a subsystem, a module-level config object
-  (`src/ndif/services/api/queue/config.py`). For a shell knob, `${VAR:-default}` in
+  (`src/ndif/services/ray/queue/config.py`). For a shell knob, `${VAR:-default}` in
   the service's `start.sh` with the default in the header comment.
 - **Empty means off.** An optional subsystem's URL defaults to `""` and empty
   disables it (`NDIF_LOKI_URL`, `NDIF_POSTGRES_URL`). Add an `_ENABLED` boolean only

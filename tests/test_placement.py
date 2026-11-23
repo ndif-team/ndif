@@ -577,26 +577,26 @@ class TestTheTwoExecutorsAreOne:
     def test_the_runner_calls_the_shared_executor(self):
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        source = inspect.getsource(nns)
+        source = inspect.getsource(execute)
         assert "execute_traced_block" in source
 
     def test_the_runner_does_not_reimplement_the_trace_scope(self):
         # inc()/dec() around tracer.execute is exactly what it used to duplicate.
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        source = inspect.getsource(nns._run)
+        source = inspect.getsource(execute._run)
         assert "inc()" not in source and "dec()" not in source
 
     def test_the_runner_applies_the_source_cache_scope(self):
         import inspect
 
-        from ndif.services.ray.sandbox import nns
+        from ndif.services.ray.sandbox import execute
 
-        assert "block_scope" in inspect.getsource(nns.run)
+        assert "block_scope" in inspect.getsource(execute.run)
 
     def test_the_host_brackets_the_forward_it_drives(self):
         # The half that is easy to miss: the runner brackets its own work, but
@@ -617,10 +617,9 @@ class TestTheTwoExecutorsAreOne:
         import inspect
 
         from ndif.services.ray.deployments.modeling import base, nns
-        from ndif.services.ray.sandbox import model
-        from ndif.services.ray.sandbox import nns as sandbox_nns
+        from ndif.services.ray.sandbox import adapters, driver, execute, model, worker
 
-        for module in (sandbox_nns, model, base):
+        for module in (execute, worker, adapters, driver, model, base):
             source = inspect.getsource(module)
             assert "torch.autocast" not in source, (
                 f"{module.__name__} builds its own autocast region instead of "
@@ -633,11 +632,9 @@ class TestTheTwoExecutorsAreOne:
         # `execute_traced_block` would autocast to the wrong thing, or nothing.
         import inspect
 
-        from ndif.services.ray.sandbox import model, runner
+        from ndif.services.ray.sandbox import execute, model, runner
 
-        assert "dtype" in inspect.signature(nns_run := __import__(
-            "ndif.services.ray.sandbox.nns", fromlist=["run"]
-        ).run).parameters
+        assert "dtype" in inspect.signature(execute.run).parameters
         assert "str(self.dtype)" in inspect.getsource(model.SandboxHost.run_in_runner)
         assert "dtype" in inspect.getsource(runner.Runner.handle)
 
@@ -1156,13 +1153,11 @@ class TestDeterminismAcrossProcesses:
         assert "self.run_in_runner(request, None)" in source
 
     def test_the_runner_tolerates_a_host_that_sends_none(self):
-        # The wire tuple grew a field; a runner must not require it.
-        import inspect
+        # The payload grew a field; a host must not be required to send it.
+        from ndif.services.ray.sandbox.messages import Payload
 
-        from ndif.services.ray.sandbox import runner
-
-        source = inspect.getsource(runner.Runner.handle)
-        assert "*rest" in source and "rest[0] if rest else None" in source
+        payload = Payload(b"blob", False, "float32")
+        assert payload.seed is None and payload.env is None
 
 
 class TestTheSandboxedTensorParallelActor:
@@ -1366,15 +1361,17 @@ class TestValuesFromTheRunnerLandOnThisHost:
 
     def test_the_host_reads_the_runner_in_exactly_one_place(self):
         # The premise the seam rests on: setting `map_location` on the connection
-        # covers everything only while that connection is the sole reader.
+        # covers everything only while that connection is the sole reader. The
+        # host reads through its link, and the link reads the channel once.
         import inspect
 
-        from ndif.services.ray.sandbox import driver
+        from ndif.services.ray.sandbox import controls, driver, link
 
-        source = inspect.getsource(driver)
-        assert source.count("connection.recv()") == 1, (
-            "a second read from the runner would bypass the device policy"
-        )
+        for module in (driver, controls):
+            assert ".recv(" not in inspect.getsource(module), (
+                "a second read from the runner would bypass the device policy"
+            )
+        assert inspect.getsource(link).count("self.channel.recv()") == 1
 
     def test_the_host_declares_where_tensors_land(self):
         import inspect
@@ -1420,7 +1417,7 @@ class TestValuesFromTheRunnerLandOnThisHost:
         from ndif.services.ray.sandbox.driver import SandboxDriver
 
         source = inspect.getsource(SandboxDriver.pump)
-        assert source.index("map_location") < source.index("next_event")
+        assert source.index("map_location") < source.index("link.receive(")
 
     def test_the_deserializer_honours_it(self):
         import inspect
@@ -1435,12 +1432,13 @@ class TestValuesFromTheRunnerLandOnThisHost:
         # "somewhere else" is expressed as an explicit map_location.
         import torch
 
+        from ndif.services.ray.sandbox.messages import Resume
         from ndif.services.ray.sandbox.protocol import decode, encode
 
-        blob = encode(("RESUME", 0, (torch.ones(4),), None))
+        blob = encode(Resume(0, (torch.ones(4),), None))
 
-        assert decode(blob)[2][0].device.type == "cpu"
-        assert decode(blob, map_location="cpu")[2][0].device.type == "cpu"
+        assert decode(blob).args[0].device.type == "cpu"
+        assert decode(blob, map_location="cpu").args[0].device.type == "cpu"
 
     def test_the_runner_leaves_tensors_where_they_are(self):
         # None is the runner's setting: the block is meant to compute on GPU, and
@@ -1771,7 +1769,7 @@ class TestScaleMatchesWhatIsRunning:
         # that is the call that grew a single-GPU replica for a sharded model.
         import inspect
 
-        from ndif.services.api.queue.replica import Replica
+        from ndif.services.ray.queue.replica import Replica
 
         source = inspect.getsource(Replica.provision)
         assert "controller_handle().scale.remote" in source

@@ -20,7 +20,6 @@
 #   NDIF_DASHBOARD_SESSION_SECRET        random secret for cookie signing
 #   NDIF_API_URL                         used by /api/status proxy (default: http://localhost:8001)
 #   NDIF_RAY_ADDRESS                     for the reconcile cron's deploy/evict calls
-#   NDIF_REDIS_URL                      for the reconcile cron's deploy/evict calls
 # Optional:
 #   NDIF_DASHBOARD_PORT                  default 8081
 #   NDIF_DASHBOARD_FRONTEND_DIST         default <package>/frontend/dist
@@ -75,7 +74,6 @@ NDIF_DASHBOARD_DATA_DIR=$DATA_DIR
 NDIF_API_URL=${NDIF_API_URL:-http://localhost:8001}
 NDIF_API_KEY=${NDIF_API_KEY:-}
 NDIF_RAY_ADDRESS=${NDIF_RAY_ADDRESS:-}
-NDIF_REDIS_URL=${NDIF_REDIS_URL:-}
 NDIF_INFLUX_URL=${NDIF_INFLUX_URL:-}
 NDIF_INFLUX_TOKEN=${NDIF_INFLUX_TOKEN:-}
 NDIF_INFLUX_ORG=${NDIF_INFLUX_ORG:-}

@@ -18,7 +18,7 @@ Two faces were *not* covered by #305 and are fixed alongside these tests:
   and ``report`` recorded ``error_type=RunnerError`` where the trusted path
   recorded ``OutOfOrderError`` — the issue's misattribution, surviving in a
   milder form. The runner now ships the terminal exception's class name on the
-  EXCEPTION message (``nns._run``), ``RunnerError`` carries it as
+  ``Failed`` message (``execute._run``), ``RunnerError`` carries it as
   ``cause_type``, and ``SandboxHost.error_name`` hands it to ``report``.
 * **A failure the host raises itself** — applying a bad swapped value such that
   the forward step raises host-side — must surface as that exception, never as

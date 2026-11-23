@@ -41,7 +41,7 @@ them, so the interactive docs are live on any deployment.
 
 `/request`, `/status`, and `/env` carry the `require_ray_connection` dependency
 (`src/ndif/services/api/app.py` `require_ray_connection`) and return **503** whenever the `ray:connected` Redis flag is
-absent, before any other work; `/connected` is that dependency and nothing else.
+absent or Redis cannot be read, before any other work; `/connected` is that dependency and nothing else.
 Every error body is `{"detail": ...}` — a string, or pydantic's error list for a
 422.
 
@@ -173,7 +173,7 @@ A status update is a JSON text frame:
 | `ERROR` | anywhere; `description` carries the user-facing message |
 
 On `COMPLETED`, the result arrives one of two ways. If the result fits under the
-inline cap (`RedisProvider.max_publish_bytes`) and the job is blocking, the whole
+inline cap (`NDIF_MAX_SOCKET_RESULT_BYTES`) and the job is blocking, the whole
 response is sent as one **binary** frame (`torch.save` bytes) with the result in
 `data`. Otherwise `data` is a presigned GET URL for `{request_id}.pt` in the object
 store (`BaseModelDeployment.upload_bytes`), which the client fetches directly. The
@@ -246,7 +246,7 @@ not the per-request `trusted`.
 
 | Code | Cause |
 |---|---|
-| 503 | Ray not connected, or the dispatcher's refresh failed |
+| 503 | No dispatcher running (`ray:connected` absent), or the dispatcher's refresh failed |
 | 504 | No refresh arrived within `NDIF_STATUS_TIMEOUT_S` |
 
 The dashboard's `/api/status` does not use this endpoint: it asks the controller
@@ -268,8 +268,8 @@ local environment. Backs the CLI's `ndif env` (`src/ndif/cli/commands/env.py` `e
 Structurally identical to `/status`: cached at the `env` Redis key with
 `NDIF_ENV_TTL_S` (300s — the env only changes on a redeploy), refreshed by the
 dispatcher's `env_worker` from `_ControllerActor.env`, bounded
-by `NDIF_ENV_TIMEOUT_S` (60s). Same errors: 503 on a failed refresh or a
-disconnected Ray, 504 on timeout.
+by `NDIF_ENV_TIMEOUT_S` (60s). Same errors: 503 on a failed refresh or with no
+dispatcher running, 504 on timeout.
 
 **Response** — `200`, `application/json`. Keys of `packages` are *import* names
 where resolvable, falling back to the distribution name.
@@ -317,9 +317,9 @@ without a body.
 again in a few minutes."`
 
 > **Gotcha:** this reflects the `ray:connected` Redis flag, which the dispatcher
-> sets on connect and deletes while reconnecting — with no TTL. If the
-> dispatcher process dies outright the flag survives and this reports
-> "connected" while nothing is being dispatched.
+> renews every 10 s with a 30 s expiry. For up to 30 s after the
+> dispatcher stops, this still reports "connected" while nothing is being
+> dispatched.
 
 ```bash
 curl -i http://localhost:8001/connected

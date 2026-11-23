@@ -3,7 +3,7 @@ title: Services and Topology
 one_liner: The three NDIF services and the seven supporting containers — what each is for, what talks to what, what holds state, and what degrades when a piece is missing.
 tags: [concepts, api, ray, dashboard, redis, telemetry]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/queue-and-scheduling.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/operating/observability.md, docs/reference/ports.md, docs/reference/env-vars.md]
-sources: [docker/docker-compose.yml, docker/Dockerfile, src/ndif/cli/service.py, src/ndif/services/ray/start.sh, src/ndif/services/api/start.sh, src/ndif/services/dashboard/start.sh, src/ndif/common/providers/redis.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/ray.py]
+sources: [docker/docker-compose.yml, docker/Dockerfile, src/ndif/cli/service.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/api/start.sh, src/ndif/services/dashboard/start.sh, src/ndif/common/providers/redis.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/ray.py]
 ---
 
 # Services and Topology
@@ -22,10 +22,10 @@ shape:
    in one container; compose sets one name per container instead. Every knob is
    an `NDIF_*` env var read at process start.
 2. **The API and the Ray cluster never speak directly.** The API talks to Redis;
-   a separate dispatcher process (spawned by the API's gunicorn master) holds
-   the one Ray client connection. Redis is therefore the load-bearing hop for
-   both request handoff and status delivery, and `ray:connected` — a flag the
-   dispatcher maintains — is how the API knows whether the cluster is reachable.
+   the dispatcher, a detached actor on the Ray head, takes requests off it.
+   Redis is therefore the load-bearing hop for both request handoff and status
+   delivery, and `ray:connected` — a key the dispatcher keeps alive — is how the
+   API knows whether a dispatcher is running.
 
 ## Topology
 
@@ -37,7 +37,7 @@ flowchart TB
 
     subgraph ndif[NDIF services]
         API["api<br/>gunicorn + FastAPI<br/>:8001"]
-        DISP["dispatcher<br/>(spawned by api)"]
+        DISP["dispatcher<br/>(actor on the ray head)"]
         RAY["ray<br/>head + controller actor<br/>:8265 :10001"]
         ACT["ModelActor replicas<br/>(Ray worker processes, GPU)"]
         DASH["dashboard<br/>Vue + FastAPI<br/>:8081"]
@@ -58,17 +58,17 @@ flowchart TB
     API -- "LPUSH queue, pub/sub" --> RED
     API -- "verify api key" --> PG
     API -- "responses/{id}.json" --> MIN
-    API --- DISP
+    RAY --- DISP
     DISP -- "BRPOP queue" --> RED
-    DISP -- "ray:// client" --> RAY
+    DISP -- "run(request)" --> ACT
     RAY --- ACT
     ACT -- "PUBLISH session_id" --> RED
     ACT -- "PUT {id}.pt" --> MIN
     DASH -- "status, deploy / evict (ray:// client)" --> RAY
     DASH -- "monitor / report jobs (HTTP)" --> API
     DASH -- "reconcile events" --> RED
-    API & RAY & ACT & DASH -. "logs" .-> LOKI
-    API & RAY & ACT -. "metrics" .-> INF
+    API & DISP & RAY & ACT & DASH -. "logs" .-> LOKI
+    API & DISP & RAY & ACT -. "metrics" .-> INF
     PROM -. "scrape :8080/metrics" .-> RAY
     GRAF --> LOKI & INF & PROM & PG
 ```
@@ -78,16 +78,16 @@ flowchart TB
 **`api`** — `gunicorn` with uvicorn workers serving
 `ndif.services.api.app:app` (`src/ndif/services/api/start.sh`). It accepts
 requests, authenticates them, pushes them onto Redis, and forwards status
-updates over `/subscribe` websockets. Its gunicorn master also *spawns* the
-queue dispatcher as a separate process (`src/ndif/services/api/gunicorn_conf.py`
-`on_starting`) — that process drains the Redis queue and holds the Ray
-connection. Popped requests live in the dispatcher's memory; nothing else in the
-API holds state.
+updates over `/subscribe` websockets. It holds no queue state and has no
+connection to Ray.
 
-**`ray`** — a Ray node plus, on the head, the NDIF controller
-(`src/ndif/services/ray/start.sh`). `NDIF_RAY_HEAD_ADDRESS` decides head vs
-worker: unset starts a head and launches the controller; set joins that address
-as a worker. Model replicas are detached Ray actors the controller creates on
+**`ray`** — a Ray node plus, on the head, the NDIF controller and the queue
+dispatcher (`src/ndif/services/ray/start.sh`). `NDIF_RAY_HEAD_ADDRESS` decides
+head vs worker: unset starts a head and launches both; set joins that address
+as a worker. The dispatcher is a detached actor
+(`src/ndif/services/ray/queue/dispatcher.py` `DispatcherActor`) that drains the
+Redis queue and calls the model actors; popped requests live in its memory.
+Model replicas are detached Ray actors the controller creates on
 GPU nodes — plain Ray actor placement, not Ray Serve. The container needs a GPU,
 the NVIDIA container toolkit, and a raised `shm_size` (Ray's plasma store lives
 in `/dev/shm`).
@@ -134,15 +134,15 @@ re-reads nodes from Ray and re-pins `NDIF_DEPLOYMENTS` on boot.
 | `influxdb` / `NDIF_INFLUX_ENABLED=false` | Fail-open: no metric points recorded. |
 | `prometheus`, `grafana` | No dashboards; nothing else notices. |
 | `rustfs` unreachable | Results over the inline cap error at upload after the run; non-blocking requests have nowhere to write or read status. |
-| `ray` down, dispatcher reconnecting | The dispatcher clears `ray:connected`, and `/request`, `/status`, `/env`, `/connected` all 503 (`require_ray_connection` in `src/ndif/services/api/app.py`). |
-| dispatcher process dead, or its Ray connection dead without an error reaching it | `ray:connected` has no TTL and stays set. Health endpoints pass and `POST /request` returns `RECEIVED`, while requests never progress. |
+| `ray` head down | The dispatcher goes with it. `ray:connected` lapses within 30 s, and `/request`, `/status`, `/env`, `/connected` all 503 (`require_ray_connection` in `src/ndif/services/api/app.py`). Requests the dispatcher had popped are lost and their users are not told; requests still in the Redis list wait for the next dispatcher. |
+| dispatcher actor dead, head up | Ray restarts it, and it adopts the running replicas as requests arrive. The requests it had popped are lost. |
 | `redis` down | The API cannot enqueue and the dispatcher cannot pop; nothing works. |
 
 > **Gotcha:** every provider defaults to `localhost`. Inside the `ray` container
 > `localhost` is the ray container itself, and Redis is a different container —
 > which is why compose sets `NDIF_REDIS_URL: redis://redis:6379` explicitly on
-> the ray service. A model actor that can't reach Redis runs the job and then
-> fails to publish its result. See
+> the ray service. A dispatcher that can't reach Redis never sets
+> `ray:connected`, and every request gets a 503. See
 > [Compose stack](../operating/compose-stack.md#service-names-not-localhost).
 
 ## Related

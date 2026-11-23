@@ -1,7 +1,7 @@
 """Coordination for the /env endpoint's coalesced cluster-env cache.
 
-Mirrors :mod:`ndif.common.redis.status`. The API can't reach Ray directly (only the
-dispatcher connects), so it serves a TTL'd JSON blob from ``ENV_KEY``. On a
+Mirrors :mod:`ndif.common.redis.status`. The API can't reach Ray directly (the
+dispatcher does), so it serves a TTL'd JSON blob from ``ENV_KEY``. On a
 miss, requests coalesce through ``ENV_REQUESTED_KEY`` (a SET NX lock) so only
 one triggers a refresh: the winner appends to ``ENV_TRIGGER_STREAM``, which the
 dispatcher's env worker consumes. The worker fetches ``env`` from the

@@ -13,9 +13,10 @@ no separate flag to keep in sync. The two ways a worker ends are:
     in which case the in-flight request is handed back to the *front* of the
     Processor's queue rather than errored, so a sibling replica (or a freshly
     re-provisioned one) can pick it up; and
-  - a deliberate ``cancel`` (a connection-error purge, or an operator kill whose
-    actor did not stop the request in time), which errors the in-flight request.
-    An operator kill the actor honours leaves the worker running.
+  - a deliberate ``cancel`` (a purge after a failed provision, or an operator
+    kill whose actor did not stop the request in time), which errors the
+    in-flight request. An operator kill the actor honours leaves the worker
+    running.
 """
 
 from __future__ import annotations
@@ -79,14 +80,13 @@ class Replica:
         Args:
             model_key: The model this Replica serves.
             replica_id: The controller-assigned id of the backing actor.
-            processor: The owning Processor; the Replica reads its shared queue /
-                error queue and drives its own pool membership through it.
+            processor: The owning Processor; the Replica reads its shared queue
+                and drives its own pool membership through it.
         """
         self.model_key = model_key
         self.replica_id = replica_id
         self.processor = processor
         self.queue = processor.queue
-        self.error_queue = processor.error_queue
 
         self.task: Optional[asyncio.Task] = None
 
@@ -152,10 +152,9 @@ class Replica:
 
         ``__ray_ready__`` returns once the constructor has finished, however long
         that takes. The one failure that means "not yet" is
-        ``ActorUnavailableError``: the actor is restarting, and over Ray Client
-        — how the dispatcher connects — ``__ray_ready__`` raises immediately
-        rather than blocking through the restart the way it does for a
-        driver-mode caller, so it has to be polled.
+        ``ActorUnavailableError``: the actor is restarting, and a call made
+        while it is can raise at once instead of waiting out the restart, so it
+        has to be polled.
 
         Anything else propagates to the caller, which reports it. That includes
         ``ValueError`` from the lookup: a name is registered when the actor is
@@ -212,8 +211,7 @@ class Replica:
         the Processor's queue (``enqueue(prepend=True)``) and this replica is
         dropped (``self.task = None``) so the worker loop exits. A
         ``CancelledError`` (deliberate cancel) errors the request and re-raises.
-        Other exceptions error the request and are reported via ``error_queue``
-        for connection-error detection, and the worker keeps serving.
+        Other exceptions error the request, and the worker keeps serving.
         """
         self.current_request = request
         self.current_started_at = time.time()
@@ -229,8 +227,8 @@ class Replica:
             await handle.run.remote(request)
 
         except asyncio.CancelledError:
-            # The worker task was cancelled mid-dispatch (operator kill,
-            # reconcile, or a connection-error purge). CancelledError inherits
+            # The worker task was cancelled mid-dispatch (an operator kill, or a
+            # purge after a failed provision). CancelledError inherits
             # BaseException, so the ``except Exception`` below would NOT catch
             # it — without this branch the user is stuck on DISPATCHED forever.
             # Surface an error, then re-raise to exit.
@@ -255,24 +253,7 @@ class Replica:
             raise
 
         except Exception as e:
-            # Not a bare ``isinstance``: an exception raised *inside* the actor
-            # (CachedActorError, on a HOT->WARM demotion) comes back wrapped in a
-            # ``ray.exceptions.RayTaskError``, and the dual RayTaskError-plus-cause
-            # class that would satisfy ``isinstance`` is only built when Ray
-            # applies ``as_instanceof_cause()`` — which it does not over Ray
-            # Client, the way the dispatcher connects. The wrapper arrives plain,
-            # so the cause has to be read off ``.cause``.
-            #
-            # Missing this meant a demotion never re-queued: the actor raised
-            # CachedActorError exactly as designed, the match failed, and the
-            # request fell through to the generic handler and was errored to the
-            # user, on a cluster that otherwise looked healthy.
-            cause = getattr(e, "cause", None)
-            evicted = isinstance(e, EVICTED_ERRORS) or (
-                cause is not None and isinstance(cause, EVICTED_ERRORS)
-            )
-
-            if evicted:
+            if isinstance(e, EVICTED_ERRORS):
                 # The replica is gone (lookup failure, actor died, or moved to
                 # CPU cache). Drop this replica (task -> None ends the worker
                 # loop) and hand the in-flight request back to the front of the
@@ -313,7 +294,6 @@ class Replica:
                 error_type=error_type_name(e),
                 exec_ms=elapsed_ms(self.current_started_at),
             )
-            self.error_queue.put_nowait((self.model_key, e))
 
             if isinstance(e, ActorUnavailableError):
                 # The actor killed itself to recover from an unrecoverable CUDA
@@ -358,8 +338,8 @@ class Replica:
         ``interrupt`` (``ndif kill``) first stops the request on the actor and
         gives its dispatch a few seconds to return on its own, so the replica
         stays in the pool and the worker is cancelled only if the actor does not
-        respond. Without it (a purge, whose actor may be unreachable) only the
-        dispatch is cancelled, and a live actor runs the block to completion.
+        respond. Without it (a purge) only the dispatch is cancelled, and a live
+        actor runs the block to completion.
         """
         request = self.current_request
         if request is not None:

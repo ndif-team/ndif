@@ -3,7 +3,7 @@ title: Wire Schemas
 one_liner: Every model in common/schema — BackendRequestModel, BackendResponseModel, Status, and the controller RPC shapes — field by field.
 tags: [reference, api, controller, internals]
 related: [docs/concepts/status-and-results.md, docs/concepts/request-lifecycle.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md, docs/developing/controller-internals.md, docs/developing/sandbox-internals.md, docs/developing/telemetry-internals.md, docs/reference/redis-keys.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/common/schema/controller.py, src/ndif/common/errors.py, src/ndif/common/types.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/nns.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/schema/response.py, src/ndif/common/schema/controller.py, src/ndif/common/errors.py, src/ndif/common/types.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/deployments/controller/cluster/cluster.py, src/ndif/services/ray/deployments/controller/controller.py]
 ---
 
 # Wire Schemas
@@ -36,7 +36,7 @@ server-side ones.
 | `id` | `str` | `uuid4().hex` | The job id: stamps every response, names the result object (`{id}.pt`), and is what a non-blocking client polls. Distinct from `session_id`. Minted server-side unless the envelope supplies one. |
 | `api_key` | `Optional[str]` | `None` | Taken from the `ndif-api-key` header by `validate_request` when one is sent. |
 | `email` | `Optional[str]` | `None` | The key owner's email, resolved at ingress so logs and metrics attribute to a person. With auth on, from Postgres; with auth off, whatever the client sent. |
-| `tags` | `set[str]` | `set()` | The caller's user_tags, stamped at ingress (with auth off: as sent, defaulting to `{"trusted"}`). Read by three properties: `trusted` (**selects the execution path** — see below), `trust_remote_code` (may deploy a model whose key carries `trust_remote_code`; `trusted` implies it — [auth-and-limits.md](../concepts/auth-and-limits.md#trust_remote_code)) and `priority` (sorts ahead as a *group*, FIFO within each group, `src/ndif/services/api/queue/request_queue.py` `RequestQueue.rank`; no aging, so saturated priority traffic starves normal requests). |
+| `tags` | `set[str]` | `set()` | The caller's user_tags, stamped at ingress (with auth off: as sent, defaulting to `{"trusted"}`). Read by three properties: `trusted` (**selects the execution path** — see below), `trust_remote_code` (may deploy a model whose key carries `trust_remote_code`; `trusted` implies it — [auth-and-limits.md](../concepts/auth-and-limits.md#trust_remote_code)) and `priority` (sorts ahead as a *group*, FIFO within each group, `src/ndif/services/ray/queue/request_queue.py` `RequestQueue.rank`; no aging, so saturated priority traffic starves normal requests). |
 | `payload` | `Optional[bytes]` | `None` | The serialized interventions blob, filled from the multipart `blob` part by `create_request`. Not part of the client's JSON envelope. |
 | `enqueued_at` | `Optional[float]` | `None` | Unix time the request joined a model's in-memory queue (`Processor.enqueue`); the autoscaler reads it to spot a stale queue. Preserved on a re-queue. |
 | `last_status` / `last_status_time` | `Optional[Status]` / `Optional[float]` | `None` | The status the request is in and when it entered it. `last_status_time` is seeded at `RECEIVED`, so it doubles as the ingress time; per-stage latency comes from the `status_time` metric ([telemetry-internals.md](../developing/telemetry-internals.md)). |
@@ -70,7 +70,7 @@ records `len(request.payload)`, the compressed size.
 
 The actor inverts it with `BackendRequestModel.deserialize` — the subclass
 override — in `BaseModelDeployment.execute`, and the sandbox runner calls the same
-override (`src/ndif/services/ray/sandbox/nns.py` `_run`). The override classifies
+override (`src/ndif/services/ray/sandbox/execute.py` `_run`). The override classifies
 an unreadable payload as `PayloadError` and an unresolvable module path as
 `ArchitectureMismatchError` (`src/ndif/common/errors.py`), so both paths report
 the same sentence. Past the API, the whole request travels as pickle:
@@ -78,7 +78,7 @@ the same sentence. Past the API, the whole request travels as pickle:
 | Hop | Encoding | Code |
 |---|---|---|
 | API worker → dispatcher | `pickle.dumps` onto the Redis list `NDIF_QUEUE_KEY`, `LPUSH`/`BRPOP` | `create_request`, `Dispatcher.get` |
-| dispatcher → model actor | Ray serialization of `handle.run.remote(request)` | `src/ndif/services/api/queue/replica.py` `Replica.dispatch` |
+| dispatcher → model actor | Ray serialization of `handle.run.remote(request)` | `src/ndif/services/ray/queue/replica.py` `Replica.dispatch` |
 | actor → result | `torch.save` with a CUDA→CPU relocating pickler, zstd level 3 if `compress` | `BaseModelDeployment.execute`, `BaseModelDeployment.prepare_result` |
 
 > **Gotcha:** every server-side field is a declared field, so a client can put
@@ -124,20 +124,20 @@ it serializes as its own name (`"COMPLETED"`).
 | `RUNNING` | `BaseModelDeployment.run` | The actor has started executing the block. | once per dispatch |
 | `COMPLETED` | `BaseModelDeployment.run` | Done; `data` carries the result or a URL to it. | **terminal** |
 | `ERROR` | many (below) | Failed, cancelled, timed out, or killed; `description` carries the message. | **terminal** |
-| `LOG` | `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`); in the sandbox, `SandboxDriver.next_event` through the `on_log` callback | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many per run** |
+| `LOG` | `LogStream.write` (`src/ndif/services/ray/deployments/modeling/util.py`); in the sandbox, a `Print` message through the `on_log` callback of `SandboxDriver` | One line of the user's `print()` output. Not a lifecycle stage. | **out-of-band, many per run** |
 
 `ERROR` comes from the actor (an exception via `format_error`, or the execution
 timeout — both in `BaseModelDeployment.run`); from the
 dispatch side (`Replica.dispatch` when a dispatch fails or its worker is
 cancelled, `Replica.cancel`); from `Processor.purge`; or from `ndif kill`
-(`Dispatcher._kill`).
+(`Dispatcher.kill`).
 
 The transitions between these values, including the cold-start path
 (`RECEIVED` → `PROVISIONING` → `DEPLOYING` → `QUEUED`), are drawn in
 [Status and Results](../concepts/status-and-results.md#the-lifecycle).
 
 The queue's `ProcessorStatus` (`UNINITIALIZED` / `PROVISIONING` / `DEPLOYING` /
-`READY` / `CANCELLED`, in `src/ndif/services/api/queue/processor.py`) is a
+`READY` / `CANCELLED`, in `src/ndif/services/ray/queue/processor.py`) is a
 different enum describing a model's replica pool; `Processor.reply` maps two of
 its values onto the matching request statuses.
 
@@ -152,7 +152,7 @@ what an unmodified client parses.
 | `id` | `str` | *(required)* | The request id this update belongs to. |
 | `status` | `Status` | *(required)* | Lifecycle position (above). |
 | `description` | `str` | `""` | Human-readable detail — queue position, error message, or one line of `print` output for `LOG`. |
-| `data` | `Optional[Any]` | `None` | Only on `COMPLETED`: the result itself (on a response sent as `torch.save` bytes) when it fits under `RedisProvider.max_publish_bytes` and the job is blocking, otherwise a presigned GET URL for `{id}.pt` (`BaseModelDeployment.upload_bytes`). The cap lives in [status-and-results.md](../concepts/status-and-results.md). |
+| `data` | `Optional[Any]` | `None` | Only on `COMPLETED`: the result itself (on a response sent as `torch.save` bytes) when it fits under `ObjectStoreProvider.max_socket_result_bytes` and the job is blocking, otherwise a presigned GET URL for `{id}.pt` (`BaseModelDeployment.upload_bytes`). The cap lives in [status-and-results.md](../concepts/status-and-results.md). |
 | `meta` | `Optional[dict]` | `None` | What the run cost, on `COMPLETED` **and** on the actor's `ERROR` responses (`src/ndif/services/ray/deployments/modeling/util.py` `request_meta`): `runtime` (wall-clock seconds), `max_mem_by_gpu` / `max_mem_pct_by_gpu` (bytes above the resident weights, and that against the headroom the request had), `max_memory_usage` (the worst device), and, only on an out-of-memory failure, `alloc_shortfall_by_gpu`. GPU keys are strings so the JSON and `torch.save` encodings agree. |
 
 Model config (`arbitrary_types_allowed=True, protected_namespaces=()`) is
@@ -162,8 +162,8 @@ inherited and used by `respond(..., pickled=True)` for an inline result;
 
 ## Controller schemas
 
-`src/ndif/common/schema/controller.py`. Both sides speak them — the API-side queue
-calls, the Ray-side controller answers — as Ray call arguments and returns, not
+`src/ndif/common/schema/controller.py`. Both sides speak them — the queue
+calls, the controller answers — as Ray call arguments and returns, not
 JSON. `MODEL_KEY`, `REPLICA_ID` and `NODE_ID` are `str` aliases from
 `src/ndif/common/types.py`.
 

@@ -37,7 +37,6 @@ from .....common.metrics import (
 )
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.ray import CachedActorError
-from .....common.providers.redis import RedisProvider
 from .....common.telemetry import elapsed_ms, event
 from .....common.types import MODEL_KEY
 from .nns import execute_traced_block, prepare_traced_block
@@ -437,12 +436,11 @@ class BaseModelDeployment:
             # Hand the result straight back on the COMPLETED response when it is
             # small enough (and there is a socket to hand it to). A non-blocking
             # request has no live channel, so it always goes to the object store.
-            # The cap comes from the Redis the response publishes through: past
-            # its pubsub output-buffer limits the subscriber is disconnected and
-            # the response silently lost — see RedisProvider.max_publish_bytes.
-            limit = RedisProvider.max_publish_bytes()
             blob = self.prepare_result(request, data)
-            if request.session_id and len(blob) <= limit:
+            if (
+                request.session_id
+                and len(blob) <= ObjectStoreProvider.max_socket_result_bytes
+            ):
                 inline = blob
             else:
                 url = self.upload_bytes(request, blob)
@@ -453,6 +451,14 @@ class BaseModelDeployment:
             # bug above. The finally below still restores state and cleans up.
             raise
         except Exception as exception:
+            if self.cached:
+                # to_cache moved the weights to CPU under this request, and the
+                # forward failed on them before the preempting cancel reached
+                # it. The request did nothing wrong: re-queue it, as above.
+                self.report(request, "preempted", elapsed_ms(exec_started))
+                raise CachedActorError(
+                    f"Model actor {self.model_key} was cached (WARM) mid-execution."
+                ) from exception
             message, fatal = self.format_error(exception)
             request.respond(
                 Status.ERROR,

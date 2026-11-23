@@ -3,7 +3,7 @@ title: Model Actor
 one_liner: The Ray actor that owns a model's GPU-resident weights and runs one request against them — loading, the run() template, results, timeouts, and metrics.
 tags: [internals, dev, ray, telemetry]
 related: [docs/developing/adding-a-model-actor.md, docs/developing/sandbox-internals.md, docs/developing/controller-internals.md, docs/developing/queue-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/status-and-results.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/developing/nnsight-integration.md, docs/reference/env-vars.md]
-sources: [src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/common/schema/request.py, src/ndif/common/providers/objectstore.py, src/ndif/common/metrics.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py]
+sources: [src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/common/schema/request.py, src/ndif/common/providers/objectstore.py, src/ndif/common/metrics.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/api/auth.py, src/ndif/services/ray/sandbox/model.py]
 ---
 
 # Model Actor
@@ -157,7 +157,7 @@ a client-supplied `tags: []` is honored** (`src/ndif/services/api/auth.py`
 ## One request, inside the actor
 
 The queue's replica worker calls `handle.run.remote(request)` and awaits it
-(`Replica.dispatch` in `src/ndif/services/api/queue/replica.py`). The request carries
+(`Replica.dispatch` in `src/ndif/services/ray/queue/replica.py`). The request carries
 `payload` (the serialized tracer blob), `compress`, `env`, `tags`, and the
 identity fields (`id`, `api_key`, `email`, `session_id`) used for responses and
 telemetry.
@@ -276,11 +276,11 @@ when the CUDA allocator refused an allocation, `alloc_shortfall_by_gpu`.
 The redirect is installed on the event-loop thread, since both streams are
 process-global and the restore must not run on the thread `interrupt()` kills. The
 sandbox actor uses it only for trusted requests; an untrusted runner forwards its
-output as `PRINT` events instead.
+output as `Print` messages instead.
 
 An exception out of the raced block is formatted by
 `BaseModelDeployment.format_error` and becomes the ERROR description verbatim: a
-`RequestError` (unreadable payload, architecture mismatch) reports its own sentence;
+`RequestError` (unreadable payload, architecture mismatch, a refused weight edit) reports its own sentence;
 anything else goes through nnsight's `clean_traceback`, which drops nnsight
 internals, then `filter_traceback`, which drops this actor's wrapper frames, leaving
 the user's code with the line text the linecache registration supplied. It also
@@ -311,8 +311,8 @@ request.
 
 `BaseModelDeployment.prepare_result` zstd-compresses (level 3) when
 `request.compress` is set and meters the size. The blob then takes one of two routes
-back, decided against the inline cap — `RedisProvider.max_publish_bytes`, derived
-from the Redis server's own pubsub output-buffer limits: under the cap, and with a
+back, decided against the inline cap, `ObjectStoreProvider.max_socket_result_bytes`
+(`NDIF_MAX_SOCKET_RESULT_BYTES`, 8 MiB by default): under the cap, and with a
 `session_id` to publish to, it rides on the `COMPLETED` response's `data` field
 itself, stored as `torch.save` output under the Redis key `result:{id}` with a
 short notice on pub/sub, and forwarded by `/subscribe` as a binary frame. Over it — and for a non-blocking request, which has no socket —

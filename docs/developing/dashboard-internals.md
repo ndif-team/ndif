@@ -189,7 +189,7 @@ A one-shot script. `main()` arms a `SIGALRM` for `SCRIPT_TIMEOUT` (480 s) that
 and exits if held (`acquire_lock`) — a slow tick skips rather than overlaps.
 `probe_health` does `GET /connected` then `GET /status`, calling the deployment down
 for an unreachable API, a failed `/connected`, a failed `/status`, **or zero
-HOT models** — `/connected` alone is too shallow, since the Ray client can be alive
+HOT models** — `/connected` alone is too shallow, since the dispatcher can be running
 while the controller is wedged. Both requests time out after `TIMEOUT` (60 s, in
 `jobs/util.py`). When a request raises, `describe_failure` puts the exception type
 and message in the reason, plus the response body for an HTTP error, so the log

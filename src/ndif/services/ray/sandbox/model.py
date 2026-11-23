@@ -16,7 +16,7 @@ use it too.
 import contextlib
 import os
 import threading
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import ray
 
@@ -25,6 +25,7 @@ from nnsight.schema.response import Status
 from ..deployments.modeling.base import BaseModelDeployment
 from .driver import RunnerError, SandboxDriver
 from .host import Pool
+from .messages import Payload
 
 if TYPE_CHECKING:
     from ....common.schema.request import BackendRequestModel
@@ -32,19 +33,18 @@ if TYPE_CHECKING:
 
 # How many runners to keep pre-warmed per model actor.
 #
-# Sized from the two costs it trades off, both measured on a g4dn.xlarge:
-# a cold spawn (python + torch + nnsight import) takes ~4s, while executing an
-# already-warm request takes ~0.7s. A pool only keeps up if refills — which run
-# concurrently, one thread each — cover the drain rate, so it needs to be at
-# least spawn/execute ~= 6. At the old default of 2 a saturated queue drained
-# the pool immediately and every other request paid the full ~4s spawn inline.
+# A refill is a fork of the pool's template (`host.Template`), ready in ~30 ms,
+# or ~0.5 s more with `NDIF_SANDBOX_PRELOAD_CUDA`. The default is sized for a
+# pool whose template cannot run, which starts each runner from nothing: ~4 s
+# (python + torch + nnsight import + meta model) against ~0.7 s for a request,
+# measured on a g4dn.xlarge. Refills run concurrently, one thread each, so that
+# pool keeps up with a saturated queue only if it holds at least start-up /
+# request time ~= 6.
 #
-# The costs of raising it: each warm runner holds ~480 MB (PSS, measured with
-# gpt2 on 2026-09-14) whether or not it is used — more for a larger
-# architecture, since a runner builds a meta model before it binds — so 7 is
-# ~3.4 GB per model actor, and concurrent refills contend for CPU on the node
-# hosting the actor. On a memory- or core-tight node, or
-# with many models resident at once, turn this down.
+# The costs of raising it, measured with Llama-3.1-8B on 2026-11-21: a forked
+# runner adds ~125 MB (PSS) to the template's ~240 MB, where one started from
+# nothing holds ~580 MB; with CUDA preloaded each also holds ~0.5 GB of the card.
+# On a memory-tight node, or with many models resident at once, turn this down.
 DEFAULT_POOL_SIZE = int(os.environ.get("NDIF_SANDBOX_POOL_SIZE", "7"))
 
 
@@ -73,21 +73,27 @@ class SandboxHost:
     ``__init__``; :meth:`open_pool` is the one line that does both.
     """
 
-    def open_pool(self, pool_size: Optional[int] = None, peers: int = 1) -> None:
+    def open_pool(
+        self, pool_size: Optional[int] = None, peers: int = 1, device: int = 0
+    ) -> None:
         """Warm a pool of runners for this actor.
 
         ``peers`` is how many hosts drive one runner: one ordinarily, and
         ``tp_size`` for a group that shares one, where a pool entry is a *group's*
         runner rather than a process per rank.
+
+        ``device`` is the card the model starts on, where a runner that starts
+        CUDA early starts it.
         """
         self.pool = Pool(
             size=DEFAULT_POOL_SIZE if pool_size is None else pool_size,
             peers=peers,
-            # Each runner builds its own meta model from this key, so its
-            # persistent-id map has the same paths as the tree this actor loaded.
-            # The key carries whether the checkpoint's own code may run, so the
-            # runner's build is the actor's build by construction.
+            # The pool's template builds a meta model from this key, so a
+            # runner's persistent-id map has the same paths as the tree this
+            # actor loaded. The key carries whether the checkpoint's own code may
+            # run, so that build is the actor's build by construction.
             model_key=self.model_key,
+            device=device,
         )
         # The runner currently executing (fresh per request), tracked so run() can
         # stop it to interrupt a timed-out or cancelled request.
@@ -122,7 +128,9 @@ class SandboxHost:
             # against. The base applied the same dict to this actor's model
             # moments ago.
             connection.send(
-                (request.payload, request.compress, str(self.dtype), seed, request.env)
+                Payload(
+                    request.payload, request.compress, str(self.dtype), seed, request.env
+                )
             )
             self.after_payload()
             driver = SandboxDriver(
@@ -151,8 +159,8 @@ class SandboxHost:
 
     def execution_scope(self, request: "BackendRequestModel"):
         # A trusted request runs in-process, so use the base's stdout capture. A
-        # sandboxed one forwards stdout as PRINT events instead (see next_event),
-        # so there's nothing to wrap here.
+        # sandboxed one forwards stdout as `Print` messages instead (see
+        # `SandboxDriver.pump`), so there's nothing to wrap here.
         if request.trusted:
             return super().execution_scope(request)
         return contextlib.nullcontext()
@@ -204,15 +212,40 @@ class SandboxModelDeployment(SandboxHost, BaseModelDeployment):
         self, *args: Any, pool_size: Optional[int] = None, **kwargs: Any
     ) -> None:
         super().__init__(*args, **kwargs)
-        self.open_pool(pool_size)
+        self.open_pool(pool_size, device=next(iter(self.gpu_mem_bytes_by_id), 0))
+
+    async def to_cache(self) -> None:
+        await super().to_cache()
+        # A parked replica serves nothing, so it keeps no runners waiting. They
+        # hold host memory, and with preload a CUDA context each on a card
+        # this replica has just given up.
+        self.pool.close()
+
+    def from_cache(self, gpu_mem_bytes_by_id: Dict[int, int]) -> None:
+        # A new pool, opened first so its runners start while the weights move.
+        # The cards may have changed, so its runners are told the new first one.
+        self.open_pool(self.pool.size, device=next(iter(gpu_mem_bytes_by_id), 0))
+        super().from_cache(gpu_mem_bytes_by_id)
 
     def interrupt(self) -> None:
         # Stopping the runner unblocks the host thread if it's parked on the socket;
         # the base's kill_thread covers it running the forward pass in Python.
         # An injection that lands late is harmless: see run_on_own_thread.
+        thread = next(
+            (t for t in threading.enumerate() if t.ident == self.execution_ident),
+            None,
+        )
         if self.execution_sandbox is not None:
             self.execution_sandbox.stop()
         super().interrupt()
+        # `stop` does not wait for the runner to exit, and the host thread is
+        # inside the forward until it sees the socket close. The next request
+        # must not start on this model before that thread has left it:
+        # unwinding late, it cancels the next request's workers, whose saves
+        # are then missing from a result that reports success. Bounded,
+        # because a thread inside a native call cannot be interrupted.
+        if thread is not None:
+            thread.join(timeout=5.0)
 
     def execute(self, request: "BackendRequestModel") -> "tuple[bytes, float | None]":
         """Worker-thread body: run the request's block in a fresh runner.

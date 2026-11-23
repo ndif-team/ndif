@@ -273,13 +273,11 @@ just up ray
 
 `docker compose restart` (`just restart ray`) keeps the old environment, and
 `just ta ray` runs `just down` first and so tears down the whole stack. Recreating
-`ray` takes down the controller **and every model actor**: in-flight and queued
-requests are errored once the API notices the lost connection, and only
+`ray` takes down the controller, the dispatcher **and every model actor**:
+requests the dispatcher had popped are lost and their users are not told, and only
 `NDIF_DEPLOYMENTS` models (and dashboard-scheduled ones, on the next reconcile)
-come back on their own. Plan it as an outage. Right after the recreate, the first
-request errors with `Error starting model. Please try again later.` — the API is
-still holding its old compute connection, and its log shows a `ConnectionError` —
-and the next may get a `503` until the API reconnects; retry after that.
+come back on their own. Plan it as an outage. A request may get a `503` until the
+new head's dispatcher is running; retry after that.
 On a from-source install, change the
 variable in the environment `ndif start` runs under, then `ndif stop ray` and
 `ndif start ray`.

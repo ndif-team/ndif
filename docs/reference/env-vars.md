@@ -3,7 +3,7 @@ title: Environment Variables
 one_liner: Every NDIF_* variable the server reads — default, the symbol that reads it, and what it changes.
 tags: [reference, operating, config]
 related: [docs/operating/configuration.md, docs/reference/ports.md, docs/operating/compose-stack.md, docs/operating/production.md, docs/developing/providers.md, docs/concepts/auth-and-limits.md, docs/operating/observability.md]
-sources: [src/ndif/cli/config.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/ray.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/postgres.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/versioning.py, src/ndif/services/api/queue/config.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/common/redis/env.py, src/ndif/common/redis/status.py, src/ndif/common/logging_setup.py, src/ndif/cli/commands/doctor.py, docker/Dockerfile, docker/docker-compose.yml]
+sources: [src/ndif/cli/config.py, src/ndif/common/providers/redis.py, src/ndif/common/providers/ray.py, src/ndif/common/providers/objectstore.py, src/ndif/common/providers/postgres.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/influx.py, src/ndif/services/api/gunicorn_conf.py, src/ndif/services/api/versioning.py, src/ndif/services/ray/queue/config.py, src/ndif/services/ray/start.sh, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/dashboard/start.sh, src/ndif/services/dashboard/backend/config.py, src/ndif/common/redis/env.py, src/ndif/common/redis/status.py, src/ndif/common/logging_setup.py, src/ndif/cli/commands/doctor.py, docker/Dockerfile, docker/docker-compose.yml]
 ---
 
 # Environment Variables
@@ -36,7 +36,7 @@ controller's Redis, object-store, Loki and Influx settings into the actor's Ray
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_SERVICE` | `all` (image `ENV` in `docker/Dockerfile`); `unknown` as a telemetry label | `src/ndif/cli/service.py` `env_services`; `LokiProvider.CONFIG`, `InfluxProvider.CONFIG` | Which service(s) a bare `ndif start` brings up (space/comma list; `all` = redis, rustfs, ray, api), **and** the `service` label on every log line and metric point. The start scripts export it per service; `Deployment.create` overrides it to `model` for actor processes. |
+| `NDIF_SERVICE` | `all` (image `ENV` in `docker/Dockerfile`); `unknown` as a telemetry label | `src/ndif/cli/service.py` `env_services`; `LokiProvider.CONFIG`, `InfluxProvider.CONFIG` | Which service(s) a bare `ndif start` brings up (space/comma list; `all` = redis, rustfs, ray, api), **and** the `service` label on every log line and metric point. The start scripts export it per service; `Deployment.create` overrides it to `model` for actor processes, and the dispatcher's launcher to `dispatcher` for the dispatcher actor. |
 | `NDIF_ENVIRONMENT` | `dev` | `LokiProvider.CONFIG`, `InfluxProvider.CONFIG`; the report cron's `parse_args` | Second static label on all telemetry — the prod/staging/dev discriminator. The report cron filters usage by it. |
 | `NDIF_LOG_LEVEL` | `INFO` | `src/ndif/common/logging_setup.py` `configure_console` | Level of the `ndif` logger (not the root; `propagate` is off). Applied only if it *lowers* the current level. |
 | `NDIF_HOME` | `~/.ndif` | `src/ndif/cli/state.py` `State.from_env`; `src/ndif/cli/config.py` `DEFAULTS` | CLI state root: `run/<name>.pid`, `logs/<name>.log`, and RustFS's data dir when the CLI spawns it. CLI-only. |
@@ -46,7 +46,7 @@ controller's Redis, object-store, Loki and Influx settings into the actor's Ray
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
 | `NDIF_API_PORT` | `8001` | `src/ndif/services/api/gunicorn_conf.py` `bind` | Port gunicorn binds, always on `0.0.0.0`. |
-| `NDIF_API_WORKERS` | `1` | `src/ndif/services/api/gunicorn_conf.py` `workers` | Uvicorn worker count. The queue dispatcher is started once by the master (`on_starting`), so this scales ingress only. |
+| `NDIF_API_WORKERS` | `1` | `src/ndif/services/api/gunicorn_conf.py` `workers` | Uvicorn worker count. The queue dispatcher is not part of the API, so this scales ingress only. |
 | `NDIF_API_TIMEOUT` | `120` | `src/ndif/services/api/gunicorn_conf.py` `timeout` | Gunicorn worker timeout in seconds. |
 | `NDIF_API_URL` | `http://localhost:8001` | `src/ndif/cli/config.py` `DEFAULTS` (the CLI's `env`, `info`, `doctor`); `src/ndif/services/dashboard/jobs/report.py` `parse_args` | Where *clients of the API* find it: the CLI's checks, and the dashboard's daily report cron, which reads `GET /status` there to count hot models (`hot_models`). Does not affect what the API binds. |
 | `NDIF_MIN_NNSIGHT_VERSION` | unset | `src/ndif/services/api/versioning.py` `MIN_NNSIGHT_VERSION` | Minimum client nnsight version. Unset or empty disables the check; set, an older client gets a 400 at submit. |
@@ -55,15 +55,16 @@ controller's Redis, object-store, Loki and Influx settings into the actor's Ray
 
 ## Queue and autoscaling
 
-Read once at import by `src/ndif/services/api/queue/config.py` `QueueConfig.from_env`,
-in the API's dispatcher process. The six numeric ones go through `_positive_int`,
-which raises at import on a non-integer or non-positive value — the API won't boot.
+Read once at import by `src/ndif/services/ray/queue/config.py` `QueueConfig.from_env`,
+in the dispatcher, so set them in the environment of the ray service's head node.
+Only `NDIF_QUEUE_KEY` is also read by the API, and must match. The six numeric
+ones go through `_positive_int`, which raises at import on a non-integer or
+non-positive value, and the process does not start.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `NDIF_QUEUE_KEY` | `queue` | Redis list the API pushes onto and the dispatcher pops from. |
-| `NDIF_QUEUE_FETCH_TIMEOUT_S` | `10` | Blocking-pop timeout; bounds how long an idle dispatch loop waits before re-checking evictions and errors. |
-| `NDIF_QUEUE_FETCH_BATCH_MAX` | `32` | Max requests drained per dispatch iteration. |
+| `NDIF_QUEUE_FETCH_TIMEOUT_S` | `10` | Blocking-pop timeout: the length of an idle pass of the dispatch loop. The dispatcher's stream reads block for as long, and its Redis reply timeout is this plus 10 s. |
 | `NDIF_AUTOSCALING_INTERVAL_S` | `5` | How often a per-model processor inspects its queue. |
 | `NDIF_AUTOSCALING_WAIT_THRESHOLD_S` | `30` | Scale up when the oldest queued request has waited longer than this. |
 | `NDIF_AUTOSCALING_BACKOFF_S` | `120` | Pause after a scale-up before another can fire. |
@@ -73,16 +74,21 @@ which raises at import on a non-integer or non-positive value — the API won't 
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py` `RedisProvider`; `src/ndif/cli/service.py` `_redis_command` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI starts `redis-server` on this URL's port. The inline-result cap derives from this server's `client-output-buffer-limit pubsub` (`RedisProvider.max_publish_bytes`: `min(soft, hard // 2)`, 8 MiB on stock redis:7); there is deliberately no env var for it, so raise the Redis limits to raise the cap. |
+| `NDIF_REDIS_URL` | `redis://localhost:6379` | `src/ndif/common/providers/redis.py` `RedisProvider`; `src/ndif/cli/service.py` `_redis_command` | The one Redis every service shares: request queue, response pub/sub, status/env caches, trigger streams. The CLI starts `redis-server` on this URL's port. |
 | `NDIF_ENV_TTL_S` | `300` | `src/ndif/common/redis/env.py` `ENV_TTL_S` | How long a cached `/env` payload is served before a refresh is triggered. |
 | `NDIF_ENV_TIMEOUT_S` | `60` | `src/ndif/common/redis/env.py` `ENV_TIMEOUT_S` | How long a `/env` request waits for a refresh, and how long the refresh holds the coalescing lock. |
 | `NDIF_STATUS_TTL_S` | `60` | `src/ndif/common/redis/status.py` `STATUS_TTL_S` | Same, for the cached `/status` blob. |
 | `NDIF_STATUS_TIMEOUT_S` | `60` | `src/ndif/common/redis/status.py` `STATUS_TIMEOUT_S` | Same, for a waiting `/status` request. |
 
+The two TTLs are applied by the dispatcher, so they are set on the ray head. The
+two timeouts are read on both sides: by the API for the wait and the lock, and by
+the dispatcher to bound its call to the controller.
+
 > **Gotcha:** every service other than the one running Redis needs
 > `NDIF_REDIS_URL` set explicitly. In compose, Redis is its own container, so
 > nothing listens on `localhost:6379` inside the `ray` container; left at the
-> default, a model actor cannot publish its response and the request looks hung.
+> default, the dispatcher cannot reach Redis, `ray:connected` is never set and
+> every request gets a 503.
 > Compose sets the key on the `api`, `ray` and `dashboard` services.
 
 ## Ray node
@@ -92,7 +98,7 @@ Read by `src/ndif/services/ray/start.sh` (ray service only), except
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `src/ndif/common/providers/ray.py` `RayProvider.CONFIG`; `src/ndif/cli/config.py` `DEFAULTS` | The `ray://` **client** address the API's dispatcher, the dashboard and the CLI connect with. Says nothing about head vs worker. A URL with no port logs a warning and falls back to 6379 (`RayProvider.get_host_port`). |
+| `NDIF_RAY_ADDRESS` | `ray://localhost:10001` | `src/ndif/common/providers/ray.py` `RayProvider.CONFIG`; `src/ndif/cli/config.py` `DEFAULTS` | The `ray://` **client** address the dashboard and the CLI connect with. Says nothing about head vs worker. A URL with no port logs a warning and falls back to 6379 (`RayProvider.get_host_port`). |
 | `NDIF_RAY_HEAD_ADDRESS` | unset | `start.sh`; `src/ndif/cli/commands/start.py` `start` | **The head/worker switch.** Unset → `ray start --head`. Set to the head's `HOST:PORT` → wait for it, then join as a worker (a `ray://` prefix is stripped). When set, a bare `ndif start` brings up only Ray. |
 | `NDIF_RAY_HEAD_PORT` | `6385` | `start.sh`; `src/ndif/cli/config.py` `DEFAULTS` | Ray's GCS port on the head (`--port`). Both defaults are 6385, off Redis's 6379. Head only. |
 | `NDIF_RAY_OBJECT_MANAGER_PORT` | `8076` | `start.sh` | Object-manager port. Head only. |
@@ -130,7 +136,8 @@ Read by the controller launcher,
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor. A cold spawn (~4 s) is several times a warm execution, so a smaller pool makes a saturated queue pay the spawn inline; each warm runner holds roughly 0.5 GB of RAM whether used or not. Turn it down on memory- or core-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor while it is HOT; a WARM replica keeps none. Each is forked from the pool's template (`src/ndif/services/ray/sandbox/host.py` `Template`) in ~30 ms and adds ~125 MB of RAM to the template's ~240 MB (Llama-3.1-8B); a pool whose template cannot run starts each from nothing (~4 s, ~0.5 GB). Turn it down on memory-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_PRELOAD_CUDA` | off | `src/ndif/services/ray/sandbox/runner.py` `PRELOAD_CUDA` | `1`/`true`/`yes`/`on`: each runner starts CUDA while it waits in the pool, so a request does not (~0.45 s on an A100). The cost is the CUDA context, ~0.5 GB per waiting runner on the model's first card: `NDIF_SANDBOX_POOL_SIZE` of them per HOT replica, outside the actor's GPU budget. Set on the actor; it reaches the runner through `RUNNER_ENV`. |
 
 ## Object store
 
@@ -147,6 +154,7 @@ RustFS in dev, S3 in production.
 | `NDIF_OBJECT_STORE_BUCKET` | `ndif-results` | Bucket result blobs are written to. |
 | `NDIF_OBJECT_STORE_REGION` | `us-east-1` | Set explicitly so presigning never round-trips to discover the region. |
 | `NDIF_OBJECT_STORE_VERIFY` | `true` | TLS verification (`_boolish`: `1`/`true`/`yes`/`on`). Set false for a self-signed store over HTTPS. |
+| `NDIF_MAX_SOCKET_RESULT_BYTES` | `8388608` (8 MiB) | The inline cap: a blocking request's result up to this many bytes goes back on the COMPLETED response, through Redis, and a larger one goes to the object store. `0` sends every result to the object store. Set it on the Ray head; the Controller forwards it to each model actor. |
 | `NDIF_OBJECT_STORE_CONSOLE_PORT` | `9001` | **CLI only** (`src/ndif/cli/service.py` `_rustfs_command`): the console port of a RustFS the CLI spawns. Compose hardcodes its own. |
 
 Set both keys empty to authenticate as the host's own IAM role: the keys are used
@@ -252,7 +260,6 @@ NDIF_INFLUX_TOKEN=...
 **API service:**
 
 ```bash
-NDIF_RAY_ADDRESS=ray://ray-head.internal:10001
 NDIF_POSTGRES_URL=postgresql://ndifapi:<pw>@postgres.internal:5432/ndif
 NDIF_OBJECT_STORE_URL=https://s3.internal:9000        # what the server uploads to
 NDIF_OBJECT_STORE_PUBLIC_URL=https://results.example.org  # what the client downloads from
@@ -283,6 +290,7 @@ NDIF_RAY_HEAD_ADDRESS=ray-head.internal:6385
 **Dashboard**, if you run it:
 
 ```bash
+NDIF_RAY_ADDRESS=ray://ray-head.internal:10001
 NDIF_DASHBOARD_USERNAME=...
 NDIF_DASHBOARD_PASSWORD_HASH=$2b$12$...   # python -m ndif.services.dashboard.backend.auth hash <pw>
 NDIF_DASHBOARD_SESSION_SECRET=<32+ random bytes>
@@ -301,7 +309,7 @@ NDIF_API_KEY=<a real client key>          # the monitor cron's traces need one
 | `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `MASTER_ADDR`, `MASTER_PORT` | set per rank by `src/ndif/services/ray/tp/common.py` `rank_env` | A tensor-parallel group's rendezvous: `127.0.0.1` and an OS-chosen free port (`ShardGroup.__init__`). |
 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | written by `src/ndif/cli/service.py` `_rustfs_env`; set on the compose `rustfs` service | RustFS reads its root credentials from these; the CLI mirrors the object-store keys into them. |
 | `HF_TOKEN`, `HF_HOME` | compose `ray` service (`HF_TOKEN` passthrough, HF cache bind mount); the dashboard cron block | Hugging Face auth and cache, read by `transformers` / `huggingface_hub`. The image declares `/root/.cache/huggingface` a `VOLUME`, and compose bind-mounts the host cache there, so weights persist. |
-| `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH` and `PYTHONHASHSEED=0`. |
+| `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH`, `PYTHONHASHSEED=0` and `TOKENIZERS_PARALLELISM=false`. |
 | `NDIF_VERSION` | a `docker build` ARG in `docker/Dockerfile`, not read at runtime | Carries the version into the build (setuptools-scm has no `.git` there); Resolved versions go to `/etc/ndif/build.json` via `ndif version --write`. |
 | `DOCKER_INFLUXDB_INIT_*`, `POSTGRES_*`, `GF_*` | compose `influxdb`, `postgres`, `grafana` services | Image bootstrap variables; keep them consistent with the `NDIF_INFLUX_*` and `NDIF_POSTGRES_URL` the services use. |
 

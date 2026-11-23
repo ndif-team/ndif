@@ -66,7 +66,7 @@ class Service:
 SERVICES: list[Service] = [
     Service("redis", _redis_command, "Redis (request queue + response pub/sub)"),
     Service("rustfs", _rustfs_command, "RustFS object store (execution results)", _rustfs_env),
-    Service("ray", _script_command("ray/start.sh"), "Ray node + NDIF controller (head)"),
+    Service("ray", _script_command("ray/start.sh"), "Ray node + NDIF controller and dispatcher (head)"),
     Service("api", _script_command("api/start.sh"), "FastAPI served by gunicorn"),
 ]
 

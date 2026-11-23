@@ -64,7 +64,7 @@ every Serve page you find.
 | Ray topic | Go there when |
 |---|---|
 | Ray Core: actors, `lifetime="detached"`, namespaces, `ray.get_actor` | You are reading the controller. Deployments are `actor_class.options(name=..., namespace="NDIF", lifetime="detached")` (`.../cluster/deployment.py` `Deployment.create`); every deploy/evict is an actor create or `ray.kill`. |
-| Ray Client (`ray://`) | You are debugging why the API can't reach the cluster. The dispatcher holds the one client connection; port 10001 is Ray's own default and NDIF never overrides it. |
+| Ray Client (`ray://`) | You are debugging why the CLI or the dashboard can't reach the cluster. They are the only Ray Client users (the dispatcher is an actor inside the cluster); port 10001 is Ray's own default and NDIF never overrides it. |
 | `ray start` flags and the cluster port map | You are adding a node. `services/ray/start.sh` passes five port flags and lets Ray default the rest — the raylet, node-manager, and worker port range are Ray's business, and Ray's port documentation is the only place they're enumerated. |
 | Custom resources (`--resources`) | You are reading `resources.py`. NDIF advertises `cuda_memory_bytes`, `cpu_memory_bytes` and, on the head, `head=10`; the controller reads them back off the node list. |
 | `runtime_env` / `env_vars` | You are wondering how a model actor got its Redis address. The controller copies its provider config into each actor's `runtime_env`. |

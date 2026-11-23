@@ -3,7 +3,7 @@ title: Trace a User's Failed Job
 one_liner: From "my trace errored at 14:20" to root cause — correlating one request id across the API logs, the actor logs, Loki and Influx, and telling user error apart from server failure.
 tags: [runbook, operating, telemetry, errors, api, sandbox]
 related: [docs/reference/error-messages.md, docs/concepts/status-and-results.md, docs/concepts/request-lifecycle.md, docs/operating/observability.md, docs/operating/troubleshooting.md, docs/developing/telemetry-internals.md, docs/developing/sandbox-internals.md, docs/runbooks/debug-a-stuck-request.md, docs/runbooks/enable-auth.md]
-sources: [src/ndif/common/schema/request.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/objectstore.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/api/queue/dispatcher.py, src/ndif/services/api/queue/replica.py, src/ndif/services/api/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/nns.py, docker/grafana/provisioning/datasources/loki.yml]
+sources: [src/ndif/common/schema/request.py, src/ndif/common/metrics.py, src/ndif/common/providers/loki.py, src/ndif/common/providers/objectstore.py, src/ndif/services/api/app.py, src/ndif/services/api/auth.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/deployments/modeling/util.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/execute.py, docker/grafana/provisioning/datasources/loki.yml]
 ---
 
 # Trace a User's Failed Job
@@ -53,8 +53,8 @@ the provisioned Loki datasource puts on each `request_id`:
 ```
 
 Without Loki (`NDIF_LOKI_URL` unset) the same records are on each process's
-console: `just logs api` for the API and dispatcher, the Ray dashboard's
-per-actor log for the model actor.
+console: `just logs api` for the API, the Ray dashboard's per-actor log for the
+dispatcher and the model actor.
 
 ## Step 2 — read the lifecycle timeline
 
@@ -92,7 +92,7 @@ last frames are greenlet/threading or NDIF paths, it's the server.**
 
 On the untrusted path the runner catches the exception where it is live, formats
 the traceback there and ships the text back
-(`src/ndif/services/ray/sandbox/nns.py` `_run`);
+(`src/ndif/services/ray/sandbox/execute.py` `_run`);
 `SandboxHost.format_error` passes it through as a non-fatal user error
 (`src/ndif/services/ray/sandbox/model.py` `SandboxHost.format_error`). On the
 trusted path `BaseModelDeployment.format_error`
@@ -117,8 +117,8 @@ The server's own record of the failure:
 ### Killed jobs
 
 An operator `ndif kill` of an executing request produces two `ERROR` responses in
-a row (`src/ndif/services/api/queue/dispatcher.py` `Dispatcher._kill`,
-`src/ndif/services/api/queue/replica.py` `Replica.cancel`): first `Request
+a row (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
+`src/ndif/services/ray/queue/replica.py` `Replica.cancel`): first `Request
 cancelled by operator.` from the dispatcher, then `Your job was cancelled or
 preempted by the server.` from the actor (`BaseModelDeployment.run`). The actor's
 log shows `model execution cancelled`, and the replica keeps serving.
@@ -231,7 +231,7 @@ from(bucket: "metrics")
 | `Replica was evicted while processing your request.` with no kill | Server-side; retry. If it repeats, the model is being evicted under memory pressure — [Model OOM on deploy](model-oom-on-deploy.md). |
 | `Could not deploy this model. <reason>` | The controller refused the deploy and said why — a wrong or gated repo, or no room. Not retryable until that changes. |
 | `Error starting model.` / `Error provisioning model.` | The cluster couldn't place or start the model and gave no reason. Retry later; if it repeats, check `ndif.queue.processor` and [Model OOM on deploy](model-oom-on-deploy.md). |
-| `Critical server error occurred.` | The API lost Ray; everything queued at that moment was errored. Retry. |
+| No terminal status, and the dispatcher or the Ray head went down while the job was queued or running | The request was in the dispatcher's memory and went with it; nothing errored it. Ask them to resubmit. |
 | 401 / 403 at ingress | Their key. `/whoami` confirms what the server sees. |
 | 400 mentioning a version | The client version gate (`NDIF_MIN_NNSIGHT_VERSION` / `NDIF_MIN_PYTHON_VERSION`). Tell them the minimum; `ndif env` lists the cluster's versions. |
 | `COMPLETED` server-side, nothing client-side | Your object-store URL configuration, Step 5. Fix it and ask them to re-run. |

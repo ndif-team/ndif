@@ -17,7 +17,7 @@ peft
 torchvision
 
 # The reconcile cron drives deploy/evict/restart through the cli lib, which uses
-# the Ray client (pinned to match services/ray). cli.lib.checks.check_redis and
-# cli.lib.events.notify_reconcile need a redis client.
+# the Ray client (pinned to match services/ray). cli.lib.checks.check_redis
+# needs a redis client.
 ray[client]==2.55.1
 redis

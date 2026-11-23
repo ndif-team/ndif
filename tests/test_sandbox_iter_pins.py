@@ -17,9 +17,9 @@ one bug:
   was handed the *previous step's value* again — three identical "steps", no
   error, silently wrong.
 
-The fix is the ``KEEP_PIN`` sentinel on control-event RESUMEs
-(``MediatorProxy.settle_control``), which the runner's pump treats as "leave the
-worker's pin alone".
+The fix is to answer a control request with a ``Reply``, which carries no pin
+(``MediatorProxy.settle_control``), so the runner's pump leaves the worker's pin
+alone.
 
 No server and no Ray: a real gpt2 on CPU, a runner spawned over a Unix socket,
 and a ``SandboxDriver`` pumping it — the same halves a request gets, minus the
@@ -41,6 +41,7 @@ nnsight = pytest.importorskip("nnsight")
 
 from ndif.services.ray.sandbox import host
 from ndif.services.ray.sandbox.driver import SandboxDriver
+from ndif.services.ray.sandbox.messages import Payload
 
 REPO = "openai-community/gpt2"
 PROMPT = "The Eiffel Tower is in the city of"
@@ -85,8 +86,8 @@ def run_sandboxed(model, blob: bytes):
     sandbox = host.spawn(model_key=model.to_model_key())
     try:
         connection = sandbox.connection()
-        # The payload message run_in_runner sends: blob, compress, dtype, seed, env.
-        connection.send((blob, False, "torch.float32", None, {}))
+        # The message run_in_runner sends: blob, compress, dtype, seed, env.
+        connection.send(Payload(blob, False, "torch.float32", None, {}))
         data, _ = SandboxDriver(model, torch.float32).pump(connection)
         return torch.load(io.BytesIO(data), weights_only=False)
     finally:
@@ -146,7 +147,7 @@ class TestIterLoopsOverControlEvents:
         assert_steps_match(*both_ways(model, block))
 
     def test_a_plain_iter_loop_still_locks_step(self, model):
-        # No control events at all: the pin push on value RESUMEs — what KEEP_PIN
+        # No control events at all: the pin push on a `Resume` — what a `Reply`
         # must *not* disturb — is the only thing keeping this loop in step.
         def block(tracer, acts, mlp):
             for step in tracer.iter[:3]:

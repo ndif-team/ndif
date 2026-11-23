@@ -16,7 +16,7 @@ import time
 import uuid
 from typing import Optional, Tuple
 
-from .protocol import Channel, signature_of, unpack
+from .protocol import Channel, signature_of
 
 # The dir containing the top-level ``ndif`` package, so the runner (which runs as
 # ndif.services.ray.sandbox.runner) can import ndif.* and reuse its helpers.
@@ -43,7 +43,9 @@ _PACKAGE_ROOT = os.path.dirname(
 #   device index is a position in this list, not a physical card;
 # * cache locations, so a block that touches the Hub or torch.hub finds the
 #   shared cache instead of downloading into the container;
-# * thread-count knobs an operator tuned for the box.
+# * the thread count an operator tuned for the box;
+# * `NDIF_SANDBOX_PRELOAD_CUDA`, the operator's choice of whether a waiting
+#   runner starts CUDA early (`runner.PRELOAD_CUDA`).
 #
 # What it deliberately drops, beyond the credentials: `RANK`, `LOCAL_RANK`,
 # `WORLD_SIZE`, `MASTER_ADDR` and `MASTER_PORT`. Rank 0 sets those on itself to
@@ -64,7 +66,7 @@ RUNNER_ENV: Tuple[str, ...] = (
     "TORCH_HOME",
     "XDG_CACHE_HOME",
     "OMP_NUM_THREADS",
-    "TOKENIZERS_PARALLELISM",
+    "NDIF_SANDBOX_PRELOAD_CUDA",
 )
 
 
@@ -76,12 +78,8 @@ def runner_env() -> dict:
 
 
 class Connection(Channel):
-    """The host's end of a runner channel.
-
-    Inherits the framing; overrides only the receive codec, because the two
-    directions deliberately differ — the host sends one value, the runner replies
-    with an event name plus values and kwargs (see this module's protocol).
-    """
+    """The host's end of a runner channel: a `Channel` that connects to the
+    runner's socket."""
 
     @classmethod
     def open(cls, path: str, timeout: float = 60.0) -> "Connection":
@@ -90,10 +88,6 @@ class Connection(Channel):
         sock.connect(path)
         sock.settimeout(None)
         return cls(sock)
-
-    def recv(self, timeout=None):
-        """Receive a runner message as ``(values, kwargs)``, on this host's device."""
-        return unpack(self.recv_raw(timeout), self.map_location)
 
 
 class FollowerConnection(Connection):
@@ -106,43 +100,56 @@ class FollowerConnection(Connection):
     them whole, so at degree 8 seven eighths of this leg was tensors serialized,
     sent, rebuilt and discarded.
 
-    This sends the signature alone. The barrier is untouched: still one message per
-    event per peer, in the same order, so a peer that resumed a worker while
-    another finished is still caught. What is given up is the *option* of ever
-    comparing payloads across ranks — which was never taken, since the signature
-    defaults to the event name and comparing whole tensors at every location would
-    cost more than the interleave it guards.
+    This sends the signature alone, which is the type of the message. The barrier
+    is untouched: still one message per event per peer, in the same order, so a
+    peer that resumed a worker while another finished is still caught. What is
+    given up is the *option* of ever comparing payloads across ranks — which was
+    never taken, since the signature defaults to the type and comparing whole
+    tensors at every location would cost more than the interleave it guards.
 
     Every tensor-parallel shard is a follower by construction; rank 0 is the actor
     and always the leader, which is why this needs no rank plumbing.
     """
 
     def send(self, value) -> None:
-        super().send((signature_of(value),))
+        super().send(signature_of(value))
 
 
 class Sandbox:
-    """A running runner process, reachable over its Unix socket."""
+    """A running runner process, reachable over its Unix socket.
 
-    def __init__(self, path: str, process: subprocess.Popen):
+    ``process`` is the `Popen` of a runner `spawn` started, or the pid of one a
+    `Template` forked, with that ``template``.
+    """
+
+    def __init__(self, path: str, process, template: "Optional[Template]" = None):
         self.path = path
         self.process = process
+        self.template = template
 
     def connection(self, timeout: float = 60.0) -> Connection:
         return Connection.open(self.path, timeout)
 
     def stop(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+        """Kill the runner and return without waiting for it to exit.
+
+        Its exit takes ~150 ms, which is the CUDA context being torn down, and the
+        actor stops a request's runner before it answers the request. SIGKILL
+        rather than SIGTERM, because the block may have installed a handler.
+        """
+        if self.template is not None:
+            self.template.kill(self.process)
+        elif self.process.poll() is None:
+            self.process.kill()
+            threading.Thread(target=self.process.wait, daemon=True).start()
         try:
             os.remove(self.path)
         except FileNotFoundError:
             pass
+
+
+def socket_path() -> str:
+    return f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
 
 
 def spawn(
@@ -151,6 +158,8 @@ def spawn(
     timeout: float = 30.0,
     peers: int = 1,
     model_key: Optional[str] = None,
+    template: bool = False,
+    device: int = 0,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -166,8 +175,16 @@ def spawn(
     mostly waiting for. Omitted, the runner resolves those ids to ``None`` — the
     behaviour before meta models, and what a standalone runner gets. Whether
     the checkpoint's own code may run during that build is in the key.
+
+    ``template`` starts the process as a template (``runner.serve_template``),
+    which forks runners rather than serving requests itself. `Template` is the
+    handle on one.
+
+    ``device`` is the card the model starts on. A runner that starts CUDA early
+    starts it there (``runner.preload_cuda``). It has to be told: it sees every
+    card the actor sees, and its first is not the model's on a node with several.
     """
-    path = f"/tmp/sbx-{uuid.uuid4().hex[:12]}.sock"
+    path = socket_path()
     env = runner_env()
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
@@ -177,13 +194,30 @@ def spawn(
     # host's, and — under tensor parallelism, where every rank hosts the same runner — from
     # its peers'.
     env["PYTHONHASHSEED"] = "0"
+    # tokenizers encodes on one thread. Its thread pool does not survive a fork:
+    # the fork has the pool's state and none of its threads, so a runner forked
+    # from a template whose build encoded anything never returns from its first
+    # encode. A runner tokenizes a block's own strings, which needs no pool.
+    env["TOKENIZERS_PARALLELISM"] = "false"
+    env["NDIF_SANDBOX_CUDA_DEVICE"] = str(device)
     # `quiet` silences stdout only. **stderr is never discarded**: the block's own
-    # output is forwarded as PRINT events (see nns.Writer), so anything reaching
+    # output is forwarded as `Print` messages (see runner.Writer), so anything reaching
     # this stderr is the runner process failing on its own account -- including
     # `serve`'s "runner: ..." handler, which is the only report of a request the
     # runner could not finish. Sending it to DEVNULL made a runner that died
     # mid-request indistinguishable from one that hung, and cost hours.
-    argv = [python, "-m", "ndif.services.ray.sandbox.runner", path, str(peers)]
+    #
+    # This process's pid rides along so the runner can tell when it is gone
+    # (`runner.die_with_parent`).
+    argv = [
+        python,
+        "-m",
+        "ndif.services.ray.sandbox.runner",
+        path,
+        str(peers),
+        str(os.getpid()),
+        "template" if template else "runner",
+    ]
     if model_key is not None:
         argv.append(model_key)
     process = subprocess.Popen(
@@ -194,21 +228,98 @@ def spawn(
         stderr=None,
     )
 
+    try:
+        wait_for(path, lambda: process.poll() is not None, timeout)
+    except TimeoutError:
+        process.kill()
+        raise
+    return Sandbox(path, process)
+
+
+def wait_for(path: str, exited, timeout: float) -> None:
+    """Wait until a runner accepts connections at ``path``.
+
+    Raises ``RuntimeError`` as soon as ``exited()`` says the process is gone, and
+    ``TimeoutError`` after ``timeout`` seconds.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         if os.path.exists(path):
             try:
-                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                probe.connect(path)
-                probe.close()
-                return Sandbox(path, process)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                    probe.connect(path)
+                return
             except OSError:
                 pass
-        if process.poll() is not None:
+        if exited():
             raise RuntimeError("runner process exited before its socket was ready")
         time.sleep(0.02)
-    process.kill()
     raise TimeoutError("timed out waiting for the runner socket")
+
+
+def running(pid: int) -> bool:
+    """Whether ``pid`` is alive: neither gone nor a zombie waiting to be reaped."""
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (FileNotFoundError, IndexError):
+        return False
+
+
+class Template:
+    """A runner process that forks the pool's runners (``runner.serve_template``).
+
+    It does the start-up every runner needs once: the imports and the meta
+    model, ~4 s. Each runner it forks is then ready in ~30 ms. It is started by
+    `spawn`, so it runs with the same allowlisted environment as any runner,
+    and its runners inherit nothing more.
+
+    It is the parent of the runners it forks, so it is also what kills them
+    (`Sandbox.stop`).
+    """
+
+    def __init__(
+        self,
+        python: str = sys.executable,
+        quiet: bool = True,
+        peers: int = 1,
+        model_key: Optional[str] = None,
+        timeout: float = 300.0,
+        device: int = 0,
+    ):
+        self.server = spawn(
+            python, quiet, timeout, peers, model_key, template=True, device=device
+        )
+
+    def fork(self, timeout: float = 60.0) -> Sandbox:
+        """A new runner, accepting connections."""
+        path = socket_path()
+        connection = Connection.open(self.server.path)
+        try:
+            connection.send(f"fork {path}")
+            pid = int(connection.recv())
+        finally:
+            connection.close()
+        sandbox = Sandbox(path, pid, self)
+        try:
+            wait_for(path, lambda: not running(pid), timeout)
+        except Exception:
+            sandbox.stop()
+            raise
+        return sandbox
+
+    def kill(self, pid: int) -> None:
+        try:
+            connection = Connection.open(self.server.path)
+        except OSError:
+            return  # the template is gone, and its runners go with it
+        try:
+            connection.send(f"kill {pid}")
+        finally:
+            connection.close()
+
+    def close(self) -> None:
+        self.server.stop()
 
 
 class Pool:
@@ -220,6 +331,10 @@ class Pool:
     in the background so acquiring one doesn't pay python/nnsight startup; taking
     one triggers a refill. Callers must ``stop()`` what they acquire — there's no
     release-back-to-pool.
+
+    Runners are forked from one `Template`, started by the first refill. If it
+    cannot start, every runner is started from nothing instead (`spawn`); if it
+    dies, the next refill starts another.
     """
 
     def __init__(
@@ -229,27 +344,67 @@ class Pool:
         quiet: bool = True,
         peers: int = 1,
         model_key: Optional[str] = None,
+        device: int = 0,
     ):
         self.size = size
         self.python = python
         self.quiet = quiet
         self.peers = peers
         self.model_key = model_key
+        self.device = device
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
         self.closed = False
+        # None until the first refill starts it; False if it could not start.
+        self.template: "Template | bool | None" = None
+        self.template_lock = threading.Lock()
         for _ in range(size):
             self.refill()
 
     def _spawn(self) -> Sandbox:
         """One runner, configured the way this pool's runners are."""
-        return spawn(
-            python=self.python,
-            quiet=self.quiet,
-            peers=self.peers,
-            model_key=self.model_key,
-        )
+        with self.template_lock:
+            # Checked under the lock `close` takes the template under, so a
+            # refill that loses the race with `close` cannot start another.
+            if self.closed:
+                raise RuntimeError("the runner pool is closed")
+            if self.template is None:
+                try:
+                    self.template = Template(
+                        self.python,
+                        self.quiet,
+                        self.peers,
+                        self.model_key,
+                        device=self.device,
+                    )
+                except Exception as error:
+                    print(
+                        f"sandbox: no runner template ({error!r}); "
+                        "starting each runner from nothing",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self.template = False
+            template = self.template
+        if not template:
+            return spawn(
+                python=self.python,
+                quiet=self.quiet,
+                peers=self.peers,
+                model_key=self.model_key,
+                device=self.device,
+            )
+        try:
+            return template.fork()
+        except Exception:
+            if template.server.process.poll() is not None:
+                # The template died. The next runner starts another.
+                with self.template_lock:
+                    if self.template is template:
+                        self.template = None
+                template.close()
+            raise
 
     def refill(self) -> None:
         """Warm one runner into the ready set in the background, unless the pool is
@@ -262,6 +417,10 @@ class Pool:
         def warm():
             try:
                 sandbox = self._spawn()
+            except Exception:
+                if self.closed:
+                    return  # closed while this runner was starting
+                raise
             finally:
                 with self.lock:
                     self.spawning -= 1
@@ -275,6 +434,8 @@ class Pool:
     def acquire(self, timeout: float = 30.0) -> Sandbox:
         """Take a warm runner (or spawn one if the pool is drained) and top the
         pool back up. The caller owns the returned runner and must ``stop()`` it."""
+        if self.closed:
+            raise RuntimeError("the runner pool is closed")
         try:
             sandbox = self.ready.get(timeout=timeout)
         except queue.Empty:
@@ -290,3 +451,7 @@ class Pool:
                 self.ready.get_nowait().stop()
             except queue.Empty:
                 break
+        with self.template_lock:
+            template, self.template = self.template, None
+        if template:
+            template.close()
