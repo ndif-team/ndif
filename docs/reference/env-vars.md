@@ -136,7 +136,8 @@ Read by the controller launcher,
 
 | Variable | Default | Read by | Effect |
 |---|---|---|---|
-| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor. A cold spawn (~4 s) is several times a warm execution, so a smaller pool makes a saturated queue pay the spawn inline; each warm runner holds roughly 0.5 GB of RAM whether used or not. Turn it down on memory- or core-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor while it is HOT; a WARM replica keeps none. Each is forked from the pool's template (`src/ndif/services/ray/sandbox/host.py` `Template`) in ~30 ms and adds ~125 MB of RAM to the template's ~240 MB (Llama-3.1-8B); a pool whose template cannot run starts each from nothing (~4 s, ~0.5 GB). Turn it down on memory-tight nodes. A per-deployment `pool_size` overrides it. |
+| `NDIF_SANDBOX_PRELOAD_CUDA` | off | `src/ndif/services/ray/sandbox/runner.py` `PRELOAD_CUDA` | `1`/`true`/`yes`/`on`: each runner starts CUDA while it waits in the pool, so a request does not (~0.45 s on an A100). The cost is the CUDA context, ~0.5 GB per waiting runner on the model's first card: `NDIF_SANDBOX_POOL_SIZE` of them per HOT replica, outside the actor's GPU budget. Set on the actor; it reaches the runner through `RUNNER_ENV`. |
 
 ## Object store
 
@@ -308,7 +309,7 @@ NDIF_API_KEY=<a real client key>          # the monitor cron's traces need one
 | `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `MASTER_ADDR`, `MASTER_PORT` | set per rank by `src/ndif/services/ray/tp/common.py` `rank_env` | A tensor-parallel group's rendezvous: `127.0.0.1` and an OS-chosen free port (`ShardGroup.__init__`). |
 | `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | written by `src/ndif/cli/service.py` `_rustfs_env`; set on the compose `rustfs` service | RustFS reads its root credentials from these; the CLI mirrors the object-store keys into them. |
 | `HF_TOKEN`, `HF_HOME` | compose `ray` service (`HF_TOKEN` passthrough, HF cache bind mount); the dashboard cron block | Hugging Face auth and cache, read by `transformers` / `huggingface_hub`. The image declares `/root/.cache/huggingface` a `VOLUME`, and compose bind-mounts the host cache there, so weights persist. |
-| `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH` and `PYTHONHASHSEED=0`. |
+| `PYTHONPATH` and the rest of a sandbox runner's environment | `src/ndif/services/ray/sandbox/host.py` `spawn` | A runner inherits only the allowlist in `RUNNER_ENV` (no credentials, no rank variables), plus the package root on `PYTHONPATH`, `PYTHONHASHSEED=0` and `TOKENIZERS_PARALLELISM=false`. |
 | `NDIF_VERSION` | a `docker build` ARG in `docker/Dockerfile`, not read at runtime | Carries the version into the build (setuptools-scm has no `.git` there); Resolved versions go to `/etc/ndif/build.json` via `ndif version --write`. |
 | `DOCKER_INFLUXDB_INIT_*`, `POSTGRES_*`, `GF_*` | compose `influxdb`, `postgres`, `grafana` services | Image bootstrap variables; keep them consistent with the `NDIF_INFLUX_*` and `NDIF_POSTGRES_URL` the services use. |
 

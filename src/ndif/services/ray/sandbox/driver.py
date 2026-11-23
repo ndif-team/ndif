@@ -27,7 +27,7 @@ from nnsight.intervention.interleaver import EarlyStopException, Event, Mediator
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
-from .controls import HANDLERS, kept_by, serve_recursive_source
+from .controls import HANDLERS, compact, kept_by, serve_recursive_source, write_back
 from .link import Link
 from .messages import (
     Control,
@@ -74,7 +74,7 @@ def landing(model) -> Callable:
     ``model.device``.
 
     The first half matters for a model a device map spreads over several cards.
-    Every value a block reads is written back to the host, and a read of
+    A value a block edits is written back to the host, and a read of
     ``model.output`` carries the whole KV cache. Accelerate's hooks move an
     activation back to the card of the module that takes it next, but they never
     move a cache. So a cache rebuilt on ``model.device`` stays there, and the next
@@ -119,9 +119,6 @@ class MediatorProxy(Mediator):
         self.id = mediator_id
         self.link = link
         self.driver = driver
-        # What `switch` last served for a read, kept until the worker's copy of
-        # it comes back (`controls.writeback`).
-        self.served = None
         self.adopt(pending)
 
     def adopt(self, pending) -> None:
@@ -157,14 +154,21 @@ class MediatorProxy(Mediator):
         occurrence = pin if pin is not None else self.occurrence(pending.provider)
         self.pending = pending._replace(iteration=occurrence)
 
-    def resume(self, message) -> None:
+    def resume(self, message, served=None) -> None:
         """One exchange with the worker: send ``message``, which switches it in,
-        and adopt the park it answers with."""
+        and adopt the park it answers with.
+
+        ``served`` is the value a read handed the worker. If the block edited its
+        copy in place, the park brings the copy back (``Park.edited``), and it is
+        written into ``served`` before anything else happens at this location.
+        """
         answer = self.link.request(message, Park, Stop)
         if isinstance(answer, Stop):
             # A worker asked to halt the run; unwind the forward pass, which the
             # model's interleaver __exit__ swallows as an intentional early stop.
             raise EarlyStopException()
+        if answer.edited is not None:
+            write_back(served, answer.edited, self.driver.kept)
         self.adopt(answer.pending)
 
     def settle_control(self) -> None:
@@ -235,10 +239,12 @@ class MediatorProxy(Mediator):
                     args[0],
                 ),
             )
-        # After a read, the worker's first park is the Writeback of what it was
-        # served, which `settle_control` writes into this.
-        self.served = args[0] if args else None
-        self.resume(Resume(self.id, args, self.iteration))
+        # What crosses is a compact copy of a read; an edit of it comes back to
+        # the value itself, which is a view into the forward's own tensors.
+        served = args[0] if args else None
+        if args:
+            args = (compact(served),)
+        self.resume(Resume(self.id, args, self.iteration), served)
         self.settle_control()
         return self.pending
 

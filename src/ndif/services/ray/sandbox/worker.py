@@ -15,30 +15,25 @@ The interleaver is split across the socket at the mediator level:
 
 So iteration state is tracked per mediator on the host, and a worker's activation
 values only cross when the host resumes it (a read) or it swaps (in its park).
-Because a read hands back a *copy*, ``pump`` sends each read's value back after
-the worker moves past it, so in-place edits (``output[:] = 0``) reach the host.
+Because a read hands the worker a *copy*, ``pump`` checks the copy once the
+worker moves past it, and if the block edited it in place (``output[:] = 0``),
+sends it back in the worker's next park for the host to write into its own.
 """
 
 import warnings
 
+import torch
 from nnsight.intervention.cache import Cache
 from nnsight.intervention.envoy import Envoy
 from nnsight.intervention.interleaver import (
     EarlyStopException,
-    Event,
     Interleaver,
     OutOfOrderError,
 )
+from nnsight.util import apply
 
-from .messages import CacheHit, Dangling, Done, Park, Reply, Resume, Stop, Throw, Writeback
-
-
-def read_of(park):
-    """The read a park represents — ``(location, occurrence)`` — or ``None`` if the
-    park isn't a value read. pump tracks these to write in-place edits back."""
-    if park is not None and park.event is Event.VALUE:
-        return (park.provider, park.iteration)
-    return None
+from .controls import editable, write_back
+from .messages import CacheHit, Dangling, Done, Park, Reply, Resume, Stop, Throw
 
 
 class IPCInterleaver(Interleaver):
@@ -70,12 +65,19 @@ class IPCInterleaver(Interleaver):
         tracer.iter relaxation stays in lockstep. `Reply` does the same in answer
         to a control request or a barrier park, and leaves the worker's own pin
         standing (see below). `Throw` surfaces a dangling worker. `Done` carries
-        the model's result and ends the loop. After a read, the worker's copy of
-        the value also goes back (see :meth:`writeback`) so in-place edits reach
-        the host.
+        the model's result and ends the loop.
 
-        ``reads`` tracks each worker's outstanding read (by mediator id), seeded from
-        the parks already shipped in the `Interleave` message.
+        A park that answers a read also carries the worker's copy of the value,
+        when the block edited it in place, so the edit reaches the host
+        (``Park.edited``). A read hands the worker a copy, which crossed the
+        socket, so an edit never reaches the host on its own. The read left the
+        host parked at that location, so the edit lands before the model moves
+        on. It is sent only when the host would write something: this end keeps
+        a copy of the value's tensors as it hands the value over, and afterwards
+        runs the host's own ``controls.write_back`` against that copy. A read
+        the block only looks at sends nothing back. A copy rather than each
+        tensor's version counter, because an edit through ``tensor.data`` does
+        not move the counter.
 
         A worker that calls ``tracer.stop()`` is answered for with `Stop`, and the
         stop is held until the host's `Done`. The host goes on serving the workers
@@ -88,11 +90,6 @@ class IPCInterleaver(Interleaver):
         # any point; record the (already filtered + moved-to-cpu) value wherever
         # this end is waiting.
         self.link.always = {CacheHit: self.record}
-        reads = {
-            mediator_id: read
-            for mediator_id, mediator in enumerate(self.mediators)
-            if (read := read_of(mediator.pending)) is not None
-        }
         stopped = None
         while True:
             message = self.link.receive(Resume, Reply, Throw, Done)
@@ -116,9 +113,17 @@ class IPCInterleaver(Interleaver):
             # it here wound the loop back a step (#296).
             if isinstance(message, Resume):
                 mediator.iteration = message.pin
-            # The read this message answers, if any — the worker has held its
-            # (copied) value and may have edited it in place.
-            read = reads.pop(message.worker, None)
+            # A `Resume` that carries a value answers a read: the worker is
+            # handed a copy of the host's value, which the block may edit in
+            # place. Keep its tensors as they arrived, to tell whether it did.
+            read = isinstance(message, Resume) and bool(message.args)
+            before = None
+            if read:
+                before = apply(
+                    message.args[0],
+                    lambda tensor: tensor.detach().clone() if editable(tensor) else None,
+                    torch.Tensor,
+                )
             try:
                 park = mediator.switch(*message.args)
             except EarlyStopException as stop:
@@ -128,35 +133,18 @@ class IPCInterleaver(Interleaver):
                 stopped = stop
                 self.link.send(Stop())
                 continue
-            if read is not None:
-                self.writeback(message.worker, read, message.args[0])
-            if (new_read := read_of(park)) is not None:
-                reads[message.worker] = new_read
-            self.link.send(Park(message.worker, park))
+            # TODO: only the value is sent back — eproperty write-back transforms
+            # attached to the read are silently dropped on the sandbox path.
+            edited = read and write_back(before, message.args[0])
+            # Freed now, not held while this end waits for the host's next message.
+            before = None
+            self.link.send(
+                Park(message.worker, park, message.args[0] if edited else None)
+            )
 
     def record(self, hit) -> None:
         """Put one value the host observed into the cache it belongs to."""
         self.caches[hit.cache]._record(hit.path, hit.key, hit.value)
-
-    def writeback(self, mediator_id, read, value):
-        """Send a read's (maybe-edited) value back for the host to write into its
-        own, and wait for the host's reply.
-
-        A read hands the worker a *copy* of the model's value (it crossed the
-        socket), so an in-place edit — ``output[:] = 0`` — never reaches the host on
-        its own. The read left the host parked at that location, so writing back now
-        applies any edit before the model moves on. We always write back (any
-        tensor may have been edited, and we can't tell from here).
-
-        A `Writeback` control request, not a swap: a swap replaces the host's
-        objects with these copies, and the forward's other references to the
-        originals then hold something else than the module ran on (see
-        ``controls.write_back``).
-        """
-        # TODO: only the value is sent back — eproperty write-back transforms
-        # attached to the read are silently dropped on the sandbox path.
-        location, _ = read
-        self.link.request(Park(mediator_id, Writeback(location, value)), Reply)
 
     def throw(self, mediator, requester, kind):
         """End a worker still parked after the run, as the host classified it.

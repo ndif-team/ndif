@@ -10,16 +10,23 @@ handler here, and the park in the runner.
 
 A handler takes ``(driver, proxy, request)``: the ``SandboxDriver`` running the
 model, the ``MediatorProxy`` of the worker that asked, and the request.
+
+The last section is not a request: it is what the host does with a value it
+serves, on the way out (`compact`) and when an edit of it comes back
+(`write_back`).
 """
 
 from __future__ import annotations
 
+from collections import Counter
+
 import torch
 
 from nnsight.intervention.cache import Cache
+from nnsight.util import apply
 
 from ....common.errors import WeightEditError
-from .messages import CacheHit, Call, Observe, Source, SourceRefused, Writeback
+from .messages import CacheHit, Call, Observe, Source, SourceRefused
 
 #: The handler for each type of control request.
 HANDLERS: dict = {}
@@ -220,7 +227,9 @@ class ShippingCache(Cache):
         self._link = link
 
     def _record(self, path, key, value):
-        self._link.send(CacheHit(self._cache_id, path, key, value))
+        # Narrowed to the worker's rows, and still on the card if the cache keeps
+        # values there, so a view of the whole batch.
+        self._link.send(CacheHit(self._cache_id, path, key, compact(value)))
 
 
 @control(Observe)
@@ -232,7 +241,60 @@ def observe(driver, proxy, request):
     )
 
 
-# ------------------------------------------------------------------ the write-back of a read
+# ------------------------------------------------------------------ a value the host serves
+
+
+def editable(tensor) -> bool:
+    """Whether a block's in-place edit of ``tensor`` can be written back: a plain
+    tensor or a parameter, stored densely.
+
+    Any other tensor is read only on this path, and is never copied or compared.
+    A subclass has operations of its own: on the ``DTensor`` a tensor-parallel
+    linear takes they are collectives, which the runner is in no group to run.
+    """
+    return (
+        type(tensor) in (torch.Tensor, torch.nn.Parameter)
+        and tensor.layout is torch.strided
+    )
+
+
+def compact(value):
+    """``value``, with each tensor that views part of a larger storage copied out,
+    so that only its own elements cross the socket.
+
+    ``torch.save`` writes the whole storage under a view. A read narrowed to one
+    invoke's rows is such a view of the batch: sent as it is, each invoke's read
+    would carry every invoke's rows.
+
+    A copy must not change what an edit of the value does, so two kinds of view
+    are sent as they are:
+
+    * One that shares its storage with another tensor in ``value``. Copied
+      apart, two views of the same elements would no longer see each other's
+      edits in the runner, and writing back the second would undo an edit of
+      the first.
+    * An expanded one. Its copy would be an ordinary tensor, so an edit torch
+      refuses on the host would pass in the runner and fail in the write-back.
+    """
+    found = []
+    apply(value, found.append, torch.Tensor)
+    tensors = [tensor for tensor in found if editable(tensor)]
+    owners = Counter(tensor.untyped_storage().data_ptr() for tensor in tensors)
+    oversized = {
+        id(tensor)
+        for tensor in tensors
+        if type(tensor) is torch.Tensor
+        and owners[tensor.untyped_storage().data_ptr()] == 1
+        and 0 not in tensor.stride()
+        and tensor.untyped_storage().nbytes() > tensor.numel() * tensor.element_size()
+    }
+    if not oversized:
+        return value
+    return apply(
+        value,
+        lambda tensor: tensor.clone() if id(tensor) in oversized else tensor,
+        torch.Tensor,
+    )
 
 
 def kept_by(module) -> set:
@@ -249,11 +311,12 @@ def kept_by(module) -> set:
     }
 
 
-def write_back(served, edited, kept=frozenset()) -> None:
-    """Copy a block's in-place edits of a value it read into the host's own value.
+def write_back(served, edited, kept=frozenset()) -> bool:
+    """Copy a block's in-place edits of a value it read into the host's own value,
+    and return whether there were any.
 
     ``served`` is what the host handed over and ``edited`` is the runner's copy of
-    it, sent back after the block moved on. Each tensor in ``served`` takes the
+    it, sent back in the worker's next park. Each tensor in ``served`` takes the
     values of its counterpart, in place, if they differ. Nothing is replaced, so
     the forward keeps its own objects, as it does on the trusted path: its other
     references to an edited tensor see the edit, and an object a module updates,
@@ -265,6 +328,10 @@ def write_back(served, edited, kept=frozenset()) -> None:
     ``kept`` is the model's own storage (`kept_by`). An edit of a tensor stored
     there would change the model for every later request, so it raises
     ``WeightEditError`` and the tensor is left as it was.
+
+    The runner calls this too, against the copy it kept of a read, and sends the
+    read back only if this returns True (``IPCInterleaver.pump``). It passes no
+    ``kept``: the model's storage is on the host.
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
@@ -273,17 +340,18 @@ def write_back(served, edited, kept=frozenset()) -> None:
                 if served.untyped_storage().data_ptr() in kept:
                     raise WeightEditError()
                 served.copy_(edited)
-    elif isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
-        for mine, theirs in zip(served, edited):
-            write_back(mine, theirs, kept)
-    elif isinstance(served, dict) and isinstance(edited, dict):
-        for key in served.keys() & edited.keys():
-            write_back(served[key], edited[key], kept)
-
-
-@control(Writeback)
-def writeback(driver, proxy, request):
-    """Write the worker's copy of the value it just read into the original,
-    which is what the proxy served (``MediatorProxy.switch``)."""
-    write_back(proxy.served, request.value, driver.kept)
-    proxy.served = None
+                return True
+        return False
+    # Lists, not generators: every element is written, not only the first.
+    if isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
+        return any(
+            [write_back(mine, theirs, kept) for mine, theirs in zip(served, edited)]
+        )
+    if isinstance(served, dict) and isinstance(edited, dict):
+        return any(
+            [
+                write_back(served[key], edited[key], kept)
+                for key in served.keys() & edited.keys()
+            ]
+        )
+    return False

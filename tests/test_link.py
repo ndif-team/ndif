@@ -18,7 +18,7 @@ import threading
 import pytest
 
 from ndif.services.ray.sandbox.link import Link, ProtocolError
-from ndif.services.ray.sandbox.messages import Interleave, Park, Print, Reply, Resume, Writeback
+from ndif.services.ray.sandbox.messages import Interleave, Park, Print, Reply, Resume, Source
 from ndif.services.ray.sandbox.protocol import Channel, Fanout
 
 
@@ -76,10 +76,10 @@ def test_a_message_nobody_was_waiting_for_is_named():
 
 
 def test_a_control_request_is_told_from_a_park_by_its_type():
-    link, thread = linked([[Park(0, Writeback("model.h.0.output", "copy"))], [Park(0, None)]])
+    link, thread = linked([[Park(0, Source("model.h.0"))], [Park(0, None)]])
 
     first = link.request(Resume(0, ("value",), None), Park)
-    assert isinstance(first.pending, Writeback) and first.pending.value == "copy"
+    assert isinstance(first.pending, Source) and first.pending.path == "model.h.0"
     assert link.request(Reply(0, (None,)), Park).pending is None
     thread.join(timeout=5)
 
@@ -98,3 +98,22 @@ def test_it_sits_on_a_fanout_as_on_a_channel():
     assert isinstance(link.receive(Resume), Resume)
     link.send(Park(0, None))
     assert [host.recv() for host in theirs] == [Park(0, None)] * 2
+
+
+def test_frames_sent_from_two_threads_arrive_whole():
+    # A frame is a header and a body, sent one after the other, and a thread a
+    # block started can print while the block itself parks.
+    ours, theirs = socket.socketpair()
+    sender, receiver = Channel(ours), Channel(theirs)
+    texts, count = ("a" * 64, "b" * 64), 2000
+
+    def send(text):
+        for _ in range(count):
+            sender.send(text)
+
+    threads = [threading.Thread(target=send, args=(text,), daemon=True) for text in texts]
+    for thread in threads:
+        thread.start()
+    received = [receiver.recv(timeout=10) for _ in range(2 * count)]
+
+    assert [received.count(text) for text in texts] == [count, count]

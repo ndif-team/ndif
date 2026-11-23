@@ -83,7 +83,7 @@ worker asked for something the model already ran past.
 |---|---|
 | the serialized request payload (host → runner, once) | the model, its weights, and its module tree — host only |
 | an activation a worker is actually parked on, narrowed to that invoke's rows | every other activation the forward produces |
-| a worker's replacement value on a swap, and the value it was handed (written back so in-place edits land) | invoke inputs: they ship raw and the host's tokenizer / pipeline assembles them (the runner's own tokenizer is a local copy, used only by the block) |
+| a worker's replacement value on a swap, and a value it was handed and edited in place (written back so the edit lands) | invoke inputs: they ship raw and the host's tokenizer / pipeline assembles them (the runner's own tokenizer is a local copy, used only by the block) |
 | ad-hoc module calls (`model.lm_head(h)`) as a request/response | the module itself — the host runs its forward and returns the output |
 | `tracer.cache()` hits, filtered and moved off-device on the host | untargeted locations — a cache never ships what it wouldn't keep |
 | the block's stdout, one line at a time, surfaced as `LOG` responses | — |
@@ -98,21 +98,22 @@ still a message, because the meta modules have no values to give.
 
 ## What it implies
 
-**Latency is per-interaction, not per-request.** A read is two socket round trips
-(the value out, the possibly-edited value back) plus a pickle of the value in each
-direction. A trace that reads one layer costs almost nothing extra; a trace that
-reads every layer on every generated token pays that per location per step. A
-location no worker is parked on costs nothing — it never crosses. If a trace is
-slower than expected, count its parks, not its lines.
+**Latency is per-interaction, not per-request.** A read is one socket round trip:
+the value goes out, and the worker's next park comes back. A read the block edits
+in place also pickles the value a second time, to send it back. A trace that
+reads one layer costs almost nothing extra; a trace that reads every layer on
+every generated token pays that per location per step. A location no worker is
+parked on costs nothing — it never crosses. If a trace is slower than expected,
+count its parks, not its lines.
 
 **Values you read are copies.** A tensor handed to your block was pickled out of
 the host process and rebuilt in the runner. In-place edits still work: the runner
-sends the copy back before the model moves on, and the host writes its tensors
-into the model's own, so the edit reaches everything the forward does with them.
-Two things do not cross: an in-place edit made after the block's next read of the
-model, and a different object put into a container you read
-(`kwargs["mask"] = None`). For the second, assign the location instead
-(`layer.inputs = ...`).
+sends an edited copy back before the model moves on, and the host writes its
+tensors into the model's own, so the edit reaches everything the forward does with
+them. Two things do not cross: an in-place edit made after the block's next
+interaction with the model (a read, a swap, a module call), and a different
+object put into a container you read (`kwargs["mask"] = None`). For the second,
+assign the location instead (`layer.inputs = ...`).
 
 **An in-place edit of a weight is refused.** A value you read can hold one of
 the model's own weights or buffers: an argument of an operation under `.source`
@@ -132,7 +133,7 @@ here even if it would have worked in-process.
 can import, allocate, and print. It does *not* inherit the actor's environment —
 the runner starts with an allowlist (`RUNNER_ENV` in
 `src/ndif/services/ray/sandbox/host.py`) covering the loader and locale basics,
-`CUDA_VISIBLE_DEVICES`, the cache locations, and the thread-count knobs, and
+`CUDA_VISIBLE_DEVICES`, the cache locations, and `OMP_NUM_THREADS`, and
 nothing else.
 
 ## What the separation is — and is not
@@ -141,7 +142,8 @@ nothing else.
   message protocol, with no handle on the actor's Python objects or the model.
 - **It is** fresh per request: the pool hands out a runner that has never run user
   code and stops it when the request ends, so compiled blocks, globals, and module
-  state do not carry from one request to the next. What a block writes to the
+  state do not carry from one request to the next. Runners are forked from a
+  template process that never runs user code either. What a block writes to the
   shared filesystem does persist.
 - **It is** started with an allowlisted environment, so `HF_TOKEN`,
   `NDIF_INFLUX_TOKEN`, `NDIF_POSTGRES_URL` and object-store credentials are not

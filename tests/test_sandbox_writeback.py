@@ -1,7 +1,7 @@
 """A sandboxed block edits the host's own values, not copies of them.
 
 A value a block reads crosses the socket as a copy, and the runner sends the copy
-back when the block moves on, so in-place edits reach the forward. The host used
+back if the block edited it, so in-place edits reach the forward. The host used
 to swap that copy in at the location, which replaced every object in it. The
 forward's other references to the originals then held something else than the
 module ran on, and the same block returned different numbers than on the trusted
@@ -24,6 +24,11 @@ back stayed in the model after the request. ``write_back`` refuses a tensor
 stored where a parameter or a buffer is, and the request fails with
 ``WeightEditError``.
 
+The runner sends a copy back only when the block edited it, which it tells by
+running ``write_back`` against a copy it kept. And what crosses on a read is a
+compact copy (``controls.compact``), so one invoke's read carries its own rows
+and not the whole batch.
+
 Same harness as ``test_sandbox_iter_pins``, whose helpers this imports: no server
 and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
 ``SandboxDriver`` pumping it. The trusted run is the ground truth.
@@ -31,13 +36,17 @@ and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 torch = pytest.importorskip("torch")
 nnsight = pytest.importorskip("nnsight")
 
 from ndif.common.errors import WeightEditError
-from ndif.services.ray.sandbox.controls import kept_by, write_back
+from ndif.services.ray.sandbox import driver, host
+from ndif.services.ray.sandbox.controls import compact, kept_by, write_back
+from ndif.services.ray.sandbox.messages import Payload
 
 from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     PROMPT,
@@ -177,9 +186,107 @@ def test_write_back_edits_tensors_and_replaces_nothing():
     served = ((hidden,), {"attention_mask": mask, "cache": cache})
     edited = ((torch.ones(3, 4),), {"attention_mask": mask.clone(), "cache": object()})
 
-    write_back(served, edited)
+    assert write_back(served, edited)
 
     assert served[0][0] is hidden
     assert torch.equal(hidden, torch.ones(3, 4))
     assert served[1]["attention_mask"] is mask
     assert served[1]["cache"] is cache
+    # Nothing differs now, which is how the runner tells a read it need not send.
+    assert not write_back(served, edited)
+
+
+def test_compact_sends_a_view_as_its_own_rows():
+    batch = torch.arange(24.0).reshape(4, 6)
+    rows = batch[1:2]
+    fresh = torch.ones(3)
+    sent = compact((rows, fresh))
+    assert torch.equal(sent[0], rows)
+    assert sent[0].untyped_storage().nbytes() == rows.numel() * rows.element_size()
+    assert sent[1] is fresh
+
+
+def test_compact_leaves_what_it_cannot_shrink_or_must_not_split():
+    batch = torch.zeros(4, 3)
+    for value in (
+        torch.zeros(2, 3),  # owns its storage
+        batch[0:1, 0:1].expand(1, 3),  # a copy could be edited, and this cannot
+        (batch[0:1], batch[0:1]),  # copied apart, an edit of one would miss the other
+        # The same, where the other tensor is a parameter.
+        (weight := torch.nn.Parameter(torch.zeros(4, 3)), weight.data[0:1]),
+    ):
+        assert compact(value) is value
+
+
+def run_measured(model, blob):
+    """Run ``blob`` in a runner; return its saved values and the size of every
+    frame the host sent."""
+    sandbox = host.spawn(model_key=model.to_model_key())
+    sizes = []
+    try:
+        connection = sandbox.connection()
+        send_raw = connection.send_raw
+        connection.send_raw = lambda data: (sizes.append(len(data)), send_raw(data))
+        connection.send(Payload(blob, False, "torch.float32", None, {}))
+        data, _ = driver.SandboxDriver(model, torch.float32).pump(connection)
+        return torch.load(io.BytesIO(data), weights_only=False), sizes
+    finally:
+        sandbox.stop()
+
+
+def test_a_read_carries_only_its_invokes_rows(frozen):
+    model = frozen
+    prompt = " ".join([PROMPT] * 8)
+    mlp = model.transformer.h[0].mlp
+
+    capture = Capture()
+    with model.trace(backend=capture) as tracer:
+        with tracer.invoke(prompt):
+            first = mlp.output.save()
+        with tracer.invoke(prompt):
+            second = mlp.output.save()
+
+    saved, sizes = run_measured(model, capture.blob)
+    rows = saved["first"].numel() * saved["first"].element_size()
+    # The first frame is the request and the last is `Done`, which carries the
+    # model's whole output; between them are the two reads.
+    assert len(sizes) == 4
+    assert max(sizes[1:-1]) < 1.5 * rows
+
+
+def test_only_an_edited_read_is_sent_back(frozen, monkeypatch):
+    model = frozen
+    norm = model.transformer.h[5].ln_1
+    written = []
+    real = driver.write_back
+    monkeypatch.setattr(
+        driver,
+        "write_back",
+        lambda served, copy, kept: (written.append(copy), real(served, copy, kept)),
+    )
+
+    # Two reads, one of them edited.
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        norm.input[:] = 0
+        logits = model.lm_head.output[0, -1].save()
+    run_sandboxed(model, capture.blob)
+    assert len(written) == 1
+
+
+def test_an_edit_through_data_reaches_the_host(frozen):
+    model = frozen
+    norm = model.transformer.h[5].ln_1
+
+    with model.trace(PROMPT):
+        norm.input.data[:] = 0
+        logits = model.lm_head.output[0, -1].save()
+    local = logits
+
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        norm.input.data[:] = 0
+        logits = model.lm_head.output[0, -1].save()
+
+    saved = run_sandboxed(model, capture.blob)
+    assert torch.allclose(saved["logits"], local)
