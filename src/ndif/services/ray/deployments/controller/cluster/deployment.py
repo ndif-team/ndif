@@ -182,8 +182,10 @@ class Deployment:
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
         try:
-            # Inject the assigned GPU allocation so the actor targets those GPUs.
+            # Inject the assigned GPU allocation so the actor targets those GPUs,
+            # and the replica's id so its telemetry carries it.
             deployment_args.gpu_mem_bytes_by_id = self.gpus
+            deployment_args.replica_id = self.replica_id
 
             env_vars = {
                 # Keep Ray from setting CUDA_VISIBLE_DEVICES, so the actor sees

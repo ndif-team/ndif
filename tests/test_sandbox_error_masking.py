@@ -195,6 +195,7 @@ class TestReportWiring:
         )
         deployment = object.__new__(SandboxModelDeployment)
         deployment.model_key = "test-model"
+        deployment.replica_id = "abc12"
         request = SimpleNamespace(id="r1", api_key="k", email="e@example.com")
         error = RunnerError("Traceback ...", cause_type="OutOfOrderError")
 
@@ -205,6 +206,7 @@ class TestReportWiring:
             r for r in caplog.records if r.getMessage() == "model execution errored"
         )
         assert record.error_type == "OutOfOrderError"
+        assert record.replica_id == "abc12"
 
     def test_a_bare_runner_error_still_names_itself(self, monkeypatch, caplog):
         # An EXCEPTION from an older runner build carries no cause_type; the
@@ -222,6 +224,7 @@ class TestReportWiring:
         )
         deployment = object.__new__(SandboxModelDeployment)
         deployment.model_key = "test-model"
+        deployment.replica_id = "abc12"
         request = SimpleNamespace(id="r1", api_key="k", email="e@example.com")
 
         with caplog.at_level(logging.ERROR, logger="ndif.modeling"):

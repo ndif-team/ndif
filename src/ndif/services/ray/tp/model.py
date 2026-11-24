@@ -190,6 +190,7 @@ class TPModelDeployment(BaseModelDeployment):
         )
         ModelLoadTimeMetric.update(
             model_key=self.model_key,
+            replica_id=self.replica_id,
             duration_ms=elapsed_ms(started_at),
             load_type="initial",
             num_gpus=self.tp_size,

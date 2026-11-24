@@ -75,10 +75,15 @@ class ModelLoadTimeMetric(Metric):
         duration_ms: float,
         load_type: str = "initial",
         num_gpus: Optional[int] = None,
+        replica_id: Optional[str] = None,
     ) -> None:
         cls._emit(
             tags={"model_key": model_key, "load_type": load_type},
-            fields={"duration_ms": float(duration_ms), "num_gpus": num_gpus},
+            fields={
+                "replica_id": replica_id,
+                "duration_ms": float(duration_ms),
+                "num_gpus": num_gpus,
+            },
         )
 
 
@@ -105,6 +110,7 @@ class GPUMemMetric(Metric):
         per_device: Dict[int, Tuple[int, int]],
         api_key: Optional[str] = None,
         email: Optional[str] = None,
+        replica_id: Optional[str] = None,
     ) -> None:
         for gpu_index, (baseline_bytes, peak_bytes) in per_device.items():
             cls._emit(
@@ -116,6 +122,7 @@ class GPUMemMetric(Metric):
                 },
                 fields={
                     "request_id": request_id,
+                    "replica_id": replica_id,
                     "baseline_bytes": int(baseline_bytes),
                     "peak_bytes": int(peak_bytes),
                     "extra_bytes": int(peak_bytes - baseline_bytes),
@@ -175,11 +182,13 @@ class RequestResponseSizeMetric(Metric):
         compressed: bool = False,
         api_key: Optional[str] = None,
         email: Optional[str] = None,
+        replica_id: Optional[str] = None,
     ) -> None:
         cls._emit(
             tags={"model_key": model_key, "api_key": api_key, "email": email},
             fields={
                 "request_id": request_id,
+                "replica_id": replica_id,
                 "response_bytes": int(response_bytes),
                 "compressed": bool(compressed),
             },
@@ -250,6 +259,9 @@ class RequestStatusTimeMetric(Metric):
     queue wait, ``status="running"`` the execution time, etc. — and a dashboard
     can attribute end-to-end latency to each phase without any per-call-site
     instrumentation.
+
+    ``replica_id`` is the replica the request was last dispatched to, so the
+    hops before its first dispatch carry none.
     """
 
     measurement = "status_time"
@@ -264,6 +276,7 @@ class RequestStatusTimeMetric(Metric):
         duration_ms: float,
         api_key: Optional[str] = None,
         email: Optional[str] = None,
+        replica_id: Optional[str] = None,
     ) -> None:
         cls._emit(
             tags={
@@ -274,6 +287,7 @@ class RequestStatusTimeMetric(Metric):
             },
             fields={
                 "request_id": request_id,
+                "replica_id": replica_id,
                 "duration_ms": float(duration_ms),
             },
         )

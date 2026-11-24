@@ -149,17 +149,22 @@ rejects a point that conflicts with an existing series, hence the explicit casts
 
 | Metric class | Measurement | Tags | Fields | Emitted by |
 |---|---|---|---|---|
-| `ModelLoadTimeMetric` | `model_load_time` | `model_key`, `load_type` (`initial` \| `from_cache`) | `duration_ms`, `num_gpus` | `BaseModelDeployment.load_from_disk` and `from_cache`; the tensor-parallel actor's load |
-| `GPUMemMetric` | `gpu_mem` | `model_key`, `api_key`, `email`, `gpu_index` | `request_id`, `baseline_bytes`, `peak_bytes`, `extra_bytes` | `BaseModelDeployment.run`, one point per device |
+| `ModelLoadTimeMetric` | `model_load_time` | `model_key`, `load_type` (`initial` \| `from_cache`) | `replica_id`, `duration_ms`, `num_gpus` | `BaseModelDeployment.load_from_disk` and `from_cache`; the tensor-parallel actor's load |
+| `GPUMemMetric` | `gpu_mem` | `model_key`, `api_key`, `email`, `gpu_index` | `request_id`, `replica_id`, `baseline_bytes`, `peak_bytes`, `extra_bytes` | `BaseModelDeployment.run`, one point per device |
 | `RequestSizeMetric` | `request_size` | `model_key`, `api_key`, `email` | `request_id`, `session_id`, `ip_address`, `user_agent`, `payload_bytes` | `create_request` in `src/ndif/services/api/app.py`, at ingress |
-| `RequestResponseSizeMetric` | `response_size` | `model_key`, `api_key`, `email` | `request_id`, `response_bytes`, `compressed` | `BaseModelDeployment.prepare_result` |
+| `RequestResponseSizeMetric` | `response_size` | `model_key`, `api_key`, `email` | `request_id`, `replica_id`, `response_bytes`, `compressed` | `BaseModelDeployment.prepare_result` |
 | `ExecutionTimeMetric` | `execution_time` | `model_key`, `api_key`, `email`, `status` (`completed` \| `error` \| `timeout` \| `cancelled` \| `preempted`) | `request_id`, `replica_id`, `exec_ms`, `deserialize_ms`, `upload_ms` | `BaseModelDeployment.report` |
-| `RequestStatusTimeMetric` | `status_time` | `model_key`, `api_key`, `email`, `status` | `request_id`, `duration_ms` | `BackendRequestModel._advance_status` (every transition); `create_request` (the synthetic `SENT` hop) |
+| `RequestStatusTimeMetric` | `status_time` | `model_key`, `api_key`, `email`, `status` | `request_id`, `replica_id`, `duration_ms` | `BackendRequestModel._advance_status` (every transition); `create_request` (the synthetic `SENT` hop) |
 
 - **`execution_time` splits the run into phases** — `deserialize_ms`, `exec_ms`,
   `upload_ms` — so a slow request is attributable. Absent fields are dropped (an
-  error before deserialize has no `deserialize_ms`). `replica_id` is declared but
-  `report()` never passes it.
+  error before deserialize has no `deserialize_ms`).
+- **`replica_id` is on every point written under a replica.** The controller
+  hands a model actor its id (`Deployment.create`), and the actor puts it on its
+  load, execution, GPU-memory and response-size points and on its events.
+  `Replica.dispatch` stamps it on the request, so `status_time` and the
+  lifecycle events carry the replica the request was last dispatched to; the
+  hops before the first dispatch, and `request_size`, have none.
 - **`status_time` is the latency breakdown, recorded centrally.** Each transition
   emits one point for the status being *left*, so `SENT → RECEIVED → QUEUED →
   DISPATCHED → RUNNING → COMPLETED` yields one point per hop: `SENT` is

@@ -188,7 +188,9 @@ docker compose -f docker/docker-compose.yml exec api python -c \
 
 Influx measurements (`src/ndif/common/metrics.py`). `request_id` is a field, not a
 tag, to bound series cardinality; per-request measurements are tagged
-`model_key`, `api_key` and `email`.
+`model_key`, `api_key` and `email`. `replica_id`, also a field, is on every point
+written once a replica has the request: all but `request_size` and the
+`status_time` hops before the first dispatch.
 
 | Measurement | Tag that matters | Fields |
 |---|---|---|
