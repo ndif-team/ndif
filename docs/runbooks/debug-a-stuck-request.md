@@ -318,12 +318,10 @@ interrupts the block as the execution timeout does; the replica keeps serving
 (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
 `src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
 
-If the actor has not finished the request within a few seconds, the dispatcher
-cancels its wait instead and drops the replica from the pool, and
-`ndif.queue.replica` logs `request errored: cancelled mid-dispatch`. The block may
-still be running on the actor, and new work the processor sends that replica can
-fail with cross-thread greenlet errors (`Cannot switch to a different thread`).
-Restart it:
+If the actor has not stopped the request within a few seconds, `ndif kill`
+returns all the same. The replica stays in the pool: `ndif queue` shows it
+executing that request until the actor returns, and nothing else is sent to it
+meanwhile. If it never returns, the actor is wedged. Restart it:
 
 ```bash
 ndif restart openai-community/gpt2 --replica a1b2c     # the id from the ⚙ line
