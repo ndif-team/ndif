@@ -159,12 +159,10 @@ rejects a point that conflicts with an existing series, hence the explicit casts
 - **`execution_time` splits the run into phases** — `deserialize_ms`, `exec_ms`,
   `upload_ms` — so a slow request is attributable. Absent fields are dropped (an
   error before deserialize has no `deserialize_ms`).
-- **`replica_id` is on every point written under a replica.** The controller
-  hands a model actor its id (`Deployment.create`), and the actor puts it on its
-  load, execution, GPU-memory and response-size points and on its events.
-  `Replica.dispatch` stamps it on the request, so `status_time` and the
-  lifecycle events carry the replica the request was last dispatched to; the
-  hops before the first dispatch, and `request_size`, have none.
+- **`replica_id` names the replica.** A model actor gets its id from the
+  controller (`Deployment.create`). On `status_time` and the lifecycle events it
+  is the replica the request was last dispatched to (`Replica.dispatch`): the
+  queue-wait point is written at dispatch and has it, earlier hops do not.
 - **`status_time` is the latency breakdown, recorded centrally.** Each transition
   emits one point for the status being *left*, so `SENT → RECEIVED → QUEUED →
   DISPATCHED → RUNNING → COMPLETED` yields one point per hop: `SENT` is

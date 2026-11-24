@@ -182,8 +182,7 @@ class Deployment:
 
     def create(self, node_name: str, deployment_args: BaseModelDeploymentArgs):
         try:
-            # Inject the assigned GPU allocation so the actor targets those GPUs,
-            # and the replica's id so its telemetry carries it.
+            # Inject the assigned GPU allocation so the actor targets those GPUs.
             deployment_args.gpu_mem_bytes_by_id = self.gpus
             deployment_args.replica_id = self.replica_id
 

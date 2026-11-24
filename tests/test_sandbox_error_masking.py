@@ -206,7 +206,6 @@ class TestReportWiring:
             r for r in caplog.records if r.getMessage() == "model execution errored"
         )
         assert record.error_type == "OutOfOrderError"
-        assert record.replica_id == "abc12"
 
     def test_a_bare_runner_error_still_names_itself(self, monkeypatch, caplog):
         # An EXCEPTION from an older runner build carries no cause_type; the

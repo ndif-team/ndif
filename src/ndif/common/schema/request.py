@@ -51,8 +51,7 @@ class BackendRequestModel(RequestModel):
     head. The request's ingress time isn't a separate field — it's the initial
     ``last_status_time`` (seeded at RECEIVED), and per-stage latency is recovered
     from the ``status_time`` metric rather than threaded through here.
-    ``replica_id`` is the replica the dispatcher last sent the request to
-    (``Replica.dispatch``), which its status telemetry carries from then on.
+    ``replica_id`` is the replica ``Replica.dispatch`` last sent it to.
     """
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -165,8 +164,7 @@ class BackendRequestModel(RequestModel):
         self.last_status = status
         self.last_status_time = now
 
-        # A request pickled by an API from before the field existed has no such
-        # attribute, and reaches here before a replica has set it.
+        # Absent on a request pickled by an API from before the field.
         replica_id = getattr(self, "replica_id", None)
 
         prev_stage_ms = None

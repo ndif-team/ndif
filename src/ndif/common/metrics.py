@@ -259,9 +259,6 @@ class RequestStatusTimeMetric(Metric):
     queue wait, ``status="running"`` the execution time, etc. — and a dashboard
     can attribute end-to-end latency to each phase without any per-call-site
     instrumentation.
-
-    ``replica_id`` is the replica the request was last dispatched to, so the
-    hops before its first dispatch carry none.
     """
 
     measurement = "status_time"

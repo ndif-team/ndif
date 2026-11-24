@@ -134,7 +134,6 @@ class BaseModelDeployment:
         InfluxProvider.connect()
 
         self.model_key = model_key
-        # Goes on every metric and event this replica writes.
         self.replica_id = replica_id
         self.execution_timeout = execution_timeout
         self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}

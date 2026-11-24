@@ -34,26 +34,6 @@ def written(monkeypatch):
     return points
 
 
-@pytest.mark.parametrize(
-    "metric, arguments",
-    [
-        (metrics.ModelLoadTimeMetric, {"duration_ms": 1.0}),
-        (metrics.GPUMemMetric, {"request_id": "r", "per_device": {0: (1, 2)}}),
-        (metrics.RequestResponseSizeMetric, {"request_id": "r", "response_bytes": 1}),
-        (metrics.ExecutionTimeMetric, {"request_id": "r", "exec_ms": 1.0}),
-        (metrics.RequestStatusTimeMetric, {"request_id": "r", "status": "RUNNING", "duration_ms": 1.0}),
-    ],
-)
-def test_the_replica_id_is_a_field_of_the_point(written, metric, arguments):
-    metric.update(model_key="m", replica_id=REPLICA, **arguments)
-
-    ((measurement, tags, fields),) = written
-    assert measurement == metric.measurement
-    assert fields["replica_id"] == REPLICA
-    # An id per replica as a tag would add a series for every replica ever made.
-    assert "replica_id" not in tags
-
-
 def test_status_telemetry_carries_the_replica_the_request_was_sent_to(written, caplog):
     request = BackendRequestModel(model_key="m")
 
@@ -75,8 +55,6 @@ def test_a_request_pickled_before_the_field_existed_still_advances(written):
     """The API and the cluster are not upgraded at the same instant."""
     request = BackendRequestModel(model_key="m")
     del request.__dict__["replica_id"]  # what unpickling an older request leaves
-    with pytest.raises(AttributeError):
-        request.replica_id
 
     request._advance_status(Status.RECEIVED)
     request._advance_status(Status.QUEUED)

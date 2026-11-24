@@ -40,12 +40,13 @@ lifetime="detached", runtime_env=...).remote(**deployment_args.model_dump())`, w
 |---|---|---|
 | `model_key` | required | The nnsight model key (`"{import.path}:{json}"`) this deployment serves |
 | `execution_timeout` | `None` | `DeploymentConfig.execution_timeout_seconds`, else `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS`, **unset by default**, so no cap at all (`_ControllerActor.apply`) |
+| `replica_id` | `None` | Injected by `Deployment.create`; the actor's telemetry carries it |
 | `gpu_mem_bytes_by_id` | `{}` | Injected by `Deployment.create` from the placement the cluster chose |
 | `dtype` | `"bfloat16"` | `DeploymentConfig.dtype`, else `NDIF_DEFAULT_DTYPE` |
 
-Only these four fields cross the boundary — a constructor parameter that isn't a
+Only these five fields cross the boundary — a constructor parameter that isn't a
 field here can never be set by the controller. `BaseModelDeployment.__init__` binds
-all four by name; anything else lands in `self.kwargs`, forwarded verbatim into
+all five by name; anything else lands in `self.kwargs`, forwarded verbatim into
 `from_model_key` at load time. `trust_remote_code` is not an argument: `from_model_key`
 reads it off the model key
 ([Models and Deployment](../operating/models-and-deployment.md#trust_remote_code-in-the-model-key)).

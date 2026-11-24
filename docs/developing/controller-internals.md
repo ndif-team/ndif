@@ -220,7 +220,7 @@ entry) and `deployments_to_delete` (in state, gone from the cluster model).
    The one synchronous step, because step 3 assumes that GPU memory is already free.
 3. **from_cache** (WARM→HOT) — `actor.from_cache.remote(self.gpus)`.
 4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
-   self.gpus`, then awaits `actor.__ray_ready__`.
+   self.gpus` and `replica_id`, then awaits `actor.__ray_ready__`.
 
 Steps 3 and 4 are awaited off the main path by `_ControllerActor._monitor_deployment` — awaiting the
 `ObjectRef` directly is legal in an async actor and non-blocking, so a multi-minute load doesn't
