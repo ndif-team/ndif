@@ -3,7 +3,7 @@ title: Queue Internals
 one_liner: The dispatcher actor — one Redis list in, per-model Processors and Replica workers out, plus autoscaling, eviction handling, and the places it can wedge.
 tags: [internals, dev, queue, redis, ray]
 related: [docs/developing/api-service.md, docs/concepts/queue-and-scheduling.md, docs/developing/controller-internals.md, docs/developing/model-actor.md, docs/reference/redis-keys.md, docs/reference/env-vars.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/start.sh, src/ndif/common/providers/ray.py, src/ndif/cli/lib/dispatcher.py]
+sources: [src/ndif/services/ray/queue/config.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/request_queue.py, src/ndif/services/ray/queue/runtime_limit.py, src/ndif/services/ray/start.sh, src/ndif/common/providers/ray.py, src/ndif/cli/lib/dispatcher.py]
 ---
 
 # Queue Internals
@@ -312,6 +312,10 @@ replica from `processor.replicas` and then either calls `ensure_started()`
 `UNINITIALIZED`).
 
 `Replica.dispatch` sends DISPATCHED, then `await handle.run.remote(request)`.
+Around that it applies the
+[runtime limit](../concepts/auth-and-limits.md#runtime-limit): a request whose
+user is out of runtime is errored before DISPATCHED, and a run the actor returns
+from is charged to its user (`src/ndif/services/ray/queue/runtime_limit.py`).
 The failure split is the most consequential logic in this package:
 
 | Caught | Meaning | Result |

@@ -52,6 +52,7 @@ over the socket, compared against the local run; no Ray:
 | `test_node_registry.py` | the controller noticing nodes that are gone (a stale registry after mass node loss) and `summarize_error` producing a useful line |
 | `test_inline_result_cap.py` | `NDIF_MAX_SOCKET_RESULT_BYTES`: its default, and that `to_env()` carries it to a model actor |
 | `test_result_serialization.py` | the result pickler: client classes round-trip as themselves, block-born classes as working twins, CUDA tensors to CPU |
+| `test_runtime_limit_offline.py` | the runtime limit: the budget's arithmetic, a replica refusing and charging, and the limit the dispatcher reads from Postgres |
 | `test_task_key_offline.py` | the pipeline task's place in the model key, config files and spec normalization |
 | `test_utils.py` | the per-request report helpers in `src/ndif/services/ray/deployments/modeling/util.py` (`request_meta`, OOM shortfall) |
 | `test_egress_policy.py` | the egress proxy's policy (`docker/egress/allowlist.py`), one request at a time: which hosts, methods and ports pass, a Host header that names another host, a refused body that is streamed. Needs mitmproxy, which NDIF does not install: skips without it |

@@ -1,6 +1,6 @@
 ---
 title: Enable API-Key Auth
-one_liner: Turn on Postgres-backed API-key verification on the compose stack, keep the keys across `just down`, and lock the dashboard — until you do, every caller's Python runs in-process next to the weights.
+one_liner: Turn on Postgres-backed API-key verification on the compose stack, keep the keys across `just down`, lock the dashboard, and set a runtime limit — until you do, every caller's Python runs in-process next to the weights.
 tags: [runbook, operating, auth, api, sandbox, dashboard]
 related: [docs/concepts/auth-and-limits.md, docs/concepts/sandbox-execution.md, docs/operating/production.md, docs/operating/dashboard.md, docs/operating/compose-stack.md, docs/developing/api-service.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/runbooks/trace-a-users-failed-job.md]
 sources: [src/ndif/services/api/auth.py, src/ndif/common/providers/postgres.py, src/ndif/services/api/app.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/dashboard/backend/auth.py, src/ndif/services/dashboard/backend/config.py, src/ndif/services/dashboard/backend/routers/deployments.py, docker/postgres/init.sql, docker/docker-compose.yml, justfile]
@@ -36,10 +36,10 @@ docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif 
 ```
 
 `docker/postgres/init.sql` is mounted into `/docker-entrypoint-initdb.d/`, so it
-runs **once, on an empty data directory**. Expect ten tables: `users`,
+runs **once, on an empty data directory**. Expect eleven tables: `users`,
 `profiles`, `user_tags`, `keys`, `key_user_tag_assignments`,
 `user_tag_assignments`, `models`, `model_tags`, `model_tag_assignments`,
-`audit_logs`.
+`audit_logs`, `runtime_limit`.
 
 ### Where the keys live, and what destroys them
 
@@ -78,7 +78,7 @@ Pick one of these before you issue keys you care about:
 - **Rebuild without tearing down.** After a code change, `just build` then
   `just up` replaces the changed service containers and leaves `postgres` alone.
 
-## 2. Create the two tags the server acts on
+## 2. Create the tags the server acts on
 
 `init.sql` seeds no users, keys or tags. The API runs one query per key
 (`src/ndif/services/api/auth.py` `_KEY_QUERY`): a key is valid if its row exists in
@@ -91,6 +91,7 @@ account portal's job; here you do it by hand.
 | `trusted` | `BackendRequestModel.trusted` | the request runs in-process instead of in a runner, and has the `trust_remote_code` permission |
 | `trust_remote_code` | `BackendRequestModel.trust_remote_code` | the request may deploy a model whose key carries `trust_remote_code`, and nothing more ([Auth and limits](../concepts/auth-and-limits.md#trust_remote_code)) |
 | `priority` | `BackendRequestModel.priority` | the request is served ahead of untagged traffic for that model, FIFO among other priority requests (`src/ndif/services/ray/queue/request_queue.py` `RequestQueue.rank`) |
+| `unlimited` | — | the request is exempt from the runtime limit ([Set a runtime limit](#set-a-runtime-limit)) |
 
 Every other tag name is inert.
 
@@ -99,7 +100,8 @@ docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif 
 INSERT INTO user_tags (name, description)
 VALUES ('trusted',  'code runs in the model process'),
        ('trust_remote_code', 'may deploy checkpoints that run their own code'),
-       ('priority', 'served ahead of untagged traffic');"
+       ('priority', 'served ahead of untagged traffic'),
+       ('unlimited', 'exempt from the runtime limit');"
 ```
 
 ## 3. Point the API at it
@@ -296,8 +298,48 @@ curl -s -c jar -H 'content-type: application/json' \
 curl -s -o /dev/null -w '%{http_code}\n' -b jar localhost:8081/api/schedule   # 200
 ```
 
+## Set a runtime limit
+
+Optional. What the limit does is in
+[Auth and limits](../concepts/auth-and-limits.md#runtime-limit).
+
+The dispatcher reads the limit from Postgres itself, so the Ray side needs the
+URL too. Uncomment `NDIF_POSTGRES_URL` in the `ray` service's `environment:`:
+
+```yaml
+      NDIF_POSTGRES_URL: postgresql://ndifray:admin@postgres:5432/ndif
+```
+
+`ndifray` can read `runtime_limit` and nothing else, because user code runs on
+that side. `just up ray` recreates the container, which drops its deployments.
+
+Then set the limit, as the database owner. The dispatcher reads it again every
+30 seconds, so a change needs no restart.
+
+```sql
+-- 10 minutes of model runtime every 60 minutes, for every key.
+INSERT INTO runtime_limit (minutes, per_minutes) VALUES (10, 60);
+
+-- Change it. The table holds one row, so a second INSERT fails.
+UPDATE runtime_limit SET minutes = 30, per_minutes = 60;
+
+-- Exempt a key.
+INSERT INTO key_user_tag_assignments (key_id, user_tag_id)
+SELECT '<key_id>', user_tag_id FROM user_tags WHERE name = 'unlimited';
+
+-- No limit again.
+DELETE FROM runtime_limit;
+```
+
+To give one user a full budget back, remove them from the Redis sorted set:
+`redis-cli zrem runtime <email>`.
+
 ## Gotchas
 
+- **A dispatcher that cannot read the limit keeps the last value it read**, which
+  is no limit after a restart. It logs `runtime limit not read: ...`. A database
+  that was not built from `docker/postgres/init.sql` needs the `runtime_limit`
+  table and the `ndifray` role from that file.
 - **Auth is checked at ingress only.** Anyone who can reach Redis, the Ray client
   port (10001) or the Ray dashboard (8265) bypasses it. See
   [Ports](../reference/ports.md).

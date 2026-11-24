@@ -3,7 +3,7 @@ title: Redis Keys Reference
 one_liner: Every Redis key, channel and stream NDIF uses — type, writer, reader, TTL and the env var that controls it.
 tags: [reference, redis, api, queue, cli]
 related: [docs/developing/redis-layer.md, docs/developing/providers.md, docs/developing/queue-internals.md, docs/reference/env-vars.md, docs/concepts/status-and-results.md, docs/runbooks/debug-a-stuck-request.md]
-sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/__init__.py, src/ndif/services/ray/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/common/schema/request.py, src/ndif/services/ray/sandbox/driver.py]
+sources: [src/ndif/common/redis/status.py, src/ndif/common/redis/env.py, src/ndif/common/redis/__init__.py, src/ndif/services/ray/queue/config.py, src/ndif/services/api/app.py, src/ndif/services/ray/queue/dispatcher.py, src/ndif/services/ray/queue/runtime_limit.py, src/ndif/common/schema/request.py, src/ndif/services/ray/sandbox/driver.py]
 ---
 
 # Redis Keys Reference
@@ -79,6 +79,17 @@ therefore produces hundreds of publishes on one channel.
 A request with **no** `session_id` (non-blocking submit) has no channel: its latest
 non-LOG response goes to the object store as JSON instead (see below), so its prints
 are not retrievable.
+
+## Runtime limit
+
+| Key | Type | Written by | Read by | TTL | Holds |
+|---|---|---|---|---|---|
+| `runtime` | Sorted set | `src/ndif/services/ray/queue/runtime_limit.py` `charge` — `zadd GT` + `zincrby` in one transaction, after each run of a request whose user has a limit | `refusal`, before each such run — `zscore` | none | One member per user `email`; the score is the Unix time at which that user's runtime budget is back at zero |
+
+A user is refused while their score is in the future
+([Auth and limits](../concepts/auth-and-limits.md#runtime-limit)), so
+`zrangebyscore runtime <now> +inf` lists who is out of runtime. A user with no
+member has a full budget, and losing Redis gives every user one.
 
 ## Not in Redis
 

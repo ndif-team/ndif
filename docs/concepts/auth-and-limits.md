@@ -1,9 +1,9 @@
 ---
 title: Auth and Limits
-one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag and the API gate on deploying a model that runs its own repo code, and every bound the code actually enforces on a request.
+one_liner: API keys, the Postgres-backed check, the trusted flag end to end (auth-off default, what it decides, which actor classes honor it, what the untrusted path cannot do), the trust_remote_code tag and the API gate on deploying a model that runs its own repo code, the per-user runtime limit, and every bound the code actually enforces on a request.
 tags: [concepts, auth, api, gotchas]
 related: [docs/concepts/request-lifecycle.md, docs/concepts/sandbox-execution.md, docs/concepts/deployments-and-eviction.md, docs/runbooks/enable-auth.md, docs/operating/production.md, docs/reference/env-vars.md, docs/reference/http-api.md, docs/developing/nnsight-integration.md]
-sources: [src/ndif/services/api/auth.py, src/ndif/services/ray/queue/processor.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
+sources: [src/ndif/services/api/auth.py, src/ndif/services/ray/queue/processor.py, src/ndif/services/ray/queue/replica.py, src/ndif/services/ray/queue/runtime_limit.py, src/ndif/common/types.py, src/ndif/services/api/versioning.py, src/ndif/services/api/app.py, src/ndif/common/providers/postgres.py, src/ndif/common/schema/request.py, src/ndif/common/schema/controller.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/tp/model.py, src/ndif/services/ray/deployments/controller/controller.py, docker/postgres/init.sql]
 ---
 
 # Auth and Limits
@@ -142,7 +142,7 @@ malformed key returns `400` and a Postgres failure `503`.
 
 ## What identity buys you
 
-`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly three
+`Identity` carries `key_id`, `user_id`, `email`, and `user_tags`. Exactly four
 tags mean anything to the server:
 
 | Tag | Effect |
@@ -150,11 +150,46 @@ tags mean anything to the server:
 | `trusted` | `request.trusted` and `request.trust_remote_code` — see above |
 | `trust_remote_code` | `request.trust_remote_code` — see [`trust_remote_code`](#trust_remote_code) |
 | `priority` | `request.priority`: the request sorts ahead of all normal traffic for that model, FIFO against other priority requests. |
+| `unlimited` | The request is exempt from the [runtime limit](#runtime-limit). |
 
 Everything else about identity is **observability only**. `email` travels with
 the request across the Ray boundary so every downstream log line and metric
-point can be attributed to a person. There is **no tier system, no quota, and no
-per-model authorization**: any valid key may request any `model_key`.
+point can be attributed to a person. There is **no tier system and no per-model
+authorization**: any valid key may request any `model_key`.
+
+## Runtime limit
+
+A user gets **X minutes of model runtime every Y minutes**, across all models.
+It needs auth on, because a run is billed to the `email` of its key, and there
+is no limit until one is set.
+
+**Set in Postgres.** The one row of the `runtime_limit` table (`minutes`,
+`per_minutes`) is the limit for every request that does not carry the
+`unlimited` tag. The dispatcher reads it itself
+(`src/ndif/services/ray/queue/runtime_limit.py` `limit`), so the Ray side needs
+its own `NDIF_POSTGRES_URL`; without one there is no limit. It reads at most
+every 30 seconds, so an `UPDATE` applies within that, with no restart. A read
+that fails keeps the last value. The SQL is in
+[Enable auth](../runbooks/enable-auth.md#set-a-runtime-limit).
+
+**Enforced by the replica worker.** `Replica.dispatch`
+(`src/ndif/services/ray/queue/replica.py`) asks `refusal` before it sends a
+request to the actor. A user who is out of runtime gets `ERROR` with `Runtime limit
+reached: your account gets X min of model runtime every Y min. Try again in N
+min.`, and the worker takes the next request. When the actor returns, `charge`
+takes the time the run took out of the user's budget, whether it completed,
+failed, or hit the execution timeout. A run cut short by an eviction is
+re-queued and not charged.
+
+**The budget refills continuously**, X minutes per Y, up to X. It is one budget
+per user (by `email`), so runs on several replicas at once all draw from it. It
+lives in the Redis sorted set `runtime`
+([Redis keys](../reference/redis-keys.md#runtime-limit)).
+
+**A running request is never stopped.** A request starts whenever its user has
+any runtime left, so a user can overdraw by whatever was started, and pays the
+overdraft back before their next request runs. The
+[execution timeout](#the-per-request-execution-timeout) bounds each run.
 
 ## Client version gating
 
@@ -228,6 +263,7 @@ next request.
 | Min client python version | `NDIF_MIN_PYTHON_VERSION` | unset | yes, when configured |
 | Request body size | — | — | **no** — measured only |
 | Requests per key / rate limit | — | — | **no** |
+| Runtime per user | the `runtime_limit` row in Postgres | no row (no limit) | yes, when auth is on, the Ray side has `NDIF_POSTGRES_URL` and a row is set; checked when a request starts, never during it |
 | Queue depth | — | — | **no** — unbounded |
 | Replicas per model | `NDIF_AUTOSCALING_MAX_REPLICAS` | 3 | yes |
 | Per-request execution time | `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` | unset (no cap) | only if you set it; see above for what the interrupt does |

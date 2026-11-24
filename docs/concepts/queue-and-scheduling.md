@@ -164,8 +164,10 @@ Not much, and it is worth being explicit about it:
   one, within their group. There is no aging, so sustained priority traffic
   starves normal traffic indefinitely; the autoscaler is the only relief, and it
   caps at `NDIF_AUTOSCALING_MAX_REPLICAS`.
-- **Per user:** nothing. There is no per-key concurrency cap, no quota, and no
-  rate limit anywhere on the request path.
+- **Per user:** the [runtime limit](auth-and-limits.md#runtime-limit), when one
+  is set: a user who is out of runtime has each queued request errored as a
+  replica reaches it. There is no per-key concurrency cap and no limit on how
+  many requests a key sends.
 - **Head-of-line blocking is real.** A replica handles one request at a time,
   and `NDIF_DEFAULT_EXECUTION_TIMEOUT_SECONDS` is **unset by default** — so a
   block holds its replica until it finishes. The only relief is autoscaling up to

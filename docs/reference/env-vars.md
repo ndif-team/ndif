@@ -168,7 +168,7 @@ Read by `src/ndif/common/providers/postgres.py` `PostgresProvider.CONFIG`.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `NDIF_POSTGRES_URL` | `""` | **The auth switch.** Set → keys are checked against the `keys` table, failing closed (503) if the DB is unreachable; set without `asyncpg` installed, the API raises rather than run unauthenticated (`PostgresProvider.connect`). Unset → no auth, and a request that doesn't send `trusted` is stamped trusted. What that means for where user code runs is in [auth-and-limits.md](../concepts/auth-and-limits.md). |
+| `NDIF_POSTGRES_URL` | `""` | **The auth switch.** Set → keys are checked against the `keys` table, failing closed (503) if the DB is unreachable; set without `asyncpg` installed, the API raises rather than run unauthenticated (`PostgresProvider.connect`). Unset → no auth, and a request that doesn't send `trusted` is stamped trusted. What that means for where user code runs is in [auth-and-limits.md](../concepts/auth-and-limits.md). **On the Ray side** it is where the dispatcher reads the [runtime limit](../concepts/auth-and-limits.md#runtime-limit); unset there → no limit. |
 | `NDIF_POSTGRES_POOL_MIN` | `1` | Connections opened up front on first use. |
 | `NDIF_POSTGRES_POOL_MAX` | `10` | Pool ceiling under concurrency. |
 | `NDIF_POSTGRES_COMMAND_TIMEOUT_S` | `10.0` | Per-statement timeout, so a wedged DB surfaces as an error. |
@@ -274,6 +274,7 @@ results and signs the URL:
 
 ```bash
 NDIF_REDIS_URL=redis://redis.internal:6379   # never leave this at localhost
+NDIF_POSTGRES_URL=postgresql://ndifray:<pw>@postgres.internal:5432/ndif   # only for a runtime limit
 NDIF_OBJECT_STORE_URL=https://s3.internal:9000
 NDIF_OBJECT_STORE_PUBLIC_URL=https://results.example.org
 NDIF_OBJECT_STORE_ACCESS_KEY=...

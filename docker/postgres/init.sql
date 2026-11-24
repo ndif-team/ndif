@@ -155,6 +155,14 @@ CREATE TABLE audit_logs (
     affected_id UUID
 );
 
+-- The runtime limit: a user without the `unlimited` tag gets `minutes` of model
+-- runtime every `per_minutes`. At most one row; no row means no limit.
+CREATE TABLE runtime_limit (
+    one_row BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (one_row),
+    minutes INTEGER NOT NULL CHECK (minutes > 0),
+    per_minutes INTEGER NOT NULL CHECK (per_minutes > 0)
+);
+
 ---
 --- INDEXES
 ---
@@ -179,5 +187,10 @@ CREATE USER login_page WITH PASSWORD 'admin';
 GRANT readonly TO login_page;
 GRANT INSERT, UPDATE, DELETE ON TABLE keys TO login_page;
 GRANT INSERT ON TABLE users TO login_page;
+
+-- The Ray side connects as `ndifray` to read the runtime limit. User code runs
+-- on that side, so the role can read nothing else.
+CREATE USER ndifray WITH PASSWORD 'admin';
+GRANT SELECT ON runtime_limit TO ndifray;
 
 -- No seed data: no default users or API keys are created.
