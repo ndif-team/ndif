@@ -307,7 +307,7 @@ class Processor:
         try:
             # ``deploy`` registers the replica with this Processor before its
             # worker starts, so it counts toward the pool while coming up.
-            await Replica.deploy(self.model_key, self)
+            replica = await Replica.deploy(self.model_key, self)
         except Exception as e:
             event(
                 logger,
@@ -326,6 +326,7 @@ class Processor:
             f"Autoscaling {self.model_key}: provisioning replica; "
             f"{replicas_before} -> {len(self.replicas)}",
             model_key=self.model_key,
+            replica_id=replica.replica_id,
             autoscale_result="added",
             replicas_before=replicas_before,
             replicas_after=len(self.replicas),

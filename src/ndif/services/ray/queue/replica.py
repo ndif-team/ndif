@@ -216,6 +216,7 @@ class Replica:
         """
         self.current_request = request
         self.current_started_at = time.time()
+        request.replica_id = self.replica_id
 
         try:
             handle = model_handle(self.model_key, self.replica_id)

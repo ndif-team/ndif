@@ -38,7 +38,7 @@ from .....common.metrics import (
 from .....common.providers.objectstore import ObjectStoreProvider
 from .....common.providers.ray import CachedActorError
 from .....common.telemetry import elapsed_ms, event
-from .....common.types import MODEL_KEY
+from .....common.types import MODEL_KEY, REPLICA_ID
 from .nns import execute_traced_block, prepare_traced_block
 from .util import (
     LogStream,
@@ -87,13 +87,14 @@ class BaseModelDeploymentArgs(BaseModel):
     """Constructor arguments the controller passes to a model actor.
 
     The controller sets ``model_key`` / ``execution_timeout`` / ``dtype`` and then
-    injects the assigned GPU allocation as ``gpu_mem_bytes_by_id`` before
-    ``create``.
+    injects the assigned GPU allocation as ``gpu_mem_bytes_by_id``, and the
+    replica's id as ``replica_id``, before ``create``.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     model_key: MODEL_KEY
+    replica_id: Optional[REPLICA_ID] = None
     execution_timeout: Optional[float] = None
     gpu_mem_bytes_by_id: Dict[int, int] = {}
     # torch dtype name (e.g. "bfloat16"). Must match the dtype the controller's
@@ -120,6 +121,7 @@ class BaseModelDeployment:
         execution_timeout: Optional[float] = None,
         gpu_mem_bytes_by_id: Optional[Dict[int, int]] = None,
         dtype: str = "bfloat16",
+        replica_id: Optional[REPLICA_ID] = None,
         **kwargs: Any,
     ) -> None:
         # Install the telemetry sinks in this actor's worker process (each Ray
@@ -132,6 +134,7 @@ class BaseModelDeployment:
         InfluxProvider.connect()
 
         self.model_key = model_key
+        self.replica_id = replica_id
         self.execution_timeout = execution_timeout
         self.gpu_mem_bytes_by_id = gpu_mem_bytes_by_id or {}
         # Two halves of one setting, because a quantization is not a torch.dtype.
@@ -233,6 +236,7 @@ class BaseModelDeployment:
         )
         ModelLoadTimeMetric.update(
             model_key=self.model_key,
+            replica_id=self.replica_id,
             duration_ms=elapsed_ms(started_at),
             load_type="initial",
             num_gpus=len(self.gpu_mem_bytes_by_id),
@@ -295,6 +299,7 @@ class BaseModelDeployment:
 
         ModelLoadTimeMetric.update(
             model_key=self.model_key,
+            replica_id=self.replica_id,
             duration_ms=elapsed_ms(started_at),
             load_type="from_cache",
             num_gpus=len(self.gpu_mem_bytes_by_id),
@@ -426,6 +431,7 @@ class BaseModelDeployment:
             if per_device:
                 GPUMemMetric.update(
                     model_key=self.model_key,
+                    replica_id=self.replica_id,
                     request_id=request.id,
                     api_key=request.api_key,
                     email=request.email,
@@ -630,7 +636,8 @@ class BaseModelDeployment:
         if status == "cancelled":
             event(
                 logger, "model execution cancelled", level=logging.WARNING,
-                model_key=self.model_key, request_id=request.id,
+                model_key=self.model_key, replica_id=self.replica_id,
+                request_id=request.id,
                 api_key=request.api_key, email=request.email,
                 stage="running", error_type="cancelled", exec_ms=exec_ms,
             )
@@ -641,14 +648,16 @@ class BaseModelDeployment:
             # spike, and so preemption rate is greppable.
             event(
                 logger, "model execution preempted; requeued", level=logging.WARNING,
-                model_key=self.model_key, request_id=request.id,
+                model_key=self.model_key, replica_id=self.replica_id,
+                request_id=request.id,
                 api_key=request.api_key, email=request.email,
                 stage="running", error_type="preempted", exec_ms=exec_ms,
             )
         elif status == "timeout":
             event(
                 logger, "model execution timed out", level=logging.WARNING,
-                model_key=self.model_key, request_id=request.id,
+                model_key=self.model_key, replica_id=self.replica_id,
+                request_id=request.id,
                 api_key=request.api_key, email=request.email,
                 stage="running", error_type="timeout",
                 execution_timeout=self.execution_timeout, exec_ms=exec_ms,
@@ -657,14 +666,16 @@ class BaseModelDeployment:
             event(
                 logger, "model execution errored", level=logging.ERROR,
                 exc_info=exception is not None,
-                model_key=self.model_key, request_id=request.id,
+                model_key=self.model_key, replica_id=self.replica_id,
+                request_id=request.id,
                 api_key=request.api_key, email=request.email,
                 stage="running",
                 error_type=self.error_name(exception) if exception else "error",
                 fatal=fatal, exec_ms=exec_ms,
             )
         ExecutionTimeMetric.update(
-            model_key=self.model_key, request_id=request.id,
+            model_key=self.model_key, replica_id=self.replica_id,
+            request_id=request.id,
             api_key=request.api_key, email=request.email,
             status=status, exec_ms=exec_ms,
             deserialize_ms=deserialize_ms, upload_ms=upload_ms,
@@ -734,6 +745,7 @@ class BaseModelDeployment:
 
         RequestResponseSizeMetric.update(
             model_key=self.model_key,
+            replica_id=self.replica_id,
             request_id=request.id,
             api_key=request.api_key,
             email=request.email,

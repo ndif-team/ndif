@@ -184,6 +184,7 @@ class Deployment:
         try:
             # Inject the assigned GPU allocation so the actor targets those GPUs.
             deployment_args.gpu_mem_bytes_by_id = self.gpus
+            deployment_args.replica_id = self.replica_id
 
             env_vars = {
                 # Keep Ray from setting CUDA_VISIBLE_DEVICES, so the actor sees

@@ -49,8 +49,8 @@ Keep the split the tree uses: the *deployment* class holds the logic, the
 CUDA-context-corrupting failure and relies on Ray to bring it back.
 
 Your `__init__` must accept what the controller passes — the fields of
-`BaseModelDeploymentArgs`: `model_key`, `execution_timeout`, `gpu_mem_bytes_by_id`,
-`dtype` — via `**kwargs`, and call `super().__init__()`. The
+`BaseModelDeploymentArgs`: `model_key`, `replica_id`, `execution_timeout`,
+`gpu_mem_bytes_by_id`, `dtype` — via `**kwargs`, and call `super().__init__()`. The
 controller creates whichever class it resolves the same way
 (`src/ndif/services/ray/deployments/controller/cluster/deployment.py`
 `Deployment.create`): named `{replica_id}:ModelActor:{model_key}` in namespace

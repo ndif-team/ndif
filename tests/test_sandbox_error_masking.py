@@ -195,6 +195,7 @@ class TestReportWiring:
         )
         deployment = object.__new__(SandboxModelDeployment)
         deployment.model_key = "test-model"
+        deployment.replica_id = "abc12"
         request = SimpleNamespace(id="r1", api_key="k", email="e@example.com")
         error = RunnerError("Traceback ...", cause_type="OutOfOrderError")
 
@@ -222,6 +223,7 @@ class TestReportWiring:
         )
         deployment = object.__new__(SandboxModelDeployment)
         deployment.model_key = "test-model"
+        deployment.replica_id = "abc12"
         request = SimpleNamespace(id="r1", api_key="k", email="e@example.com")
 
         with caplog.at_level(logging.ERROR, logger="ndif.modeling"):
