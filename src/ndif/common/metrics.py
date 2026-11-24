@@ -288,3 +288,28 @@ class RequestStatusTimeMetric(Metric):
                 "duration_ms": float(duration_ms),
             },
         )
+
+
+class DispatcherStateMetric(Metric):
+    """One model's replicas and its executing and queued requests, as
+    ``ndif queue`` shows them, sampled by ``Dispatcher.state_worker``."""
+
+    measurement = "dispatcher_state"
+
+    @classmethod
+    def update(
+        cls,
+        *,
+        model_key: str,
+        replicas: int,
+        executing: int,
+        queue_size: int,
+    ) -> None:
+        cls._emit(
+            tags={"model_key": model_key},
+            fields={
+                "replicas": int(replicas),
+                "executing": int(executing),
+                "queue_size": int(queue_size),
+            },
+        )

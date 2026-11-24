@@ -94,6 +94,9 @@ later, which also carries them through a Redis outage. The stream reads block
 for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
 without closing times out and is retried.
 
+`dispatch_worker` starts `state_worker` too, which writes each model's
+`dispatcher_state` point every 30 s ([Telemetry Internals](telemetry-internals.md#metrics)).
+
 ### Calls from the CLI
 
 Three methods on the actor are for callers outside it. The CLI and the dashboard
