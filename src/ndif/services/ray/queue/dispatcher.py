@@ -121,32 +121,23 @@ class Dispatcher:
                 await asyncio.sleep(1)
 
     async def state_worker(self) -> None:
-        """Record each model's replicas and its executing and queued requests.
+        """Write each model's ``dispatcher_state`` point every 30 s, which is
+        often enough to chart capacity against demand.
 
-        One ``dispatcher_state`` point per Processor every 30 s, which is often
-        enough to chart capacity against demand. A replica counts once its
-        worker is running. A model with no such replica and nothing queued
-        writes no point, so idle Processors, which are never removed, cost
-        nothing.
+        A model with no replica and nothing queued writes no point, so
+        Processors, which are never removed, cost nothing once empty.
         """
         while True:
-            try:
-                for processor in self.processors.values():
-                    replicas = [
-                        replica
-                        for replica in processor.replicas.values()
-                        if not replica.dropped
-                    ]
-                    queued = processor.queue.qsize()
-                    if replicas or queued:
-                        DispatcherStateMetric.update(
-                            model_key=processor.model_key,
-                            replicas=len(replicas),
-                            executing=sum(replica.busy for replica in replicas),
-                            queued=queued,
-                        )
-            except Exception:
-                logger.exception("state_worker: failed to record the state")
+            for processor in self.processors.values():
+                replicas = processor.replicas.values()
+                queue_size = processor.queue.qsize()
+                if replicas or queue_size:
+                    DispatcherStateMetric.update(
+                        model_key=processor.model_key,
+                        replicas=len(replicas),
+                        executing=sum(replica.busy for replica in replicas),
+                        queue_size=queue_size,
+                    )
             await asyncio.sleep(30)
 
     async def status_worker(self) -> None:

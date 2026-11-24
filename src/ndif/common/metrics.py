@@ -280,15 +280,8 @@ class RequestStatusTimeMetric(Metric):
 
 
 class DispatcherStateMetric(Metric):
-    """What the dispatcher holds for one model: its replicas, and the requests
-    executing on them and queued behind them.
-
-    Sampled on a timer by ``Dispatcher.state_worker``, not written when
-    something changes, so a change nothing reported is corrected by the next
-    sample. ``replicas`` is the number the dispatcher is sending work to, which
-    is not always the number the controller has deployed: one still loading is
-    deployed and not yet serving.
-    """
+    """One model's replicas and its executing and queued requests, as
+    ``ndif queue`` shows them, sampled by ``Dispatcher.state_worker``."""
 
     measurement = "dispatcher_state"
 
@@ -299,13 +292,13 @@ class DispatcherStateMetric(Metric):
         model_key: str,
         replicas: int,
         executing: int,
-        queued: int,
+        queue_size: int,
     ) -> None:
         cls._emit(
             tags={"model_key": model_key},
             fields={
                 "replicas": int(replicas),
                 "executing": int(executing),
-                "queued": int(queued),
+                "queue_size": int(queue_size),
             },
         )

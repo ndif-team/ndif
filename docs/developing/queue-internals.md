@@ -85,17 +85,17 @@ sleeping autoscaling task.
 
 ### The side workers
 
-`dispatch_worker` also starts four long-lived tasks: `heartbeat_worker`, which
-renews `ray:connected`; `state_worker`, which writes a `dispatcher_state` point
-for each model every 30 s
-([Telemetry Internals](telemetry-internals.md#metrics)); and `status_worker` and
-`env_worker`, the refresh half of the coalesced `/status` / `/env` cache, whose
-streams are in [The Redis Layer](redis-layer.md#the-coalesced-cache). Nothing restarts these tasks, so
+`dispatch_worker` also starts three long-lived tasks: `heartbeat_worker`, which
+renews `ray:connected`; and `status_worker` and `env_worker`, the refresh half
+of the coalesced `/status` / `/env` cache, whose streams are in
+[The Redis Layer](redis-layer.md#the-coalesced-cache). Nothing restarts these tasks, so
 each one, like the main loop, catches every error, logs it and retries a second
-later (`state_worker`, at its next sample), which also carries them through a
-Redis outage. The stream reads block
+later, which also carries them through a Redis outage. The stream reads block
 for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
 without closing times out and is retried.
+
+`dispatch_worker` starts `state_worker` too, which writes each model's
+`dispatcher_state` point every 30 s ([Telemetry Internals](telemetry-internals.md#metrics)).
 
 ### Calls from the CLI
 
