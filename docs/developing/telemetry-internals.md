@@ -155,6 +155,7 @@ rejects a point that conflicts with an existing series, hence the explicit casts
 | `RequestResponseSizeMetric` | `response_size` | `model_key`, `api_key`, `email` | `request_id`, `response_bytes`, `compressed` | `BaseModelDeployment.prepare_result` |
 | `ExecutionTimeMetric` | `execution_time` | `model_key`, `api_key`, `email`, `status` (`completed` \| `error` \| `timeout` \| `cancelled` \| `preempted`) | `request_id`, `replica_id`, `exec_ms`, `deserialize_ms`, `upload_ms` | `BaseModelDeployment.report` |
 | `RequestStatusTimeMetric` | `status_time` | `model_key`, `api_key`, `email`, `status` | `request_id`, `duration_ms` | `BackendRequestModel._advance_status` (every transition); `create_request` (the synthetic `SENT` hop) |
+| `DispatcherStateMetric` | `dispatcher_state` | `model_key` | `replicas`, `executing`, `queued` | `Dispatcher.state_worker`, one point per Processor every 30 s |
 
 - **`execution_time` splits the run into phases** — `deserialize_ms`, `exec_ms`,
   `upload_ms` — so a slow request is attributable. Absent fields are dropped (an
@@ -165,6 +166,11 @@ rejects a point that conflicts with an existing series, hence the explicit casts
   DISPATCHED → RUNNING → COMPLETED` yields one point per hop: `SENT` is
   client→server transit (from the `ndif-timestamp` header, skipped when it looks
   like clock skew), `QUEUED` is queue wait, `RUNNING` is execution.
+- **`dispatcher_state` is the one measurement that is sampled.** It is the
+  history of what `ndif queue` shows: `replicas` counts the replicas whose worker
+  is running, `executing` the requests on them, `queued` the requests waiting. A
+  model with no such replica and nothing queued writes no point, so a gap in
+  one model's series means zero.
 
 ### Adding a new metric
 
