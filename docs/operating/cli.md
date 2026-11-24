@@ -422,9 +422,10 @@ replica executing it: the client gets the same `ERROR`, and the model actor
 cancels the request, interrupting the block as the execution timeout does; the
 replica keeps serving
 (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
-`src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
-If the actor has not finished the request within a few seconds, the dispatcher
-cancels the **dispatch** instead and the block may run on; follow with
+`src/ndif/services/ray/queue/replica.py` `Replica.kill`).
+If the actor has not stopped the request within a few seconds, `ndif kill`
+returns all the same and the replica stays busy with that request until the
+actor returns; if it never does, follow with
 `ndif restart <checkpoint> --replica <id>` (the replica id is in `ndif queue`).
 What a blocking versus a non-blocking user ends up seeing is in
 [Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs).
