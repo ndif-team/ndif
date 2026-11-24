@@ -316,7 +316,7 @@ ndif kill 3f9c1e2b8d4a4c0e9b1f2d3c4b5a6978
 `ndif kill` errors the request to the user, then cancels it on the actor, which
 interrupts the block as the execution timeout does; the replica keeps serving
 (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
-`src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
+`src/ndif/services/ray/queue/replica.py` `Replica.kill`).
 
 If the actor has not stopped the request within a few seconds, `ndif kill`
 returns all the same. The replica stays in the pool: `ndif queue` shows it

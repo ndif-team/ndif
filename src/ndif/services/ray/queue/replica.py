@@ -16,8 +16,8 @@ no separate flag to keep in sync. The two ways a worker ends are:
   - a deliberate ``cancel`` (a purge after a failed provision), which errors
     the in-flight request.
 
-An operator kill (``cancel(interrupt=True)``) is not one of them: it stops the
-request on the actor and leaves the worker running.
+An operator kill (``kill``) is not one of them: it stops the request on the
+actor and leaves the worker running.
 """
 
 from __future__ import annotations
@@ -326,25 +326,14 @@ class Replica:
             self.current_request = None
             self.current_started_at = None
 
-    async def cancel(
-        self, message: Optional[str] = None, *, interrupt: bool = False
-    ) -> None:
-        """Error any in-flight request, then stop it. Idempotent.
+    async def cancel(self, message: Optional[str] = None) -> None:
+        """Cancel the worker task, erroring any in-flight request.
 
-        If a request is in flight, error it here — a teardown only notifies
-        *queued* requests via ``Processor.reply``; the running one would
-        otherwise hang.
-
-        A purge (the default) cancels the worker task. Its ``finally`` runs even
-        under cancellation, so the Processor sees this replica drop itself; a
-        live actor runs the block to completion.
-
-        ``interrupt`` (``ndif kill``) stops the request on the actor instead and
-        never touches the worker, so the replica stays in the pool. The actor
-        ignores a cancel that reaches it before the block has begun, so the
-        cancel is repeated until the dispatch returns. If the actor has not
-        stopped the request after a few seconds this stops asking, and the
-        replica takes its next request whenever the actor does return.
+        Idempotent. The worker's ``finally`` runs even under cancellation, so
+        the Processor still sees this replica drop itself. If a request is in
+        flight, error it here — a teardown only notifies *queued* requests via
+        ``Processor.reply``; the running one would otherwise hang. Only the
+        dispatch is cancelled: a live actor runs the block to completion.
         """
         request = self.current_request
         if request is not None:
@@ -355,16 +344,29 @@ class Replica:
                 "Sorry for the inconvenience. Please try again later.",
             )
 
-        if not interrupt:
-            if self.task is not None and not self.task.done():
-                self.task.cancel()
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    async def kill(self, message: str) -> None:
+        """Stop the in-flight request on the actor (``ndif kill``).
+
+        Errors the request to its user, then asks the actor to stop it. The
+        worker is left alone, so the replica stays in the pool. The actor
+        ignores a cancel that reaches it before the block has begun, so the
+        cancel is repeated until the dispatch returns. If the actor has not
+        stopped the request after a few seconds this stops asking, and the
+        replica takes its next request whenever the actor does return.
+        """
+        request = self.current_request
+        if request is None:
             return
+        await request.arespond(Status.ERROR, message)
 
         # The caller matched current_request a moment ago, so the actor's
         # in-flight request is overwhelmingly this one; the race we accept is
         # that it finished in between and the next one is cancelled.
         for _ in range(50):
-            if request is None or self.current_request is not request:
+            if self.current_request is not request:
                 return
             try:
                 handle = model_handle(self.model_key, self.replica_id)

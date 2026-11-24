@@ -1,7 +1,7 @@
 """An operator kill of an executing request stops the request and keeps the replica.
 
 ``ndif kill`` on a running request goes ``Dispatcher.kill`` ->
-``Replica.cancel(interrupt=True)`` -> the actor's ``cancel``. The actor ignores
+``Replica.kill`` -> the actor's ``cancel``. The actor ignores
 a cancel that reaches it before the block has begun, and it can be slow to stop
 one. Neither may cost the pool a healthy replica. A batch of kills on a busy
 model once left the dispatcher using 8 of its 10 replicas, and only a manual
@@ -103,7 +103,7 @@ def test_a_kill_is_repeated_until_the_actor_honours_it(monkeypatch):
         actor, pool, replica, killed = serving(monkeypatch, honours=3)
         await until(lambda: actor.ran == ["killed"])
 
-        await replica.cancel(OPERATOR, interrupt=True)
+        await replica.kill(OPERATOR)
 
         assert actor.cancels == 3
         assert killed.responses[-1] == (Status.ERROR, OPERATOR)
@@ -119,7 +119,7 @@ def test_a_kill_the_actor_never_honours_keeps_the_replica(monkeypatch):
         actor, pool, replica, killed = serving(monkeypatch, honours=None)
         await until(lambda: actor.ran == ["killed"])
 
-        await replica.cancel(OPERATOR, interrupt=True)
+        await replica.kill(OPERATOR)
 
         # It stopped asking, and left the worker waiting on the block.
         assert actor.cancels == 50

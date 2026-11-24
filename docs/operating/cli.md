@@ -422,7 +422,7 @@ replica executing it: the client gets the same `ERROR`, and the model actor
 cancels the request, interrupting the block as the execution timeout does; the
 replica keeps serving
 (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
-`src/ndif/services/ray/queue/replica.py` `Replica.cancel`).
+`src/ndif/services/ray/queue/replica.py` `Replica.kill`).
 If the actor has not stopped the request within a few seconds, `ndif kill`
 returns all the same and the replica stays busy with that request until the
 actor returns; if it never does, follow with

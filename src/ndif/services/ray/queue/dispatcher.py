@@ -231,7 +231,7 @@ class Dispatcher:
         for processor in self.processors.values():
             replica = processor.executing_replica(request_id)
             if replica is not None:
-                await replica.cancel("Request cancelled by operator.", interrupt=True)
+                await replica.kill("Request cancelled by operator.")
                 return {"status": "cancelled_execution",
                         "message": f"Request {request_id} cancelled while executing."}
 

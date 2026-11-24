@@ -28,10 +28,10 @@ class Request:
 
 class Replica:
     def __init__(self):
-        self.cancels = []
+        self.kills = []
 
-    async def cancel(self, message, *, interrupt=False):
-        self.cancels.append((message, interrupt))
+    async def kill(self, message):
+        self.kills.append(message)
 
 
 class Processor:
@@ -84,7 +84,7 @@ def test_kill_interrupts_an_executing_request():
     reply = asyncio.run(dispatcher_with(a=Processor(executing={"r1": replica})).kill("r1"))
 
     assert reply["status"] == "cancelled_execution"
-    assert replica.cancels == [("Request cancelled by operator.", True)]
+    assert replica.kills == ["Request cancelled by operator."]
 
 
 def test_kill_of_an_unknown_request_says_so():

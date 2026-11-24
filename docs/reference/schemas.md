@@ -130,7 +130,7 @@ it serializes as its own name (`"COMPLETED"`).
 timeout — both in `BaseModelDeployment.run`); from the
 dispatch side (`Replica.dispatch` when a dispatch fails or its worker is
 cancelled, `Replica.cancel`); from `Processor.purge`; or from `ndif kill`
-(`Dispatcher.kill`).
+(`Dispatcher.kill`, `Replica.kill`).
 
 The transitions between these values, including the cold-start path
 (`RECEIVED` → `PROVISIONING` → `DEPLOYING` → `QUEUED`), are drawn in
