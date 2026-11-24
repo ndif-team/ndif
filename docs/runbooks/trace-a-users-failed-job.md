@@ -198,6 +198,7 @@ tag, to bound series cardinality; per-request measurements are tagged
 | `response_size` | — | `response_bytes`, `compressed` |
 | `gpu_mem` | `gpu_index` | `baseline_bytes`, `peak_bytes`, `extra_bytes` |
 | `model_load_time` | `load_type`: `initial` / `from_cache` | `duration_ms`, `num_gpus` |
+| `dispatcher_state` | — | `replicas`, `executing`, `queue_size` |
 
 In Grafana Explore against the InfluxDB datasource (Flux):
 
