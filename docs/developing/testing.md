@@ -55,6 +55,11 @@ over the socket, compared against the local run; no Ray:
 | `test_utils.py` | the per-request report helpers in `src/ndif/services/ray/deployments/modeling/util.py` (`request_meta`, OOM shortfall) |
 | `test_docs.py` | the docs gate: cited paths and symbols exist, links and anchors resolve, line-number citations don't grow |
 
+`test_auth_tags_postgres.py` needs Postgres and nothing else: it runs
+`_KEY_QUERY` (`src/ndif/services/api/auth.py`) against the compose stack's
+database on `localhost:5432`, rolls back what it inserts, and skips when nothing
+answers there.
+
 The live files are the ones that test the seam that matters most — a serialized
 block leaving a client, crossing Redis and Ray, running against real weights and
 coming back — which no mock reproduces; the offline ones pin the parts that are

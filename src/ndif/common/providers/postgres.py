@@ -2,7 +2,7 @@
 
 NDIF's user data — users, API keys, and the tags they grant — lives in a Postgres
 database (schema in ``init.sql``: ``users`` / ``user_tags`` / ``keys`` /
-``key_user_tag_assignments``).
+``key_user_tag_assignments`` / ``user_tag_assignments``).
 This provider is the thin, generic sink the API's auth layer
 (:mod:`ndif.services.api.auth`) queries through; the auth *logic* (what counts
 as a valid key, which HTTP status a failure maps to) lives there, not here.

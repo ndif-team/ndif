@@ -60,8 +60,8 @@ in request.tags`) decides whether the sandbox runs at all:
 
 `SandboxHost.execution_scope` forks the same way: trusted reuses the base's
 stdout/stderr capture, untrusted gets a `nullcontext` because its output arrives as
-`Print` messages. How the tags are stamped (the key's user_tags with auth on;
-client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
+`Print` messages. How the tags are stamped (the key's user_tags plus its user's
+with auth on; client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
 with auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 
 > **Gotcha:** a plain local `just up` has no Postgres, so a request is trusted by

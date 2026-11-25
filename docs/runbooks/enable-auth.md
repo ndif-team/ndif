@@ -36,9 +36,10 @@ docker compose -f docker/docker-compose.yml exec postgres psql -U admin -d ndif 
 ```
 
 `docker/postgres/init.sql` is mounted into `/docker-entrypoint-initdb.d/`, so it
-runs **once, on an empty data directory**. Expect nine tables: `users`,
-`profiles`, `user_tags`, `keys`, `key_user_tag_assignments`, `models`,
-`model_tags`, `model_tag_assignments`, `audit_logs`.
+runs **once, on an empty data directory**. Expect ten tables: `users`,
+`profiles`, `user_tags`, `keys`, `key_user_tag_assignments`,
+`user_tag_assignments`, `models`, `model_tags`, `model_tag_assignments`,
+`audit_logs`.
 
 ### Where the keys live, and what destroys them
 
@@ -81,8 +82,9 @@ Pick one of these before you issue keys you care about:
 
 `init.sql` seeds no users, keys or tags. The API runs one query per key
 (`src/ndif/services/api/auth.py` `_KEY_QUERY`): a key is valid if its row exists in
-`keys`, and its `user_tags` come back through `key_user_tag_assignments`. Key
-issuance is normally the account portal's job; here you do it by hand.
+`keys`, and its `user_tags` come back through `key_user_tag_assignments` (the
+key's own) and `user_tag_assignments` (its user's). Key issuance is normally the
+account portal's job; here you do it by hand.
 
 | Tag | Property | Effect |
 |---|---|---|
@@ -151,9 +153,13 @@ VALUES ('researcher@example.edu') RETURNING user_id;
 INSERT INTO keys (user_id)
 VALUES ('<user_id from above>') RETURNING key_id;   -- this UUID is the API key
 
--- Optional: grant a tag.
+-- Optional: grant a tag to this key...
 INSERT INTO key_user_tag_assignments (key_id, user_tag_id)
 SELECT '<key_id>', user_tag_id FROM user_tags WHERE name = 'trusted';
+
+-- ...or to the user, which grants it to every key the user has or creates.
+INSERT INTO user_tag_assignments (user_id, user_tag_id)
+SELECT '<user_id>', user_tag_id FROM user_tags WHERE name = 'trusted';
 ```
 
 Grant `trusted` only to keys you would hand a shell on the model node;

@@ -39,24 +39,29 @@ from ndif.common.schema.request import BackendRequestModel
 
 logger = logging.getLogger("ndif.api")
 
-# One row per user_tag granted to the key; no rows means the key doesn't exist.
-# The LEFT JOINs mean a key with no tag assignments still returns a single row
-# (with tag = NULL), distinguishing "known key, no tags" from "unknown key".
-# ``user_id`` / ``email`` (the key's owner) are the same on every row; ``email``
-# is LEFT JOINed so a key whose user row is missing still verifies (email NULL).
+# One row per user_tag the key carries: its own and its user's, each once. No
+# rows means the key doesn't exist. The LEFT JOINs mean a key with no tags still
+# returns a single row (with tag = NULL), distinguishing "known key, no tags"
+# from "unknown key". ``user_id`` / ``email`` (the key's owner) are the same on
+# every row; ``email`` is LEFT JOINed so a key whose user row is missing still
+# verifies (email NULL).
 _KEY_QUERY = """
 SELECT k.user_id, u.email, ut.name AS user_tag
 FROM keys k
 LEFT JOIN users u ON u.user_id = k.user_id
-LEFT JOIN key_user_tag_assignments kuta ON kuta.key_id = k.key_id
-LEFT JOIN user_tags ut ON ut.user_tag_id = kuta.user_tag_id
+LEFT JOIN user_tags ut ON ut.user_tag_id IN (
+    SELECT user_tag_id FROM key_user_tag_assignments WHERE key_id = k.key_id
+    UNION
+    SELECT user_tag_id FROM user_tag_assignments WHERE user_id = k.user_id
+)
 WHERE k.key_id = $1
 """
 
 
 @dataclass
 class Identity:
-    """The authenticated caller: their key, its owning user, and its user_tags."""
+    """The authenticated caller: their key, its owning user, and the user_tags
+    the key carries (its own plus the user's)."""
 
     key_id: str
     user_id: str
@@ -133,11 +138,11 @@ async def validate_request(
     with it through the queue (``request.trusted`` / ``trust_remote_code`` /
     ``priority`` read the tags).
 
-    With auth on the tags are the key's user_tags and a client value is
-    overwritten. With auth off (no Postgres configured) the deployment is assumed
-    to sit on a trusted network: client-supplied ``tags`` are honored (so a
-    caller can opt into the sandbox path with ``tags: []``) and unspecified ones
-    default to ``{"trusted"}``; ``email`` is left as sent.
+    With auth on the tags are the key's user_tags plus its user's, and a client
+    value is overwritten. With auth off (no Postgres configured) the deployment
+    is assumed to sit on a trusted network: client-supplied ``tags`` are honored
+    (so a caller can opt into the sandbox path with ``tags: []``) and unspecified
+    ones default to ``{"trusted"}``; ``email`` is left as sent.
     """
     try:
         request = BackendRequestModel.model_validate_json(data)
