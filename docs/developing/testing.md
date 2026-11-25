@@ -33,7 +33,7 @@ over the socket, compared against the local run; no Ray:
 | `test_sandbox_error_masking.py` | errors crossing the sandbox as themselves (`OutOfOrderError`, the host's own exception — never `BrokenPipeError`), and telemetry's `error_type` naming the real type on both paths (the `report`-wiring tests also need `ray` importable) |
 | `test_sandbox_recursive_source.py` | recursive `.source` over the socket, against the local run |
 | `test_sandbox_adhoc_calls.py` | an ad-hoc module call (`hook=False` and `hook=True`) leaving the module's real occurrence alone |
-| `test_sandbox_gradients.py` | every form of backward pass refused with the trusted-access message |
+| `test_sandbox_gradients.py` | untrusted-path gradients matching the trusted path (reads, edits, steering vectors, session training, batched invokes, repeated backwards), refused backward forms including `torch.autograd.grad`, and host-graph cleanup |
 | `test_sandbox_writeback.py` | an in-place edit of a value a block read, and a read of a layer's `.input` in a cached generate, leaving the forward its own tensors and KV cache; the runner sending a read back only when the block edited it; a read carrying only its own invoke's rows |
 | `test_sandbox_stop.py` | `tracer.stop()`: the trace after a stopped one in a session, and the other invoke parked on the visit the stop fired at |
 | `test_sandbox_template.py` | runners forked from a `Template`: one serves a request, forks draw their own random numbers, stop and template close end them, a runner whose parent is gone exits, and CUDA starts early only with `NDIF_SANDBOX_PRELOAD_CUDA`, on the card the runner is given |
@@ -161,10 +161,9 @@ whole run untrusted:
 PYTHONPATH=tests pytest tests/test_nnsight_remote.py -p conftest_untrusted
 ```
 
-Compare against the trusted run. The untrusted path's known limits — gradients,
-weight access, training — are listed in
-[Sandbox internals](sandbox-internals.md#what-the-untrusted-path-cannot-do), so
-`TestRemoteGradients` is expected to fail there.
+Compare against the trusted run. Known untrusted-path limits (weight access,
+training the model's parameters, and unsupported backward forms) are listed in
+[Sandbox internals](sandbox-internals.md#what-the-untrusted-path-cannot-do).
 
 `tests/test_sandbox_conformance.py` turns the comparison into an assertion: it runs
 one script both ways against a live server and compares the results. It refuses to

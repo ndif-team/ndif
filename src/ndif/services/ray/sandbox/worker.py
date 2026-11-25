@@ -32,8 +32,19 @@ from nnsight.intervention.interleaver import (
 )
 from nnsight.util import apply
 
+from .autograd import RunnerGraph
 from .controls import editable, write_back
-from .messages import CacheHit, Dangling, Done, Park, Reply, Resume, Stop, Throw
+from .messages import (
+    CacheHit,
+    Dangling,
+    Done,
+    GradRequest,
+    Park,
+    Reply,
+    Resume,
+    Stop,
+    Throw,
+)
 
 
 class IPCInterleaver(Interleaver):
@@ -51,6 +62,9 @@ class IPCInterleaver(Interleaver):
         # tracer.cache() caches, by id — the host observes on our behalf and ships
         # each kept value back as a CacheHit for us to record here.
         self.caches: dict[int, Cache] = {}
+        # Runner half of split autograd: received crossings and sent tensors
+        # (``autograd.RunnerGraph``).
+        self.graph = RunnerGraph(link)
 
     def instrument(self, envoy: Envoy) -> None:
         # This process only has meta modules — the forward runs on the host, so
@@ -64,8 +78,9 @@ class IPCInterleaver(Interleaver):
         is answered with its next park; the host pushes the worker's pin so
         tracer.iter relaxation stays in lockstep. `Reply` does the same in answer
         to a control request or a barrier park, and leaves the worker's own pin
-        standing (see below). `Throw` surfaces a dangling worker. `Done` carries
-        the model's result and ends the loop.
+        standing (see below). `Throw` surfaces a dangling worker. `GradRequest`
+        asks the runner to backpropagate through a tensor it sent
+        (``autograd.py``). `Done` carries the model's result and ends the loop.
 
         A park that answers a read also carries the worker's copy of the value,
         when the block edited it in place, so the edit reaches the host
@@ -74,8 +89,10 @@ class IPCInterleaver(Interleaver):
         host parked at that location, so the edit lands before the model moves
         on. It is sent only when the host would write something: this end keeps
         a copy of the value's tensors as it hands the value over, and afterwards
-        runs the host's own ``controls.write_back`` against that copy. A read
-        the block only looks at sends nothing back. A copy rather than each
+        runs the host's own ``controls.write_back`` against that copy, or when
+        the edit linked the value to the runner's autograd graph
+        (``RunnerGraph.settle``). A read the block only looks at sends nothing
+        back. A copy rather than each
         tensor's version counter, because an edit through ``tensor.data`` does
         not move the counter.
 
@@ -92,7 +109,11 @@ class IPCInterleaver(Interleaver):
         self.link.always = {CacheHit: self.record}
         stopped = None
         while True:
-            message = self.link.receive(Resume, Reply, Throw, Done)
+            message = self.link.receive(Resume, Reply, Throw, Done, GradRequest)
+            if isinstance(message, GradRequest):
+                # Host backward reached a tensor sent from the runner.
+                self.graph.answer(message)
+                continue
             if isinstance(message, Done):
                 if stopped is not None:
                     try:
@@ -117,6 +138,7 @@ class IPCInterleaver(Interleaver):
             # handed a copy of the host's value, which the block may edit in
             # place. Keep its tensors as they arrived, to tell whether it did.
             read = isinstance(message, Resume) and bool(message.args)
+            args = self.graph.receive(message.args, message.crossings)
             before = None
             if read:
                 before = apply(
@@ -125,7 +147,7 @@ class IPCInterleaver(Interleaver):
                     torch.Tensor,
                 )
             try:
-                park = mediator.switch(*message.args)
+                park = mediator.switch(*args)
             except EarlyStopException as stop:
                 # A worker halted the run (tracer.stop()); tell the host to
                 # unwind the model, and let the stop propagate, as nnsight's
@@ -135,11 +157,14 @@ class IPCInterleaver(Interleaver):
                 continue
             # TODO: only the value is sent back — eproperty write-back transforms
             # attached to the read are silently dropped on the sandbox path.
-            edited = read and write_back(before, message.args[0])
+            edited = read and write_back(before, args[0])
             # Freed now, not held while this end waits for the host's next message.
             before = None
+            mirror, linked = self.graph.settle()
+            edited = edited or (read and linked)
+            sent, links = self.graph.outgoing((park, args[0] if edited else None))
             self.link.send(
-                Park(message.worker, park, message.args[0] if edited else None)
+                Park(message.worker, sent[0], sent[1], links, mirror or None)
             )
 
     def record(self, hit) -> None:

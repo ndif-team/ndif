@@ -23,10 +23,22 @@ from collections import Counter
 import torch
 
 from nnsight.intervention.cache import Cache
+from nnsight.intervention.interleaver import Interleaver
 from nnsight.util import apply
 
 from ....common.errors import WeightEditError
-from .messages import CacheHit, Call, Observe, Source, SourceRefused
+from .autograd import autograd_backward, watch
+from .messages import (
+    Backward,
+    CacheHit,
+    Call,
+    Dangling,
+    Observe,
+    Source,
+    SourceRefused,
+    Throw,
+    WatchGrad,
+)
 
 #: The handler for each type of control request.
 HANDLERS: dict = {}
@@ -193,6 +205,65 @@ def call(driver, proxy, request):
     )
 
 
+# ------------------------------------------------------------------ split autograd
+
+
+@control(Backward)
+def backward(driver, proxy, request):
+    """Run the host's half of a backward started in the runner.
+
+    The runner has already backpropagated to the crossings in ``request.roots``
+    with gradients ``request.grads``. When ``request.worker`` is set (a backward
+    block), a `MediatorProxy` on this handler's own `Interleaver` drives it, and
+    `WatchGrad` hooks feed its ``.grad`` parks. Any `FromRunner` reached during
+    the host backward sends `GradRequest` back to the runner's pump.
+    """
+    from .driver import MediatorProxy  # driver imports this module
+
+    graph = driver.graph
+    interleaver = Interleaver()
+    hooks = []
+    graph.watching = (interleaver, set(), hooks)
+    block = None
+    try:
+        if request.worker is not None:
+            block = MediatorProxy(request.worker, proxy.link, driver, request.first)
+            interleaver.mediators = [block]
+            block.settle_control()
+        roots = [graph.served[crossing] for crossing in request.roots]
+        # Single-threaded, matching nnsight's BackwardTracer: the `.grad` hooks
+        # and `FromRunner` exchange with the runner over one socket, one
+        # exchange at a time.
+        with interleaver, torch.autograd.set_multithreading_enabled(False):
+            if roots:
+                autograd_backward(roots, request.grads, retain_graph=request.retain_graph)
+        if block is not None and block.alive:
+            proxy.link.send(
+                Throw(block.id, str(block.pending), Dangling.OUT_OF_ORDER)
+            )
+    finally:
+        for handle in hooks:
+            handle.remove()
+        graph.watching = None
+        interleaver.mediators = []
+        # Clear host leaf grads even on failure so a later backward does not
+        # double-count them.
+        grads = graph.take()
+    # Returned as the `Backward` reply; the runner adds these to its leaves.
+    return grads
+
+
+@control(WatchGrad)
+def watch_grad(driver, proxy, request):
+    """Register a gradient hook on the host tensor served under ``request.crossing``."""
+    interleaver, seen, hooks = driver.graph.watching
+    if request.crossing in seen:
+        return None
+    seen.add(request.crossing)
+    watch(interleaver, driver.graph.served[request.crossing], request.crossing, hooks)
+    return None
+
+
 # ------------------------------------------------------------------ tracer.cache()
 
 
@@ -311,7 +382,7 @@ def kept_by(module) -> set:
     }
 
 
-def write_back(served, edited, kept=frozenset()) -> bool:
+def write_back(served, edited, kept=frozenset(), linked=False) -> bool:
     """Copy a block's in-place edits of a value it read into the host's own value,
     and return whether there were any.
 
@@ -329,14 +400,19 @@ def write_back(served, edited, kept=frozenset()) -> bool:
     there would change the model for every later request, so it raises
     ``WeightEditError`` and the tensor is left as it was.
 
+    ``linked`` writes a tensor whose edit carries an autograd graph even when
+    its values are unchanged (for example ``h[:] = h + v`` with ``v`` all
+    zeros), so the host forward connects to the runner's graph (``autograd.py``).
+
     The runner calls this too, against the copy it kept of a read, and sends the
-    read back only if this returns True (``IPCInterleaver.pump``). It passes no
-    ``kept``: the model's storage is on the host.
+    read back only when this returns True or the edit linked it to a graph
+    (``IPCInterleaver.pump``). It passes no ``kept``: model storage lives on the
+    host.
     """
     if isinstance(served, torch.Tensor):
         if isinstance(edited, torch.Tensor) and served.shape == edited.shape:
             edited = edited.to(served.device)
-            if not torch.equal(served, edited):
+            if not torch.equal(served, edited) or (linked and edited.grad_fn is not None):
                 if served.untyped_storage().data_ptr() in kept:
                     raise WeightEditError()
                 served.copy_(edited)
@@ -345,12 +421,15 @@ def write_back(served, edited, kept=frozenset()) -> bool:
     # Lists, not generators: every element is written, not only the first.
     if isinstance(served, (list, tuple)) and isinstance(edited, (list, tuple)):
         return any(
-            [write_back(mine, theirs, kept) for mine, theirs in zip(served, edited)]
+            [
+                write_back(mine, theirs, kept, linked)
+                for mine, theirs in zip(served, edited)
+            ]
         )
     if isinstance(served, dict) and isinstance(edited, dict):
         return any(
             [
-                write_back(served[key], edited[key], kept)
+                write_back(served[key], edited[key], kept, linked)
                 for key in served.keys() & edited.keys()
             ]
         )

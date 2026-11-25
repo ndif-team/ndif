@@ -61,8 +61,8 @@ is on, `NDIF_TP_MODEL_ACTOR_CLASS` set to
 `ndif.services.ray.tp.model.SandboxedTPModelActor`. Only the compose file sets
 the first; nothing sets the second.
 
-**What the untrusted path cannot do.** The runner holds a weightless meta model
-and the backward pass runs on the host, so today a block on the untrusted path:
+**What the untrusted path cannot do.** The runner holds a weightless meta model,
+so a block on the untrusted path:
 
 - cannot read weights — `model.lm_head.weight` is the runner's meta parameter,
   with a shape and no data;
@@ -70,10 +70,11 @@ and the backward pass runs on the host, so today a block on the untrusted path:
   host;
 - cannot train — an optimizer stepping `model.parameters()` updates meta tensors
   and changes nothing;
-- cannot take gradients — every backward pass (`loss.backward()`,
-  `with loss.backward():`, `torch.autograd.grad`) raises `NotImplementedError`
-  telling the user to ask the server's maintainers for trusted access, including
-  one over values detached from the model.
+- cannot call `torch.autograd.grad` (which raises `NotImplementedError`
+  directing the user to `backward()` or trusted access) or the other unsupported
+  backward forms listed in Sandbox internals; `loss.backward()` and
+  `with loss.backward():` work and match the trusted path's results, to float
+  rounding in the cases listed there.
 
 Activations — reads, swaps, in-place edits, `.source`, module calls, caches —
 behave as they do in-process. The mechanics are in

@@ -27,6 +27,7 @@ from nnsight.intervention.interleaver import EarlyStopException, Event, Mediator
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
+from .autograd import HostGraph
 from .controls import HANDLERS, compact, kept_by, serve_recursive_source, write_back
 from .link import Link
 from .messages import (
@@ -162,14 +163,26 @@ class MediatorProxy(Mediator):
         copy in place, the park brings the copy back (``Park.edited``), and it is
         written into ``served`` before anything else happens at this location.
         """
+        graph = self.driver.graph
+        if message.args:
+            # Number outgoing tensors as crossings so the runner can link back to them.
+            message.crossings = graph.serve(
+                served if isinstance(message, Resume) else message.args
+            )
+            # Send detached tensors; the runner creates its own leaves and the
+            # host graph stays here.
+            message.args = apply(message.args, lambda t: t.detach(), torch.Tensor)
         answer = self.link.request(message, Park, Stop)
         if isinstance(answer, Stop):
             # A worker asked to halt the run; unwind the forward pass, which the
             # model's interleaver __exit__ swallows as an intentional early stop.
             raise EarlyStopException()
-        if answer.edited is not None:
-            write_back(served, answer.edited, self.driver.kept)
-        self.adopt(answer.pending)
+        graph.mirror(answer.mirror, self.driver.kept)
+        pending, edited = graph.incoming((answer.pending, answer.edited), answer.links)
+        if edited is not None:
+            write_back(served, edited, self.driver.kept, linked=True)
+        graph.prune()
+        self.adopt(pending)
 
     def settle_control(self) -> None:
         # Answer control requests until the worker parks on a real location, so
@@ -411,6 +424,9 @@ class SandboxDriver:
         # armed recursive-source paths are per-trace for the same reason.
         self._barriers = {}
         self.armed = set()
+        # Per-trace graph, matching the runner (`adapters.IPCEnvoy.interleave`).
+        self.graph = HostGraph()
+        self.graph.link = link
         proxies = self._build_proxies(link, message.parks, message.batch_groups)
         interleaver.mediators = proxies
         result = None
@@ -442,6 +458,7 @@ class SandboxDriver:
             # Leave the interleaver clean so the next run starts fresh.
             interleaver.mediators = []
             interleaver.batcher = None
+            self.graph.release()
         try:
             link.send(Done(result))
         except OSError:

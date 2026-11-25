@@ -194,8 +194,10 @@ connection.send(
   here, taking strict turns over the socket. The runner returns the `torch.save`d bytes directly.
 
 Both paths hand `torch.save` bytes to the same result step. They agree on
-activations; they differ where a block touches weights or gradients — see
-[Sandbox Execution](sandbox-execution.md).
+activations and, to float rounding, on gradients from `backward()`; they
+differ when a block
+touches weights (see
+[Sandbox Execution](sandbox-execution.md)).
 
 **9. Result back, by one of two routes.** `prepare_result`
 (`src/ndif/services/ray/deployments/modeling/base.py`

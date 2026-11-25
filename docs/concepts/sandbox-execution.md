@@ -43,11 +43,14 @@ bare `just up` never exercises the sandbox unless a request sends
 [Auth and Limits](auth-and-limits.md#the-trusted-flag).
 
 The sandbox reuses nnsight's own mediator, batching, and cache machinery rather
-than reimplementing it, so activations behave as they do in-process. Weights and
-gradients do not: on the untrusted path weight reads fail, weight edits and
-training loops are no-ops, and gradients are unsupported, because the runner
-holds a weightless meta model and the backward runs on the host (see
-[what the untrusted path cannot do](auth-and-limits.md#the-trusted-flag)).
+than reimplementing it, so activations behave as they do in-process. Weights
+differ: because the runner holds a weightless meta model, weight reads fail,
+weight edits are refused or are no-ops, and training the model's parameters is a
+no-op
+(see [what the untrusted path cannot do](auth-and-limits.md#the-trusted-flag)).
+Gradients work across the socket by linking the host and runner graphs at every
+value that crosses it; `torch.autograd.grad` and a few other backward forms are refused (see
+[Gradients across the socket](../developing/sandbox-internals.md#gradients-across-the-socket)).
 
 ## The picture
 

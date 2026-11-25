@@ -44,7 +44,8 @@ across a process boundary.
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <parent pid> runner\|template [model_key]`). Accepts a connection, receives the payload, and calls `execute.run`. Building a `Runner` calls `adapters.install` — **in the runner, never on the host**. In `template` mode it builds once and forks runners (`serve_template`). |
 | [`execute.py`](execute.py) | Runs one request **inside the runner**: deserialize the tracer, execute the block, send back what it saved or its traceback. |
 | [`worker.py`](worker.py) | `IPCInterleaver` — the **worker side** of the interleaver: the loop the host drives. |
-| [`adapters.py`](adapters.py) | The replacements for the nnsight methods that assume the model is local (patched `Mediator.event`, `IPCEnvoy`, `.source`, `tracer.cache()`, barriers), the refusal of backward passes, and `install`, which applies them. |
+| [`adapters.py`](adapters.py) | Replacements for nnsight methods that assume a local model (patched `Mediator.event`, `IPCEnvoy`, `.source`, `tracer.cache()`, barriers), the runner's backward entry point (`run_backward`), and `install`, which applies them. |
+| [`autograd.py`](autograd.py) | Split autograd: `HostGraph` and `RunnerGraph` track tensors crossing the socket, and `FromRunner` attaches runner tensors to the host graph so one backward spans both processes. |
 | [`meta.py`](meta.py) | The runner's weightless model and the unpickler that resolves a request's ids against it. |
 
 ```
@@ -372,11 +373,13 @@ These are deliberately deferred (correctness-first, optimize later):
 - **Device placement is host-side only** — assembled inputs and ad-hoc `Call` args
   are moved onto the model's device on the host; activations otherwise cross as-is,
   which assumes the runner shares the host's GPU (true on a single box).
-- **Gradients** — the runner refuses every backward pass (`Tensor.backward`,
-  `torch.autograd.backward`, `torch.autograd.grad`) with `adapters.NO_BACKWARD`,
-  pointing the user to trusted access: the model's graph is on the host, so a
-  backward here gets no gradients from it. `TestRemoteGradients` fails under
-  `-p conftest_untrusted`; it is the only part of the suite that does.
+- **Gradients** are split across the two processes (`autograd.py`). Inside a
+  `with loss.backward():` block `.grad` is served only for values read from the
+  model, through a hook on the host tensor; a tensor the block made has its
+  gradient complete only once the host's half has finished. `torch.autograd.grad`,
+  `create_graph`, `inputs=`, a backward from several tensors, a nested backward,
+  and a backward across traces are refused; both ends keep their graphs until
+  the trace ends. See `docs/developing/sandbox-internals.md` for the full list.
 - **exec_ms spans the whole run** — `ExecutionTimeMetric` / `GPUMemMetric` /
   `RequestResponseSizeMetric`, the structured `event()` logs, and the
   `deserialize_ms` / `upload_ms` split are all emitted. After the template
@@ -391,6 +394,6 @@ These are deliberately deferred (correctness-first, optimize later):
 The message catalog is [`messages.py`](messages.py): one class per message, with
 what it carries in its docstring. In brief:
 
-- **host → runner:** `Payload`, `Resume`, `Reply`, `Throw`, `CacheHit`, `Done`
-- **runner → host:** `Interleave`, `Park`, `Stop`, `Print`, `End`, `Failed`
-- **control requests, carried by a `Park`:** `Source`, `Call`, `Observe`
+- **host → runner:** `Payload`, `Resume`, `Reply`, `Throw`, `CacheHit`, `Done`, `GradRequest`
+- **runner → host:** `Interleave`, `Park`, `Stop`, `Print`, `End`, `Failed`, `GradReply`
+- **control requests, carried by a `Park`:** `Source`, `Call`, `Observe`, `Backward`, `WatchGrad`

@@ -113,8 +113,10 @@ ends.
 | `Throw` (a `Dangling` kind) | h→r | `SandboxDriver.check_dangling` | `IPCInterleaver.throw` |
 | `CacheHit` | h→r | `ShippingCache._record` | `IPCInterleaver.record`, wherever the runner is waiting |
 | `Done` | h→r | `SandboxDriver.interleave` | ends `pump` |
+| `GradRequest` | h→r | `FromRunner.backward` → `HostGraph.request` | `pump` → `RunnerGraph.answer` |
 | `Interleave` | r→h | `IPCEnvoy.interleave` | `SandboxDriver.interleave` |
-| `Park` | r→h | `pump` | `MediatorProxy.resume` → `write_back`, `adopt` |
+| `Park` | r→h | `pump` | `MediatorProxy.resume` → `HostGraph.mirror`, `HostGraph.incoming`, `write_back`, `adopt` |
+| `GradReply` | r→h | `RunnerGraph.answer` | `HostGraph.request` |
 | `Stop` | r→h | `pump` on `tracer.stop()` | `MediatorProxy.resume` raises `EarlyStopException` |
 | `Print` | r→h | `Writer.write` (runner.py) | the host link's `always` → `Status.LOG` |
 | `End` | r→h | `execute.run` | `pump` returns the blob |
@@ -137,6 +139,8 @@ A control request asks the host for something only it can do. It is a subclass o
 | `Source` | `ipc_module_source`, `ipc_recursive_source` | `source` |
 | `Call` | `IPCEnvoy.__call__` | `call` |
 | `Observe` | `ipc_cache` | `observe`, which attaches a `ShippingCache` |
+| `Backward` | `run_backward` | `backward`, which replies with the host's leaf gradients |
+| `WatchGrad` | `grad_property` | `watch_grad` |
 
 `MediatorProxy.settle_control` looks the request's type up in `HANDLERS` and
 answers until the worker parks on a location, so `handle` never sees one. A new
@@ -276,9 +280,9 @@ and nothing on the host may: `Mediator.event` → `ipc_event` (park untagged);
 `Envoy` itself (the tracer's root is a model-wrapper subclass that *inherits*
 `interleave`); `Envoy.source` → `ipc_module_source` and `SourceEnvoy.source` →
 `ipc_recursive_source`; `InterleavingTracer.cache` → `ipc_cache`; and
-`Tensor.backward`, `torch.autograd.backward` and `torch.autograd.grad` → a
-`refusal()` each (no backward passes, see
-[below](#what-the-untrusted-path-cannot-do)).
+`Tensor.backward` → `ipc_backward` and `torch.autograd.backward` →
+`ipc_autograd_backward` (see [Gradients across the socket](#gradients-across-the-socket));
+`torch.autograd.grad` → `refuse_grad`.
 
 ### The actor's seams
 
@@ -468,10 +472,68 @@ seccomp, rlimits or filesystem jail — so what is reachable by those means (ano
 process's `/proc/<pid>/environ`, a token file in the HF cache, the Ray client port)
 is not shown to be out of reach. It is a seam hardening can be added behind.
 
+## Gradients across the socket
+
+On the untrusted path, one autograd graph spans two processes: the model's
+forward runs on the host and the block's arithmetic runs in the runner.
+`src/ndif/services/ray/sandbox/autograd.py` links both halves at every value
+that crosses the socket, the same way `torch.distributed.autograd` links RPC
+calls.
+
+- **Host to runner.** `HostGraph.serve` assigns each tensor in a `Resume` or
+  `Reply` an integer *crossing* id and stores the host tensor under it. When
+  that host tensor requires grad, `RunnerGraph.receive` creates a
+  grad-requiring leaf in the runner and hands the block a clone of it, so
+  in-place edits work as they do on the host. When the block calls
+  `requires_grad_()` on a read value, `RunnerGraph.adopt` registers it as a
+  leaf and `HostGraph.mirror` applies the flag to the host tensor at the next
+  park, before the forward continues; on the model's own weights and buffers
+  that raises `WeightEditError`.
+- **Runner to host.** When a swap, an in-place edit, or a module call's
+  argument requires grad, `RunnerGraph.outgoing` detaches it and records the
+  crossings its graph reaches. `HostGraph.incoming` wraps it in a `FromRunner`
+  node taking those crossings' host tensors as inputs. When the host's backward
+  reaches `FromRunner`, it sends the incoming gradient in a `GradRequest`; the
+  runner backpropagates it through its own graph, accumulating into the block's
+  own parameters, and returns the crossing gradients in a `GradReply`.
+- **Backward started in the runner.** `adapters.run_backward` backpropagates
+  the loss through the runner's graph to the crossings and parks the trace's
+  worker on a `Backward` control request carrying those gradients. The host
+  handler (`controls.backward`) runs `torch.autograd.backward` from the
+  crossings' host tensors, single-threaded as nnsight's `BackwardTracer` runs
+  it, because the `.grad` hooks and `FromRunner` exchange with the runner over
+  one socket, one exchange at a time. Any `with loss.backward():` backward block runs in the
+  runner as another worker driven by a `MediatorProxy` on a dedicated host
+  interleaver; its `t.grad` sends `WatchGrad` so the host hooks that crossing's
+  tensor, then parks on `grad.{crossing}`. The handler returns the gradients
+  accumulated on the host's leaves during that backward and clears them;
+  `RunnerGraph.restore` adds them into the runner's leaves, so `act.grad`
+  after a bare `loss.backward()` holds the full gradient. Leaf totals live only
+  in the runner, where the block reads and resets them: each pass through the
+  runner's graph (`RunnerGraph.through`) sets existing totals aside and
+  collects only its own gradients.
+
+**Cost and memory.** Each `FromRunner` reached by the host's backward adds one
+socket round trip carrying an activation-sized gradient (so steering every
+layer adds one round trip per layer). Both ends retain their graphs until the
+trace ends: the runner uses `retain_graph=True` because a later `GradRequest`
+can traverse the same nodes. When the trace finishes, `SandboxDriver.interleave`
+calls `HostGraph.release` to break the cycle between `FromRunner` contexts and
+their graph, which Python's garbage collector cannot collect through autograd's
+C++ nodes.
+
+**Numerics.** When each of the block's tensors gets its whole gradient in one
+pass (the runner's half of the backward, or one `FromRunner` call back), the
+result is bit-identical to one in-process backward;
+`tests/test_sandbox_gradients.py` checks this against the trusted path. A tensor
+that gets parts in several passes (a value swapped into the model and also added
+to the loss, or one swapped in at two places) gets each part carried to it on
+its own, where one backward adds them first, and agrees to float rounding.
+
 ## What the untrusted path cannot do
 
-The runner holds a **meta** model — structure, no weights — and the backward pass
-runs on the host after the forward. So on the untrusted path today:
+The runner holds a **meta** model (structure, no weights). On the untrusted
+path today:
 
 - **Weight reads** (`model.lm_head.weight`) resolve to the runner's meta parameter:
   it has a shape and no data, and arithmetic with it against real activations
@@ -482,14 +544,18 @@ runs on the host after the forward. So on the untrusted path today:
   [One read and one swap](#one-read-and-one-swap)).
 - **Training loops** over parameters (an optimizer stepping `model.parameters()`)
   update meta tensors and are a no-op.
-- **Backward passes** are refused. A value read from the model arrives in the
-  runner as a fresh leaf, so a backward gets no gradients from the model: left
-  alone, `with loss.backward(): act.grad` dangles into an `OutOfOrderError`, and
-  a bare `loss.backward()` finishes with `.grad` `None`. So the runner replaces
-  `Tensor.backward`, `torch.autograd.backward` and `torch.autograd.grad` with a
-  function that raises `NotImplementedError(NO_BACKWARD)`
-  (`src/ndif/services/ray/sandbox/adapters.py`), which tells the user to ask for
-  trusted access. That includes a backward that never touches the model.
+- **Unsupported backward forms** raise `NotImplementedError`
+  (`src/ndif/services/ray/sandbox/adapters.py`): `torch.autograd.grad`
+  (`NO_BACKWARD`), `create_graph`, `inputs=`, a backward from several tensors at
+  once, a backward inside a `with loss.backward():` block, that block outside a
+  trace, a first statement in that block carrying a grad-requiring tensor, and a
+  backward reaching a value read in an earlier trace of a session
+  (`STALE_BACKWARD`), whose host graph has been released.
+- **Inside a backward block, `.grad` is served only for values read from the
+  model.** The gradient of a tensor the block created is complete only after the
+  host's backward finishes, so it must be read after the block.
+- **Exceptions raised in a backward block after its first `.grad`** cannot be
+  caught by an `except` around the block in the trace; they fail the request.
 - **`eproperty` write-back transforms don't fire.** A transform is bound onto the
   mediator in the runner, whose `handle` never runs, so only the write-back of
   the raw value reaches the host.

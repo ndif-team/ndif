@@ -170,8 +170,10 @@ not:
 - reading or editing parameters directly (`module.weight`) — the runner's
   parameters are meta tensors. Saving anything derived from one fails at result
   upload with `Cannot copy out of meta tensor`; weight writes are silent no-ops;
-- gradients and `backward()`;
-- training loops in a session — optimizer steps update nothing.
+- `torch.autograd.grad` and a few other backward forms (`backward()` works);
+- training the model's parameters in a session: optimizer steps on them update
+  nothing, while parameters the block creates itself train as on the trusted
+  path.
 
 Users who need those need a `trusted` key. What the runner's process separation
 covers, and what it does not, is in [Sandbox execution](../concepts/sandbox-execution.md).
