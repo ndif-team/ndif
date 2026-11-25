@@ -171,7 +171,9 @@ host: forward pass reaches location L, value V
   value rides in `Resume`. Locations no worker is parked on never cross. What
   crosses is `V'`, a compact copy of `V` (`controls.compact`): `torch.save`
   writes a view's whole storage, and a read narrowed to one invoke's rows is a
-  view of the whole batch.
+  view of the whole batch. A KV cache in `V` does not cross: an `OnHost`
+  stand-in goes in its place (`controls.withhold`), and where a swap brings the
+  stand-in back the proxy puts the host's cache there (`controls.own`).
 - A **swap** (`model.layer.output = x`) rides back in the worker's `Park` (its
   pending event carries the replacement); the proxy substitutes it.
 - An **in-place edit** (`model.layer.output[:] = 0`) was made to the runner's copy.

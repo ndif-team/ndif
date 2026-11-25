@@ -13,13 +13,14 @@ import time
 import torch
 
 from nnsight.tracing.globals import block_scope
+from nnsight.util import apply
 
 from ....common.errors import RequestError
 from ....common.schema.request import BackendRequestModel
 from ..deployments.modeling.nns import execute_traced_block
 from ..deployments.modeling.util import cpu_pickle_module, resolve_dtype
 from .link import Link
-from .messages import End, Failed
+from .messages import End, Failed, OnHost
 from .meta import PERSISTENT_OBJECTS, IPCCloudUnpickler, set_env
 
 
@@ -98,6 +99,10 @@ def _run(
             # same block returns different numbers depending on whether the
             # request was trusted.
             saved = execute_traced_block(tracer, resolve_dtype(dtype), seed)
+            # A saved value can hold the stand-in for a KV cache (a layer's
+            # `.inputs`). The cache never came here, and the client could not
+            # load the stand-in's class, so the result holds None there.
+            saved = apply(saved, lambda stand_in: None, OnHost)
             buffer = io.BytesIO()
             torch.save(saved, buffer, pickle_module=cpu_pickle_module())
         except Exception as error:

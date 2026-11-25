@@ -25,6 +25,30 @@ import enum
 from dataclasses import dataclass
 from typing import Any, Optional
 
+@dataclass
+class OnHost:
+    """Stands in the runner for a KV cache, which stays on the host.
+
+    A cache is in the keyword arguments of every decoder layer and in the model's
+    output. It is most of the bytes of such a value, a block almost never reads
+    it, and a copy of it must never come back in place of the host's: the forward
+    appends to its cache and reads it again on the next step. So the host sends
+    this in a cache's place (``controls.withhold``) and puts its own cache back
+    wherever this returns in a value a block assigns (``controls.own``).
+
+    ``key`` is the cache's number among the ones withheld in this request, in the
+    order the host met them, which is the same on every tensor-parallel rank.
+    """
+
+    key: int
+
+    def __getattr__(self, name):
+        raise AttributeError(
+            f"cannot read {name!r}: under sandboxed execution a KV cache stays on "
+            "the host, and the block holds a stand-in for it"
+        )
+
+
 # ------------------------------------------------------------------ host -> runner
 
 

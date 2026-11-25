@@ -27,7 +27,15 @@ from nnsight.intervention.interleaver import EarlyStopException, Event, Mediator
 from nnsight.util import apply
 
 from ..deployments.modeling.nns import request_dtype
-from .controls import HANDLERS, compact, kept_by, serve_recursive_source, write_back
+from .controls import (
+    HANDLERS,
+    compact,
+    kept_by,
+    own,
+    serve_recursive_source,
+    withhold,
+    write_back,
+)
 from .link import Link
 from .messages import (
     Control,
@@ -146,6 +154,13 @@ class MediatorProxy(Mediator):
             return
         # A park on a model location carries the worker's pin where the
         # occurrence goes.
+        if pending.event is Event.SWAP:
+            # A value the block assigns. Where it holds the stand-in for a KV
+            # cache, the forward gets its own cache back.
+            try:
+                pending = pending._replace(value=own(pending.value, self.driver.held))
+            except LookupError as error:
+                raise RunnerError(str(error), "ProtocolError") from error
         pin = pending.iteration
         self.iteration = pin
         # The occurrence a relaxed worker wants is the next visit the model has
@@ -239,11 +254,12 @@ class MediatorProxy(Mediator):
                     args[0],
                 ),
             )
-        # What crosses is a compact copy of a read; an edit of it comes back to
-        # the value itself, which is a view into the forward's own tensors.
+        # What crosses is a compact copy of a read, with a stand-in for each KV
+        # cache; an edit of it comes back to the value itself, which is a view
+        # into the forward's own tensors.
         served = args[0] if args else None
         if args:
-            args = (compact(served),)
+            args = (compact(withhold(served, self.driver.held)),)
         self.resume(Resume(self.id, args, self.iteration), served)
         self.settle_control()
         return self.pending
@@ -284,6 +300,9 @@ class SandboxDriver:
         # per driver, so per request, because the addresses change when a cached
         # model is moved back onto its cards.
         self.kept = kept_by(model._module)
+        # The KV caches this request's values held, which stay here: a stand-in
+        # crosses in each one's place (`controls.withhold`).
+        self.held: list = []
 
     def pump(self, connection) -> "tuple[bytes, Optional[float]]":
         """Service the runner until it reports the block finished.
@@ -443,7 +462,7 @@ class SandboxDriver:
             interleaver.mediators = []
             interleaver.batcher = None
         try:
-            link.send(Done(result))
+            link.send(Done(withhold(result, self.held)))
         except OSError:
             # A fatal `Throw` (check_dangling) makes the runner unwind, report
             # `Failed` and close its socket — possibly before this send. The
