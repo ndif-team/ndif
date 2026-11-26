@@ -340,7 +340,8 @@ not by the job path.
 {"email": "someone@example.com", "tags": ["trusted", "priority"]}
 ```
 
-`tags` are the key's `user_tags`. Three are meaningful to the server: `trusted`
+`tags` are the key's `user_tags` plus its user's. Three are meaningful to the
+server: `trusted`
 (the request's code runs in-process in the model actor rather than a separate
 runner, and it may deploy a `trust_remote_code` key), `trust_remote_code` (that
 deploy permission alone) and `priority` (jump the model's queue). See

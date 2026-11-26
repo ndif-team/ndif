@@ -81,8 +81,9 @@ the request through the queue.
 
 With Postgres configured, a key is valid **iff its row exists in `keys`** — key
 issuance is a separate login/account service's job. `_KEY_QUERY` LEFT JOINs
-`key_user_tag_assignments` / `user_tags`, so a key with no tags still returns one
-row (tag NULL), distinguishing "known key, no tags" from "unknown key".
+`user_tags` on the key's rows in `key_user_tag_assignments` and its user's in
+`user_tag_assignments`, so a key with no tags still returns one row (tag NULL),
+distinguishing "known key, no tags" from "unknown key".
 
 | Failure | Status |
 |---|---|
@@ -94,7 +95,7 @@ row (tag NULL), distinguishing "known key, no tags" from "unknown key".
 ### The `trusted` flag — read this before you deploy
 
 `validate_request` stamps two things onto the request from the resolved
-`Identity`: `email` and `tags` (the key's `user_tags`).
+`Identity`: `email` and `tags` (the key's `user_tags` plus its user's).
 
 ```python
 identity = await verify_api_key(request.api_key)

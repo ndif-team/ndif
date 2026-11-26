@@ -46,8 +46,8 @@ server-side ones.
 
 `BackendRequestModel.trusted` is `"trusted" in request.tags`; the tags are
 stamped by `src/ndif/services/api/auth.py` `validate_request` (with auth on, the
-key's user_tags, overwriting a client value; with auth off, as sent, defaulting
-to `{"trusted"}`). Consumed by
+key's user_tags plus its user's, overwriting a client value; with auth off, as
+sent, defaulting to `{"trusted"}`). Consumed by
 `src/ndif/services/ray/sandbox/model.py` `SandboxModelDeployment.execute`: `True`
 runs the block in the model actor process via `BaseModelDeployment.execute`;
 `False` hands it to a runner subprocess (`SandboxHost.run_in_runner`), which
