@@ -3,7 +3,7 @@ title: Configuration
 one_liner: How NDIF is configured — environment variables only, no config file, layered per process with a fixed precedence, and the handful of defaults that must change off a single host.
 tags: [operating, cli, dev, telemetry, auth]
 related: [docs/reference/env-vars.md, docs/operating/compose-stack.md, docs/operating/quickstart.md, docs/operating/production.md, docs/operating/cli.md, docs/developing/providers.md, docs/reference/ports.md, docs/runbooks/enable-auth.md]
-sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/docker-compose.yml, docker/Dockerfile, pyproject.toml, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/api/versioning.py, src/ndif/services/dashboard/backend/config.py]
+sources: [src/ndif/cli/config.py, src/ndif/common/providers/base.py, docker/docker-compose.yml, docker/Dockerfile, pyproject.toml, src/ndif/services/ray/deployments/controller/controller.py, src/ndif/services/ray/deployments/controller/cluster/deployment.py, src/ndif/services/api/versioning.py, src/ndif/services/dashboard/backend/config.py, docker/docker-compose.egress.yml, docker/egress/allowlist.py, src/ndif/services/ray/sandbox/egress.py]
 ---
 
 # Configuration
@@ -112,6 +112,73 @@ nnsight client sends none, so its requests run trusted: the traced block runs
 in-process in the model actor, and it may provision a model whose key carries
 `trust_remote_code`. [Auth and Limits](../concepts/auth-and-limits.md) and
 [Enable auth](../runbooks/enable-auth.md) cover turning it on.
+
+## Confining untrusted code to an egress proxy
+
+An untrusted block has the host's network unless you set `NDIF_SANDBOX_EGRESS`.
+With it set, runners start in a network namespace that holds only loopback and
+reach one thing: an egress proxy that you run. The proxy is mitmproxy 12 with
+the policy in `docker/egress/allowlist.py`, which reads two comma-separated
+lists of host names from its own environment. A name covers its subdomains.
+
+| Variable, on the proxy | A host on the list |
+|---|---|
+| `EGRESS_READ_ONLY` | is decrypted, and only `GET` and `HEAD` are forwarded |
+| `EGRESS_ALLOW` | is passed through untouched |
+
+Every other host is refused. With `EGRESS_READ_ONLY=huggingface.co,hf.co` and
+`EGRESS_ALLOW` empty, a block can download a file published on the Hub, and the
+proxy forwards nothing else.
+
+On the compose stack, add the override file. It starts the proxy with those two
+values and sets `NDIF_SANDBOX_EGRESS` on `ray`. To change the lists, edit them
+there.
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.egress.yml up -d
+```
+
+Two things differ in a container:
+
+- The override takes docker's default seccomp profile off the whole `ray`
+  container, because that profile refuses the namespace.
+- The image runs as root, and a confined root loses root's pass on files that
+  other users own. Its runners read the mounted Hugging Face cache only if root
+  owns it or its mode lets anyone. Behind a cache directory that is `0700` and
+  yours, a runner has no tokenizer or module map, and a block cannot download
+  into a directory that only your user may write.
+
+Without docker, run the proxy where the model actors can reach it. One on each
+GPU node, listening on loopback, needs no network rule:
+
+```bash
+EGRESS_READ_ONLY=huggingface.co,hf.co mitmdump \
+    --listen-host 127.0.0.1 --listen-port 3128 \
+    --set flow_detail=1 --set stream_large_bodies=1m -s docker/egress/allowlist.py
+
+export NDIF_SANDBOX_EGRESS=http://127.0.0.1:3128   # before `ray start` on that node
+```
+
+- The host has to allow unprivileged user namespaces: `unshare -Urn true`
+  succeeds as the user Ray runs as. Where it does not, a runner exits before it
+  runs anything and untrusted requests fail
+  ([Troubleshooting](troubleshooting.md#symptom--diagnosis--fix)).
+- Only an untrusted request on a sandbox actor class is confined
+  (`NDIF_MODEL_IMPORT_PATH`, above). A trusted request runs in the model actor,
+  with the host's network. A confined actor's log has
+  `sandbox: runners are confined to the egress proxy at <host>:<port>`.
+- The proxy logs each request it forwards, and each one it refuses with the
+  reason (`refused ...`).
+- Keep the proxy's data directory (`~/.mitmproxy`) across restarts. It holds the
+  certificate authority that runners are told to trust, and an actor fetches it
+  once. After a proxy that lost it, a block's HTTPS requests fail until the
+  model is redeployed.
+- A runner starts whether or not the proxy is up. While it is down, a block's
+  requests fail.
+- It closes a block's network route and is not a hardened boundary: a block
+  still runs as the actor's user, with its files and its view of the host's
+  other processes
+  ([Sandbox Execution](../concepts/sandbox-execution.md#what-the-separation-is--and-is-not)).
 
 ## The fail-open switches
 
