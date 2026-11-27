@@ -14,6 +14,7 @@ from typing import Optional
 
 from .. import config
 from ._common import OnMessage, emit, ensure_ray_connected
+from .dispatcher import reconcile
 from .models import extract_task_from_model_key, get_model_key
 
 
@@ -88,5 +89,9 @@ def scale(
     else:
         for replica_id in replicas:
             emit(on_message, f"  ✓ {model_key} [{replica_id}]: added")
+
+    # Have the dispatcher adopt the new replicas. A model that is already
+    # serving does not use them otherwise.
+    reconcile([model_key])
 
     return {"model_key": model_key, "replicas": replicas, "error": error}

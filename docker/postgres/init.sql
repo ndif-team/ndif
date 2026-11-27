@@ -89,7 +89,8 @@ CREATE TABLE profiles (
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
--- Tags applied to users' keys (e.g. `hotswapping`). What a key carries.
+-- Tags applied to users and to their keys (e.g. `hotswapping`). A key carries
+-- its own tags plus its user's.
 CREATE TABLE user_tags (
     user_tag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(50) UNIQUE NOT NULL,
@@ -111,6 +112,15 @@ CREATE TABLE key_user_tag_assignments (
     user_tag_id UUID NOT NULL,
     PRIMARY KEY (key_id, user_tag_id),
     FOREIGN KEY (key_id) REFERENCES keys(key_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_tag_id) REFERENCES user_tags(user_tag_id) ON DELETE RESTRICT
+);
+
+-- A tag on the user: every one of the user's keys carries it.
+CREATE TABLE user_tag_assignments (
+    user_id UUID NOT NULL,
+    user_tag_id UUID NOT NULL,
+    PRIMARY KEY (user_id, user_tag_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (user_tag_id) REFERENCES user_tags(user_tag_id) ON DELETE RESTRICT
 );
 

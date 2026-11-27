@@ -51,6 +51,7 @@ class BackendRequestModel(RequestModel):
     head. The request's ingress time isn't a separate field — it's the initial
     ``last_status_time`` (seeded at RECEIVED), and per-stage latency is recovered
     from the ``status_time`` metric rather than threaded through here.
+    ``replica_id`` is the replica ``Replica.dispatch`` last sent it to.
     """
 
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -68,6 +69,7 @@ class BackendRequestModel(RequestModel):
 
     payload: Optional[bytes] = None
     enqueued_at: Optional[float] = None
+    replica_id: Optional[str] = None
 
     # Status-timing state, carried with the request (including across the Ray
     # boundary via pickling) so ``respond`` can record how long the request
@@ -162,6 +164,9 @@ class BackendRequestModel(RequestModel):
         self.last_status = status
         self.last_status_time = now
 
+        # Absent on a request pickled by an API from before the field.
+        replica_id = getattr(self, "replica_id", None)
+
         prev_stage_ms = None
         if previous_status is not None and previous_time is not None:
             prev_stage_ms = round((now - previous_time) * 1000, 2)
@@ -170,6 +175,7 @@ class BackendRequestModel(RequestModel):
                 request_id=self.id,
                 api_key=self.api_key,
                 email=self.email,
+                replica_id=replica_id,
                 status=previous_status.value,
                 duration_ms=prev_stage_ms,
             )
@@ -179,6 +185,7 @@ class BackendRequestModel(RequestModel):
             description or f"status: {status.value.lower()}",
             level=logging.WARNING if status == Status.ERROR else logging.INFO,
             model_key=self.model_key,
+            replica_id=replica_id,
             request_id=self.id,
             api_key=self.api_key,
             email=self.email,

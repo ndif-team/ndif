@@ -94,6 +94,9 @@ later, which also carries them through a Redis outage. The stream reads block
 for `STREAM_BLOCK_MS` at a time, not forever, so one on a connection that died
 without closing times out and is retried.
 
+`dispatch_worker` starts `state_worker` too, which writes each model's
+`dispatcher_state` point every 30 s ([Telemetry Internals](telemetry-internals.md#metrics)).
+
 ### Calls from the CLI
 
 Three methods on the actor are for callers outside it. The CLI and the dashboard
@@ -110,10 +113,11 @@ what only the dispatcher holds: its Processors.
 | `reconcile(model_key)` | the end of `ndif deploy` / `ndif evict`, and the dashboard's same calls | Re-syncs that model's Processor with the Controller's replica list (`Processor.reconcile`); nothing for a model with no Processor | `None`; the caller does not wait |
 
 An exception in one reaches its caller as a `RayTaskError`. A kill of an
-executing request goes through `Replica.cancel(interrupt=True)`: the request is
-errored, the actor's `cancel()` is called, and the dispatch is given a few
-seconds to return on its own; only if it does not is the dispatch task
-cancelled.
+executing request goes through `Replica.kill`: the request is errored, and the
+actor's `cancel()` is called every 100 ms until the dispatch returns, for a few
+seconds at most. The actor ignores a cancel that reaches it before the block
+has begun. The replica's worker task is never cancelled, so a kill cannot cost
+the pool a replica.
 
 ## The Processor
 

@@ -24,6 +24,7 @@ import pickle
 
 import ray
 
+from ....common.metrics import DispatcherStateMetric
 from ....common.providers.ray import NAMESPACE, controller_handle
 from ....common.providers.redis import RedisProvider
 from ....common.redis import (
@@ -118,6 +119,26 @@ class Dispatcher:
             except Exception:
                 logger.exception("heartbeat_worker: failed to renew ray:connected")
                 await asyncio.sleep(1)
+
+    async def state_worker(self) -> None:
+        """Write each model's ``dispatcher_state`` point every 30 s, which is
+        often enough to chart capacity against demand.
+
+        A model with no replica and nothing queued writes no point, so
+        Processors, which are never removed, cost nothing once empty.
+        """
+        while True:
+            for processor in self.processors.values():
+                replicas = processor.replicas.values()
+                queue_size = processor.queue.qsize()
+                if replicas or queue_size:
+                    DispatcherStateMetric.update(
+                        model_key=processor.model_key,
+                        replicas=len(replicas),
+                        executing=sum(replica.busy for replica in replicas),
+                        queue_size=queue_size,
+                    )
+            await asyncio.sleep(30)
 
     async def status_worker(self) -> None:
         """Serve coalesced cluster-status refreshes for the API's /status.
@@ -231,7 +252,7 @@ class Dispatcher:
         for processor in self.processors.values():
             replica = processor.executing_replica(request_id)
             if replica is not None:
-                await replica.cancel("Request cancelled by operator.", interrupt=True)
+                await replica.kill("Request cancelled by operator.")
                 return {"status": "cancelled_execution",
                         "message": f"Request {request_id} cancelled while executing."}
 
@@ -256,6 +277,7 @@ class Dispatcher:
         await self.startup()
 
         asyncio.create_task(self.heartbeat_worker())
+        asyncio.create_task(self.state_worker())
         asyncio.create_task(self.status_worker())
         asyncio.create_task(self.env_worker())
 
@@ -288,7 +310,8 @@ class DispatcherActor(Dispatcher):
         super().__init__()
 
         # Install the telemetry sinks in this actor's worker process: Loki for
-        # logs, InfluxDB for the RECEIVED / QUEUED status-time points.
+        # logs, InfluxDB for the RECEIVED / QUEUED status-time points and the
+        # dispatcher-state points.
         from ....common.providers.influx import InfluxProvider
         from ....common.providers.loki import LokiProvider
 

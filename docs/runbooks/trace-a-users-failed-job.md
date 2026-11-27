@@ -118,7 +118,7 @@ The server's own record of the failure:
 
 An operator `ndif kill` of an executing request produces two `ERROR` responses in
 a row (`src/ndif/services/ray/queue/dispatcher.py` `Dispatcher.kill`,
-`src/ndif/services/ray/queue/replica.py` `Replica.cancel`): first `Request
+`src/ndif/services/ray/queue/replica.py` `Replica.kill`): first `Request
 cancelled by operator.` from the dispatcher, then `Your job was cancelled or
 preempted by the server.` from the actor (`BaseModelDeployment.run`). The actor's
 log shows `model execution cancelled`, and the replica keeps serving.
@@ -128,11 +128,11 @@ log shows `model execution cancelled`, and the replica keeps serving.
 - **Non-blocking job:** `responses/{id}.json` is overwritten by the second, so
   polling shows the actor's sentence.
 
-If the actor does not finish the request within a few seconds (it had not
-reached execution yet, or it is wedged), the dispatcher cancels the dispatch
-instead: the second response is `Replica was evicted while processing your
-request. …`, and the actor may still run the block to completion, its final
-response (`COMPLETED`, or an `ERROR`) overwriting a non-blocking job's stored one.
+The actor ignores a cancel that reaches it before the block has begun, so the
+dispatcher repeats it for a few seconds, until the actor has stopped the
+request. If the actor never does (it is wedged), there is no second response
+until the block ends, and its final response (`COMPLETED`, or an `ERROR`) then
+overwrites a non-blocking job's stored one.
 
 ## Step 4 — what the server kept
 
@@ -188,7 +188,8 @@ docker compose -f docker/docker-compose.yml exec api python -c \
 
 Influx measurements (`src/ndif/common/metrics.py`). `request_id` is a field, not a
 tag, to bound series cardinality; per-request measurements are tagged
-`model_key`, `api_key` and `email`.
+`model_key`, `api_key` and `email`. `replica_id`, also a field, names the replica:
+`request_size` has none, and `status_time` has it from the queue wait on.
 
 | Measurement | Tag that matters | Fields |
 |---|---|---|
@@ -198,6 +199,7 @@ tag, to bound series cardinality; per-request measurements are tagged
 | `response_size` | — | `response_bytes`, `compressed` |
 | `gpu_mem` | `gpu_index` | `baseline_bytes`, `peak_bytes`, `extra_bytes` |
 | `model_load_time` | `load_type`: `initial` / `from_cache` | `duration_ms`, `num_gpus` |
+| `dispatcher_state` | — | `replicas`, `executing`, `queue_size` |
 
 In Grafana Explore against the InfluxDB datasource (Flux):
 

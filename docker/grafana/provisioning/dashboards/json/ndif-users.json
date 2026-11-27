@@ -600,7 +600,7 @@
             "type": "postgres",
             "uid": "postgres"
           },
-          "rawSql": "SELECT u.email, u.verification_status::text AS verification, string_agg(DISTINCT ut.name, ', ') AS tags FROM users u LEFT JOIN keys k ON k.user_id = u.user_id LEFT JOIN key_user_tag_assignments kuta ON kuta.key_id = k.key_id LEFT JOIN user_tags ut ON ut.user_tag_id = kuta.user_tag_id GROUP BY u.email, u.verification_status",
+          "rawSql": "SELECT u.email, u.verification_status::text AS verification, string_agg(DISTINCT ut.name, ', ') AS tags FROM users u LEFT JOIN keys k ON k.user_id = u.user_id LEFT JOIN user_tags ut ON ut.user_tag_id IN (SELECT user_tag_id FROM key_user_tag_assignments WHERE key_id = k.key_id UNION SELECT user_tag_id FROM user_tag_assignments WHERE user_id = u.user_id) GROUP BY u.email, u.verification_status",
           "rawQuery": true,
           "format": "table",
           "refId": "user"
@@ -702,7 +702,7 @@
             "type": "postgres",
             "uid": "postgres"
           },
-          "rawSql": "SELECT k.key_id::text AS key_id, u.email, u.verification_status::text AS verification, string_agg(DISTINCT ut.name, ', ') AS tags, k.created_at AS created FROM keys k JOIN users u ON u.user_id = k.user_id LEFT JOIN key_user_tag_assignments kuta ON kuta.key_id = k.key_id LEFT JOIN user_tags ut ON ut.user_tag_id = kuta.user_tag_id WHERE k.key_id::text ILIKE '%${key}%' GROUP BY k.key_id, u.email, u.verification_status, k.created_at ORDER BY u.email, k.created_at",
+          "rawSql": "SELECT k.key_id::text AS key_id, u.email, u.verification_status::text AS verification, string_agg(DISTINCT ut.name, ', ') AS tags, k.created_at AS created FROM keys k JOIN users u ON u.user_id = k.user_id LEFT JOIN user_tags ut ON ut.user_tag_id IN (SELECT user_tag_id FROM key_user_tag_assignments WHERE key_id = k.key_id UNION SELECT user_tag_id FROM user_tag_assignments WHERE user_id = k.user_id) WHERE k.key_id::text ILIKE '%${key}%' GROUP BY k.key_id, u.email, u.verification_status, k.created_at ORDER BY u.email, k.created_at",
           "rawQuery": true,
           "format": "table",
           "refId": "A"

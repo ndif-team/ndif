@@ -3,7 +3,7 @@ title: Sandbox Execution
 one_liner: Why a request's traced block runs in a separate process from the model, how the two stay in lockstep over a socket, and what that means for your code.
 tags: [concepts, sandbox, ray]
 related: [docs/developing/sandbox-internals.md, docs/concepts/request-lifecycle.md, docs/concepts/auth-and-limits.md, docs/developing/model-actor.md, docs/reference/error-messages.md]
-sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/api/auth.py, src/ndif/common/schema/request.py]
+sources: [src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/api/auth.py, src/ndif/common/schema/request.py, src/ndif/services/ray/sandbox/egress.py]
 ---
 
 # Sandbox Execution
@@ -148,10 +148,15 @@ nothing else.
 - **It is** started with an allowlisted environment, so `HF_TOKEN`,
   `NDIF_INFLUX_TOKEN`, `NDIF_POSTGRES_URL` and object-store credentials are not
   inherited.
-- **It is not** hardened. The runner is a plain child process — same user,
-  filesystem, network, and visible GPUs. There are no namespaces, seccomp
-  filters, rlimits, or filesystem jail, and secrets reachable by those means are
-  not shown to be out of reach.
+- **It is**, where the deployment sets `NDIF_SANDBOX_EGRESS`, off the host's
+  network: a block reaches an egress proxy, whose policy decides what it may
+  fetch
+  ([Configuration](../operating/configuration.md#confining-untrusted-code-to-an-egress-proxy)).
+  Unset, which is the default, a block has the host's network.
+- **It is not** hardened beyond that. The runner is a child process with the
+  actor's user, filesystem and visible GPUs. There is no seccomp filter, rlimit
+  or filesystem jail, and secrets reachable by those means are not shown to be
+  out of reach.
 
 Treat it as a seam that hardening can be added behind, not as a boundary you can
 lean on for adversarial code.

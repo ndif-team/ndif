@@ -3,7 +3,7 @@ title: Sandbox Internals
 one_liner: How a request's traced block runs in a separate runner process while the model stays on the host, with nnsight's interleaver split across a Unix socket.
 tags: [internals, dev, sandbox, ray]
 related: [docs/concepts/sandbox-execution.md, docs/developing/model-actor.md, docs/developing/nnsight-integration.md, docs/concepts/request-lifecycle.md, docs/reference/error-messages.md]
-sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/messages.py, src/ndif/services/ray/sandbox/link.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/worker.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/meta.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/deployments/modeling/base.py]
+sources: [src/ndif/services/ray/sandbox/protocol.py, src/ndif/services/ray/sandbox/messages.py, src/ndif/services/ray/sandbox/link.py, src/ndif/services/ray/sandbox/driver.py, src/ndif/services/ray/sandbox/controls.py, src/ndif/services/ray/sandbox/host.py, src/ndif/services/ray/sandbox/model.py, src/ndif/services/ray/sandbox/runner.py, src/ndif/services/ray/sandbox/worker.py, src/ndif/services/ray/sandbox/adapters.py, src/ndif/services/ray/sandbox/meta.py, src/ndif/services/ray/sandbox/execute.py, src/ndif/services/ray/deployments/modeling/base.py, src/ndif/services/ray/sandbox/egress.py]
 ---
 
 # Sandbox Internals
@@ -60,8 +60,8 @@ in request.tags`) decides whether the sandbox runs at all:
 
 `SandboxHost.execution_scope` forks the same way: trusted reuses the base's
 stdout/stderr capture, untrusted gets a `nullcontext` because its output arrives as
-`Print` messages. How the tags are stamped (the key's user_tags with auth on;
-client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
+`Print` messages. How the tags are stamped (the key's user_tags plus its user's
+with auth on; client-supplied tags honored and unspecified ones defaulting to `{"trusted"}`
 with auth off) lives in [Auth and limits](../concepts/auth-and-limits.md).
 
 > **Gotcha:** a plain local `just up` has no Postgres, so a request is trusted by
@@ -210,6 +210,29 @@ starts CUDA itself.
 > decrements the counter in its `finally`; the exception dies with the thread and
 > lands in the Ray worker's `.err` file, never the actor's log. The visible symptom
 > is `acquire` waiting its full 30s and then spawning inline.
+
+### A confined runner
+
+Where the actor's environment sets `NDIF_SANDBOX_EGRESS` (the egress proxy's
+URL), a `Pool` opens an `egress.Door`, and `spawn` puts
+`src/ndif/services/ray/sandbox/egress.py` in front of every runner's command,
+the template's included. The script moves the process into a network namespace
+that holds only loopback (`leave_network`), forks a child that passes
+connections on `127.0.0.1:3128` to the door (`tunnel`), and replaces itself
+with the command it was given. The door is a Unix socket in the actor, which
+passes each connection to the proxy and adds the proxy's certificate authority
+to the bundle runners are told to trust. A template's forks are in its
+namespace and share its tunnel. The module's docstring has the reason for each
+step.
+
+A confined runner's start-up goes through the door as well: building the meta
+model asks the Hub (`meta.load_meta_model`), so the proxy has to be up when a
+model's runners start. A runner that cannot create the namespace exits before
+it runs anything, and `spawn` raises.
+
+What a block may reach is the proxy's policy
+(`docker/egress/allowlist.py`), not anything in this package:
+[Configuration](../operating/configuration.md#confining-untrusted-code-to-an-egress-proxy).
 
 ### The runner process
 
@@ -462,11 +485,14 @@ reading — so a caller waiting for a specific reply never sees the user's stdou
   `MASTER_ADDR` and `MASTER_PORT`, so a runner spawned from rank 0 doesn't claim to
   be rank 0 of a group it is not in.
 
-What it does not provide: anything an OS-level sandbox would. The runner is a plain
-`subprocess.Popen` child — same uid, filesystem, network and GPUs, no namespaces,
-seccomp, rlimits or filesystem jail — so what is reachable by those means (another
-process's `/proc/<pid>/environ`, a token file in the HF cache, the Ray client port)
-is not shown to be out of reach. It is a seam hardening can be added behind.
+What it does not provide: most of what an OS-level sandbox would. The runner is a
+`subprocess.Popen` child with the actor's uid, filesystem and GPUs, and no
+seccomp, rlimits or filesystem jail, so what is reachable by those means (another
+process's `/proc/<pid>/environ`, a token file in the HF cache) is not shown to be
+out of reach. Its network is the host's too, the Ray client port included, unless
+the deployment sets `NDIF_SANDBOX_EGRESS`: then its network namespace holds only
+the way to the egress proxy ([a confined runner](#a-confined-runner)). It is a
+seam hardening can be added behind.
 
 ## What the untrusted path cannot do
 

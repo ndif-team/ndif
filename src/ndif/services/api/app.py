@@ -361,7 +361,8 @@ async def whoami(
     Reads the key from the ``ndif-api-key`` header. Unlike the request path, an
     unknown/missing/malformed key is not an error here — it just resolves to
     ``{"email": None, "tags": []}`` (matching the pre-existing public contract,
-    where ``tags`` are the key's user_tags). A DB outage still surfaces as 503.
+    where ``tags`` are the key's user_tags plus its user's). A DB outage still
+    surfaces as 503.
     """
     try:
         identity = await verify_api_key(api_key)

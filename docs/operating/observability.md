@@ -30,7 +30,7 @@ operator's view.
 | Surface | Holds | Written by | Dev URL |
 |---|---|---|---|
 | **Loki** | Every `ndif` log record, as a structured JSON line | `LokiProvider` handler on the `ndif` logger | `http://localhost:3100` |
-| **InfluxDB** | NDIF's own numeric time series (six measurements) | `ndif.common.metrics` via `InfluxProvider` | `http://localhost:8086` |
+| **InfluxDB** | NDIF's own numeric time series (seven measurements) | `ndif.common.metrics` via `InfluxProvider` | `http://localhost:8086` |
 | **Prometheus** | Ray's cluster/node/actor metrics | scraped from `ray:8080/metrics` | `http://localhost:9090` |
 | **Grafana** | Nothing — it queries the other three (plus Postgres) | — | `http://localhost:3000` |
 
@@ -119,6 +119,7 @@ enqueues onto a batching writer that flushes from a background thread.
 | `status_time` | Time spent in each lifecycle status | `duration_ms`, tagged by the status it *left* |
 | `gpu_mem` | Extra GPU a request drove past the resident weights | `baseline_bytes`, `peak_bytes`, `extra_bytes` |
 | `model_load_time` | Weights onto GPU | `duration_ms`, `num_gpus`, tagged `load_type` |
+| `dispatcher_state` | Each model's replicas and queue, every 30 s | `replicas`, `executing`, `queue_size` |
 
 **Tags** are `service`, `environment`, `model_key`, `api_key`, `email`, and small
 enumerations (`status`, `load_type`, `gpu_index`) — group by these. **Fields**

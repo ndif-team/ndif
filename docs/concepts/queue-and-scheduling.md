@@ -145,8 +145,8 @@ Three things can pull a request back out of flight:
 - **Operator cancel.** `ndif kill <request_id>` calls the Dispatcher actor's
   `kill`. A queued request is removed and errored. An executing one is
   errored to the user and cancelled on the actor, which interrupts the block and
-  takes the next request; only if the actor has not finished it within a few
-  seconds is the replica's worker task cancelled instead
+  takes the next request. The replica's worker task is never cancelled, so a
+  kill cannot cost the pool a replica
   ([Killed jobs](../runbooks/trace-a-users-failed-job.md#killed-jobs)).
 - **Purge.** A failed provision makes the Processor error every queued request
   for its model, clear the queue and cancel its replicas (`Processor.purge`).

@@ -39,14 +39,15 @@ server-side ones.
 | `tags` | `set[str]` | `set()` | The caller's user_tags, stamped at ingress (with auth off: as sent, defaulting to `{"trusted"}`). Read by three properties: `trusted` (**selects the execution path** — see below), `trust_remote_code` (may deploy a model whose key carries `trust_remote_code`; `trusted` implies it — [auth-and-limits.md](../concepts/auth-and-limits.md#trust_remote_code)) and `priority` (sorts ahead as a *group*, FIFO within each group, `src/ndif/services/ray/queue/request_queue.py` `RequestQueue.rank`; no aging, so saturated priority traffic starves normal requests). |
 | `payload` | `Optional[bytes]` | `None` | The serialized interventions blob, filled from the multipart `blob` part by `create_request`. Not part of the client's JSON envelope. |
 | `enqueued_at` | `Optional[float]` | `None` | Unix time the request joined a model's in-memory queue (`Processor.enqueue`); the autoscaler reads it to spot a stale queue. Preserved on a re-queue. |
+| `replica_id` | `Optional[str]` | `None` | The replica the dispatcher last sent the request to (`Replica.dispatch`). The request's `status_time` points and lifecycle events carry it from then on. |
 | `last_status` / `last_status_time` | `Optional[Status]` / `Optional[float]` | `None` | The status the request is in and when it entered it. `last_status_time` is seeded at `RECEIVED`, so it doubles as the ingress time; per-stage latency comes from the `status_time` metric ([telemetry-internals.md](../developing/telemetry-internals.md)). |
 
 ### `trusted` — the flag that picks how user code runs
 
 `BackendRequestModel.trusted` is `"trusted" in request.tags`; the tags are
 stamped by `src/ndif/services/api/auth.py` `validate_request` (with auth on, the
-key's user_tags, overwriting a client value; with auth off, as sent, defaulting
-to `{"trusted"}`). Consumed by
+key's user_tags plus its user's, overwriting a client value; with auth off, as
+sent, defaulting to `{"trusted"}`). Consumed by
 `src/ndif/services/ray/sandbox/model.py` `SandboxModelDeployment.execute`: `True`
 runs the block in the model actor process via `BaseModelDeployment.execute`;
 `False` hands it to a runner subprocess (`SandboxHost.run_in_runner`), which
@@ -130,7 +131,7 @@ it serializes as its own name (`"COMPLETED"`).
 timeout — both in `BaseModelDeployment.run`); from the
 dispatch side (`Replica.dispatch` when a dispatch fails or its worker is
 cancelled, `Replica.cancel`); from `Processor.purge`; or from `ndif kill`
-(`Dispatcher.kill`).
+(`Dispatcher.kill`, `Replica.kill`).
 
 The transitions between these values, including the cold-start path
 (`RECEIVED` → `PROVISIONING` → `DEPLOYING` → `QUEUED`), are drawn in

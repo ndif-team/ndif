@@ -13,10 +13,11 @@ no separate flag to keep in sync. The two ways a worker ends are:
     in which case the in-flight request is handed back to the *front* of the
     Processor's queue rather than errored, so a sibling replica (or a freshly
     re-provisioned one) can pick it up; and
-  - a deliberate ``cancel`` (a purge after a failed provision, or an operator
-    kill whose actor did not stop the request in time), which errors the
-    in-flight request. An operator kill the actor honours leaves the worker
-    running.
+  - a deliberate ``cancel`` (a purge after a failed provision), which errors
+    the in-flight request.
+
+An operator kill (``kill``) is not one of them: it stops the request on the
+actor and leaves the worker running.
 """
 
 from __future__ import annotations
@@ -215,6 +216,7 @@ class Replica:
         """
         self.current_request = request
         self.current_started_at = time.time()
+        request.replica_id = self.replica_id
 
         try:
             handle = model_handle(self.model_key, self.replica_id)
@@ -227,8 +229,8 @@ class Replica:
             await handle.run.remote(request)
 
         except asyncio.CancelledError:
-            # The worker task was cancelled mid-dispatch (an operator kill, or a
-            # purge after a failed provision). CancelledError inherits
+            # The worker task was cancelled mid-dispatch (a purge after a failed
+            # provision). CancelledError inherits
             # BaseException, so the ``except Exception`` below would NOT catch
             # it — without this branch the user is stuck on DISPATCHED forever.
             # Surface an error, then re-raise to exit.
@@ -325,21 +327,14 @@ class Replica:
             self.current_request = None
             self.current_started_at = None
 
-    async def cancel(
-        self, message: Optional[str] = None, *, interrupt: bool = False
-    ) -> None:
+    async def cancel(self, message: Optional[str] = None) -> None:
         """Cancel the worker task, erroring any in-flight request.
 
         Idempotent. The worker's ``finally`` runs even under cancellation, so
         the Processor still sees this replica drop itself. If a request is in
         flight, error it here — a teardown only notifies *queued* requests via
-        ``Processor.reply``; the running one would otherwise hang.
-
-        ``interrupt`` (``ndif kill``) first stops the request on the actor and
-        gives its dispatch a few seconds to return on its own, so the replica
-        stays in the pool and the worker is cancelled only if the actor does not
-        respond. Without it (a purge) only the dispatch is cancelled, and a live
-        actor runs the block to completion.
+        ``Processor.reply``; the running one would otherwise hang. Only the
+        dispatch is cancelled: a live actor runs the block to completion.
         """
         request = self.current_request
         if request is not None:
@@ -350,30 +345,41 @@ class Replica:
                 "Sorry for the inconvenience. Please try again later.",
             )
 
-        if interrupt and request is not None:
-            # The caller matched current_request a moment ago, so the actor's
-            # in-flight request is overwhelmingly this one; the race we accept
-            # is that it finished in between and the next one is cancelled.
-            # cancel() is a no-op before the actor reaches execute(); the
-            # worker cancel below covers that.
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+    async def kill(self, message: str) -> None:
+        """Stop the in-flight request on the actor (``ndif kill``).
+
+        Errors the request to its user, then asks the actor to stop it. The
+        worker is left alone, so the replica stays in the pool. The actor
+        ignores a cancel that reaches it before the block has begun, so the
+        cancel is repeated until the dispatch returns. If the actor has not
+        stopped the request after a few seconds this stops asking, and the
+        replica takes its next request whenever the actor does return.
+        """
+        request = self.current_request
+        if request is None:
+            return
+        await request.arespond(Status.ERROR, message)
+
+        # The caller matched current_request a moment ago, so the actor's
+        # in-flight request is overwhelmingly this one; the race we accept is
+        # that it finished in between and the next one is cancelled.
+        for _ in range(50):
+            if self.current_request is not request:
+                return
             try:
                 handle = model_handle(self.model_key, self.replica_id)
                 await asyncio.wait_for(handle.cancel.remote(), 5)
             except Exception as e:
                 event(
                     logger,
-                    f"could not cancel on the actor ({error_type_name(e)}); "
-                    "cancelling the dispatch instead",
+                    f"could not cancel on the actor ({error_type_name(e)})",
                     level=logging.WARNING,
                     model_key=self.model_key,
                     replica_id=self.replica_id,
                     request_id=request.id,
                 )
-            # run() returns promptly once its kill switch fires.
-            for _ in range(50):
-                if self.current_request is not request:
-                    return
-                await asyncio.sleep(0.1)
-
-        if self.task is not None and not self.task.done():
-            self.task.cancel()
+                return
+            await asyncio.sleep(0.1)

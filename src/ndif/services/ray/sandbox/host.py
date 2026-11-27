@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import Optional, Tuple
 
+from . import egress
 from .protocol import Channel, signature_of
 
 # The dir containing the top-level ``ndif`` package, so the runner (which runs as
@@ -61,6 +62,7 @@ RUNNER_ENV: Tuple[str, ...] = (
     "TZ",
     "CUDA_VISIBLE_DEVICES",
     "HF_HOME",
+    "HF_HUB_CACHE",
     "HUGGINGFACE_HUB_CACHE",
     "TRANSFORMERS_CACHE",
     "TORCH_HOME",
@@ -160,6 +162,7 @@ def spawn(
     model_key: Optional[str] = None,
     template: bool = False,
     device: int = 0,
+    door: "Optional[egress.Door]" = None,
 ) -> Sandbox:
     """Launch a runner process and wait until its socket is accepting.
 
@@ -183,9 +186,18 @@ def spawn(
     ``device`` is the card the model starts on. A runner that starts CUDA early
     starts it there (``runner.preload_cuda``). It has to be told: it sees every
     card the actor sees, and its first is not the model's on a node with several.
+
+    ``door`` confines the runner: it starts through ``egress.py``, which takes
+    it off the network before any of the runner's code runs and leaves the door
+    as its one way out. Without one it keeps the host's network.
     """
     path = socket_path()
     env = runner_env()
+    launch = [python, "-m", "ndif.services.ray.sandbox.runner"]
+    if door is not None:
+        env.update(door.env())
+        # A script, by path: `egress` says why it cannot be run with `-m`.
+        launch = [python, "-I", egress.__file__, *launch]
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [_PACKAGE_ROOT, env.get("PYTHONPATH", "")])
     )
@@ -210,9 +222,7 @@ def spawn(
     # This process's pid rides along so the runner can tell when it is gone
     # (`runner.die_with_parent`).
     argv = [
-        python,
-        "-m",
-        "ndif.services.ray.sandbox.runner",
+        *launch,
         path,
         str(peers),
         str(os.getpid()),
@@ -286,9 +296,17 @@ class Template:
         model_key: Optional[str] = None,
         timeout: float = 300.0,
         device: int = 0,
+        door: "Optional[egress.Door]" = None,
     ):
         self.server = spawn(
-            python, quiet, timeout, peers, model_key, template=True, device=device
+            python,
+            quiet,
+            timeout,
+            peers,
+            model_key,
+            template=True,
+            device=device,
+            door=door,
         )
 
     def fork(self, timeout: float = 60.0) -> Sandbox:
@@ -335,6 +353,9 @@ class Pool:
     Runners are forked from one `Template`, started by the first refill. If it
     cannot start, every runner is started from nothing instead (`spawn`); if it
     dies, the next refill starts another.
+
+    Where the deployment names an egress proxy (``NDIF_SANDBOX_EGRESS``), the
+    pool opens a `egress.Door` to it and every runner starts confined.
     """
 
     def __init__(
@@ -352,6 +373,8 @@ class Pool:
         self.peers = peers
         self.model_key = model_key
         self.device = device
+        proxy = os.environ.get(egress.PROXY)
+        self.door = egress.Door(proxy) if proxy else None
         self.ready: "queue.Queue" = queue.Queue()
         self.lock = threading.Lock()
         self.spawning = 0
@@ -377,6 +400,7 @@ class Pool:
                         self.peers,
                         self.model_key,
                         device=self.device,
+                        door=self.door,
                     )
                 except Exception as error:
                     print(
@@ -394,6 +418,7 @@ class Pool:
                 peers=self.peers,
                 model_key=self.model_key,
                 device=self.device,
+                door=self.door,
             )
         try:
             return template.fork()
@@ -455,3 +480,5 @@ class Pool:
             template, self.template = self.template, None
         if template:
             template.close()
+        if self.door is not None:
+            self.door.close()

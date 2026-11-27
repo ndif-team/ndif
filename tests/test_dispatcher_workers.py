@@ -12,6 +12,7 @@ Pure unit tests over fakes: no Redis, no Ray, no server.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,7 +122,7 @@ def test_main_loop_pauses_between_failures(dispatcher):
 
     instance.get = get
     instance.startup = instance.heartbeat_worker = idle
-    instance.status_worker = instance.env_worker = idle
+    instance.status_worker = instance.env_worker = instance.state_worker = idle
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(instance.dispatch_worker())
@@ -169,3 +170,40 @@ def test_startup_waits_for_redis(dispatcher, monkeypatch):
 
     assert len(deletes) == 2
     assert sleeps == [1]
+
+
+def processor(model_key, busy, queue_size):
+    """A stand-in Processor with one replica per entry of ``busy``."""
+    return SimpleNamespace(
+        model_key=model_key,
+        replicas={i: SimpleNamespace(busy=b) for i, b in enumerate(busy)},
+        queue=SimpleNamespace(qsize=lambda: queue_size),
+    )
+
+
+def test_state_worker_records_what_each_model_holds(monkeypatch):
+    instance = dispatcher_module.Dispatcher()
+    instance.processors = {
+        "serving": processor("serving", [True, False], 3),
+        "provisioning": processor("provisioning", [], 1),
+        "idle": processor("idle", [], 0),
+    }
+    points, sleeps = [], []
+
+    async def sleep(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(dispatcher_module.asyncio, "sleep", sleep)
+    monkeypatch.setattr(
+        dispatcher_module.DispatcherStateMetric, "update", lambda **point: points.append(point)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(instance.state_worker())
+
+    assert points == [
+        {"model_key": "serving", "replicas": 2, "executing": 1, "queue_size": 3},
+        {"model_key": "provisioning", "replicas": 0, "executing": 0, "queue_size": 1},
+    ], "an idle model writes nothing"
+    assert sleeps == [30]

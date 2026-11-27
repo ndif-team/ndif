@@ -31,7 +31,7 @@ things:
 
 | Mode | `tags` on the request |
 |---|---|
-| Auth on (`NDIF_POSTGRES_URL` set) | the key's user_tags. A client-supplied value is overwritten. |
+| Auth on (`NDIF_POSTGRES_URL` set) | the key's user_tags plus its user's. A client-supplied value is overwritten. |
 | Auth off, client sent `tags` | left as sent |
 | Auth off, client sent nothing | `{"trusted"}` |
 
@@ -126,9 +126,14 @@ short-circuit before the request is ever enqueued.
 **A key is valid iff its row exists in the `keys` table.** The owning user's
 `verification_status` is not checked — issuing and gating keys is the account
 portal's job. The API connects as the read-only `ndifapi` role and only issues
-`SELECT` (`docker/postgres/init.sql`). The query `LEFT JOIN`s through
-`key_user_tag_assignments` to `user_tags`, so a known key with no tags still
-returns one row — that is how "unknown key" differs from "known key, no tags".
+`SELECT` (`docker/postgres/init.sql`). The query `LEFT JOIN`s `user_tags`,
+so a known key with no tags still returns one row — that is how "unknown key"
+differs from "known key, no tags".
+
+**A key carries its own tags and its user's.** A tag is granted to one key in
+`key_user_tag_assignments` or to a user in `user_tag_assignments`, and the query
+returns the union. A tag on the user reaches every key the user has, including
+ones created later.
 
 `GET /whoami` (`src/ndif/services/api/app.py` `whoami`) resolves a key to
 `{"email": ..., "tags": [...]}`. A missing or unknown key resolves to

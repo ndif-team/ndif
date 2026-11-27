@@ -90,9 +90,11 @@ in-process. A per-deployment `actor_class` (`--actor-class`, `models.yaml`, the
 dashboard's deploy modal) also overrides the default — don't point one at the
 base `ModelActor` on a cluster that takes untrusted traffic.
 
-The sandbox is process separation, not a hardened jail: no namespaces, seccomp,
-rlimits, or filesystem isolation, and the runner runs as the same user as the
-actor. Size your threat model accordingly.
+The sandbox is process separation, not a hardened jail: no seccomp, rlimits or
+filesystem isolation, and the runner runs as the same user as the actor. Its
+network is the host's unless you set `NDIF_SANDBOX_EGRESS`
+([Configuration](configuration.md#confining-untrusted-code-to-an-egress-proxy)).
+Size your threat model accordingly.
 
 ### Client versions
 
@@ -318,6 +320,7 @@ durable volumes and retention policy for anything it needs to keep. See
 | 17 | `NDIF_AUTOSCALING_MAX_REPLICAS`, padding factors and an execution timeout reviewed | ray | — |
 | 18 | `NDIF_MIN_NNSIGHT_VERSION` set to the oldest client you will support | api | An older client gets a clear 400 |
 | 19 | Durable volumes and a retention policy for anything you must keep | telemetry, store | Survives a recreate; disk doesn't fill unbounded |
+| 20 | If untrusted code must not send data out: `NDIF_SANDBOX_EGRESS` set and the egress proxy running ([how](configuration.md#confining-untrusted-code-to-an-egress-proxy)) | ray | An untrusted block's `urllib.request.urlopen("https://example.com")` fails with `403 Forbidden` |
 
 ## Related
 

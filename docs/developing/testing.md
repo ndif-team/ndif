@@ -38,6 +38,7 @@ over the socket, compared against the local run; no Ray:
 | `test_sandbox_stop.py` | `tracer.stop()`: the trace after a stopped one in a session, and the other invoke parked on the visit the stop fired at |
 | `test_sandbox_template.py` | runners forked from a `Template`: one serves a request, forks draw their own random numbers, stop and template close end them, a runner whose parent is gone exits, and CUDA starts early only with `NDIF_SANDBOX_PRELOAD_CUDA`, on the card the runner is given |
 | `test_sandbox_host.py` | the actor's half: `SandboxHost.run_in_runner` with a real pool of one runner, and the block's prints reaching the client as `LOG` |
+| `test_sandbox_egress.py` | a runner confined by `NDIF_SANDBOX_EGRESS`: its block reaches a stand-in proxy through the door and cannot dial the proxy's own address, a pool without a template confines its runners too, a runner that cannot be confined does not start, and the door adds the proxy's authority to the certificate bundle. The confined cases skip on a host without unprivileged user namespaces |
 | `test_sandbox_two_hosts.py` | two hosts, each with its own gpt2, driving one runner through the `Fanout`, the second as a follower: the path a tensor-parallel group takes |
 
 **Offline** — no model, no server, no GPU:
@@ -53,7 +54,13 @@ over the socket, compared against the local run; no Ray:
 | `test_result_serialization.py` | the result pickler: client classes round-trip as themselves, block-born classes as working twins, CUDA tensors to CPU |
 | `test_task_key_offline.py` | the pipeline task's place in the model key, config files and spec normalization |
 | `test_utils.py` | the per-request report helpers in `src/ndif/services/ray/deployments/modeling/util.py` (`request_meta`, OOM shortfall) |
+| `test_egress_policy.py` | the egress proxy's policy (`docker/egress/allowlist.py`), one request at a time: which hosts, methods and ports pass, a Host header that names another host, a refused body that is streamed. Needs mitmproxy, which NDIF does not install: skips without it |
 | `test_docs.py` | the docs gate: cited paths and symbols exist, links and anchors resolve, line-number citations don't grow |
+
+`test_auth_tags_postgres.py` needs Postgres and nothing else: it runs
+`_KEY_QUERY` (`src/ndif/services/api/auth.py`) against the compose stack's
+database on `localhost:5432`, rolls back what it inserts, and skips when nothing
+answers there.
 
 The live files are the ones that test the seam that matters most — a serialized
 block leaving a client, crossing Redis and Ray, running against real weights and
