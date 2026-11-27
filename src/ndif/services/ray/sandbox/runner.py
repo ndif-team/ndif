@@ -4,10 +4,11 @@ Binds a Unix socket and serves: each connection delivers the request (a
 ``Payload``); the runner deserializes and executes it with ``execute.run``, which
 drives the exchange with the messages in ``messages.py``. The process calls
 `build` once before it serves — in the runner, never on the host — which
-replaces the nnsight methods that assume the model is in this process. The
-process is not hardened (no namespaces, seccomp, rlimits, or filesystem jail);
-what it provides is separation from the model actor and a fresh process per
-request.
+replaces the nnsight methods that assume the model is in this process. What the
+process provides is separation from the model actor and a fresh process per
+request. It is not hardened (no seccomp, rlimits or filesystem jail), with one
+exception: where the deployment names an egress proxy, the process is started
+through `egress.py` and has no network but the door to that proxy.
 
 A pool does not start each runner from nothing: it starts one *template*, which
 builds what every runner needs and forks a runner per request

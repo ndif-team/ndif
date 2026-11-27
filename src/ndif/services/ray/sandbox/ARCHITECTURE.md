@@ -6,8 +6,11 @@ host GPU (weights never move); only the traced block — the arbitrary Python a 
 wrote inside `with model.trace(...)` — is shipped to a runner process and executed
 there.
 
-> **Isolation caveat.** Today the runner is just a separate OS process with *no*
-> hardening (no namespaces, seccomp, rlimits, or filesystem jail). What it gives
+> **Isolation caveat.** Today the runner is just a separate OS process with almost
+> no hardening (no seccomp, rlimits, or filesystem jail). The exception is its
+> network: where the deployment sets `NDIF_SANDBOX_EGRESS`, a runner starts in a
+> network namespace of its own and reaches only an egress proxy
+> ([`egress.py`](egress.py)). What it gives
 > you is a *seam*: user code executes somewhere other than the model actor, with a
 > narrow socket protocol between them, and each request gets a fresh process so
 > nothing leaks between them. Hardening can be added behind that seam later
@@ -39,6 +42,7 @@ across a process boundary.
 | [`link.py`](link.py) | `Link` — one end of the conversation. It receives by type, hands messages that can arrive at any point to their handlers, and raises `ProtocolError` on anything else. |
 | [`model.py`](model.py) | `SandboxModelDeployment` — the actor. Loads the model (base class), owns the runner pool, and turns a runner failure into a client-facing error. Thin: it acquires a runner and hands it to a driver. |
 | [`host.py`](host.py) | Host-side plumbing: `spawn` a runner, the `Template` a pool forks its runners from, `Pool` that pre-warms runners and hands out a **fresh one per request** (stopped when done), `Sandbox` handle, and the host's `Connection`. |
+| [`egress.py`](egress.py) | A confined runner's network. Run as a script in front of the runner's command, it leaves the network (`leave_network`), opens the tunnel to the actor's `Door`, and becomes the runner. `Door` is the actor's end, which passes connections to the egress proxy and holds the certificates runners trust. |
 | [`driver.py`](driver.py) | `SandboxDriver` — the **host side** of a request: the request loop, the interleaved run, and a `MediatorProxy` per worker. Knows nothing of Ray, requests or actors, so anything holding a model and a socket can be a host — including a tensor-parallel shard. |
 | [`controls.py`](controls.py) | The host's handler for each control request (`.source`, an ad-hoc module call, `tracer.cache()`), in a table keyed by the request's type, and what a read needs on its way out and back (`compact`, `write_back`). |
 | [`runner.py`](runner.py) | The runner process (`python -m sandbox.runner <socket> <peers> <parent pid> runner\|template [model_key]`). Accepts a connection, receives the payload, and calls `execute.run`. Building a `Runner` calls `adapters.install` — **in the runner, never on the host**. In `template` mode it builds once and forks runners (`serve_template`). |
@@ -368,7 +372,8 @@ than to discover from a hang on eight cards.
 
 These are deliberately deferred (correctness-first, optimize later):
 
-- **No isolation** — the runner is an ordinary process (see the top caveat).
+- **No isolation** — the runner is an ordinary process, apart from its network
+  where `NDIF_SANDBOX_EGRESS` is set (see the top caveat).
 - **Device placement is host-side only** — assembled inputs and ad-hoc `Call` args
   are moved onto the model's device on the host; activations otherwise cross as-is,
   which assumes the runner shares the host's GPU (true on a single box).

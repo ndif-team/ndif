@@ -1,0 +1,31 @@
+# Opt-in override: confine sandbox runners to an egress proxy.
+#
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.egress.yml up -d
+#
+# See "Confining untrusted code to an egress proxy" in
+# docs/operating/configuration.md.
+services:
+  egress:
+    image: mitmproxy/mitmproxy:12.2.1
+    command: ["mitmdump", "--listen-port", "3128", "--set", "flow_detail=1", "--set", "stream_large_bodies=1m", "-s", "/allowlist.py"]
+    environment:
+      # Comma-separated host names; a name covers its subdomains.
+      EGRESS_READ_ONLY: huggingface.co,hf.co
+      EGRESS_ALLOW: ""
+    volumes:
+      - ./egress/allowlist.py:/allowlist.py:ro
+      # The proxy's certificate authority, kept across restarts.
+      - egress_data:/home/mitmproxy/.mitmproxy
+  ray:
+    environment:
+      NDIF_SANDBOX_EGRESS: http://egress:3128
+    # A runner leaves the network by creating a user namespace, which docker's
+    # default seccomp profile refuses.
+    security_opt:
+      - seccomp=unconfined
+    depends_on:
+      egress:
+        condition: service_started
+
+volumes:
+  egress_data:

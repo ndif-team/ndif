@@ -104,6 +104,7 @@ ray/
 │   ├── driver.py       the host side of a run: request loop, run loop, a proxy per worker
 │   ├── controls.py     the host's handler for each control request
 │   ├── host.py         spawn runners, Pool, Connection
+│   ├── egress.py       a confined runner's network: the namespace, the tunnel, the actor's Door
 │   ├── runner.py       the runner process entry point
 │   ├── execute.py      runner: run one request
 │   ├── worker.py       runner: the worker's side of the loop
@@ -152,6 +153,8 @@ build ships.
 | `Dockerfile` | one image for all services: `python:3.12-slim`, torch from a `--index-url` build arg (`TORCH_CUDA`), `requirements.txt` in its own layer, then the package with `--no-deps` and the `ext` extra's list; `redis-server` and a rustfs binary so `NDIF_SERVICE=all` runs them in-container; `ndif version --write /etc/ndif/build.json` records what resolved |
 | `docker-compose.yml` | the dev stack: redis, loki, influxdb, prometheus, grafana, postgres, rustfs, api, dashboard, ray — every NDIF service shares one `build:` block and differs by env |
 | `docker-compose.nnsight.yml` | bind-mounts an editable nnsight over the image's copy ([how](nnsight-integration.md#developing-against-a-local-nnsight)) |
+| `docker-compose.egress.yml` | opt-in: the egress proxy, and `NDIF_SANDBOX_EGRESS` on `ray` ([what it does](../operating/configuration.md#confining-untrusted-code-to-an-egress-proxy)) |
+| `egress/allowlist.py` | the egress proxy's policy, a mitmproxy addon: two lists of host names |
 | `grafana/provisioning/` | datasources and the pre-built NDIF dashboards |
 | `prometheus/prometheus.yml` | scrapes Ray's metrics port; Ray is the only Prometheus speaker |
 | `postgres/init.sql` | the users/keys schema and a read-only role; no seed data |

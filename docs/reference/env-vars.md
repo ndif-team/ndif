@@ -138,6 +138,7 @@ Read by the controller launcher,
 |---|---|---|---|
 | `NDIF_SANDBOX_POOL_SIZE` | `7` | `src/ndif/services/ray/sandbox/model.py` `DEFAULT_POOL_SIZE` | Runners kept pre-warmed per **sandboxed** model actor while it is HOT; a WARM replica keeps none. Each is forked from the pool's template (`src/ndif/services/ray/sandbox/host.py` `Template`) in ~30 ms and adds ~125 MB of RAM to the template's ~240 MB (Llama-3.1-8B); a pool whose template cannot run starts each from nothing (~4 s, ~0.5 GB). Turn it down on memory-tight nodes. A per-deployment `pool_size` overrides it. |
 | `NDIF_SANDBOX_PRELOAD_CUDA` | off | `src/ndif/services/ray/sandbox/runner.py` `PRELOAD_CUDA` | `1`/`true`/`yes`/`on`: each runner starts CUDA while it waits in the pool, so a request does not (~0.45 s on an A100). The cost is the CUDA context, ~0.5 GB per waiting runner on the model's first card: `NDIF_SANDBOX_POOL_SIZE` of them per HOT replica, outside the actor's GPU budget. Set on the actor; it reaches the runner through `RUNNER_ENV`. |
+| `NDIF_SANDBOX_EGRESS` | unset | `src/ndif/services/ray/sandbox/host.py` `Pool` | The egress proxy's URL (`http://egress:3128`). Set, the runners of a sandboxed actor start without the host's network and reach only that proxy, whose policy decides what an untrusted block may fetch ([setup](../operating/configuration.md#confining-untrusted-code-to-an-egress-proxy)). Set on the actor: the `ray` service, or each Ray worker's environment. |
 
 ## Object store
 
