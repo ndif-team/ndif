@@ -140,13 +140,18 @@ class TestTensorParallelRounding:
 class TestEviction:
     """A replica whose actor can't be parked is removed, not cached."""
 
+    def _place(self, node, actor, loaded=True):
+        size = 40_000_000_000
+        node.deploy("m", node.evaluate("m", size), size, actor_class=actor)
+        replica_id, replica = next(iter(node.deployments["m"].items()))
+        if loaded:
+            replica.loading = False  # as the controller does once the actor is ready
+        return replica_id
+
     def test_a_parkable_replica_is_demoted_to_warm(self):
         node = make_node()
-        size = 40_000_000_000
-        candidate = node.evaluate("m", size)
-        node.deploy("m", candidate, size, actor_class=Parkable)
 
-        node.evict("m", next(iter(node.deployments["m"])))
+        node.evict("m", self._place(node, Parkable))
 
         assert node.cache.get("m"), "a parkable replica should keep its weights on CPU"
 
@@ -155,22 +160,26 @@ class TestEviction:
         # fixed when its process starts — and demoting it anyway would leave the
         # controller believing in a WARM replica while the actor holds its GPUs.
         node = make_node()
-        size = 40_000_000_000
-        candidate = node.evaluate("m", size)
-        node.deploy("m", candidate, size, actor_class=Fixed)
 
-        node.evict("m", next(iter(node.deployments["m"])))
+        node.evict("m", self._place(node, Fixed))
+
+        assert not node.cache.get("m")
+
+    def test_a_replica_still_loading_is_removed_outright(self):
+        # Its actor would park only after the load, so the eviction, and the
+        # replica taking its place, would wait for a load nobody will use. On
+        # 2026-11-23 that was 142 s for a model evicted 2 s after it was placed.
+        node = make_node()
+
+        node.evict("m", self._place(node, Parkable, loaded=False))
 
         assert not node.cache.get("m")
 
     @pytest.mark.parametrize("actor", [Parkable, Fixed])
     def test_either_way_the_gpus_come_back(self, actor):
         node = make_node()
-        size = 40_000_000_000
-        candidate = node.evaluate("m", size)
-        node.deploy("m", candidate, size, actor_class=actor)
 
-        node.evict("m", next(iter(node.deployments["m"])))
+        node.evict("m", self._place(node, actor))
 
         assert all(
             gpu.available_memory_bytes == CARD for gpu in node.gpu_resources.gpus

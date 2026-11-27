@@ -136,7 +136,7 @@ minutes ago. Nothing retries it — the request errors and the user tries again
 later. An explicit `ndif evict` bypasses both rules.
 
 An evicted `HOT` replica does not simply die. It releases its GPU reservation
-and, if its actor class is cacheable and the node's CPU cache can make room
+and, if it has finished loading, its actor class is cacheable and the node's CPU cache can make room
 (dropping the smallest `WARM` entries if needed), is demoted to `WARM` keeping
 its `replica_id`; otherwise it is removed and the actor killed. The CPU cache
 budget is the node's RAM scaled by `NDIF_MODEL_CACHE_PERCENTAGE` (default `0.7`).
@@ -150,6 +150,10 @@ request in `to_cache()` and raises `CachedActorError`. Both are in
 `EVICTED_ERRORS` (`src/ndif/services/ray/queue/replica.py`), so the queue drops
 the replica, puts the request back at the front of its priority group, and
 re-provisions if work remains. The user sees no error.
+
+A replica removed while it is still loading is the exception. No request is
+running on it yet, and the ones waiting for that load get `Error starting model`
+and have to be sent again.
 
 The policy code (`Node.evictable`, `Node.find_evictions`, `Node.evict`) is walked
 through in

@@ -74,16 +74,24 @@ class Deployment:
         self.actor_class = actor_class
         self.dtype = dtype
         self.deployed = time.time()
+        # A HOT replica is loading from when it is placed until its actor
+        # reports ready; the controller clears this then.
+        self.loading = deployment_level is DeploymentLevel.HOT
 
     @property
     def cacheable(self) -> bool:
         """Whether this replica can be parked HOT->WARM rather than torn down.
 
-        Read off the actor class (``CACHEABLE``). Resolving the class can fail
-        for a bad import path, and an unanswerable question here should not stop
-        an eviction — so it falls back to True, the behaviour every actor had
-        before any of them could say otherwise.
+        Not while it is still loading: ``to_cache`` would run only after the
+        load, so the eviction would wait out the rest of it.
+
+        Otherwise read off the actor class (``CACHEABLE``). Resolving the class
+        can fail for a bad import path, and an unanswerable question here should
+        not stop an eviction — so it falls back to True, the behaviour every
+        actor had before any of them could say otherwise.
         """
+        if self.loading:
+            return False
         try:
             return bool(getattr(self._resolve_actor_class(), "CACHEABLE", True))
         except Exception:

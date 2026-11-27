@@ -38,9 +38,10 @@ mental-model version. Three facts frame the design:
 `app()` resolves the controller class from `NDIF_CONTROLLER_IMPORT_PATH` (`_import_from_path`,
 defaulting to this module's own `ControllerActor`) and launches it as `name="Controller"`,
 `namespace="NDIF"`, `lifetime="detached"`, `get_if_exists=True`. `detached` keeps it alive after the
-one-shot launching driver `start.sh` runs exits. Because `_ControllerActor.deploy` and
-`.check_nodes` are `async def`, Ray makes this an asyncio actor; the synchronous methods (`evict`,
-`status`, `build`, `apply`) share that event-loop thread and never interleave.
+one-shot launching driver `start.sh` runs exits. Its methods are coroutines, so Ray makes this an
+asyncio actor with one event loop. Everything that changes placement (`deploy`, `scale`, `evict`),
+`get_deployment` and the node sync hold `self.lock`, so they run one at a time. `status` and `env`
+do not take it and answer while an eviction is in flight.
 
 > **Gotcha:** `get_if_exists=True` makes relaunching idempotent, but a relaunch against a live
 > cluster **silently reuses the old actor and discards the new arguments**. Changing
@@ -174,7 +175,9 @@ possible. `Node.evict` then executes one eviction: a **WARM** replica is dropped
 released; a **HOT** replica releases its GPU bytes and, if `find_cache_evictions` can supply CPU
 room, is **demoted to WARM** with the *same* `replica_id` and a fresh `Deployment` — otherwise it is
 removed outright. A replica whose actor class sets `CACHEABLE = False` (the tensor-parallel actors)
-is always removed outright (`Deployment.cacheable`). Preserving `replica_id` matters because the
+is always removed outright (`Deployment.cacheable`). So is one that is still `loading`, from when it
+is placed until its actor reports ready: its actor would park only after the load, and the eviction
+would wait for it. Preserving `replica_id` matters because the
 actor's Ray name is `f"{replica_id}:ModelActor:{model_key}"` (`Deployment.name`), so the same
 process survives the transition and a later promotion reuses it (`Node.deploy`).
 
@@ -216,8 +219,10 @@ entry) and `deployments_to_delete` (in state, gone from the cluster model).
 `_ControllerActor.apply` executes them in order:
 
 1. **delete** — `ray.kill(actor, no_restart=True)`.
-2. **cache** (HOT→WARM) — `actor.to_cache.remote()`, then **blocks** on every future with `ray.get`.
-   The one synchronous step, because step 3 assumes that GPU memory is already free.
+2. **cache** (HOT→WARM) — `actor.to_cache.remote()`, then awaits every future. Step 3 assumes that
+   GPU memory is already free, so the rest of `apply` waits here, with `self.lock` held. The event
+   loop does not: a `ray.get` here stopped the controller answering anything, `status` included,
+   for as long as the weights took to move.
 3. **from_cache** (WARM→HOT) — `actor.from_cache.remote(self.gpus)`.
 4. **create** — builds `BaseModelDeploymentArgs` (model key, execution timeout, dtype), calls `Deployment.create(name, args)` which injects `gpu_mem_bytes_by_id =
    self.gpus` and `replica_id`, then awaits `actor.__ray_ready__`.
@@ -247,7 +252,8 @@ Schemas live in `src/ndif/common/schema/controller.py` because both sides speak 
 `error` is meaningful. `_ControllerActor.status` starts from Ray's `list_actors()`, filtered to exclude
 `DEAD` because Ray keeps a record for every actor it has run and silently cuts the list at its limit,
 so dead records could push a live replica out of `status`. A replica the controller tracks with no
-live actor is reported as `UNHEALTHY`. It then enriches each entry the controller tracks with its level, `pinned`, `trust_remote_code` (read
+live actor is reported as `DEPLOYING` while it is `loading` (its actor is created once the eviction
+ahead of it finishes) and as `UNHEALTHY` otherwise. It then enriches each entry the controller tracks with its level, `pinned`, `trust_remote_code` (read
 off the key), `dtype`,
 `execution_timeout_seconds`, `repo_id`, `task`, `revision`, `n_params`, `size_bytes`, `actor_class`
 and `gpus` count — so an actor Ray knows about but the controller doesn't ends up with **only**
