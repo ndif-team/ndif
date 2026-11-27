@@ -3,8 +3,10 @@
 With an egress proxy named, a runner starts in a network namespace of its own
 and reaches the proxy through a Unix socket (``egress.py``). The proxy here is a
 few lines of this file: it answers every plain HTTP request and records it,
-which is enough to tell what reached it and what did not. The real proxy is
-not run here; its policy has ``test_egress_policy.py``.
+which is enough to tell what reached it and what did not. It also passes a
+tunnel on to the host it names, because a runner's start-up asks the Hub
+through it. The real proxy is not run here; its policy has
+``test_egress_policy.py``.
 
 The tests that confine a runner use a real gpt2 on CPU, as
 ``test_sandbox_template.py`` does, and skip on a host that does not let the user
@@ -13,6 +15,7 @@ create a user namespace (docker's default seccomp profile is one).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -52,7 +55,8 @@ needs_namespaces = pytest.mark.skipif(
 
 class Proxy:
     """Stands in for the egress proxy: answers any plain HTTP request it is
-    sent, and hands out an authority the way mitmproxy does."""
+    sent, passes a tunnel on, and hands out an authority the way mitmproxy
+    does."""
 
     def __init__(self, port: int = 0) -> None:
         self.authority = certificate()
@@ -68,19 +72,44 @@ class Proxy:
                 connection, _ = self.listener.accept()
             except OSError:
                 return
+            head = b""
+            while b"\r\n\r\n" not in head and (data := connection.recv(65536)):
+                head += data
+            line = head.split(b"\r\n", 1)[0].decode()
+            if line.startswith("CONNECT "):
+                self.tunnel(connection, line.split()[1])
+                continue
             with connection:
-                head = b""
-                while b"\r\n\r\n" not in head and (data := connection.recv(65536)):
-                    head += data
-                if not head:
+                if not line:
                     continue
-                line = head.split(b"\r\n", 1)[0].decode()
                 self.seen.append(line)
                 body = self.authority if "mitm.it" in line else b"through the proxy"
                 connection.sendall(
                     b"HTTP/1.1 200 OK\r\nConnection: close\r\n"
                     b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
                 )
+
+    def tunnel(self, near: socket.socket, target: str) -> None:
+        """What a runner's start-up opens to ask the Hub."""
+
+        def pump(source: socket.socket, sink: socket.socket) -> None:
+            with contextlib.suppress(OSError):
+                while data := source.recv(65536):
+                    sink.sendall(data)
+            for end in (source, sink):
+                with contextlib.suppress(OSError):
+                    end.shutdown(socket.SHUT_RDWR)
+
+        name, _, port = target.rpartition(":")
+        try:
+            far = socket.create_connection((name, int(port)), timeout=10)
+        except OSError:
+            near.close()
+            return
+        far.settimeout(None)
+        near.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        for source, sink in ((near, far), (far, near)):
+            threading.Thread(target=pump, args=(source, sink), daemon=True).start()
 
     def close(self) -> None:
         self.listener.close()
@@ -229,10 +258,8 @@ def test_a_confined_block_reaches_the_proxy_and_nothing_else(model, proxy, monke
     assert saved["fetched"] == b"through the proxy"
     assert "GET http://files.test/weights HTTP/1.1" in proxy.seen
     assert saved["trusted"].endswith(proxy.authority)
-    # The runner built its meta model, and from the cache: its start-up asked
-    # the proxy for nothing.
+    # The runner built its meta model.
     assert saved["tokenizer"] != "NoneType"
-    assert not [line for line in proxy.seen if "huggingface" in line]
     # The proxy listens on this host's loopback. The runner's loopback is its own.
     assert saved["direct"] == "ConnectionRefusedError"
     # The model's forward is the host's, as ever.
@@ -260,39 +287,6 @@ def test_a_pool_without_a_template_confines_its_runners_too(model, proxy, monkey
     assert saved["fetched"] == b"through the proxy"
     assert saved["direct"] == "ConnectionRefusedError"
     assert saved["tokenizer"] != "NoneType"
-
-
-@needs_namespaces
-def test_a_confined_runner_starts_while_its_proxy_is_down(model):
-    with socket.create_server(("127.0.0.1", 0)) as free:
-        port = free.getsockname()[1]
-    door = egress.Door(f"http://127.0.0.1:{port}")
-    capture = Capture()
-    with model.trace(PROMPT, backend=capture):
-        import urllib.request
-
-        model.transformer.h[5].output
-        tokenizer = nnsight.save(type(model.tokenizer).__name__)
-        try:
-            urllib.request.urlopen("http://files.test/weights", timeout=10)
-            fetched = nnsight.save("fetched")
-        except OSError as error:
-            fetched = nnsight.save(type(error).__name__)
-    try:
-        started = time.time()
-        sandbox = host.spawn(model_key=model.to_model_key(), timeout=120, door=door)
-        elapsed = time.time() - started
-        try:
-            saved = run(model, sandbox, capture.blob)
-        finally:
-            sandbox.stop()
-    finally:
-        door.close()
-    assert saved["tokenizer"] != "NoneType"
-    # What the troubleshooting page tells an operator to look for.
-    assert saved["fetched"] == "RemoteDisconnected"
-    # With the Hub asked and unreachable, huggingface_hub retries for ~45 s.
-    assert elapsed < 30
 
 
 def test_without_the_setting_a_pool_opens_no_door(monkeypatch):

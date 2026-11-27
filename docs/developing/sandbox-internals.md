@@ -225,10 +225,10 @@ to the bundle runners are told to trust. A template's forks are in its
 namespace and share its tunnel. The module's docstring has the reason for each
 step.
 
-A confined runner builds its meta model with the Hub marked offline
-(`meta.load_meta_model`), so it starts the same whether or not the proxy is up.
-A runner that cannot create the namespace exits before it runs anything, and
-`spawn` raises.
+A confined runner's start-up goes through the door as well: building the meta
+model asks the Hub (`meta.load_meta_model`), so the proxy has to be up when a
+model's runners start. A runner that cannot create the namespace exits before
+it runs anything, and `spawn` raises.
 
 What a block may reach is the proxy's policy
 (`docker/egress/allowlist.py`), not anything in this package:

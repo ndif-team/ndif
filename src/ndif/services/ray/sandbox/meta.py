@@ -8,14 +8,12 @@ not come from the model is the interleaver, which resolves to an
 ``IPCInterleaver`` bound to the request's link.
 """
 
-import os
 import sys
 import warnings
 
 from nnsight.intervention.serialization import CustomCloudUnpickler
 from nnsight.modeling.mixins.remotable import Remotable
 
-from . import egress
 from .worker import IPCInterleaver
 
 # This runner's weightless model, and the persistent-id map built from it. The
@@ -47,28 +45,13 @@ def load_meta_model(model_key: str) -> None:
     and huggingface_hub serves a cached file even when its HEAD call fails — which
     is what happens here for a gated repo, since a runner deliberately inherits no
     `HF_TOKEN`.
-
-    A confined runner (`egress.py`) is not allowed the round trip at all: the
-    build runs with the Hub marked offline, and so reads the cache and nothing
-    else. Its only way to the Hub is the egress proxy, and a start-up that asked
-    it would depend on the proxy being up and on its policy allowing the Hub: a
-    refusal there fails the build, and with no route at all huggingface_hub
-    retries for most of a minute first. The mark is lifted afterwards, because a
-    block may fetch from the Hub.
     """
     global META_MODEL
 
-    from huggingface_hub import constants
-
-    offline = constants.HF_HUB_OFFLINE
-    constants.HF_HUB_OFFLINE = offline or egress.DOOR in os.environ
-    try:
-        # `from_model_key` resolves the wrapper class from the key itself, so
-        # this is the same build the actor does (base.py) minus the weights --
-        # and it is right for a non-HuggingFace wrapper too.
-        META_MODEL = Remotable.from_model_key(model_key)
-    finally:
-        constants.HF_HUB_OFFLINE = offline
+    # `from_model_key` resolves the wrapper class from the key itself, so this is
+    # the same build the actor does (base.py) minus the weights -- and it is right
+    # for a non-HuggingFace wrapper too.
+    META_MODEL = Remotable.from_model_key(model_key)
     PERSISTENT_OBJECTS.update(META_MODEL._remoteable_persistent_objects())
 
 

@@ -173,8 +173,10 @@ export NDIF_SANDBOX_EGRESS=http://127.0.0.1:3128   # before `ray start` on that 
   certificate authority that runners are told to trust, and an actor fetches it
   once. After a proxy that lost it, a block's HTTPS requests fail until the
   model is redeployed.
-- A runner starts whether or not the proxy is up. While it is down, a block's
-  requests fail.
+- Start the proxy before you deploy a model, and keep `huggingface.co` on one
+  of its lists. A runner's start-up asks the Hub through the proxy. A model
+  whose runners start while it is down has no tokenizer in a block until the
+  model is redeployed. While the proxy is down, a block's requests fail.
 - It closes a block's network route and is not a hardened boundary: a block
   still runs as the actor's user, with its files and its view of the host's
   other processes

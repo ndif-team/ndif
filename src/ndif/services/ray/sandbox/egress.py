@@ -21,9 +21,9 @@ it is the one thing both sides can reach. Nothing here decides what a block may
 reach. The proxy does, from two lists of host names
 (`docker/egress/allowlist.py`): hosts passed through untouched, and hosts that
 may only be read from. A block cannot go around it, because nothing else is
-reachable. The runner's own start-up does not use it: the meta model is built
-from the shared cache alone (`meta.load_meta_model`), so a runner starts the
-same whether or not the proxy is up.
+reachable. Neither can the runner's own start-up: building the meta model asks
+the Hub (`meta.load_meta_model`), so the proxy has to be up, and its policy
+has to let the Hub be read, when a model's runners start.
 
 A process may create a network namespace only where it holds the privilege to,
 so it first creates a user namespace, in which it holds every privilege over
@@ -212,9 +212,6 @@ class Door:
             "SSL_CERT_FILE": self.bundle,
             "REQUESTS_CA_BUNDLE": self.bundle,
             "CURL_CA_BUNDLE": self.bundle,
-            # Hugging Face's xet client does its own networking and ignores
-            # the proxy settings.
-            "HF_HUB_DISABLE_XET": "1",
         }
 
     def add_authority(self) -> None:
