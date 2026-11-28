@@ -240,6 +240,9 @@ services:
       # name; without this they'd default to localhost:6379 — and inside this
       # container nothing listens there (redis is its own container).
       NDIF_REDIS_URL: redis://redis:6379
+      # The runtime limit, which the dispatcher reads from Postgres as `ndifray`.
+      # Commented out: no limit.
+      # NDIF_POSTGRES_URL: postgresql://ndifray:admin@postgres:5432/ndif
       # Ship logs to Loki (reached by service name on the compose network).
       NDIF_LOKI_URL: http://loki:3100/loki/api/v1/push
       # Ship metrics to InfluxDB (org/bucket/token match the influxdb service).

@@ -39,6 +39,7 @@ from ....common.schema.controller import DeployResponse, DeploymentConfig
 from ....common.schema.request import BackendRequestModel
 from ....common.telemetry import elapsed_ms, error_type_name, event
 from ....common.types import MODEL_KEY, REPLICA_ID
+from . import runtime_limit
 
 if TYPE_CHECKING:
     from .processor import Processor
@@ -213,12 +214,20 @@ class Replica:
         dropped (``self.task = None``) so the worker loop exits. A
         ``CancelledError`` (deliberate cancel) errors the request and re-raises.
         Other exceptions error the request, and the worker keeps serving.
+
+        A request whose user is out of runtime is errored without reaching the
+        actor; one the actor ran to its end is charged the time it took.
         """
         self.current_request = request
         self.current_started_at = time.time()
         request.replica_id = self.replica_id
 
         try:
+            refusal = await runtime_limit.refusal(request)
+            if refusal:
+                await request.arespond(Status.ERROR, refusal)
+                return
+
             handle = model_handle(self.model_key, self.replica_id)
 
             await request.arespond(
@@ -227,6 +236,8 @@ class Replica:
             )
 
             await handle.run.remote(request)
+
+            await runtime_limit.charge(request, time.time() - self.current_started_at)
 
         except asyncio.CancelledError:
             # The worker task was cancelled mid-dispatch (a purge after a failed

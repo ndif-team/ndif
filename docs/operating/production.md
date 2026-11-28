@@ -271,9 +271,11 @@ durable volumes and retention policy for anything it needs to keep. See
   (`src/ndif/services/api/app.py` `get_response`): anyone holding a request id
   can fetch that request's latest response, including its result URL. Request
   ids are the only thing protecting it.
-- **No rate limiting or quotas.** The only per-key behaviors implemented are the
-  `trusted`, `trust_remote_code` and `priority` tags. A single key can submit
-  unlimited requests.
+- **No limit on requests, and none on runtime until you set one.** A single key
+  can submit unlimited requests. The
+  [runtime limit](../concepts/auth-and-limits.md#runtime-limit) caps how long a
+  user's requests may run. It is off until the Ray side has `NDIF_POSTGRES_URL`
+  and the limit's row is set in Postgres.
 - **No multi-tenancy.** All users share the same model deployments and the same
   GPUs. There is no per-user isolation beyond the trusted/untrusted execution
   fork, and no accounting.

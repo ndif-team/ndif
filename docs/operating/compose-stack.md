@@ -147,7 +147,7 @@ service**; a service that misses one silently talks to itself.
 | `NDIF_LOKI_URL` | unset (shipping off) | `http://loki:3100/loki/api/v1/push` | `api`, `ray` |
 | `NDIF_INFLUX_URL` | unset (metrics off) | `http://influxdb:8086` | `api`, `ray`; `dashboard` only reads it, for its report cron |
 | `NDIF_API_URL` | `http://localhost:8001` | `http://api:8001` | `dashboard` (its report cron) |
-| `NDIF_POSTGRES_URL` | empty (auth off) | commented out | — |
+| `NDIF_POSTGRES_URL` | empty (auth off, no runtime limit) | commented out | `api` (auth), `ray` (the runtime limit) |
 
 `NDIF_OBJECT_STORE_PUBLIC_URL` is the one URL about someone else's network: it
 signs result URLs for the *client*, so `localhost:9000` works only for a client

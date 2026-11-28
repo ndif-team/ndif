@@ -74,7 +74,7 @@ guessing, since this repo doesn't pin them.
 | 6379 | redis | RESP | Request queue, response pub/sub, status/env caches, trigger streams. | address side: `NDIF_REDIS_URL`; the CLI starts `redis-server` on that URL's port (`src/ndif/cli/service.py` `_redis_command`) | yes — `6379:6379` (compose `redis` `ports`) | no |
 | 9000 | rustfs | HTTP (S3) | Result blobs. Servers upload here; clients download via presigned GET URLs. | address side: `NDIF_OBJECT_STORE_URL` / `NDIF_OBJECT_STORE_PUBLIC_URL`; the CLI's RustFS takes the URL's port (`_rustfs_command`) | yes — `9000:9000` (compose `rustfs` `ports`) | **yes** — clients must be able to reach whatever host `NDIF_OBJECT_STORE_PUBLIC_URL` names |
 | 9001 | rustfs | HTTP | RustFS web console. Compose turns it on with `RUSTFS_CONSOLE_ENABLE` on the image's default port; only a CLI-spawned RustFS reads the variable. | `NDIF_OBJECT_STORE_CONSOLE_PORT` (CLI only) | yes — `9001:9001` (compose `rustfs` `ports`) | no |
-| 5432 | postgres | Postgres wire | User/API-key database for auth. Nothing connects unless `NDIF_POSTGRES_URL` is set — the dev compose leaves it commented out on the `api` service. | address side: `NDIF_POSTGRES_URL` | yes — `5432:5432` (compose `postgres` `ports`) | no |
+| 5432 | postgres | Postgres wire | User/API-key database for auth. Nothing connects unless `NDIF_POSTGRES_URL` is set — the dev compose leaves it commented out on the `api` service (auth) and the `ray` service (the runtime limit). | address side: `NDIF_POSTGRES_URL` | yes — `5432:5432` (compose `postgres` `ports`) | no |
 | 3100 | loki | HTTP | Log ingest (`/loki/api/v1/push`) and query. Services ship here only when `NDIF_LOKI_URL` is set. | address side: `NDIF_LOKI_URL` | yes — `3100:3100` | no |
 | 8086 | influxdb | HTTP | Metrics write API (InfluxDB 2.x). | address side: `NDIF_INFLUX_URL` | yes — `8086:8086` | no |
 | 9090 | prometheus | HTTP | Prometheus UI and API; scrapes `ray:8080` every 10s (`docker/prometheus/prometheus.yml`). | none | yes — `9090:9090` | no |
@@ -137,6 +137,7 @@ flowchart LR
     api -->|6379| redis[(redis)]
     rayhead[ray head] -->|6379| redis
     api -->|5432| pg[(postgres)]
+    ray -->|5432| pg
     rayhead ---|6385, 8076| worker[ray worker]
     rayhead -->|9000| s3
     api & rayhead -->|3100 / 8086| tel[loki / influx]
