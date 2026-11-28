@@ -12,6 +12,9 @@ A request is three conversations, one inside the next:
 * an exchange with one worker: the host sends `Resume`; the runner answers with
   the worker's next `Park`, or with `Stop`.
 
+During a host backward (`Backward`), the host sends `GradRequest` when it
+reaches a tensor from the runner, and the runner replies with `GradReply`.
+
 A worker that needs something only the host can do parks on a `Control` request
 in place of a location. The host answers it with a `Reply` and the exchange goes
 on. `Print` and `CacheHit` answer nothing and can arrive at any point.
@@ -57,6 +60,8 @@ class Resume:
     worker: int
     args: tuple
     pin: Optional[int]
+    #: Per-tensor ``(crossing, requires_grad)`` list for ``args`` (``autograd.py``).
+    crossings: Any = None
 
 
 @dataclass
@@ -70,6 +75,8 @@ class Reply:
 
     worker: int
     args: tuple = ()
+    #: Same format as `Resume.crossings`.
+    crossings: Any = None
 
 
 class Dangling(enum.Enum):
@@ -109,6 +116,15 @@ class Done:
     result: Any
 
 
+@dataclass
+class GradRequest:
+    """Host -> runner: backpropagate ``grad`` through the tensor sent under
+    ``out``. Answered by `GradReply`."""
+
+    out: int
+    grad: Any
+
+
 # ------------------------------------------------------------------ runner -> host
 
 
@@ -146,6 +162,20 @@ class Park:
     worker: int
     pending: Any
     edited: Any = None
+    #: Per-tensor ``None`` or ``(out_id, reached_crossings)`` for
+    #: ``(pending, edited)``, linking runner tensors into the host graph
+    #: (``autograd.py``).
+    links: Any = None
+    #: Crossings where the block called ``requires_grad_()``.
+    mirror: Any = None
+
+
+@dataclass
+class GradReply:
+    """Runner -> host: gradients for the crossings reached by the requested
+    tensor, in the order they were sent."""
+
+    grads: list
 
 
 @dataclass
@@ -232,3 +262,28 @@ class SourceRefused:
     """
 
     message: str
+
+
+@dataclass
+class Backward(Control):
+    """Control request: run the host's half of a backward started in the runner.
+
+    ``roots`` are crossing ids and ``grads`` are their gradients from the
+    runner's half. For a backward block (``with loss.backward():``), ``worker``
+    is the block's runner worker id and ``first`` is its first park; for a bare
+    ``backward()``, ``worker`` is ``None``.
+    """
+
+    roots: list
+    grads: list
+    worker: Optional[int] = None
+    first: Any = None
+    retain_graph: Optional[bool] = None
+
+
+@dataclass
+class WatchGrad(Control):
+    """Control request: hook the gradient of the host tensor under ``crossing``
+    so a backward block can read or write its ``.grad``."""
+
+    crossing: int

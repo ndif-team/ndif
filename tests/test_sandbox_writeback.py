@@ -262,7 +262,10 @@ def test_only_an_edited_read_is_sent_back(frozen, monkeypatch):
     monkeypatch.setattr(
         driver,
         "write_back",
-        lambda served, copy, kept: (written.append(copy), real(served, copy, kept)),
+        lambda served, copy, kept, **flags: (
+            written.append(copy),
+            real(served, copy, kept, **flags),
+        ),
     )
 
     # Two reads, one of them edited.

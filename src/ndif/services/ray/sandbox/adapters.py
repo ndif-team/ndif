@@ -4,8 +4,8 @@ In the runner the model is weightless and the forward runs on the host, so the
 methods a block reaches the model through are replaced by ones that go over the
 socket: a model call becomes an ``Interleave`` message, a park goes to the host
 untagged, and ``.source``, an ad-hoc module call, ``tracer.cache()`` and
-``tracer.barrier()`` park on a request the host answers. Backward passes are
-refused, because the graph is on the host.
+``tracer.barrier()`` park on a request the host answers. A backward spans both
+processes, linked at every crossing (``autograd.py``).
 
 Importing this module changes nothing. `install` applies the replacements, for
 the whole process, and ``runner.py`` calls it once before it serves. Nothing on
@@ -26,8 +26,19 @@ from nnsight.intervention.interleaver import (
 )
 from nnsight.intervention.source import SourceEnvoy, SourceNotAvailable
 from nnsight.intervention.tracer import InterleavingTracer
+from nnsight.intervention.backward import BackwardTracer
+from nnsight.tracing.tracer import WithBlockNotFoundError, push_result
 
-from .messages import Call, Interleave, Observe, Source, SourceRefused
+from .autograd import RunnerGraph, autograd_backward, earlier
+from .messages import (
+    Backward,
+    Call,
+    Interleave,
+    Observe,
+    Source,
+    SourceRefused,
+    WatchGrad,
+)
 
 
 def ipc_event(cls, event, location, *rest):
@@ -88,6 +99,9 @@ class IPCEnvoy(Envoy):
         # Envoy so an edit's swap lands before a trace read this run.
         self.interleaver.mediators[:0] = self._edits
         result = None
+        # Each trace uses a fresh graph; a worker can start a backward at its
+        # first park, before `pump` begins.
+        self.interleaver.graph = RunnerGraph(self.interleaver.link)
         try:
             with self.interleaver:
                 # Workers are parked on their first locations; ship each one's park
@@ -258,29 +272,183 @@ def ipc_cache(self, *args, **kwargs):
     return view
 
 
-# No backward passes on the untrusted path. The model's forward, and the graph a
-# backward would walk, run on the host, and a value read from the model arrives
-# here as a fresh leaf, so a backward gets no gradients from the model. Left to
-# itself it fails opaquely (`with loss.backward(): act.grad` dangles into an
-# OutOfOrderError naming a tensor id) or not at all (a bare `loss.backward()`
-# leaves every `.grad` None). Refuse it at the call and say why.
+# `torch.autograd.grad` is refused on the untrusted path. `Tensor.backward` and
+# `torch.autograd.backward` route through `run_backward` to reach the host
+# graph, and the host's half reports only gradients accumulated on leaves
+# (`HostGraph.take`). `grad` returns gradients instead of accumulating them, and
+# called locally it would differentiate only the runner's half.
 NO_BACKWARD = (
-    "Backward passes need trusted access. This request is untrusted, so it ran "
-    "in a sandbox without the model's computation graph, where gradients do not "
-    "flow back into the model. To run backward passes, ask the maintainers of "
-    "this NDIF server for trusted access."
+    "torch.autograd.grad is not supported on untrusted requests. Use "
+    "loss.backward() and read .grad instead, or ask the maintainers of this "
+    "NDIF server for trusted access."
 )
 
 
-def refusal():
-    # A new function per name, not one shared: torch._dynamo keys its rules by
-    # object, gives `torch.autograd.backward` and `torch.autograd.grad` different
-    # ones, and asserts when one object turns up under both. transformers imports
-    # dynamo mid-request.
-    def refuse_backward(*args, **kwargs):
-        raise NotImplementedError(NO_BACKWARD)
+def refuse_grad(*args, **kwargs):
+    raise NotImplementedError(NO_BACKWARD)
 
-    return refuse_backward
+
+# ------------------------------------------------------------------ split autograd
+
+
+def grad_property(graph):
+    """``Tensor.grad`` property active during a backward block in the runner.
+
+    Reading or setting `.grad` on a tensor from the host sends `WatchGrad` so
+    the host hooks that crossing, then parks on ``grad.{crossing}``. Accessing
+    `.grad` on any other tensor raises `NotImplementedError`, because its
+    gradient is complete only after the host's backward finishes."""
+    def crossing(tensor):
+        found = graph.crossing_of(tensor)
+        if found is None:
+            raise NotImplementedError(
+                "On the untrusted path, inside a `with loss.backward():` block, "
+                "`.grad` is served only for values read from the model, not for "
+                "tensors the block made. Read it after the block instead."
+            )
+        getcurrent().parent.switch(WatchGrad(found))
+        return f"grad.{found}"
+
+    def getter(tensor):
+        return Mediator.value(crossing(tensor))
+
+    def setter(tensor, value):
+        Mediator.swap(crossing(tensor), value)
+
+    return property(getter, setter)
+
+
+class IPCBackwardTracer(BackwardTracer):
+    """Runs a backward block (``with loss.backward():``) in the runner.
+
+    The block runs as an extra worker on the trace's `IPCInterleaver` so the
+    host can resume it by worker id while the trace worker stays parked on
+    `Backward`."""
+
+    def execute(self, code) -> None:
+        frame = self.info.frame
+        block = Mediator(code, frame.f_globals, dict(frame.f_locals))
+        run_backward(self.tensor, *self.args, block=block, **self.kwargs)
+        push_result(frame, block.lcls)
+
+
+STALE_BACKWARD = (
+    "On the untrusted path, a backward must run in the trace whose values it "
+    "reaches: this one reaches a value read from the model in an earlier trace, "
+    "and that trace's half of the graph is gone. Compute the loss and call "
+    "backward() inside one trace."
+)
+
+
+def run_backward(
+    tensor, gradient=None, retain_graph=None, create_graph=False, inputs=None, block=None
+):
+    """Run a backward started by the block: runner half first, then host half.
+
+    `RunnerGraph.local` backpropagates through the runner's graph to the
+    crossings. The trace worker then parks on a `Backward` control request
+    carrying those gradients. The host (`controls.backward`) runs its half,
+    calling back into the runner for each `FromRunner` node it reaches and
+    driving ``block`` if this is a backward block. Host leaf gradients return as
+    the request's reply and are added into the runner's leaves
+    (`RunnerGraph.restore`).
+    """
+    if create_graph or inputs is not None:
+        raise NotImplementedError(
+            "`create_graph` and `inputs` are not supported on the untrusted path."
+        )
+    try:
+        trace_worker = Mediator.current("backward()")
+    except ValueError:
+        trace_worker = None
+    if trace_worker is None:
+        # Outside a trace (in a session body): run locally on the block's own tensors.
+        if block is not None:
+            raise NotImplementedError(
+                "`with loss.backward():` outside a trace is not supported on the "
+                "untrusted path."
+            )
+        if earlier(tensor):
+            raise NotImplementedError(STALE_BACKWARD)
+        autograd_backward([tensor], None if gradient is None else [gradient],
+                          retain_graph=retain_graph)
+        return None
+    graph = trace_worker.interleaver.graph
+    if graph.backward:
+        raise NotImplementedError(
+            "On the untrusted path, a backward cannot start inside a "
+            "`with loss.backward():` block."
+        )
+    # Include any requires_grad_() set since the last park as a leaf.
+    graph.adopt()
+    if earlier(tensor, {id(leaf) for leaf in graph.leaf.values()}):
+        raise NotImplementedError(STALE_BACKWARD)
+    roots, grads = graph.local(tensor, gradient)
+    if not roots and block is None:
+        return None
+    worker = first = None
+    original = torch.Tensor.grad
+    graph.backward = True
+    try:
+        if block is not None:
+            interleaver = trace_worker.interleaver
+            worker = len(interleaver.mediators)
+            interleaver.mediators.append(block)
+            torch.Tensor.grad = grad_property(graph)
+            # Run the block to its first park; that park rides inside `Backward`.
+            block.start(interleaver)
+            first = block.pending
+            sent, infos = graph.outgoing(first)
+            if infos:
+                raise NotImplementedError(
+                    "On the untrusted path, the first statement of a "
+                    "`with loss.backward():` block cannot carry a tensor that "
+                    "requires grad."
+                )
+            first = sent
+        graph.restore(
+            getcurrent().parent.switch(
+                Backward(roots, grads, worker, first, retain_graph)
+            )
+        )
+    finally:
+        torch.Tensor.grad = original
+        graph.backward = False
+    return None
+
+
+def ipc_backward(tensor, *args, **kwargs):
+    """Runner replacement for ``Tensor.backward``.
+
+    Returns an `IPCBackwardTracer` when used in a ``with`` statement, or calls
+    `run_backward` directly for a bare call."""
+    tracer = IPCBackwardTracer(tensor, None, *args, **kwargs)
+    try:
+        tracer.capture()
+    except WithBlockNotFoundError:
+        pass
+    else:
+        return tracer
+    # Call outside the except block so backward errors do not chain to nnsight's
+    # WithBlockNotFoundError.
+    return run_backward(tensor, *args, **kwargs)
+
+
+def ipc_autograd_backward(tensors, grad_tensors=None, retain_graph=None, **kwargs):
+    """Runner replacement for ``torch.autograd.backward``; delegates a
+    single-tensor backward to `run_backward`."""
+    if isinstance(tensors, torch.Tensor):
+        tensors, grad_tensors = [tensors], (
+            None if grad_tensors is None else [grad_tensors]
+        )
+    if len(tensors) != 1:
+        raise NotImplementedError(
+            "On the untrusted path, a backward starts from one tensor at a time."
+        )
+    return run_backward(
+        tensors[0], None if grad_tensors is None else grad_tensors[0],
+        retain_graph, **kwargs
+    )
 
 
 def install() -> None:
@@ -304,6 +472,6 @@ def install() -> None:
     # `Tensor.backward` is where nnsight's `with loss.backward():` starts too, so
     # this replaces nnsight's patch as well; the other two are torch's direct
     # entry points.
-    torch.Tensor.backward = refusal()
-    torch.autograd.backward = refusal()
-    torch.autograd.grad = refusal()
+    torch.Tensor.backward = ipc_backward
+    torch.autograd.backward = ipc_autograd_backward
+    torch.autograd.grad = refuse_grad

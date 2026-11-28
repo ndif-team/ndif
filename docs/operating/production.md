@@ -59,8 +59,11 @@ walkthrough in [Enable auth](../runbooks/enable-auth.md).
 
 **Turning auth on changes behavior for every key without the `trusted` tag.**
 Such a request runs in the sandbox runner, against a weightless copy of the
-model, so it cannot read or edit weights, cannot take gradients (a `.grad`
-read fails), and therefore cannot train. Tell your users before you flip
+model, so it cannot read or edit weights or train the model's parameters.
+Gradients via `backward()` work; `torch.autograd.grad` and the other forms
+listed in
+[Sandbox internals](../developing/sandbox-internals.md#what-the-untrusted-path-cannot-do)
+are refused. Tell your users before you flip
 it; see [Sandbox Execution](../concepts/sandbox-execution.md).
 
 ### The sandboxed actor class
@@ -303,7 +306,7 @@ durable volumes and retention policy for anything it needs to keep. See
 |---|---|---|---|
 | 1 | `NDIF_POSTGRES_URL` set on the API, keys created, `trusted` and `trust_remote_code` granted deliberately | api | `GET /whoami` with a key returns your email; without one, `/request` 401s |
 | 2 | Model actor class is a sandbox actor: `NDIF_MODEL_IMPORT_PATH` (or `NDIF_DEFAULT_MODEL_ACTOR_CLASS`) = `ndif.services.ray.sandbox.model.SandboxModelActor`, and `NDIF_TP_MODEL_ACTOR_CLASS` = `ndif.services.ray.tp.model.SandboxedTPModelActor` if TP is on | ray | `ndif status --json-output` shows a sandbox `actor_class` on every replica |
-| 3 | Users told that untagged keys can no longer read weights, take gradients or train | — | — |
+| 3 | Users told that untagged keys cannot read weights, train the model's parameters, or call `torch.autograd.grad` | — | — |
 | 4 | Postgres password is not `admin`, and the DB is not published | postgres | — |
 | 5 | `NDIF_DASHBOARD_DEV_MODE` removed; username, bcrypt hash, random session secret set | dashboard | The dashboard prompts for a login |
 | 6 | Object-store credentials replaced; bucket durable; lifecycle rule aborts incomplete multipart uploads | api, ray | — |
