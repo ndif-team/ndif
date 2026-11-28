@@ -29,6 +29,14 @@ running ``write_back`` against a copy it kept. And what crosses on a read is a
 compact copy (``controls.compact``), so one invoke's read carries its own rows
 and not the whole batch.
 
+A KV cache stays on the host. It is in the keyword arguments of every decoder
+layer and in the model's output, so it was most of the bytes of a read of
+``.input``, and a block that assigned ``.input`` or ``.inputs`` sent a copy of it
+back, which replaced the one the forward held: later steps of a cached
+``generate`` diverged from the trusted run. The host now sends a stand-in in a
+cache's place (``controls.withhold``) and puts its own cache back wherever the
+stand-in returns in an assigned value (``controls.own``).
+
 Same harness as ``test_sandbox_iter_pins``, whose helpers this imports: no server
 and no Ray, a real gpt2 on CPU, a runner spawned over a Unix socket and a
 ``SandboxDriver`` pumping it. The trusted run is the ground truth.
@@ -39,14 +47,22 @@ from __future__ import annotations
 import io
 
 import pytest
+from nnsight.util import apply
+from transformers.cache_utils import Cache
 
 torch = pytest.importorskip("torch")
 nnsight = pytest.importorskip("nnsight")
 
 from ndif.common.errors import WeightEditError
 from ndif.services.ray.sandbox import driver, host
-from ndif.services.ray.sandbox.controls import compact, kept_by, write_back
-from ndif.services.ray.sandbox.messages import Payload
+from ndif.services.ray.sandbox.controls import (
+    compact,
+    kept_by,
+    own,
+    withhold,
+    write_back,
+)
+from ndif.services.ray.sandbox.messages import OnHost, Payload
 
 from test_sandbox_iter_pins import (  # noqa: F401  (model is a fixture)
     PROMPT,
@@ -290,3 +306,162 @@ def test_an_edit_through_data_reaches_the_host(frozen):
 
     saved = run_sandboxed(model, capture.blob)
     assert torch.allclose(saved["logits"], local)
+
+
+def test_withhold_and_own_keep_a_cache_on_the_host():
+    from transformers import DynamicCache
+
+    cache, other, hidden = DynamicCache(), DynamicCache(), torch.zeros(2, 3)
+    held = []
+
+    sent = withhold(((hidden,), {"past_key_values": cache, "step": 0}), held)
+    assert sent == ((hidden,), {"past_key_values": OnHost(0), "step": 0})
+    assert sent[0][0] is hidden
+    # The same cache met again keeps its number; another one gets the next.
+    assert withhold([cache, other], held) == [OnHost(0), OnHost(1)]
+    assert held[0] is cache and held[1] is other
+
+    (new,), kwargs = own(((hidden * 2,), {"past_key_values": OnHost(0)}), held)
+    assert kwargs["past_key_values"] is cache
+
+    for key in (2, -1, True, "0"):
+        with pytest.raises(LookupError):
+            own((OnHost(key),), held)
+    # A block that reads into the stand-in is told why it cannot.
+    with pytest.raises(AttributeError, match="stays on the host"):
+        OnHost(0).layers
+
+
+def test_a_read_of_a_blocks_inputs_leaves_the_kv_cache_on_the_host(frozen):
+    model = frozen
+    block = model.transformer.h[5]
+
+    with model.trace(PROMPT):
+        local = block.input.save()
+    hidden_bytes = local.numel() * local.element_size()
+
+    # `.input` and `.inputs` are one read of the call's ``(args, kwargs)``.
+    for read in ("input", "inputs"):
+        capture = Capture()
+        with model.trace(PROMPT, backend=capture):
+            if read == "input":
+                hidden = block.input.save()
+            else:
+                hidden = block.inputs[0][0].save()
+        saved, sizes = run_measured(model, capture.blob)
+        # The request, the one read, and `Done`.
+        assert len(sizes) == 3
+        assert torch.equal(saved["hidden"], local)
+        assert sizes[1] < 1.5 * hidden_bytes
+
+
+def test_an_in_place_edit_of_a_blocks_input_reaches_the_forward(frozen):
+    # The block's call has other arguments, so the read is a part of it, and the
+    # edit of that part has to land in the host's whole.
+    model = frozen
+    block = model.transformer.h[5]
+
+    with model.trace(PROMPT):
+        block.input[:, -1] = 0
+        logits = model.lm_head.output[0, -1].save()
+    local = logits.detach().clone()
+    with model.trace(PROMPT):
+        untouched = model.lm_head.output[0, -1].save()
+    assert not torch.allclose(local, untouched)
+
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        block.input[:, -1] = 0
+        logits = model.lm_head.output[0, -1].save()
+
+    saved = run_sandboxed(model, capture.blob)
+    assert torch.allclose(saved["logits"], local)
+
+
+def test_assigning_input_keeps_the_kv_cache(frozen):
+    # The assignment used to bring the whole call back, and the cache in it
+    # replaced the one the forward held: the steps after it lost their history.
+    model = frozen
+    block = model.transformer.h[5]
+
+    with model.generate(PROMPT, **GENERATE) as tracer:
+        block.input = block.input * 0.5
+        steps = nnsight.save([])
+        for step in tracer.iter[:3]:
+            steps.append(model.lm_head.output[0, -1].clone())
+    local = [logits.detach().clone() for logits in steps]
+
+    capture = Capture()
+    with model.generate(PROMPT, backend=capture, **GENERATE) as tracer:
+        block.input = block.input * 0.5
+        steps = nnsight.save([])
+        for step in tracer.iter[:3]:
+            steps.append(model.lm_head.output[0, -1].clone())
+
+    saved = run_sandboxed(model, capture.blob)
+    assert len(saved["steps"]) == len(local) == 3
+    for step, (expected, actual) in enumerate(zip(local, saved["steps"])):
+        assert torch.allclose(actual, expected), f"step {step} diverged from the trusted run"
+
+
+def test_assigning_a_source_operations_input_matches_the_trusted_run(frozen):
+    model = frozen
+    operation = model.transformer.h[5].mlp.source.self_act_0
+
+    with model.trace(PROMPT):
+        operation.input = operation.input * 0.5
+        logits = model.lm_head.output[0, -1].save()
+    local = logits.detach().clone()
+
+    capture = Capture()
+    with model.trace(PROMPT, backend=capture):
+        operation.input = operation.input * 0.5
+        logits = model.lm_head.output[0, -1].save()
+
+    saved = run_sandboxed(model, capture.blob)
+    assert torch.allclose(saved["logits"], local, atol=1e-5)
+
+
+def test_assigning_inputs_keeps_the_kv_cache(frozen):
+    # The whole call, assigned with a new first argument: the other arguments,
+    # the cache among them, are the ones the block read.
+    model = frozen
+    block = model.transformer.h[5]
+    with model.generate(PROMPT, **GENERATE) as tracer:
+        args, kwargs = block.inputs
+        block.inputs = ((args[0] * 0.5, *args[1:]), kwargs)
+        steps = nnsight.save([])
+        for step in tracer.iter[:3]:
+            steps.append(model.lm_head.output[0, -1].clone())
+    local = [logits.detach().clone() for logits in steps]
+
+    capture = Capture()
+    with model.generate(PROMPT, backend=capture, **GENERATE) as tracer:
+        args, kwargs = block.inputs
+        block.inputs = ((args[0] * 0.5, *args[1:]), kwargs)
+        steps = nnsight.save([])
+        for step in tracer.iter[:3]:
+            steps.append(model.lm_head.output[0, -1].clone())
+
+    saved = run_sandboxed(model, capture.blob)
+    assert len(saved["steps"]) == len(local) == 3
+    for step, (expected, actual) in enumerate(zip(local, saved["steps"])):
+        assert torch.allclose(actual, expected), f"step {step} diverged from the trusted run"
+
+
+def test_saved_inputs_hold_none_where_the_kv_cache_was(frozen):
+    model = frozen
+    block = model.transformer.h[5]
+
+    capture = Capture()
+    with model.generate(PROMPT, backend=capture, **GENERATE):
+        call = block.inputs.save()
+    args, kwargs = run_sandboxed(model, capture.blob)["call"]
+
+    with model.generate(PROMPT, **GENERATE):
+        local = block.inputs.save()
+    assert torch.equal(args[0], local[0][0])
+    there, here = [], []
+    apply(local, there.append, Cache)
+    apply((args, kwargs), here.append, (Cache, OnHost))
+    assert there and not here

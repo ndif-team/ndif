@@ -106,6 +106,11 @@ every generated token pays that per location per step. A location no worker is
 parked on costs nothing — it never crosses. If a trace is slower than expected,
 count its parks, not its lines.
 
+**A KV cache is not readable from a sandboxed block.** A layer's `.inputs` and
+the model's output hold a stand-in where the cache is. Reading into it raises
+an `AttributeError`, and a saved value holds `None` there. Assigning `.input`
+or `.inputs` leaves the forward its own cache.
+
 **Values you read are copies.** A tensor handed to your block was pickled out of
 the host process and rebuilt in the runner. In-place edits still work: the runner
 sends an edited copy back before the model moves on, and the host writes its

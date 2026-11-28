@@ -24,9 +24,10 @@ import torch
 
 from nnsight.intervention.cache import Cache
 from nnsight.util import apply
+from transformers.cache_utils import Cache as KVCache
 
 from ....common.errors import WeightEditError
-from .messages import CacheHit, Call, Observe, Source, SourceRefused
+from .messages import CacheHit, Call, Observe, OnHost, Source, SourceRefused
 
 #: The handler for each type of control request.
 HANDLERS: dict = {}
@@ -206,7 +207,7 @@ class ShippingCache(Cache):
     location the forward reaches, narrowed to that worker's rows.
     """
 
-    def __init__(self, cache_id, link, config, model=None) -> None:
+    def __init__(self, cache_id, link, config, model, held) -> None:
         targets = config["targets"]
         super().__init__(
             # The host's model, not None. `Cache.subscriptions` reads every
@@ -225,11 +226,14 @@ class ShippingCache(Cache):
         )
         self._cache_id = cache_id
         self._link = link
+        self._held = held
 
     def _record(self, path, key, value):
         # Narrowed to the worker's rows, and still on the card if the cache keeps
         # values there, so a view of the whole batch.
-        self._link.send(CacheHit(self._cache_id, path, key, compact(value)))
+        self._link.send(
+            CacheHit(self._cache_id, path, key, compact(withhold(value, self._held)))
+        )
 
 
 @control(Observe)
@@ -237,7 +241,9 @@ def observe(driver, proxy, request):
     """Attach a `ShippingCache` to the worker's proxy, so that the worker's
     ``tracer.cache()`` in the runner fills from the forward that runs here."""
     proxy.caches.append(
-        ShippingCache(request.cache, proxy.link, request.config, driver.model)
+        ShippingCache(
+            request.cache, proxy.link, request.config, driver.model, driver.held
+        )
     )
 
 
@@ -295,6 +301,33 @@ def compact(value):
         lambda tensor: tensor.clone() if id(tensor) in oversized else tensor,
         torch.Tensor,
     )
+
+
+def withhold(value, held: list):
+    """``value`` with an `OnHost` in place of each KV cache in it. ``held`` is the
+    request's list of withheld caches; a cache new to it is added."""
+
+    def stand_in(cache):
+        for key, mine in enumerate(held):
+            if mine is cache:
+                return OnHost(key)
+        held.append(cache)
+        return OnHost(len(held) - 1)
+
+    return apply(value, stand_in, KVCache)
+
+
+def own(value, held: list):
+    """``value``, which a block assigns, with each `OnHost` replaced by the cache
+    it stands for. Raises ``LookupError`` for one that stands for none."""
+
+    def cache(stand_in):
+        key = stand_in.key
+        if type(key) is not int or not 0 <= key < len(held):
+            raise LookupError(f"no KV cache was withheld under {key!r}")
+        return held[key]
+
+    return apply(value, cache, OnHost)
 
 
 def kept_by(module) -> set:

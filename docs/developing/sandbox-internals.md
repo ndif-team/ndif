@@ -374,6 +374,22 @@ sequenceDiagram
   P-->>F: possibly-edited value returns into the forward
 ```
 
+**A KV cache stays on the host.** A cache (`transformers.cache_utils.Cache`) is
+in the keyword arguments of every decoder layer and in the model's output. It
+never crosses: `withhold` in `src/ndif/services/ray/sandbox/controls.py` puts an
+`OnHost` stand-in in its place in every value the host sends (a read in
+`MediatorProxy.switch`, a `CacheHit`, the result in `Done`), and
+`SandboxDriver.held` lists the caches withheld in the request. When a block
+assigns a value that holds a stand-in (`layer.input = x`, which nnsight sends
+as the whole call, or `layer.inputs = ...`), `MediatorProxy.adopt` puts the
+host's cache back with `own`. Two things follow. A read of `.input` or
+`.inputs` carries the call's tensors and not the cache, which was most of its
+bytes and was never narrowed to an invoke's rows. And an assigned call keeps
+the cache the forward holds; a copy in its place made later steps of a cached
+`generate` diverge from the trusted run. A block that reads into the stand-in
+gets an `AttributeError` that says the cache stays on the host, and a saved
+value holds `None` where the stand-in was (`execute.run`).
+
 **What crosses on a read.** `MediatorProxy.switch` sends a compact copy of the
 narrowed value (`compact` in `src/ndif/services/ray/sandbox/controls.py`).
 `torch.save` writes a view's whole storage, and a read narrowed to one invoke's

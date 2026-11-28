@@ -34,7 +34,7 @@ over the socket, compared against the local run; no Ray:
 | `test_sandbox_recursive_source.py` | recursive `.source` over the socket, against the local run |
 | `test_sandbox_adhoc_calls.py` | an ad-hoc module call (`hook=False` and `hook=True`) leaving the module's real occurrence alone |
 | `test_sandbox_gradients.py` | every form of backward pass refused with the trusted-access message |
-| `test_sandbox_writeback.py` | an in-place edit of a value a block read, and a read of a layer's `.input` in a cached generate, leaving the forward its own tensors and KV cache; the runner sending a read back only when the block edited it; a read carrying only its own invoke's rows |
+| `test_sandbox_writeback.py` | an in-place edit of a value a block read, and a read of a layer's `.input` in a cached generate, leaving the forward its own tensors and KV cache; the runner sending a read back only when the block edited it; a read carrying only its own invoke's rows; a KV cache staying on the host through reads and assignments of `.input` and `.inputs` |
 | `test_sandbox_stop.py` | `tracer.stop()`: the trace after a stopped one in a session, and the other invoke parked on the visit the stop fired at |
 | `test_sandbox_template.py` | runners forked from a `Template`: one serves a request, forks draw their own random numbers, stop and template close end them, a runner whose parent is gone exits, and CUDA starts early only with `NDIF_SANDBOX_PRELOAD_CUDA`, on the card the runner is given |
 | `test_sandbox_host.py` | the actor's half: `SandboxHost.run_in_runner` with a real pool of one runner, and the block's prints reaching the client as `LOG` |
